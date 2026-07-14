@@ -17,8 +17,9 @@ on ARM systems until dedicated ARM validation is completed.
 
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
-with `main` as the published branch. The initial `v0.1.0-alpha` release is
-published as a pre-release.
+with `main` as the published branch. The `v0.1.x` alpha releases are published
+as pre-releases. The current `v0.1.2-alpha` release includes the guarded local
+Migration / Support workflow described below.
 
 Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
 intended for early validation and feedback; hardware-sensitive and experimental
@@ -94,6 +95,7 @@ with:
 - VRAM allocation and verification workloads
 - result folder summaries and legacy-compatible JSON
 - diagnostics and dependency checks for field troubleshooting
+- public-safe support summaries and guarded local migration/restore tooling
 - QA review payloads for result readiness, import readiness, comparison
   context, and escalation decisions
 
@@ -163,6 +165,21 @@ Available workflows include:
   pre-import sanity, comparison, artifacts, upload workflow, and core settings.
 - QA wrapper JSON contracts for single-result and batch review.
 - A public hardware/result coverage matrix with optional local result mappings.
+- CLI and TUI Migration / Support workflows for public-safe support export,
+  explicitly acknowledged private migration bundles, restore preview, and
+  confirmed restore apply. Restore never overwrites existing local files;
+  conflicts are staged for manual comparison, and bundle manifests, checksums,
+  paths, and symlinks are validated before use.
+
+The runtime version follows the `v0.1.x-alpha` release policy. The current
+`v0.1.2-alpha` release passed all 189 smoke tests. Passing smoke runs capture
+expected interactive output instead of dumping CLI/TUI setup screens; failures
+still retain their assertion diagnostics.
+
+Migration bundles exclude secrets, Google credentials, result contents,
+sensor-log contents, vendor/test data, `.venv`, caches, and private identifiers
+by default. The public-safe support export is shareable; a private migration
+bundle is not.
 
 Still experimental or hardware-sensitive:
 
