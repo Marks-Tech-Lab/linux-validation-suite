@@ -1,4 +1,4 @@
-# Linux Validation Suite
+# LVS — Linux Validation Suite
 
 Linux Validation Suite is a hardware validation and stress-test orchestrator
 for Linux systems. It runs repeatable CPU, memory, GPU, and VRAM workloads,
