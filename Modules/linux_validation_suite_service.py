@@ -130,6 +130,22 @@ class SuiteAppService(
     def stop_enhanced_telemetry_keepalive(self) -> None:
         self.privileged_telemetry.stop_keepalive()
 
+    def public_support_export_text(self) -> str:
+        return self.local_migration_manager.export_public_support().summary_text
+
+    def create_private_migration_bundle(self, *, acknowledge_private_data: bool):
+        return self.local_migration_manager.create_private_bundle(
+            acknowledge_private_data=acknowledge_private_data,
+        )
+
+    def preview_migration_restore(self, bundle_path: Path):
+        return self.local_migration_manager.preview_restore(bundle_path)
+
+    def apply_migration_restore(self, bundle_path: Path, *, confirmed: bool):
+        if not confirmed:
+            raise ValueError("migration restore apply requires explicit confirmation")
+        return self.local_migration_manager.apply_restore(bundle_path, yes=True)
+
 
 def main() -> int:
     service = SuiteAppService()

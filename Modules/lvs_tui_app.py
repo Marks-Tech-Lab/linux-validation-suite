@@ -134,6 +134,7 @@ class LinuxValidationSuiteTui(
         ("r", "refresh", "Refresh"),
         ("d", "dry_run", "Dry Run"),
         ("c", "dependency_check", "Deps"),
+        ("k", "show_migration_support", "Migration"),
         ("n", "new_profile", "New"),
         ("t", "setup_run", "Setup"),
         ("m", "edit_profile", "Edit"),
@@ -181,6 +182,7 @@ class LinuxValidationSuiteTui(
         self.setting_list_selected_index: int = 0
         self.history_entries: list[RunSetupHistoryEntry] = []
         self.pending_history_entry: Optional[RunSetupHistoryEntry] = None
+        self.pending_migration_bundle_path: Optional[Path] = None
         self.last_audit_notes: list[str] = []
         self.last_run_dir: Optional[Path] = None
         self.last_run_metadata = None

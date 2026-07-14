@@ -39,6 +39,7 @@ ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
     ("run", "Run"),
     ("results", "Results"),
     ("settings", "Settings"),
+    ("migration-support", "Migration"),
     ("refresh", "Refresh"),
 )
 
@@ -57,6 +58,7 @@ ACTION_BUTTON_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
         ("run", "Run"),
         ("results", "Results"),
         ("settings", "Settings"),
+        ("migration-support", "Migration"),
         ("refresh", "Refresh"),
     ),
 )
@@ -234,6 +236,19 @@ def settings_sidebar_state() -> TuiSidebarListState:
     )
 
 
+def migration_support_sidebar_state() -> TuiSidebarListState:
+    return TuiSidebarListState(
+        title="Migration / Support",
+        rows=(
+            "Public-safe Support Summary",
+            "Create Private Migration Bundle",
+            "Preview Migration Restore",
+            "Apply Reviewed Migration Restore",
+        ),
+        selected_index=0,
+    )
+
+
 def _wrap_help_text(prefix: str, body: str, width: int | None) -> str:
     if width is None or width >= 100:
         return f"{prefix}: {body}"
@@ -267,6 +282,12 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
             "Enter toggle/edit | G upload prompt | W wall watts | R raw telemetry | P profiles",
             terminal_width,
         )
+    elif mode == "migration_support":
+        return _wrap_help_text(
+            "Migration keys",
+            "Enter select | private export requires PRIVATE | restore apply requires preview then APPLY",
+            terminal_width,
+        )
     elif mode.startswith("profile_edit"):
         return _wrap_help_text(
             "Profile edit keys",
@@ -281,7 +302,7 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
         )
     return _wrap_help_text(
         "Main keys",
-        "Enter setup/review | D dry run | T setup | S results | X settings | R refresh | Q quit",
+        "Enter setup/review | D dry run | K migration/support | S results | X settings | R refresh | Q quit",
         terminal_width,
     )
 

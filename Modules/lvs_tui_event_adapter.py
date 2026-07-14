@@ -49,6 +49,8 @@ class TuiEventAdapterMixin:
             self.action_dry_run()
         elif action == "dependency_check":
             self.action_dependency_check()
+        elif action == "show_migration_support":
+            await self.action_show_migration_support()
         elif action == "new_profile":
             await self.action_new_profile()
         elif action == "setup_run":
@@ -120,6 +122,9 @@ class TuiEventAdapterMixin:
         if self.view_mode == "settings_list":
             self.setting_list_selected_index = max(0, index)
             return
+        if self.view_mode == "migration_support":
+            await self._select_migration_support_action(index)
+            return
         if self.view_mode == "profile_edit":
             self.profile_edit_selected_index = max(0, index)
             await self._activate_profile_edit_item(index)
@@ -158,6 +163,8 @@ class TuiEventAdapterMixin:
             return
         if self.view_mode == "settings_list":
             self.setting_list_selected_index = max(0, index)
+            return
+        if self.view_mode == "migration_support":
             return
         if self.view_mode == "profile_edit":
             self.profile_edit_selected_index = max(0, index)
@@ -352,6 +359,14 @@ class TuiEventAdapterMixin:
         if self.view_mode == "results":
             await self.action_show_profiles()
             return
+        if self.view_mode == "migration_support":
+            if self.pending_input_field:
+                self.pending_migration_bundle_path = None
+                self._clear_setup_input()
+                await self.action_show_migration_support()
+            else:
+                await self.action_show_profiles()
+            return
         if not self.pending_input_field:
             return
         self._clear_setup_input(focus_items=True)
@@ -407,6 +422,9 @@ class TuiEventAdapterMixin:
                     )
                 )
                 self._set_status(outcome.status)
+            return
+        if route == "migration":
+            await self._commit_migration_input(self.pending_input_field, input_widget.value)
             return
         if route == "settings" and await self._commit_settings_input(self.pending_input_field, input_widget.value):
             return

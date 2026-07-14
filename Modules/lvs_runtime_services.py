@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Type
 
 from .lvs_dependency_reports import DependencyReportManager
+from .lvs_local_migration import LocalMigrationManager
 from .lvs_option_defaults import DEFAULT_CASE_OPTIONS, DEFAULT_CPU_COOLER_OPTIONS, DEFAULT_PSU_RATING_OPTIONS
 from .lvs_post_run import PostRunManager
 from .lvs_pre_import_sanity import PreImportSanityFacade
@@ -61,6 +62,7 @@ class RuntimeServices:
     profile_save: ProfileSaveController
     post_run_manager: PostRunManager
     dependency_reports: DependencyReportManager
+    local_migration_manager: LocalMigrationManager
     run_preflight_manager: RunPreflightManager
     run_flow: RunFlowCoordinator
     run_setup_manager: RunSetupManager
@@ -112,6 +114,7 @@ def build_runtime_services(
         orchestrator,
         post_run_manager.google_drive_readiness,
     )
+    local_migration_manager = LocalMigrationManager()
     run_preflight_manager = RunPreflightManager(
         profile_loader=profile_loader,
         orchestrator=orchestrator,
@@ -146,6 +149,7 @@ def build_runtime_services(
         profile_save=profile_save,
         post_run_manager=post_run_manager,
         dependency_reports=dependency_reports,
+        local_migration_manager=local_migration_manager,
         run_preflight_manager=run_preflight_manager,
         run_flow=run_flow,
         run_setup_manager=run_setup_manager,

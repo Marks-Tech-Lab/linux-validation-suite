@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import os
+import shutil
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -40,6 +43,7 @@ from linux_validation_suite import (
     WorkloadRunner,
 )
 from Modules.lvs_dependency_reports import DependencyReportManager
+from Modules.lvs_diagnostics_cli import DiagnosticsCliAdapter
 from Modules.lvs_advanced_debug import AdvancedDebugLogger
 from Modules import lvs_telemetry_intel
 from Modules import lvs_telemetry_memory
@@ -547,6 +551,21 @@ from Modules.lvs_hardware_matrix_state import (
     refresh_hardware_matrix_state,
     validate_hardware_matrix_state,
 )
+from Modules.lvs_local_environment_export import (
+    EXPORT_CONTRACT_ID,
+    EXPORT_CONTRACT_VERSION,
+    PublicSupportExporter,
+)
+from Modules.lvs_local_migration import (
+    HARDWARE_STATE_BUNDLE_PATH,
+    HISTORY_BUNDLE_PATH,
+    MANIFEST_NAME,
+    MIGRATION_CONTRACT_ID,
+    MIGRATION_CONTRACT_VERSION,
+    SETTINGS_BUNDLE_PATH,
+    LocalMigrationManager,
+    main as local_migration_main,
+)
 from Modules.lvs_qa_review_cli import main as qa_review_cli_main
 from Modules.lvs_settings import GlobalSettings, SettingsManager
 from Modules.lvs_settings_facade import SettingsFacade
@@ -597,6 +616,7 @@ from Modules.lvs_tui_app_actions_flow import (
     global_action_markup,
     global_action_bar_text,
     layout_action_button_rows,
+    migration_support_sidebar_state,
     profiles_sidebar_state,
     results_sidebar_state,
     settings_sidebar_state,
@@ -2177,8 +2197,12 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_equal(latest_state.first_item, latest_results[1], "TUI result sidebar latest result item")
     settings_state = settings_sidebar_state()
     assert_equal(settings_state.rows, ("Settings summary",), "TUI app actions settings sidebar row")
+    migration_state = migration_support_sidebar_state()
+    assert_equal(migration_state.title, "Migration / Support", "TUI migration sidebar title")
+    assert_equal(len(migration_state.rows), 4, "TUI migration sidebar action count")
     assert_true(("results", "Results") in ACTION_BUTTONS, "TUI right-pane buttons keep Results action")
     assert_true(("settings", "Settings") in ACTION_BUTTONS, "TUI right-pane buttons keep Settings action")
+    assert_true(("migration-support", "Migration") in ACTION_BUTTONS, "TUI right-pane buttons expose migration support")
     assert_equal(len(ACTION_BUTTON_ROWS), 2, "TUI right-pane buttons use restored two-row layout")
     assert_equal(
         ACTION_BUTTON_ROWS[0],
@@ -2199,6 +2223,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
             ("run", "Run"),
             ("results", "Results"),
             ("settings", "Settings"),
+            ("migration-support", "Migration"),
             ("refresh", "Refresh"),
         ),
         "TUI right-pane second button row matches restored layout",
@@ -2414,6 +2439,117 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_true("Dry run complete for /tmp/profile.json" in dry_tui.detail, "TUI dry run final result displayed")
     assert_equal(dry_tui.status, "Dry run complete | Smoke Profile", "TUI dry run final status")
 
+    class MigrationSupportService:
+        def __init__(self) -> None:
+            self.private_calls = []
+            self.preview_paths = []
+            self.apply_calls = []
+
+        def public_support_export_text(self):
+            return "Public-safe Support Summary\nExport folder: results/Support_Exports/smoke"
+
+        def create_private_migration_bundle(self, *, acknowledge_private_data):
+            self.private_calls.append(acknowledge_private_data)
+            return SimpleNamespace(summary_text="Private Migration Bundle\nBundle folder: results/Migration_Bundles/smoke")
+
+        def preview_migration_restore(self, bundle_path):
+            self.preview_paths.append(bundle_path)
+            return SimpleNamespace(
+                valid=True,
+                summary_text=(
+                    "Migration Restore Preview\nWrites performed: no\nAction counts: restore=1\n"
+                    "Conflicts requiring staging: 0\nManual actions: 2"
+                ),
+            )
+
+        def apply_migration_restore(self, bundle_path, *, confirmed):
+            self.apply_calls.append((bundle_path, confirmed))
+            return SimpleNamespace(
+                valid=True,
+                summary_text=(
+                    "Migration Restore Apply Result\nWrites performed: yes\nAction counts: restore=1\n"
+                    "Staging folder: none\nManual actions: 2"
+                ),
+            )
+
+    class MigrationSupportTui(TuiAppActionsAdapterMixin):
+        def __init__(self) -> None:
+            self.service = MigrationSupportService()
+            self.detail = ""
+            self.status = ""
+            self.reset_seen = False
+            self.view_mode = "profiles"
+            self.title = SimpleNamespace(update=lambda text: setattr(self, "title_text", text))
+            self.rows = []
+            self.pending_input_field = None
+            self.pending_migration_bundle_path = None
+
+        def query_one(self, selector):
+            return self.title if selector == "#sidebar-title" else SimpleNamespace()
+
+        async def _replace_sidebar_labels(self, list_view, rows, selected_index=None, focus=False):
+            self.rows = list(rows)
+
+        def _set_detail(self, text: str) -> None:
+            self.detail = text
+
+        def _set_status(self, text: str) -> None:
+            self.status = text
+
+        def _apply_navigation_reset(self, reset) -> None:
+            self.reset_seen = True
+
+        def _apply_input_state(self, state) -> None:
+            self.pending_input_field = state.pending_field
+            self.detail = state.detail
+
+        def _clear_setup_input(self, *, focus_items=False) -> None:
+            self.pending_input_field = None
+
+    async def run_migration_support_actions() -> None:
+        migration_tui = MigrationSupportTui()
+        await migration_tui.action_show_migration_support()
+        assert_equal(migration_tui.view_mode, "migration_support", "TUI migration support view mode")
+        assert_equal(len(migration_tui.rows), 4, "TUI migration support renders choices")
+        assert_true(migration_tui.reset_seen, "TUI migration support resets navigation")
+        await migration_tui._select_migration_support_action(0)
+        assert_true("Public-safe Support Summary" in migration_tui.detail, "TUI public support action renders summary")
+        assert_equal(migration_tui.status, "Public-safe support summary complete", "TUI public support action status")
+
+        await migration_tui._select_migration_support_action(1)
+        assert_equal(migration_tui.pending_input_field, "__migration_private_ack", "TUI private export awaits acknowledgement")
+        assert_equal(migration_tui.service.private_calls, [], "TUI private export does not run before acknowledgement")
+        await migration_tui._commit_migration_input("__migration_private_ack", "cancel")
+        assert_equal(migration_tui.service.private_calls, [], "TUI private export rejects incorrect acknowledgement")
+        await migration_tui._select_migration_support_action(1)
+        await migration_tui._commit_migration_input("__migration_private_ack", "PRIVATE")
+        assert_equal(migration_tui.service.private_calls, [True], "TUI private export accepts explicit acknowledgement")
+        assert_true("Bundle folder" in migration_tui.detail, "TUI private export renders output path")
+
+        await migration_tui._select_migration_support_action(2)
+        assert_equal(migration_tui.pending_input_field, "__migration_restore_preview_path", "TUI preview awaits bundle path")
+        await migration_tui._commit_migration_input("__migration_restore_preview_path", "/tmp/migration-preview")
+        assert_equal(migration_tui.service.preview_paths[-1], Path("/tmp/migration-preview"), "TUI preview passes bundle path")
+        assert_true("Writes performed: no" in migration_tui.detail, "TUI preview renders no-write result")
+
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-apply")
+        assert_equal(migration_tui.pending_input_field, "__migration_restore_apply_confirm", "TUI apply awaits second confirmation")
+        assert_equal(migration_tui.service.apply_calls, [], "TUI apply does not run after path alone")
+        await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "cancel")
+        assert_equal(migration_tui.service.apply_calls, [], "TUI apply rejects incorrect confirmation")
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-apply")
+        await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "APPLY")
+        assert_equal(
+            migration_tui.service.apply_calls,
+            [(Path("/tmp/migration-apply"), True)],
+            "TUI apply requires preview path and explicit APPLY",
+        )
+        assert_true("Writes performed: yes" in migration_tui.detail, "TUI apply renders write result")
+
+    asyncio.run(run_migration_support_actions())
+
 
 def test_tui_event_adapter_helpers() -> None:
     class FakeTui(TuiEventAdapterMixin):
@@ -2447,6 +2583,7 @@ def test_tui_event_adapter_helpers() -> None:
     assert_equal(button_action("global-results"), "show_results", "TUI event global result button routing")
     assert_equal(button_action("global-upload"), "upload_last_result", "TUI event global upload button routing")
     assert_equal(button_action("global-wall-wattage"), "edit_wall_wattage", "TUI event global wall wattage button routing")
+    assert_equal(button_action("migration-support"), "show_migration_support", "TUI event migration support routing")
     assert_equal(button_action("global-back"), "cancel_setup_input", "TUI event global back button routing")
     assert_equal(button_action("global-quit"), "quit", "TUI event global quit button routing")
     for button_id, label in GLOBAL_ACTION_BUTTONS:
@@ -2456,8 +2593,10 @@ def test_tui_event_adapter_helpers() -> None:
     assert_true(view_uses_escape_cancel("setup_picker"), "TUI event setup picker escape cancel")
     assert_true(view_uses_escape_cancel("setup_history_prompt"), "TUI event setup history prompt escape cancel")
     assert_true(view_uses_escape_cancel("setup_history_confirm"), "TUI event setup history confirm escape cancel")
+    assert_true(view_uses_escape_cancel("migration_support"), "TUI migration input supports escape cancel")
     assert_true(not view_uses_escape_cancel("settings"), "TUI event settings view does not use picker escape cancel")
     assert_equal(pending_input_route("__post_wall_wattage"), "post_wall_wattage", "TUI event wall wattage input route")
+    assert_equal(pending_input_route("__migration_restore_preview_path"), "migration", "TUI event migration input route")
     assert_equal(pending_input_route("__settings_department"), "settings", "TUI event settings input route")
     assert_equal(pending_input_route("__profile_stage_duration"), "profile_edit", "TUI event profile input route")
     assert_equal(pending_input_route("power_limit_amd_power"), "power_limit", "TUI event power-limit input route")
@@ -9441,6 +9580,359 @@ def test_hardware_matrix_state_refresh_action() -> None:
         else:
             raise AssertionError("refresh should reject malformed existing state")
         assert_equal(state_path.read_text(), "not json", "malformed state is not overwritten")
+
+
+def test_public_support_export_missing_optional_files() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        result = PublicSupportExporter(root).export()
+        payload = result.payload
+
+        assert_equal(payload["contract_id"], EXPORT_CONTRACT_ID, "local environment export contract id")
+        assert_equal(payload["contract_version"], EXPORT_CONTRACT_VERSION, "local environment export contract version")
+        assert_equal(payload["settings"]["global_settings"]["status"], "missing", "missing local settings allowed")
+        assert_equal(payload["settings"]["run_setup_history"]["status"], "missing", "missing setup history allowed")
+        assert_equal(payload["google_drive"]["configured"], False, "missing Google integration allowed")
+        assert_equal(payload["results"]["active"]["status"], "missing", "missing results directory reported")
+        assert_equal(payload["hardware_result_validation_state"]["status"], "missing", "missing hardware state allowed")
+        assert_equal(payload["sensor_probe_logs"]["status"], "missing", "missing sensor logs allowed")
+        assert_equal(payload["virtual_environment"]["status"], "missing", "missing virtual environment allowed")
+        assert_true(result.json_path.is_file(), "missing-file export still writes JSON")
+        assert_true(result.summary_path.is_file(), "missing-file export still writes text")
+
+
+def test_public_support_export_redacts_private_values() -> None:
+    secret_markers = {
+        "private-client-secret-value",
+        "private-shared-drive-id",
+        "private-customer-name",
+        "private-operator-name",
+        "private-result-folder-name",
+    }
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        settings_dir = root / "settings"
+        credential_path = root / "private" / "client-secret.json"
+        credential_path.parent.mkdir(parents=True)
+        credential_path.write_text('{"client_secret": "private-client-secret-value"}', encoding="utf-8")
+        settings_dir.mkdir()
+        JsonStore.write(
+            settings_dir / "global_settings.json",
+            {
+                "environment_mode": "production",
+                "results_dir": "results",
+                "suite_department": "private-customer-name",
+                "runtime_environment": {"PRIVATE_TOKEN": "private-client-secret-value"},
+                "google_drive_credentials_path": str(credential_path),
+                "google_drive_shared_drive_id": "private-shared-drive-id",
+            },
+        )
+        JsonStore.write(
+            settings_dir / "run_setup_history.json",
+            [{"operator": "private-operator-name", "description": "private-customer-name"}],
+        )
+        JsonStore.write(
+            root / "hardware_result_validation_state.json",
+            {
+                "entries": [
+                    {
+                        "category": "clean_passing_run",
+                        "status": "confirmed",
+                        "path": "results/private-result-folder-name",
+                    }
+                ]
+            },
+        )
+
+        result = PublicSupportExporter(root).export()
+        exported = result.json_path.read_text(encoding="utf-8") + result.summary_path.read_text(encoding="utf-8")
+        for marker in secret_markers:
+            assert_true(marker not in exported, f"local environment export redacts {marker}")
+        assert_true(str(root) not in exported, "local environment export redacts absolute local root")
+        assert_equal(result.payload["google_drive"]["shared_drive_id"], "redacted", "Google ID redacted")
+        assert_equal(result.payload["safety"]["secret_contents_exported"], False, "secret contents excluded")
+        assert_equal(
+            result.payload["hardware_result_validation_state"]["local_result_paths_exported"],
+            False,
+            "hardware state result paths excluded",
+        )
+
+
+def test_public_support_export_generated_summary_shape() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        (root / "settings").mkdir()
+        JsonStore.write(
+            root / "settings" / "global_settings.json",
+            {"environment_mode": "end_user", "results_dir": "results"},
+        )
+        (root / "settings" / "global_settings.example.json").write_text("{}\n", encoding="utf-8")
+        for path in (
+            root / "results" / "Run A",
+            root / "results" / "Run B",
+            root / "results" / "Archived" / "Archived A",
+            root / "results" / "Uploaded" / "Uploaded A",
+        ):
+            path.mkdir(parents=True)
+        (root / "sensor_probe_logs").mkdir()
+        (root / "sensor_probe_logs" / "probe.log").write_text("probe\n", encoding="utf-8")
+        (root / ".venv").mkdir()
+        (root / ".venv" / "pyvenv.cfg").write_text("version = 3.14.3\n", encoding="utf-8")
+        JsonStore.write(
+            root / "hardware_result_validation_state.json",
+            {
+                "entries": [
+                    {"category": "clean", "status": "confirmed", "path": "results/Run A"},
+                    {"category": "review", "status": "candidate", "path": "results/Run B"},
+                    {"category": "missing", "status": "missing"},
+                ]
+            },
+        )
+
+        result = PublicSupportExporter(root).export()
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        assert_equal(payload["kind"], "public_safe_local_environment_summary", "local export summary kind")
+        assert_equal(payload["results"]["active"]["directory_count"], 2, "local export active result count")
+        assert_equal(payload["results"]["archived"]["directory_count"], 1, "local export archived count")
+        assert_equal(payload["results"]["uploaded"]["directory_count"], 1, "local export uploaded count")
+        assert_equal(payload["sensor_probe_logs"]["file_count"], 1, "local export sensor log count")
+        assert_equal(payload["virtual_environment"]["python_version"], "3.14.3", "local export venv version")
+        assert_equal(
+            payload["hardware_result_validation_state"]["status_counts"]["confirmed"],
+            1,
+            "local export confirmed hardware count",
+        )
+        assert_equal(set(payload["output"]), {"folder", "json", "text"}, "local export output shape")
+        assert_true("not a secret" in result.summary_text.lower(), "local export text explains safety boundary")
+        assert_true(bool(payload["restore_recommendations"]), "public support export includes restore recommendations")
+
+
+def test_private_migration_bundle_manifest_checksums_and_exclusions() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        (root / "settings" / "secrets").mkdir(parents=True)
+        JsonStore.write(
+            root / "settings" / "global_settings.json",
+            {
+                "environment_mode": "production",
+                "suite_department": "Private Lab",
+                "runtime_environment": {"PRIVATE_TOKEN": "runtime-secret-marker"},
+                "google_drive_credentials_path": "settings/secrets/google-credentials.json",
+                "google_drive_shared_drive_id": "private-drive-id-marker",
+            },
+        )
+        JsonStore.write(root / "settings" / "run_setup_history.json", [{"description": "private history"}])
+        JsonStore.write(
+            root / "hardware_result_validation_state.json",
+            {"entries": [{"category": "clean", "status": "missing"}]},
+        )
+        (root / "settings" / "secrets" / "google-credentials.json").write_text(
+            "google-credential-secret-marker",
+            encoding="utf-8",
+        )
+        (root / "results" / "Actual Result").mkdir(parents=True)
+        (root / "results" / "Actual Result" / "secret-result.txt").write_text(
+            "actual-result-content-marker",
+            encoding="utf-8",
+        )
+        (root / "sensor_probe_logs").mkdir()
+        (root / "sensor_probe_logs" / "probe.log").write_text("sensor-log-content-marker", encoding="utf-8")
+        (root / "Files" / "OCCT Test Data").mkdir(parents=True)
+        (root / "Files" / "OCCT Test Data" / "vendor.txt").write_text("vendor-data-marker", encoding="utf-8")
+        (root / ".venv").mkdir()
+        (root / ".venv" / "private.txt").write_text("venv-content-marker", encoding="utf-8")
+
+        manager = LocalMigrationManager(root)
+        try:
+            manager.create_private_bundle(acknowledge_private_data=False)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("private migration bundle should require explicit acknowledgement")
+
+        result = manager.create_private_bundle(acknowledge_private_data=True)
+        manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert_equal(manifest["contract_id"], MIGRATION_CONTRACT_ID, "private bundle contract id")
+        assert_equal(manifest["contract_version"], MIGRATION_CONTRACT_VERSION, "private bundle contract version")
+        assert_equal(manifest["safe_to_share_publicly"], False, "private bundle marked not public-safe")
+        assert_equal(stat.S_IMODE(result.bundle_dir.stat().st_mode), 0o700, "private bundle directory permissions")
+        assert_equal(stat.S_IMODE(result.manifest_path.stat().st_mode), 0o600, "private bundle manifest permissions")
+        assert_equal(
+            {item["bundle_path"] for item in manifest["files"]},
+            {SETTINGS_BUNDLE_PATH, HISTORY_BUNDLE_PATH, HARDWARE_STATE_BUNDLE_PATH},
+            "private bundle allowed payload inventory",
+        )
+        for item in manifest["files"]:
+            payload_path = result.bundle_dir / item["bundle_path"]
+            assert_equal(hashlib.sha256(payload_path.read_bytes()).hexdigest(), item["sha256"], "bundle checksum")
+            assert_equal(payload_path.stat().st_size, item["size_bytes"], "bundle size")
+            assert_equal(stat.S_IMODE(payload_path.stat().st_mode), 0o600, "private bundle payload permissions")
+
+        portable_settings = json.loads((result.bundle_dir / SETTINGS_BUNDLE_PATH).read_text(encoding="utf-8"))
+        assert_equal(portable_settings["google_drive_credentials_path"], "", "bundle removes Google credential path")
+        assert_equal(portable_settings["google_drive_shared_drive_id"], "", "bundle removes Google drive ID")
+        assert_equal(portable_settings["runtime_environment"], {}, "bundle removes runtime environment overrides")
+        bundle_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in result.bundle_dir.rglob("*") if path.is_file()
+        )
+        for marker in (
+            "runtime-secret-marker",
+            "private-drive-id-marker",
+            "google-credential-secret-marker",
+            "actual-result-content-marker",
+            "sensor-log-content-marker",
+            "vendor-data-marker",
+            "venv-content-marker",
+        ):
+            assert_true(marker not in bundle_text, f"private bundle excludes {marker}")
+
+
+def test_migration_cli_menu_contract() -> None:
+    class Host:
+        def _input(self, prompt):
+            return "5"
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        DiagnosticsCliAdapter(Host()).migration_support_menu()
+    text = output.getvalue()
+    assert_true("1. Public-safe Support Summary" in text, "migration CLI public support option")
+    assert_true("2. Create Private Migration Bundle" in text, "migration CLI private bundle option")
+    assert_true("3. Preview Migration Restore" in text, "migration CLI restore preview option")
+    assert_true("4. Apply Reviewed Migration Restore" in text, "migration CLI restore apply option")
+    assert_true("5. Back" in text, "migration CLI back option")
+
+
+def test_migration_restore_preview_apply_and_scaffolds() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        base = Path(tmp)
+        source_root = base / "source"
+        target_root = base / "target"
+        source_root.mkdir()
+        target_root.mkdir()
+        bundle = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True)
+        (target_root / "settings").mkdir()
+        example_text = '{"environment_mode": "end_user", "google_drive_credentials_path": ""}\n'
+        (target_root / "settings" / "global_settings.example.json").write_text(example_text, encoding="utf-8")
+
+        manager = LocalMigrationManager(target_root)
+        before = sorted(path.relative_to(target_root).as_posix() for path in target_root.rglob("*"))
+        preview = manager.preview_restore(bundle.bundle_dir)
+        after_preview = sorted(path.relative_to(target_root).as_posix() for path in target_root.rglob("*"))
+        assert_true(preview.valid, "migration restore preview valid")
+        assert_true(not preview.applied, "migration restore preview performs no writes")
+        assert_equal(after_preview, before, "migration restore preview leaves target unchanged")
+        assert_true(
+            any(action["action"] == "create_from_example" for action in preview.plan["actions"]),
+            "migration restore plans settings bootstrap from example",
+        )
+
+        unconfirmed = manager.apply_restore(bundle.bundle_dir, yes=False)
+        assert_true(not unconfirmed.applied, "migration restore without confirmation performs no writes")
+        assert_equal(
+            sorted(path.relative_to(target_root).as_posix() for path in target_root.rglob("*")),
+            before,
+            "unconfirmed migration restore leaves target unchanged",
+        )
+        cli_stderr = io.StringIO()
+        with contextlib.redirect_stderr(cli_stderr):
+            cli_code = local_migration_main(
+                ["--root", str(target_root), "restore", str(bundle.bundle_dir), "--apply"]
+            )
+        assert_equal(cli_code, 2, "noninteractive migration apply requires --yes")
+        assert_true("requires both --apply and --yes" in cli_stderr.getvalue(), "migration CLI confirmation message")
+        assert_equal(
+            sorted(path.relative_to(target_root).as_posix() for path in target_root.rglob("*")),
+            before,
+            "CLI migration apply without --yes leaves target unchanged",
+        )
+
+        applied = manager.apply_restore(bundle.bundle_dir, yes=True)
+        assert_true(applied.valid and applied.applied, "confirmed migration restore applies")
+        assert_equal((target_root / "settings" / "global_settings.json").read_text(encoding="utf-8"), example_text, "settings recreated from example")
+        for relative in (
+            "settings/secrets",
+            "results",
+            "results/Archived",
+            "results/Uploaded",
+            "sensor_probe_logs",
+        ):
+            assert_true((target_root / relative).is_dir(), f"migration restore creates scaffold {relative}")
+        assert_true(
+            not (target_root / "settings" / "secrets" / "google-credentials.json").exists(),
+            "migration restore does not create Google credentials",
+        )
+
+
+def test_migration_restore_no_overwrite_and_conflict_staging() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        base = Path(tmp)
+        source_root = base / "source"
+        target_root = base / "target"
+        (source_root / "settings").mkdir(parents=True)
+        JsonStore.write(source_root / "settings" / "global_settings.json", {"suite_department": "Incoming"})
+        JsonStore.write(source_root / "settings" / "run_setup_history.json", [{"description": "incoming"}])
+        bundle = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True)
+
+        (target_root / "settings").mkdir(parents=True)
+        existing_settings = '{"suite_department": "Existing"}\n'
+        existing_history = '[{"description": "existing"}]\n'
+        (target_root / "settings" / "global_settings.json").write_text(existing_settings, encoding="utf-8")
+        (target_root / "settings" / "run_setup_history.json").write_text(existing_history, encoding="utf-8")
+        manager = LocalMigrationManager(target_root)
+        preview = manager.preview_restore(bundle.bundle_dir)
+        staged_targets = {
+            action["target"]
+            for action in preview.plan["actions"]
+            if action["action"] == "stage_for_manual_merge"
+        }
+        assert_true("settings/global_settings.json" in staged_targets, "existing settings planned for staging")
+        assert_true("settings/run_setup_history.json" in staged_targets, "existing history planned for staging")
+
+        applied = manager.apply_restore(bundle.bundle_dir, yes=True)
+        assert_true(applied.applied, "conflict migration restore applies non-conflicting actions")
+        assert_equal((target_root / "settings" / "global_settings.json").read_text(), existing_settings, "existing settings not overwritten")
+        assert_equal((target_root / "settings" / "run_setup_history.json").read_text(), existing_history, "existing history not overwritten")
+        assert_true(applied.staging_dir is not None, "migration conflicts create staging directory")
+        assert_true((applied.staging_dir / "settings" / "global_settings.json").is_file(), "incoming settings staged")
+        assert_true((applied.staging_dir / "settings" / "run_setup_history.json").is_file(), "incoming history staged")
+
+
+def test_migration_restore_rejects_invalid_bundles() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        base = Path(tmp)
+        source_root = base / "source"
+        target_root = base / "target"
+        (source_root / "settings").mkdir(parents=True)
+        JsonStore.write(source_root / "settings" / "global_settings.json", {"environment_mode": "end_user"})
+        original = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True).bundle_dir
+        target_root.mkdir()
+        manager = LocalMigrationManager(target_root)
+
+        checksum_bundle = base / "checksum_bundle"
+        shutil.copytree(original, checksum_bundle)
+        (checksum_bundle / SETTINGS_BUNDLE_PATH).write_text("{}\n", encoding="utf-8")
+        checksum_preview = manager.preview_restore(checksum_bundle)
+        assert_true(not checksum_preview.valid, "migration restore rejects checksum mismatch")
+        assert_true(any("checksum mismatch" in error or "size mismatch" in error for error in checksum_preview.plan["errors"]), "checksum rejection reason")
+
+        traversal_bundle = base / "traversal_bundle"
+        shutil.copytree(original, traversal_bundle)
+        traversal_manifest_path = traversal_bundle / MANIFEST_NAME
+        traversal_manifest = json.loads(traversal_manifest_path.read_text(encoding="utf-8"))
+        traversal_manifest["files"][0]["bundle_path"] = "../escape.json"
+        traversal_manifest_path.write_text(json.dumps(traversal_manifest), encoding="utf-8")
+        traversal_preview = manager.preview_restore(traversal_bundle)
+        assert_true(not traversal_preview.valid, "migration restore rejects traversal payload path")
+        assert_true(any("not allowed" in error for error in traversal_preview.plan["errors"]), "traversal rejection reason")
+
+        symlink_bundle = base / "symlink_bundle"
+        shutil.copytree(original, symlink_bundle)
+        (symlink_bundle / "payload" / "unsafe-link").symlink_to(base / "outside")
+        symlink_preview = manager.preview_restore(symlink_bundle)
+        assert_true(not symlink_preview.valid, "migration restore rejects bundle symlink")
+        assert_true(any("symlink" in error for error in symlink_preview.plan["errors"]), "symlink rejection reason")
+        assert_equal(list(target_root.iterdir()), [], "invalid migration previews perform no writes")
 
 
 def test_result_artifact_facade_inventory() -> None:
@@ -18323,6 +18815,10 @@ def test_runtime_services_factory() -> None:
         assert_true(runtime.run_executor.orchestrator is runtime.orchestrator, "runtime factory executor orchestrator identity")
         assert_true(runtime.run_launcher.executor is runtime.run_executor, "runtime factory launcher identity")
         assert_true(runtime.run_setup_manager.profile_loader is runtime.profile_loader, "runtime factory setup loader identity")
+        assert_true(
+            isinstance(runtime.local_migration_manager, LocalMigrationManager),
+            "runtime factory local migration manager",
+        )
         assert_true(any(Path(settings.profiles_dir).glob("*.json")), "runtime factory ensures example profile")
         assert_equal(ensure_calls, [], "runtime factory does not eagerly invoke frontend readiness")
 
@@ -18387,6 +18883,10 @@ def test_service_frontend_contract_methods() -> None:
         "settings_summary_text",
         "settings_action_for_key",
         "dependency_check_payload",
+        "public_support_export_text",
+        "create_private_migration_bundle",
+        "preview_migration_restore",
+        "apply_migration_restore",
         "profile_audit_payload",
     ]
     missing = [name for name in expected_methods if not callable(getattr(SuiteAppService, name, None))]
@@ -18741,6 +19241,14 @@ def main() -> int:
         test_hardware_matrix_state_lifecycle,
         test_hardware_matrix_state_discovery,
         test_hardware_matrix_state_refresh_action,
+        test_public_support_export_missing_optional_files,
+        test_public_support_export_redacts_private_values,
+        test_public_support_export_generated_summary_shape,
+        test_private_migration_bundle_manifest_checksums_and_exclusions,
+        test_migration_cli_menu_contract,
+        test_migration_restore_preview_apply_and_scaffolds,
+        test_migration_restore_no_overwrite_and_conflict_staging,
+        test_migration_restore_rejects_invalid_bundles,
         test_result_artifact_facade_inventory,
         test_result_artifact_presentation_helpers,
         test_profile_dry_run_summary_formatting,

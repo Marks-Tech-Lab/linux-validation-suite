@@ -90,6 +90,50 @@ Before importing or uploading active result folders:
 Google Drive upload is optional and private/local. Missing credentials or shared
 drive IDs should appear as not configured, not as a suite failure.
 
+## Migration And Public-Safe Support
+
+Use **Diagnostics / Dependencies > Migration / Support** in the CLI or the TUI
+**K Migration** action. The TUI can run all three workflows directly: it uses
+text input for bundle paths, requires `PRIVATE` before private export, and shows
+a fresh restore preview before requiring `APPLY`. The public-safe support
+export is redacted, reports
+missing optional files as informational, and writes below
+`results/Support_Exports/Public_Support_Export_<timestamp>/`:
+
+```bash
+.venv/bin/python -m Modules.lvs_local_migration support-export
+```
+
+This support summary is safe to share by default. It is not a configuration or
+secret backup.
+
+Private migration bundles require explicit acknowledgement:
+
+```bash
+.venv/bin/python -m Modules.lvs_local_migration migration-export --acknowledge-private-data
+```
+
+They are written below
+`results/Migration_Bundles/Private_Migration_Bundle_<timestamp>/` with
+restrictive permissions, a versioned manifest, and SHA-256 checksums. They may
+contain private settings, setup history, and hardware-state mappings and are
+**not public-safe**. Google credentials and identifiers, runtime environment
+overrides, actual results, sensor-log contents, vendor/test data, `.venv`, and
+caches are excluded.
+
+Restore is preview-only unless explicitly applied:
+
+```bash
+.venv/bin/python -m Modules.lvs_local_migration restore /path/to/bundle
+.venv/bin/python -m Modules.lvs_local_migration restore /path/to/bundle --apply --yes
+```
+
+Restore validates the manifest, checksums, paths, and symlink safety first. It
+recreates safe folder scaffolding and missing local files but never overwrites
+existing files. Conflicts are staged below
+`results/Migration_Restore_Staging/` for manual comparison. Google Drive
+credentials and identifiers always require manual restoration in v1.
+
 ## Production-Ready Versus Experimental
 
 Use these as normal operator workflows:

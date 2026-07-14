@@ -11,6 +11,7 @@ BUTTON_ACTIONS = {
     "profiles": "show_profiles",
     "dry-run": "dry_run",
     "deps": "dependency_check",
+    "migration-support": "show_migration_support",
     "new-profile": "new_profile",
     "setup": "setup_run",
     "edit-profile": "edit_profile",
@@ -28,6 +29,7 @@ BUTTON_ACTIONS = {
 }
 
 ESCAPE_CANCEL_VIEW_MODES = {
+    "migration_support",
     "setup_picker",
     "post_run_upload_picker",
     "profile_edit_picker",
@@ -75,6 +77,8 @@ def pending_input_route(field: object) -> str:
         return "post_wall_wattage"
     if value == "__post_upload_prompt":
         return "post_upload_prompt"
+    if value.startswith("__migration_"):
+        return "migration"
     if value.startswith("__settings_"):
         return "settings"
     if value.startswith("__profile_"):

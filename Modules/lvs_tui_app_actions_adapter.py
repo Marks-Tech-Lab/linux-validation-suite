@@ -2,11 +2,18 @@ from __future__ import annotations
 
 """Top-level Textual TUI view/action adapter methods."""
 
+from pathlib import Path
 import threading
 
 from Modules.lvs_tui_navigation_state import tui_navigation_reset
-from Modules.lvs_tui_app_actions_flow import profiles_sidebar_state, results_sidebar_state, settings_sidebar_state
+from Modules.lvs_tui_app_actions_flow import (
+    migration_support_sidebar_state,
+    profiles_sidebar_state,
+    results_sidebar_state,
+    settings_sidebar_state,
+)
 from Modules.lvs_tui_picker_presentation import TuiPickerOpenPresentation, TuiPickerPresentation
+from Modules.lvs_tui_input_state import tui_input_state
 from Modules.lvs_tui_profile_presentation import profile_summary_presentation
 from Modules.lvs_tui_run_setup_presentation import (
     run_setup_no_history_detail,
@@ -150,6 +157,141 @@ class TuiAppActionsAdapterMixin:
         except Exception as exc:
             self._set_detail(f"Dependency check failed:\n{exc}")
             self._set_status("Dependency check failed")
+
+    async def action_show_migration_support(self) -> None:
+        self.view_mode = "migration_support"
+        self.pending_migration_bundle_path = None
+        self._set_status("Ready | Migration / Support")
+        self._apply_navigation_reset(tui_navigation_reset(clear_selected_profile=True, clear_selected_result=True))
+        presentation = migration_support_sidebar_state()
+        self.query_one("#sidebar-title").update(presentation.title)
+        list_view = self.query_one("#items")
+        await self._replace_sidebar_labels(list_view, list(presentation.rows), selected_index=0, focus=True)
+        self._set_detail(
+            "Migration / Support\n"
+            "===================\n\n"
+            "Choose a public-safe summary, create an acknowledged private bundle, or preview/apply a restore.\n"
+            "Restore apply always shows a fresh preview and requires typing APPLY. Private migration operations never include Google credentials, results, or sensor-log contents."
+        )
+
+    async def _select_migration_support_action(self, index: int) -> None:
+        if index == 0:
+            self._set_status("Writing public-safe support summary")
+            try:
+                self._set_detail(self.service.public_support_export_text())
+                self._set_status("Public-safe support summary complete")
+            except Exception as exc:
+                self._set_detail(f"Public-safe support summary failed:\n{exc}")
+                self._set_status("Public-safe support summary failed")
+            return
+        if index == 1:
+            self._begin_migration_input(
+                "__migration_private_ack",
+                placeholder="Type PRIVATE to create the private bundle",
+                detail=(
+                    "Create Private Migration Bundle\n"
+                    "===============================\n\n"
+                    "NOT PUBLIC-SAFE. The bundle may contain private settings, setup history, and hardware-state mappings.\n"
+                    "Google credentials and identifiers, runtime overrides, results, sensor logs, vendor data, and .venv are excluded.\n\n"
+                    "Type PRIVATE below to acknowledge and create the bundle. Press Esc to cancel."
+                ),
+            )
+        elif index == 2:
+            self._begin_migration_input(
+                "__migration_restore_preview_path",
+                placeholder="Path to Private_Migration_Bundle_<timestamp>",
+                detail=(
+                    "Preview Migration Restore\n"
+                    "=========================\n\n"
+                    "Enter the migration bundle folder path. Preview validates the bundle and performs no writes."
+                ),
+            )
+        elif index == 3:
+            self._begin_migration_input(
+                "__migration_restore_apply_path",
+                placeholder="Path to reviewed Private_Migration_Bundle_<timestamp>",
+                detail=(
+                    "Apply Reviewed Migration Restore\n"
+                    "================================\n\n"
+                    "Enter the bundle path. The TUI will show a fresh read-only preview before asking for APPLY confirmation."
+                ),
+            )
+
+    def _begin_migration_input(self, field: str, *, placeholder: str, detail: str) -> None:
+        self._apply_input_state(
+            tui_input_state(
+                field,
+                placeholder=placeholder,
+                detail=detail,
+            )
+        )
+
+    async def _commit_migration_input(self, field: str, value: object) -> None:
+        raw = str(value or "").strip()
+        if field == "__migration_private_ack":
+            self._clear_setup_input(focus_items=True)
+            if raw != "PRIVATE":
+                self._set_detail("Private migration export cancelled; no bundle was written.")
+                self._set_status("Private migration export cancelled")
+                return
+            self._set_status("Creating private migration bundle")
+            try:
+                result = self.service.create_private_migration_bundle(acknowledge_private_data=True)
+                self._set_detail(result.summary_text)
+                self._set_status("Private migration bundle complete")
+            except Exception:
+                self._set_detail("Private migration export failed without exposing private file details.")
+                self._set_status("Private migration export failed")
+            return
+
+        if field in {"__migration_restore_preview_path", "__migration_restore_apply_path"}:
+            self._clear_setup_input(focus_items=True)
+            if not raw:
+                self._set_detail("Migration bundle path is required; no writes were performed.")
+                self._set_status("Migration path required")
+                return
+            bundle_path = Path(raw).expanduser()
+            self._set_status("Validating migration bundle")
+            try:
+                preview = self.service.preview_migration_restore(bundle_path)
+            except Exception:
+                self._set_detail("Migration preview failed without exposing private file details.")
+                self._set_status("Migration preview failed")
+                return
+            if field == "__migration_restore_preview_path" or not preview.valid:
+                self._set_detail(preview.summary_text)
+                self._set_status("Migration preview complete" if preview.valid else "Migration bundle invalid")
+                return
+            self.pending_migration_bundle_path = bundle_path
+            self._apply_input_state(
+                tui_input_state(
+                    "__migration_restore_apply_confirm",
+                    placeholder="Type APPLY to perform the reviewed restore",
+                    detail=(
+                        preview.summary_text
+                        + "\nType APPLY below to perform the missing-only restore. Existing files will be staged, not overwritten."
+                    ),
+                )
+            )
+            self._set_status("Migration restore awaiting APPLY confirmation")
+            return
+
+        if field == "__migration_restore_apply_confirm":
+            bundle_path = self.pending_migration_bundle_path
+            self.pending_migration_bundle_path = None
+            self._clear_setup_input(focus_items=True)
+            if raw != "APPLY" or bundle_path is None:
+                self._set_detail("Migration restore cancelled; no writes were performed.")
+                self._set_status("Migration restore cancelled")
+                return
+            self._set_status("Applying reviewed migration restore")
+            try:
+                result = self.service.apply_migration_restore(bundle_path, confirmed=True)
+                self._set_detail(result.summary_text)
+                self._set_status("Migration restore complete" if result.valid else "Migration restore failed")
+            except Exception:
+                self._set_detail("Migration restore failed without exposing private file details.")
+                self._set_status("Migration restore failed")
 
     async def action_setup_run(self) -> None:
         if self.view_mode != "profiles" or self.selected_profile is None:

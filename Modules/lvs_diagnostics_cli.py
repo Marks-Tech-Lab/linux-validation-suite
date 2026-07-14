@@ -27,17 +27,67 @@ class DiagnosticsCliAdapter:
             print("\nDiagnostics / Dependencies")
             print("1. Dry Run / Diagnostics")
             print("2. Dependency Check")
-            print("3. Audit Profiles")
-            print("4. Back")
+            print("3. Migration / Support")
+            print("4. Audit Profiles")
+            print("5. Back")
             choice = host._input("Select: ").strip()
             if choice == "1":
                 self.dry_run_diagnostics()
             elif choice == "2":
                 self.dependency_check()
             elif choice == "3":
-                host._profile_audit()
+                self.migration_support_menu()
             elif choice == "4":
+                host._profile_audit()
+            elif choice == "5":
                 return
+
+    def migration_support_menu(self) -> None:
+        host = self.host
+        while True:
+            print("\nMigration / Support")
+            print("1. Public-safe Support Summary")
+            print("2. Create Private Migration Bundle")
+            print("3. Preview Migration Restore")
+            print("4. Apply Reviewed Migration Restore")
+            print("5. Back")
+            choice = host._input("Select: ").strip()
+            try:
+                if choice == "1":
+                    result = host.local_migration_manager.export_public_support()
+                    print(result.summary_text, end="")
+                elif choice == "2":
+                    warning = host._input(
+                        "This bundle is NOT public-safe. Type PRIVATE to acknowledge private data: "
+                    ).strip()
+                    if warning != "PRIVATE":
+                        print("Private migration export cancelled.")
+                        continue
+                    result = host.local_migration_manager.create_private_bundle(
+                        acknowledge_private_data=True,
+                    )
+                    print(result.summary_text, end="")
+                elif choice == "3":
+                    raw = host._input("Migration bundle folder: ").strip()
+                    if raw:
+                        print(host.local_migration_manager.preview_restore(Path(raw)).summary_text, end="")
+                elif choice == "4":
+                    raw = host._input("Migration bundle folder: ").strip()
+                    if not raw:
+                        continue
+                    preview = host.local_migration_manager.preview_restore(Path(raw))
+                    print(preview.summary_text, end="")
+                    if not preview.valid:
+                        continue
+                    confirmation = host._input("Type APPLY to perform the reviewed missing-only restore: ").strip()
+                    if confirmation != "APPLY":
+                        print("Migration restore cancelled; no writes performed.")
+                        continue
+                    print(host.local_migration_manager.apply_restore(Path(raw), yes=True).summary_text, end="")
+                elif choice == "5":
+                    return
+            except (OSError, ValueError):
+                print("Migration operation failed without exposing private file details.")
 
     def dry_run_diagnostics(self) -> None:
         host = self.host
