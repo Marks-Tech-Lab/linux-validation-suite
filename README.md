@@ -5,6 +5,14 @@ for Linux systems. It runs repeatable CPU, memory, GPU, and VRAM workloads,
 collects Linux telemetry, and exports structured result folders for later
 review.
 
+## Current Platform Support
+
+This project is currently developed and validated primarily on x86_64 Linux systems.
+
+ARM64/Linux support is a goal, but it is not fully validated yet. Some telemetry,
+sensor, GPU, stress-test, or dependency behavior may be incomplete or inconsistent
+on ARM systems until dedicated ARM validation is completed.
+
 ## Fresh Clone And First Run
 
 Python 3.14 is the currently tested version. The code requires Python 3.10 or
