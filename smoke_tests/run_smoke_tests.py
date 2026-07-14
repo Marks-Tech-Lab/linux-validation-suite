@@ -507,6 +507,7 @@ from Modules.lvs_run_executor import RunExecutionError, RunExecutor
 from Modules.lvs_run_flow import RunFlowCoordinator, build_run_preflight_action_summary
 from Modules.lvs_run_launch import RunLaunchCoordinator, RunLaunchRequest
 from Modules.lvs_run_preflight import RunPreflightManager
+import Modules.lvs_cli_run as cli_run_module
 from Modules.lvs_cli_run import RunCliAdapter
 from Modules.lvs_cli_run_setup import RunSetupCliAdapter
 from Modules.lvs_cli_results import ResultCliAdapter
@@ -533,7 +534,7 @@ from Modules.lvs_profile_edit_view import (
     vram_backend_description,
     vram_backend_display_name,
 )
-from Modules.lvs_service_models import FrontendActionSpec, ProfileEditState, RunSetupHistoryEntry, RunSetupState
+from Modules.lvs_service_models import FrontendActionSpec, ProfileEditState, RunResult, RunSetupHistoryEntry, RunSetupState
 from Modules.lvs_service_results import QA_REVIEW_CONTRACT_ID, QA_REVIEW_CONTRACT_VERSION
 from Modules.lvs_hardware_matrix_state import (
     discover_hardware_matrix_state,
@@ -6861,6 +6862,24 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
         def __init__(self) -> None:
             self.request = None
             self.callback_path = None
+            self.capture_called = False
+
+        def run_prepared_capture(
+            self,
+            request,
+            *,
+            output_callback=None,
+            progress_callback=None,
+            cancel_check=None,
+            operator_stop_source="cli",
+        ):
+            self.request = request
+            self.capture_called = True
+            return RunResult(
+                run_dir=Path("/tmp/heatsoak-run"),
+                output="",
+                metadata=request.metadata,
+            )
 
         def run_prepared_direct(self, request, *, heatsoak_debug_callback=None):
             self.request = request
@@ -6943,10 +6962,16 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
 
     launcher = FakeLauncher()
     launcher.run_setup_cli = RunSetupCliAdapter(launcher)
-    RunCliAdapter(launcher).new_run()
+    original_live_run_supported = cli_run_module.cli_live_run_supported
+    cli_run_module.cli_live_run_supported = lambda stream: True
+    try:
+        RunCliAdapter(launcher).new_run()
+    finally:
+        cli_run_module.cli_live_run_supported = original_live_run_supported
 
     request = launcher.run_launcher.request
     assert_true(request is not None, "CLI heatsoak launch request created")
+    assert_true(launcher.run_launcher.capture_called, "CLI heatsoak uses prepared capture launch")
     assert_equal(request.heatsoak_minutes, 7.5, "CLI heatsoak minutes carried to launch request")
     assert_equal(launcher._pending_heatsoak_minutes, 7.5, "CLI pending heatsoak updated")
     assert_true(launcher.run_flow.prepared_setup is request.setup, "CLI heatsoak prepared setup used for launch")
@@ -18811,7 +18836,16 @@ def main() -> int:
         test_service_orchestrator_factory_injection,
     ]
     for test in tests:
-        test()
+        captured_output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured_output):
+                test()
+        except BaseException:
+            output = captured_output.getvalue()
+            if output:
+                print(f"CAPTURED OUTPUT FROM {test.__name__}:")
+                print(output, end="" if output.endswith("\n") else "\n")
+            raise
         print(f"PASS {test.__name__}")
     print(f"\n{len(tests)} smoke tests passed.")
     return 0
