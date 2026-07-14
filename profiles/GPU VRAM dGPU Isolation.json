@@ -1,0 +1,59 @@
+{
+  "profile_name": "GPU VRAM dGPU Isolation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "GPU VRAM dGPU Isolation_info.txt",
+  "menu_description": "10-minute dGPU-only OpenCL VRAM isolation",
+  "menu_group": "gpu",
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30
+  },
+  "stages": [
+    {
+      "id": "segment_1",
+      "name": "VRAM",
+      "duration_seconds": 600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": false,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "discrete_all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 80,
+          "gpus": "discrete_all",
+          "priority": "normal",
+          "backend_preference": "opencl"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      }
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "profile_name": "GPU EGL GLES Lab",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "GPU EGL GLES Lab_info.txt",
+  "menu_group": "gpu",
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30
+  },
+  "stages": [
+    {
+      "id": "egl_gles_lab",
+      "name": "3D Adaptive",
+      "duration_seconds": 900,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "egl",
+          "compute_variant": "baseline"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      }
+    }
+  ]
+}

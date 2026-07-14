@@ -1,0 +1,58 @@
+{
+  "profile_name": "GPU Troubleshooting dGPU Isolation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "GPU Troubleshooting dGPU Isolation_info.txt",
+  "menu_description": "10-minute dGPU-only 3D + VRAM isolation",
+  "menu_group": "gpu",
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30
+  },
+  "stages": [
+    {
+      "id": "segment_1",
+      "name": "Combined",
+      "duration_seconds": 600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "discrete_all",
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 90,
+          "gpus": "discrete_all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      }
+    }
+  ]
+}

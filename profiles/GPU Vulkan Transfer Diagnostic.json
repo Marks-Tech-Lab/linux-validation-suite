@@ -1,0 +1,43 @@
+{
+  "profile_name": "GPU Vulkan Transfer Diagnostic",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "GPU Vulkan Transfer Diagnostic_info.txt",
+  "menu_group": "diagnostic",
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30
+  },
+  "stages": [
+    {
+      "id": "vulkan_transfer",
+      "name": "3D Adaptive",
+      "duration_seconds": 90,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false
+        },
+        "memory": {
+          "enabled": false
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "priority": "high",
+          "backend_preference": "vulkan",
+          "compute_variant": "baseline"
+        },
+        "vram": {
+          "enabled": false
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      }
+    }
+  ]
+}

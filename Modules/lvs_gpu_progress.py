@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""GPU progress-line formatting helpers."""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from Modules.lvs_gpu_stage_targets import gpu_index_from_metric_key
+
+
+def latest_sample_value(telemetry: Any, key: str) -> Any:
+    samples = getattr(telemetry, "samples", [])
+    if not samples:
+        return None
+    values = getattr(samples[-1], "values", {})
+    return values.get(key) if isinstance(values, dict) else None
+
+
+def gpu_metric_progress_parts(values: Dict[str, Any], gpu_index: int, *, include_memory_clock: bool = False) -> list[str]:
+    metric_specs = [
+        (f"gpu_{gpu_index}_busy_percent", "busy", "%"),
+        (f"gpu_{gpu_index}_memory_busy_percent", "mem_busy", "%"),
+        (f"gpu_{gpu_index}_power_w", "pwr", "W"),
+        (f"gpu_{gpu_index}_temp_core_c", "temp", "C"),
+        (f"gpu_{gpu_index}_clock_mhz", "clk", "MHz"),
+    ]
+    if include_memory_clock:
+        metric_specs.append((f"gpu_{gpu_index}_memory_clock_mhz", "mclk", "MHz"))
+    metric_specs.append((f"gpu_{gpu_index}_vram_used_gb", "vram", "GB"))
+    parts: list[str] = []
+    for key, label, suffix in metric_specs:
+        value = values.get(key)
+        if value is not None:
+            parts.append(f"{label}={round(float(value), 2)}{suffix}")
+    return parts
+
+
+def target_gpu_metric_progress_parts(telemetry: Any, gpu_index: int) -> list[str]:
+    samples = getattr(telemetry, "samples", [])
+    if not samples:
+        return []
+    values = getattr(samples[-1], "values", {})
+    if not isinstance(values, dict):
+        return []
+    return gpu_metric_progress_parts(values, gpu_index, include_memory_clock=True)
+
+
+def _first_payload_value(payloads: list[Dict[str, Any]], key: str) -> Any:
+    for payload in payloads:
+        value = payload.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _first_payload_float(payloads: list[Dict[str, Any]], key: str) -> float | None:
+    value = _first_payload_value(payloads, key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _first_payload_int(payloads: list[Dict[str, Any]], key: str) -> int | None:
+    value = _first_payload_value(payloads, key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _first_payload_text(payloads: list[Dict[str, Any]], key: str) -> str:
+    for payload in payloads:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _planned_candidates(planned_states: list[Dict[str, Any]], key: str, cast: Any) -> list[Any]:
+    candidates: list[Any] = []
+    for state in planned_states:
+        value = state.get(key)
+        if value is None:
+            continue
+        try:
+            candidates.append(cast(value))
+        except Exception:
+            continue
+    return candidates
+
+
+def target_gpu_state_progress_parts(
+    live_payloads: list[Dict[str, Any]],
+    planned_states: list[Dict[str, Any]],
+    *,
+    target_vram_total: int = 0,
+) -> list[str]:
+    state_details: list[str] = []
+    load_fraction = _first_payload_float(live_payloads, "active_load_fraction")
+    if load_fraction is None:
+        load_candidates = _planned_candidates(planned_states, "active_load_fraction", float)
+        if load_candidates:
+            load_fraction = max(load_candidates)
+    if load_fraction is not None:
+        state_details.append(f"load={round(load_fraction * 100.0, 1)}%")
+
+    phase_name = _first_payload_text(live_payloads, "phase")
+    if not phase_name:
+        phase_candidates = [
+            str(state.get("active_phase") or "").strip()
+            for state in planned_states
+            if state.get("active_phase")
+        ]
+        if phase_candidates:
+            phase_name = phase_candidates[0]
+    if phase_name:
+        state_details.append(f"phase={phase_name}")
+
+    active_vram_target = _first_payload_int(live_payloads, "active_target_vram_bytes")
+    if active_vram_target is None:
+        vram_candidates = _planned_candidates(planned_states, "active_target_vram_bytes", int)
+        if vram_candidates:
+            active_vram_target = max(vram_candidates)
+    if active_vram_target:
+        if target_vram_total > 0:
+            state_details.append(
+                f"vram_target={round(active_vram_target / (1024 ** 3), 2)}/{round(target_vram_total / (1024 ** 3), 2)}GB"
+            )
+        else:
+            state_details.append(f"vram_target={round(active_vram_target / (1024 ** 3), 2)}GB")
+
+    allocated_vram_bytes = _first_payload_int(live_payloads, "allocated_vram_bytes")
+    if allocated_vram_bytes:
+        if active_vram_target and active_vram_target > 0:
+            state_details.append(
+                f"alloc={round(allocated_vram_bytes / (1024 ** 3), 2)}/{round(active_vram_target / (1024 ** 3), 2)}GB"
+            )
+        else:
+            state_details.append(f"alloc={round(allocated_vram_bytes / (1024 ** 3), 2)}GB")
+
+    active_fill_buffers = _first_payload_int(live_payloads, "active_fill_buffer_count")
+    if active_fill_buffers is not None:
+        state_details.append(f"fill_buf={active_fill_buffers}")
+
+    active_draw = _first_payload_int(live_payloads, "active_draw_count")
+    if active_draw is None:
+        draw_candidates = _planned_candidates(planned_states, "active_draw_count", int)
+        if draw_candidates:
+            active_draw = max(draw_candidates)
+    if active_draw:
+        state_details.append(f"draw={active_draw}")
+
+    active_processes = _first_payload_int(live_payloads, "active_process_count")
+    if active_processes:
+        target_processes = _first_payload_int(live_payloads, "target_process_count")
+        if target_processes and target_processes > 0:
+            state_details.append(f"proc={active_processes}/{target_processes}")
+        else:
+            state_details.append(f"proc={active_processes}")
+
+    active_launches = _first_payload_int(live_payloads, "active_launches_per_cycle")
+    if active_launches:
+        state_details.append(f"launch={active_launches}")
+
+    active_buffers = _first_payload_int(live_payloads, "active_buffer_count")
+    if active_buffers is not None:
+        state_details.append(f"comp_buf={active_buffers}")
+
+    active_buffer_bytes = _first_payload_int(live_payloads, "active_buffer_bytes")
+    if active_buffer_bytes is None:
+        buffer_candidates = _planned_candidates(planned_states, "active_buffer_bytes", int)
+        if buffer_candidates:
+            active_buffer_bytes = max(buffer_candidates)
+    if active_buffer_bytes:
+        state_details.append(f"buf={round(active_buffer_bytes / (1024 ** 2), 1)}MB")
+
+    active_compute_rounds = _first_payload_int(live_payloads, "active_compute_rounds")
+    if active_compute_rounds is None:
+        active_compute_rounds = _first_payload_int(live_payloads, "compute_rounds")
+    if active_compute_rounds is None:
+        round_candidates = _planned_candidates(planned_states, "active_compute_rounds", int)
+        if round_candidates:
+            active_compute_rounds = max(round_candidates)
+    if active_compute_rounds:
+        state_details.append(f"rounds={active_compute_rounds}")
+    return state_details
+
+
+def target_gpu_progress_summary(
+    gpu_index: int,
+    target: Dict[str, Any],
+    metrics: list[str],
+    state_details: list[str],
+) -> str:
+    workload_text = f"[{'+'.join(target['workloads'])}]" if target["workloads"] else ""
+    backend_text = f"/{'+'.join(target['backends'])}" if target["backends"] else ""
+    summary = f"gpu{gpu_index}@{target['target_id']}{workload_text}{backend_text}"
+    if metrics:
+        summary += ":" + ",".join(metrics)
+    if state_details:
+        summary += "|state=" + ",".join(state_details)
+    return summary
+
+
+def stage_gpu_progress_summary(target_summaries: list[str], other_summary: str = "") -> str:
+    payload_parts: list[str] = []
+    if target_summaries:
+        payload_parts.append("gpu_target=" + " ; ".join(target_summaries))
+    if other_summary:
+        payload_parts.append(other_summary)
+    return " | " + " | ".join(payload_parts) if payload_parts else ""
+
+
+def other_gpu_progress_summary(telemetry: Any, targets: Dict[int, Dict[str, Any]]) -> str:
+    samples = getattr(telemetry, "samples", [])
+    if not samples:
+        return ""
+    latest = getattr(samples[-1], "values", {})
+    if not isinstance(latest, dict):
+        return ""
+    target_indices = set(targets.keys())
+    observed_indices = sorted(
+        {
+            gpu_index_from_metric_key(key)
+            for key in latest.keys()
+            if str(key).startswith("gpu_")
+        }
+    )
+    summaries: list[str] = []
+    for gpu_index in observed_indices:
+        if gpu_index in target_indices:
+            continue
+        busy = latest.get(f"gpu_{gpu_index}_busy_percent")
+        mem_busy = latest.get(f"gpu_{gpu_index}_memory_busy_percent")
+        power = latest.get(f"gpu_{gpu_index}_power_w")
+        temp = latest.get(f"gpu_{gpu_index}_temp_core_c")
+        clock = latest.get(f"gpu_{gpu_index}_clock_mhz")
+        vram_used = latest.get(f"gpu_{gpu_index}_vram_used_gb")
+        if (
+            busy is None
+            and mem_busy is None
+            and power is None
+            and temp is None
+            and clock is None
+            and vram_used is None
+        ):
+            continue
+        if (
+            (busy is None or float(busy) < 1.0)
+            and (mem_busy is None or float(mem_busy) < 1.0)
+            and (power is None or float(power) < 5.0)
+            and (vram_used is None or float(vram_used) < 0.05)
+        ):
+            continue
+        metrics = gpu_metric_progress_parts(latest, gpu_index)
+        if metrics:
+            summaries.append(f"gpu{gpu_index}:" + ",".join(metrics))
+    return "gpu_other=" + " ; ".join(summaries) if summaries else ""

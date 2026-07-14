@@ -1,0 +1,8 @@
+Power (CPU + 3D)
+SSE + VRAM
+AVX (CPU + RAM)
+GPU (3D + VRAM)
+Power (CPU + 3D)
+SSE + VRAM
+AVX (CPU + RAM)
+GPU (3D + VRAM)

@@ -1,0 +1,2 @@
+GPU (OpenCL Baseline)
+GPU (OpenCL Integer Mix)

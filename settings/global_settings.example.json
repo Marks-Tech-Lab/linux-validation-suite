@@ -1,0 +1,92 @@
+{
+  "environment_mode": "end_user",
+  "results_dir": "results",
+  "profiles_dir": "profiles",
+  "settings_dir": "settings",
+  "runtime_environment": {},
+  "sample_interval_seconds": 2.0,
+  "trim_start_seconds": 30,
+  "trim_end_seconds": 30,
+  "export_compatibility_json": true,
+  "export_extended_json": true,
+  "keep_raw_telemetry": true,
+  "privileged_helper_enabled": false,
+  "privileged_helper_prompt_for_sudo": true,
+  "prompt_for_wall_wattage": true,
+  "abort_on_fail_threshold": false,
+  "abort_on_worker_error": false,
+  "abort_on_system_fault": false,
+  "abort_run_on_stage_abort": false,
+  "target_gpu_busy_min_percent": 0.0,
+  "target_gpu_busy_sustain_seconds": 0.0,
+  "target_gpu_memory_busy_min_percent": 0.0,
+  "target_gpu_memory_busy_sustain_seconds": 0.0,
+  "strict_threshold_recommendation_warnings": false,
+  "gpu_safe_mode": true,
+  "gpu_retune_warmup_seconds": 60.0,
+  "gpu_retune_cooldown_seconds": 30.0,
+  "gpu_max_retunes_per_worker": 1,
+  "gpu_internal_ramp_step_seconds": 15.0,
+  "gpu_safe_start_load_fraction": 0.35,
+  "gpu_safe_max_tuning_step": 2,
+  "gpu_safe_max_load_scale": 1.6,
+  "gpu_safe_max_vram_percent": 90.0,
+  "gpu_external_max_processes": 2,
+  "suite_department": "Production",
+  "case_options": [
+    "Standard Case",
+    "Small Form Factor",
+    "Rackmount",
+    "OEM",
+    "Other (custom)"
+  ],
+  "psu_rating_options": [
+    "Titanium",
+    "Platinum",
+    "Gold",
+    "Bronze",
+    "White",
+    "Skip"
+  ],
+  "cpu_cooler_options": [
+    "Stock",
+    "360mm AIO",
+    "240mm AIO",
+    "120mm AIO",
+    "Dual Tower Cooler",
+    "120mm Tower Cooler",
+    "Low Profile Cooler",
+    "Other",
+    "Skip"
+  ],
+  "google_drive_credentials_path": "",
+  "google_drive_shared_drive_id": "",
+  "google_drive_move_to_uploaded_on_success": false,
+  "google_drive_prompt_after_run": false,
+  "profile_menu_groups": [
+    {
+      "key": "standard",
+      "label": "standard profile"
+    },
+    {
+      "key": "quick",
+      "label": "quick/smoke profile"
+    },
+    {
+      "key": "gpu",
+      "label": "GPU profile/lab"
+    },
+    {
+      "key": "advanced",
+      "label": "advanced/lab profile"
+    },
+    {
+      "key": "diagnostic",
+      "label": "diagnostic/smoke profile"
+    },
+    {
+      "key": "custom",
+      "label": "custom profile"
+    }
+  ]
+}

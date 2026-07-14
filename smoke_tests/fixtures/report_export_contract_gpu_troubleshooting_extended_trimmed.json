@@ -1,0 +1,1758 @@
+{
+  "Cpu": {
+    "devices": {
+      "cpu_model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+      "cpu_package_count": 1,
+      "logical_cpu_count": 32,
+      "physical_core_count": 16
+    },
+    "tests": {
+      "CPU Package (Temperature)": [
+        {
+          "device": "AMD Ryzen 9 9950X3D 16-Core Processor",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 43.59,
+              "max": 45.25,
+              "min": 40.5
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 47.6,
+              "max": 55.38,
+              "min": 47.25
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 61.56,
+              "max": 62.12,
+              "min": 60.88
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 46.95,
+              "max": 54.62,
+              "min": 46.38
+            }
+          }
+        }
+      ],
+      "CPU Package Power (Power)": [
+        {
+          "device": "AMD Ryzen 9 9950X3D 16-Core Processor",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 41.43,
+              "max": 46.07,
+              "min": 40.08
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 63.04,
+              "max": 64.64,
+              "min": 62.08
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 66.7,
+              "max": 68.17,
+              "min": 64.76
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 45.47,
+              "max": 52.33,
+              "min": 44.74
+            }
+          }
+        }
+      ]
+    }
+  },
+  "CpuCores": {
+    "devices": {
+      "cpu_model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+      "cpu_package_count": 1,
+      "logical_cpu_count": 32,
+      "physical_core_count": 16
+    },
+    "tests": {}
+  },
+  "Elapsed": "00:40:08",
+  "ExecutionDetail": "Failed",
+  "ExportContract": {
+    "CompatibilityMode": "legacy_additive",
+    "ParserSafeAdditiveFields": true,
+    "Policy": "Preserve existing compatibility fields; add Linux-specific report fields without changing current importer assumptions.",
+    "Producer": "Linux Validation Suite",
+    "ProducerVersion": "0.2.0",
+    "ReferenceExporter": "CustomResultExporter",
+    "ReferenceImporter": "Legacy compatibility importer",
+    "ReferenceProject": "Legacy compatibility schema",
+    "RequiresLegacyImporterUpdate": false,
+    "Schema": "linux_validation_suite.compat_export.v1",
+    "StableConsumerFields": [
+      "Segments",
+      "SegmentDetails",
+      "GpuDetails.power_details",
+      "Metadata",
+      "SystemInfo",
+      "Motherboard",
+      "Memory",
+      "Storage",
+      "Gpu",
+      "Cpu",
+      "CpuCores"
+    ]
+  },
+  "Gpu": {
+    "devices": [
+      {
+        "gpu_display_name": "NVIDIA GeForce RTX 3080",
+        "gpu_driver": "610.43.02",
+        "gpu_memory": "10.0 GB",
+        "gpu_name": "NVIDIA GeForce RTX 3080"
+      },
+      {
+        "gpu_display_name": "Granite Ridge [Radeon Graphics]",
+        "gpu_driver": "amdgpu",
+        "gpu_memory": "0.5 GB",
+        "gpu_name": "Granite Ridge [Radeon Graphics]"
+      }
+    ],
+    "tests": {
+      "GPU Power (Power)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080 #1",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 315.84,
+              "max": 318.54,
+              "min": 312.05
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 318.67,
+              "max": 319.84,
+              "min": 317.27
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 315.24,
+              "max": 319.52,
+              "min": 199.41
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 303.14,
+              "max": 306.64,
+              "min": 300.22
+            }
+          }
+        },
+        {
+          "device": "Granite Ridge [Radeon Graphics] #2",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": null,
+              "max": null,
+              "min": null
+            },
+            "GPU (EGL/GLES)": {
+              "avg": null,
+              "max": null,
+              "min": null
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": null,
+              "max": null,
+              "min": null
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": null,
+              "max": null,
+              "min": null
+            }
+          }
+        }
+      ],
+      "GPU Temperature (Temperature)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080 #1 [edge]",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 59.34,
+              "max": 60.0,
+              "min": 49.0
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 59.94,
+              "max": 60.0,
+              "min": 59.0
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 59.75,
+              "max": 61.0,
+              "min": 52.0
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 58.05,
+              "max": 59.0,
+              "min": 56.0
+            }
+          }
+        },
+        {
+          "device": "Granite Ridge [Radeon Graphics] #2 [edge]",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 41.22,
+              "max": 43.0,
+              "min": 37.0
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 44.81,
+              "max": 46.0,
+              "min": 44.0
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 44.53,
+              "max": 45.0,
+              "min": 43.0
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 43.89,
+              "max": 46.0,
+              "min": 43.0
+            }
+          }
+        }
+      ],
+      "GPU Usage (Usage)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080 #1",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 91.64,
+              "max": 99.0,
+              "min": 84.0
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 99.9,
+              "max": 100.0,
+              "min": 98.0
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 97.69,
+              "max": 100.0,
+              "min": 68.0
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 80.72,
+              "max": 85.0,
+              "min": 72.0
+            }
+          }
+        },
+        {
+          "device": "Granite Ridge [Radeon Graphics] #2",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 99.42,
+              "max": 100.0,
+              "min": 0.0
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 99.42,
+              "max": 100.0,
+              "min": 0.0
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 94.98,
+              "max": 100.0,
+              "min": 0.0
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 96.06,
+              "max": 100.0,
+              "min": 0.0
+            }
+          }
+        }
+      ],
+      "GPU VRAM Allocation Shortfall (Bytes)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 536870912.0,
+              "max": 536870912.0,
+              "min": 536870912.0
+            }
+          }
+        }
+      ],
+      "GPU VRAM Used (Usage)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080 #1",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 1.1,
+              "max": 7.04,
+              "min": 0.79
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 0.48,
+              "max": 0.48,
+              "min": 0.48
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 0.88,
+              "max": 0.88,
+              "min": 0.83
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 8.42,
+              "max": 8.42,
+              "min": 8.42
+            }
+          }
+        },
+        {
+          "device": "Granite Ridge [Radeon Graphics] #2",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 0.07,
+              "max": 0.07,
+              "min": 0.07
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 0.04,
+              "max": 0.04,
+              "min": 0.04
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 0.03,
+              "max": 0.03,
+              "min": 0.03
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 0.39,
+              "max": 0.39,
+              "min": 0.39
+            }
+          }
+        }
+      ],
+      "GPU VRAM Verification Errors (Errors)": [
+        {
+          "device": "NVIDIA GeForce RTX 3080",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 1.0,
+              "max": 1.0,
+              "min": 1.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "GpuDetails": {
+    "power_details": [
+      {
+        "avg": 311.41,
+        "category": "board",
+        "is_primary": true,
+        "max": 319.84,
+        "min": 116.39,
+        "name": "NVIDIA GeForce RTX 3080",
+        "sensor_name": "NVIDIA GeForce RTX 3080 power"
+      }
+    ],
+    "validation_details": [
+      {
+        "Backend": "python_vulkan_compute",
+        "DeviceName": "NVIDIA GeForce RTX 3080",
+        "ErrorCount": 0,
+        "ExpectedGpuIndex": 1,
+        "ExpectedTargetId": "0000:01:00.0",
+        "Mode": "gpu_3d",
+        "Stage": "GPU (3D Auto + VRAM)",
+        "StageType": "Combined",
+        "StageVerdict": "fail",
+        "Status": "ok",
+        "VerificationPasses": 3839,
+        "Workload": "gpu_3d"
+      },
+      {
+        "Backend": "python_opencl",
+        "DeviceName": "NVIDIA GeForce RTX 3080",
+        "ErrorCount": 1,
+        "ExpectedGpuIndex": 1,
+        "ExpectedTargetId": "0000:01:00.0",
+        "Mode": "vram",
+        "Stage": "GPU (3D Auto + VRAM)",
+        "StageType": "Combined",
+        "StageVerdict": "fail",
+        "Status": "error",
+        "VerificationPasses": 1,
+        "Workload": "vram"
+      },
+      {
+        "Backend": "python_vulkan_compute",
+        "DeviceName": "Granite Ridge [Radeon Graphics]",
+        "ErrorCount": 0,
+        "ExpectedGpuIndex": 0,
+        "ExpectedTargetId": "0000:18:00.0",
+        "Mode": "gpu_3d",
+        "Stage": "GPU (3D Auto + VRAM)",
+        "StageType": "Combined",
+        "StageVerdict": "fail",
+        "Status": "ok",
+        "VerificationPasses": 1279,
+        "Workload": "gpu_3d"
+      },
+      {
+        "Backend": "python_egl_gles2",
+        "DeviceName": "NVIDIA GeForce RTX 3080",
+        "ErrorCount": 0,
+        "ExpectedGpuIndex": 1,
+        "ExpectedTargetId": "0000:01:00.0",
+        "Mode": "gpu_3d",
+        "Stage": "GPU (EGL/GLES)",
+        "StageType": "3D Adaptive",
+        "StageVerdict": "pass",
+        "Status": "ok",
+        "VerificationPasses": 24,
+        "Workload": "gpu_3d"
+      }
+    ]
+  },
+  "Memory": {
+    "devices": [
+      {
+        "Position": "P0 CHANNEL A/DIMM 1",
+        "Speed": 5600,
+        "manufacturer": "Kingston",
+        "module_number": 0,
+        "part_number": "KF584C40-24",
+        "size": "24 GiB",
+        "speed": 5600,
+        "type": "DDR5"
+      },
+      {
+        "Position": "P0 CHANNEL B/DIMM 1",
+        "Speed": 5600,
+        "manufacturer": "Kingston",
+        "module_number": 1,
+        "part_number": "KF584C40-24",
+        "size": "24 GiB",
+        "speed": 5600,
+        "type": "DDR5"
+      }
+    ],
+    "tests": {
+      "SPD Hub Temperature (Temperature)": [
+        {
+          "device": "DIMM 0",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 32.07,
+              "max": 38.0,
+              "min": 23.5
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 39.65,
+              "max": 40.0,
+              "min": 38.5
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 39.93,
+              "max": 40.25,
+              "min": 39.5
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 43.97,
+              "max": 45.25,
+              "min": 41.25
+            }
+          }
+        },
+        {
+          "device": "DIMM 1",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 32.09,
+              "max": 38.0,
+              "min": 23.5
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 39.68,
+              "max": 40.25,
+              "min": 38.75
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 39.91,
+              "max": 40.25,
+              "min": 39.5
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 44.1,
+              "max": 45.5,
+              "min": 41.25
+            }
+          }
+        }
+      ],
+      "System Memory Used (Usage)": [
+        {
+          "device": "System Memory",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 4.9,
+              "max": 5.04,
+              "min": 4.85
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 5.03,
+              "max": 5.1,
+              "min": 4.95
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 5.16,
+              "max": 5.22,
+              "min": 5.11
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 5.11,
+              "max": 5.16,
+              "min": 5.07
+            }
+          }
+        }
+      ]
+    }
+  },
+  "Metadata": {
+    "Description": "GPU Troubleshooting Extended M05 Adv Debug",
+    "Elapsed": "00:40:08",
+    "ExportContract": {
+      "CompatibilityMode": "legacy_additive",
+      "ParserSafeAdditiveFields": true,
+      "Policy": "Preserve existing compatibility fields; add Linux-specific report fields without changing current importer assumptions.",
+      "Producer": "Linux Validation Suite",
+      "ProducerVersion": "0.2.0",
+      "ReferenceExporter": "CustomResultExporter",
+      "ReferenceImporter": "Legacy compatibility importer",
+      "ReferenceProject": "Legacy compatibility schema",
+      "RequiresLegacyImporterUpdate": false,
+      "Schema": "linux_validation_suite.compat_export.v1",
+      "StableConsumerFields": [
+        "Segments",
+        "SegmentDetails",
+        "GpuDetails.power_details",
+        "Metadata",
+        "SystemInfo",
+        "Motherboard",
+        "Memory",
+        "Storage",
+        "Gpu",
+        "Cpu",
+        "CpuCores"
+      ]
+    },
+    "ProfileName": "GPU Troubleshooting Extended",
+    "ReportSummary": {
+      "ActionItemCategoryCounts": {
+        "report_only_threshold_recommendation": 1,
+        "workload_or_system_error": 1
+      },
+      "ActionItemDetails": [
+        {
+          "Category": "workload_or_system_error",
+          "Count": 2,
+          "Message": "Review error-level events before treating this run as passing.",
+          "Severity": "error",
+          "Source": "report_summary"
+        },
+        {
+          "Category": "report_only_threshold_recommendation",
+          "Count": 1,
+          "Message": "Review advisory performance threshold misses; workload verification passed, but sustained telemetry was below the preferred target.",
+          "Severity": "info",
+          "Source": "report_summary"
+        }
+      ],
+      "ActionItemSeverityCounts": {
+        "error": 1,
+        "info": 1
+      },
+      "ActionItems": [
+        "Review error-level events before treating this run as passing.",
+        "Review advisory performance threshold misses; workload verification passed, but sustained telemetry was below the preferred target."
+      ],
+      "DepartmentUseSummary": {
+        "Blocking": true,
+        "Confidence": "worker_results_present_with_caveats",
+        "Decision": "Do not use as a passing department validation until the blocking item is resolved.",
+        "ErrorCount": 2,
+        "OperatorNotes": [
+          "Report-only threshold misses are advisory unless strict threshold warnings are configured for the profile."
+        ],
+        "OutcomeClass": "workload_or_integrity_failure",
+        "PrimaryCaveats": [
+          "1 GPU worker result(s) reported failure",
+          "gpu vram verification coverage (1)",
+          "worker exit error (2)",
+          "report-only performance recommendation caveat (1)"
+        ],
+        "Schema": "linux_validation_suite.department_use_summary.v1",
+        "SkippedStageCount": 0,
+        "Status": "not_ready",
+        "SuccessfulWorkerResultCount": 8,
+        "VerificationPasses": 20308,
+        "WarningCount": 1,
+        "WorkerFailureCount": 1,
+        "WorkerResultCount": 9,
+        "WorkerVerified": false
+      },
+      "Elapsed": "00:40:08",
+      "ErrorCategoryCounts": {
+        "worker_exit": 2
+      },
+      "ErrorCount": 2,
+      "ExecutionDetail": "Failed",
+      "GpuWorkerSummary": {
+        "SuccessfulWorkerResultCount": 8,
+        "VerificationPasses": 20308,
+        "WorkerFailureCount": 1,
+        "WorkerResultCount": 9
+      },
+      "ImportNotes": [
+        "Existing Beta 8a parser-facing fields remain in Segments, SegmentDetails, GpuDetails, Metadata, and SystemInfo.",
+        "ReportSummary is additive and intended for concise human review or future importer columns.",
+        "No legacy importer update is required for current imports; new Linux fields are intended to be ignored by existing parsers."
+      ],
+      "OutcomeClass": "workload_or_integrity_failure",
+      "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+      "ReferenceContract": "Legacy custom JSON compatible extension",
+      "ReportOnlyThresholdUnobservedCount": 0,
+      "ReportOnlyThresholdWouldWarnCount": 1,
+      "Result": "Failed",
+      "Schema": "linux_validation_suite.report_summary.v1",
+      "SkippedStageCount": 0,
+      "StageCount": 4,
+      "StageOutcomes": [
+        {
+          "BackendConfidence": "failed",
+          "CoverageNotes": [
+            "Separate concurrent VRAM worker omitted for Granite Ridge [Radeon Graphics]; standalone VRAM stage remains the VRAM integrity source for those target(s)."
+          ],
+          "ErrorCategoryCounts": {
+            "worker_exit": 2
+          },
+          "GpuHighlights": [
+            {
+              "AllocationPercent": 99.4693,
+              "Backends": [
+                "python_vulkan_compute",
+                "python_opencl"
+              ],
+              "Cards": [
+                "card2"
+              ],
+              "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+              "GpuIndex": 1,
+              "LoadQuality": "variable_high",
+              "MemoryBusyAvg": 5.26,
+              "MemoryBusyMax": 11.0,
+              "Name": "NVIDIA GeForce RTX 3080 #1",
+              "PowerAvgW": 315.84,
+              "PowerMaxW": 318.54,
+              "Slots": [
+                "0000:01:00.0"
+              ],
+              "TargetIds": [
+                "0000:01:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 91.64,
+              "UsageMax": 99.0,
+              "UsageMin": 84.0,
+              "VerificationPasses": 3840,
+              "VramUsedAvgGB": 1.1,
+              "VramUsedMaxGB": 7.04,
+              "Workloads": [
+                "gpu_3d",
+                "vram"
+              ]
+            },
+            {
+              "AllocationPercent": 100.0,
+              "Backends": [
+                "python_vulkan_compute"
+              ],
+              "Cards": [
+                "card1"
+              ],
+              "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+              "GpuIndex": 0,
+              "LoadQuality": "sustained_extreme",
+              "MemoryBusyAvg": null,
+              "MemoryBusyMax": null,
+              "Name": "Granite Ridge [Radeon Graphics] #2",
+              "PowerAvgW": null,
+              "PowerMaxW": null,
+              "Slots": [
+                "0000:18:00.0"
+              ],
+              "TargetIds": [
+                "0000:18:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 99.42,
+              "UsageMax": 100.0,
+              "UsageMin": 0.0,
+              "VerificationPasses": 1279,
+              "VramUsedAvgGB": 0.07,
+              "VramUsedMaxGB": 0.07,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            }
+          ],
+          "IntelGpuTopSidecar": null,
+          "Label": "GPU (3D Auto + VRAM)",
+          "OutcomeClass": "workload_or_integrity_failure",
+          "OutcomeSummary": "Stage completed with error-level events or worker integrity failures.",
+          "PrimaryPurpose": "gpu_plus_vram_saturation",
+          "ReportOnlyThresholdWouldWarnCount": 1,
+          "TargetedGpuCount": 2,
+          "TargetedLoadQualityCounts": {
+            "sustained_extreme": 1,
+            "variable_high": 1
+          },
+          "TestType": "GPU (3D Auto + VRAM)",
+          "Verdict": "fail",
+          "WarningCategoryCounts": {
+            "gpu_vram_verification_coverage": 1
+          }
+        },
+        {
+          "BackendConfidence": "high",
+          "CoverageNotes": [],
+          "ErrorCategoryCounts": {},
+          "GpuHighlights": [
+            {
+              "AllocationPercent": null,
+              "Backends": [
+                "python_egl_gles2"
+              ],
+              "Cards": [
+                "card2"
+              ],
+              "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+              "GpuIndex": 1,
+              "LoadQuality": "sustained_extreme",
+              "MemoryBusyAvg": 0.0,
+              "MemoryBusyMax": 0.0,
+              "Name": "NVIDIA GeForce RTX 3080 #1",
+              "PowerAvgW": 318.67,
+              "PowerMaxW": 319.84,
+              "Slots": [
+                "0000:01:00.0"
+              ],
+              "TargetIds": [
+                "0000:01:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 99.9,
+              "UsageMax": 100.0,
+              "UsageMin": 98.0,
+              "VerificationPasses": 24,
+              "VramUsedAvgGB": 0.48,
+              "VramUsedMaxGB": 0.48,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            },
+            {
+              "AllocationPercent": null,
+              "Backends": [
+                "python_egl_gles2"
+              ],
+              "Cards": [
+                "card1"
+              ],
+              "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+              "GpuIndex": 0,
+              "LoadQuality": "sustained_extreme",
+              "MemoryBusyAvg": null,
+              "MemoryBusyMax": null,
+              "Name": "Granite Ridge [Radeon Graphics] #2",
+              "PowerAvgW": null,
+              "PowerMaxW": null,
+              "Slots": [
+                "0000:18:00.0"
+              ],
+              "TargetIds": [
+                "0000:18:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 99.42,
+              "UsageMax": 100.0,
+              "UsageMin": 0.0,
+              "VerificationPasses": 60,
+              "VramUsedAvgGB": 0.04,
+              "VramUsedMaxGB": 0.04,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            }
+          ],
+          "IntelGpuTopSidecar": null,
+          "Label": "GPU (EGL/GLES)",
+          "OutcomeClass": "verified_clean",
+          "OutcomeSummary": "Stage completed without warning or error events.",
+          "PrimaryPurpose": "gpu_saturation",
+          "ReportOnlyThresholdWouldWarnCount": 0,
+          "TargetedGpuCount": 2,
+          "TargetedLoadQualityCounts": {
+            "sustained_extreme": 2
+          },
+          "TestType": "GPU (EGL/GLES)",
+          "Verdict": "pass",
+          "WarningCategoryCounts": {}
+        },
+        {
+          "BackendConfidence": "high",
+          "CoverageNotes": [],
+          "ErrorCategoryCounts": {},
+          "GpuHighlights": [
+            {
+              "AllocationPercent": null,
+              "Backends": [
+                "python_opencl_compute"
+              ],
+              "Cards": [
+                "card2"
+              ],
+              "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+              "GpuIndex": 1,
+              "LoadQuality": "sustained_high",
+              "MemoryBusyAvg": 1.94,
+              "MemoryBusyMax": 3.0,
+              "Name": "NVIDIA GeForce RTX 3080 #1",
+              "PowerAvgW": 315.24,
+              "PowerMaxW": 319.52,
+              "Slots": [
+                "0000:01:00.0"
+              ],
+              "TargetIds": [
+                "0000:01:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 97.69,
+              "UsageMax": 100.0,
+              "UsageMin": 68.0,
+              "VerificationPasses": 340,
+              "VramUsedAvgGB": 0.88,
+              "VramUsedMaxGB": 0.88,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            },
+            {
+              "AllocationPercent": null,
+              "Backends": [
+                "python_opencl_compute"
+              ],
+              "Cards": [
+                "card1"
+              ],
+              "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+              "GpuIndex": 0,
+              "LoadQuality": "sustained_high",
+              "MemoryBusyAvg": null,
+              "MemoryBusyMax": null,
+              "Name": "Granite Ridge [Radeon Graphics] #2",
+              "PowerAvgW": null,
+              "PowerMaxW": null,
+              "Slots": [
+                "0000:18:00.0"
+              ],
+              "TargetIds": [
+                "0000:18:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 94.98,
+              "UsageMax": 100.0,
+              "UsageMin": 0.0,
+              "VerificationPasses": 310,
+              "VramUsedAvgGB": 0.03,
+              "VramUsedMaxGB": 0.03,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            }
+          ],
+          "IntelGpuTopSidecar": null,
+          "Label": "GPU (OpenCL Compute)",
+          "OutcomeClass": "verified_clean",
+          "OutcomeSummary": "Stage completed without warning or error events.",
+          "PrimaryPurpose": "gpu_saturation",
+          "ReportOnlyThresholdWouldWarnCount": 0,
+          "TargetedGpuCount": 2,
+          "TargetedLoadQualityCounts": {
+            "sustained_high": 2
+          },
+          "TestType": "GPU (OpenCL Compute)",
+          "Verdict": "pass",
+          "WarningCategoryCounts": {}
+        },
+        {
+          "BackendConfidence": "validated_explicit",
+          "CoverageNotes": [],
+          "ErrorCategoryCounts": {},
+          "GpuHighlights": [
+            {
+              "AllocationPercent": 100.0,
+              "Backends": [
+                "python_vulkan_compute"
+              ],
+              "Cards": [
+                "card2"
+              ],
+              "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+              "GpuIndex": 1,
+              "LoadQuality": "moderate_or_variable",
+              "MemoryBusyAvg": 93.02,
+              "MemoryBusyMax": 98.0,
+              "Name": "NVIDIA GeForce RTX 3080 #1",
+              "PowerAvgW": 303.14,
+              "PowerMaxW": 306.64,
+              "Slots": [
+                "0000:01:00.0"
+              ],
+              "TargetIds": [
+                "0000:01:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 80.72,
+              "UsageMax": 85.0,
+              "UsageMin": 72.0,
+              "VerificationPasses": 6851,
+              "VramUsedAvgGB": 8.42,
+              "VramUsedMaxGB": 8.42,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            },
+            {
+              "AllocationPercent": 100.0,
+              "Backends": [
+                "python_vulkan_compute"
+              ],
+              "Cards": [
+                "card1"
+              ],
+              "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+              "GpuIndex": 0,
+              "LoadQuality": "sustained_high",
+              "MemoryBusyAvg": null,
+              "MemoryBusyMax": null,
+              "Name": "Granite Ridge [Radeon Graphics] #2",
+              "PowerAvgW": null,
+              "PowerMaxW": null,
+              "Slots": [
+                "0000:18:00.0"
+              ],
+              "TargetIds": [
+                "0000:18:00.0"
+              ],
+              "TelemetryMissing": false,
+              "UsageAvg": 96.06,
+              "UsageMax": 100.0,
+              "UsageMin": 0.0,
+              "VerificationPasses": 7604,
+              "VramUsedAvgGB": 0.39,
+              "VramUsedMaxGB": 0.39,
+              "Workloads": [
+                "gpu_3d"
+              ]
+            }
+          ],
+          "IntelGpuTopSidecar": null,
+          "Label": "VRAM (Vulkan Stateful Memory)",
+          "OutcomeClass": "verified_clean",
+          "OutcomeSummary": "Stage completed without warning or error events.",
+          "PrimaryPurpose": "vulkan_memory_path_validation",
+          "ReportOnlyThresholdWouldWarnCount": 0,
+          "TargetedGpuCount": 2,
+          "TargetedLoadQualityCounts": {
+            "moderate_or_variable": 1,
+            "sustained_high": 1
+          },
+          "TestType": "VRAM (Vulkan Stateful Memory)",
+          "Verdict": "pass",
+          "WarningCategoryCounts": {}
+        }
+      ],
+      "State": "unstable",
+      "WarningCategoryCounts": {
+        "gpu_vram_verification_coverage": 1
+      },
+      "WarningCount": 1
+    },
+    "Result": "Failed",
+    "Stability": {
+      "InterpretationSummary": {
+        "BackendConfidenceCounts": {
+          "failed": 1,
+          "high": 2,
+          "validated_explicit": 1
+        },
+        "DiagnosticOnlyCount": 0,
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "InterpretedSegmentCount": 4,
+        "MemoryPathCandidateCount": 2,
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+        "OverallResult": "Failed",
+        "PrimaryPurposeCounts": {
+          "gpu_plus_vram_saturation": 1,
+          "gpu_saturation": 2,
+          "vulkan_memory_path_validation": 1
+        },
+        "ReportOnlyThresholdUnobservedCount": 0,
+        "ReportOnlyThresholdUnobservedDetails": [],
+        "ReportOnlyThresholdWouldWarnCount": 1,
+        "ReportOnlyThresholdWouldWarnDetails": [
+          {
+            "BackendConfidence": "failed",
+            "Check": "target_gpu_busy_saturation",
+            "GpuIndex": 1,
+            "Metric": "gpu_busy_percent",
+            "ObservedAvgPercent": 91.64,
+            "ObservedMaxPercent": 99.0,
+            "ObservedMinPercent": null,
+            "ObservedPercentAtOrAbove25": null,
+            "ObservedPercentAtOrAbove90": 42.32,
+            "PrimaryPurpose": "gpu_plus_vram_saturation",
+            "RecommendedMinAvgPercent": 85.0,
+            "RecommendedMinMaxPercent": 95.0,
+            "RecommendedMinPercent": null,
+            "RecommendedMinPercentAtOrAbove25": null,
+            "RecommendedMinPercentAtOrAbove90": 75.0,
+            "Result": "would_warn",
+            "Segment": "GPU (3D Auto + VRAM)",
+            "Target": "0000:01:00.0"
+          }
+        ],
+        "Result": "unstable",
+        "SaturationCandidateCount": 3,
+        "SegmentCount": 4,
+        "State": "unstable",
+        "StateCounts": {
+          "stable": 3,
+          "unstable": 1
+        },
+        "StrictThresholdRecommendationWarningsEnabled": true,
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      }
+    }
+  },
+  "Motherboard": {
+    "devices": {
+      "bios_version": "4.20",
+      "motherboard_manufacturer": "ASRock",
+      "motherboard_name": "ASRock X670E PG Lightning"
+    },
+    "tests": {}
+  },
+  "ProfileName": "GPU Troubleshooting Extended",
+  "ReportSummary": {
+    "ActionItemCategoryCounts": {
+      "report_only_threshold_recommendation": 1,
+      "workload_or_system_error": 1
+    },
+    "ActionItemDetails": [
+      {
+        "Category": "workload_or_system_error",
+        "Count": 2,
+        "Message": "Review error-level events before treating this run as passing.",
+        "Severity": "error",
+        "Source": "report_summary"
+      },
+      {
+        "Category": "report_only_threshold_recommendation",
+        "Count": 1,
+        "Message": "Review advisory performance threshold misses; workload verification passed, but sustained telemetry was below the preferred target.",
+        "Severity": "info",
+        "Source": "report_summary"
+      }
+    ],
+    "ActionItemSeverityCounts": {
+      "error": 1,
+      "info": 1
+    },
+    "ActionItems": [
+      "Review error-level events before treating this run as passing.",
+      "Review advisory performance threshold misses; workload verification passed, but sustained telemetry was below the preferred target."
+    ],
+    "DepartmentUseSummary": {
+      "Blocking": true,
+      "Confidence": "worker_results_present_with_caveats",
+      "Decision": "Do not use as a passing department validation until the blocking item is resolved.",
+      "ErrorCount": 2,
+      "OperatorNotes": [
+        "Report-only threshold misses are advisory unless strict threshold warnings are configured for the profile."
+      ],
+      "OutcomeClass": "workload_or_integrity_failure",
+      "PrimaryCaveats": [
+        "1 GPU worker result(s) reported failure",
+        "gpu vram verification coverage (1)",
+        "worker exit error (2)",
+        "report-only performance recommendation caveat (1)"
+      ],
+      "Schema": "linux_validation_suite.department_use_summary.v1",
+      "SkippedStageCount": 0,
+      "Status": "not_ready",
+      "SuccessfulWorkerResultCount": 8,
+      "VerificationPasses": 20308,
+      "WarningCount": 1,
+      "WorkerFailureCount": 1,
+      "WorkerResultCount": 9,
+      "WorkerVerified": false
+    },
+    "Elapsed": "00:40:08",
+    "ErrorCategoryCounts": {
+      "worker_exit": 2
+    },
+    "ErrorCount": 2,
+    "ExecutionDetail": "Failed",
+    "GpuWorkerSummary": {
+      "SuccessfulWorkerResultCount": 8,
+      "VerificationPasses": 20308,
+      "WorkerFailureCount": 1,
+      "WorkerResultCount": 9
+    },
+    "ImportNotes": [
+      "Existing Beta 8a parser-facing fields remain in Segments, SegmentDetails, GpuDetails, Metadata, and SystemInfo.",
+      "ReportSummary is additive and intended for concise human review or future importer columns.",
+      "No legacy importer update is required for current imports; new Linux fields are intended to be ignored by existing parsers."
+    ],
+    "OutcomeClass": "workload_or_integrity_failure",
+    "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+    "ReferenceContract": "Legacy custom JSON compatible extension",
+    "ReportOnlyThresholdUnobservedCount": 0,
+    "ReportOnlyThresholdWouldWarnCount": 1,
+    "Result": "Failed",
+    "Schema": "linux_validation_suite.report_summary.v1",
+    "SkippedStageCount": 0,
+    "StageCount": 4,
+    "StageOutcomes": [
+      {
+        "BackendConfidence": "failed",
+        "CoverageNotes": [
+          "Separate concurrent VRAM worker omitted for Granite Ridge [Radeon Graphics]; standalone VRAM stage remains the VRAM integrity source for those target(s)."
+        ],
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "GpuHighlights": [
+          {
+            "AllocationPercent": 99.4693,
+            "Backends": [
+              "python_vulkan_compute",
+              "python_opencl"
+            ],
+            "Cards": [
+              "card2"
+            ],
+            "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+            "GpuIndex": 1,
+            "LoadQuality": "variable_high",
+            "MemoryBusyAvg": 5.26,
+            "MemoryBusyMax": 11.0,
+            "Name": "NVIDIA GeForce RTX 3080 #1",
+            "PowerAvgW": 315.84,
+            "PowerMaxW": 318.54,
+            "Slots": [
+              "0000:01:00.0"
+            ],
+            "TargetIds": [
+              "0000:01:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 91.64,
+            "UsageMax": 99.0,
+            "UsageMin": 84.0,
+            "VerificationPasses": 3840,
+            "VramUsedAvgGB": 1.1,
+            "VramUsedMaxGB": 7.04,
+            "Workloads": [
+              "gpu_3d",
+              "vram"
+            ]
+          },
+          {
+            "AllocationPercent": 100.0,
+            "Backends": [
+              "python_vulkan_compute"
+            ],
+            "Cards": [
+              "card1"
+            ],
+            "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+            "GpuIndex": 0,
+            "LoadQuality": "sustained_extreme",
+            "MemoryBusyAvg": null,
+            "MemoryBusyMax": null,
+            "Name": "Granite Ridge [Radeon Graphics] #2",
+            "PowerAvgW": null,
+            "PowerMaxW": null,
+            "Slots": [
+              "0000:18:00.0"
+            ],
+            "TargetIds": [
+              "0000:18:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 99.42,
+            "UsageMax": 100.0,
+            "UsageMin": 0.0,
+            "VerificationPasses": 1279,
+            "VramUsedAvgGB": 0.07,
+            "VramUsedMaxGB": 0.07,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          }
+        ],
+        "IntelGpuTopSidecar": null,
+        "Label": "GPU (3D Auto + VRAM)",
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Stage completed with error-level events or worker integrity failures.",
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "ReportOnlyThresholdWouldWarnCount": 1,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 1,
+          "variable_high": 1
+        },
+        "TestType": "GPU (3D Auto + VRAM)",
+        "Verdict": "fail",
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      },
+      {
+        "BackendConfidence": "high",
+        "CoverageNotes": [],
+        "ErrorCategoryCounts": {},
+        "GpuHighlights": [
+          {
+            "AllocationPercent": null,
+            "Backends": [
+              "python_egl_gles2"
+            ],
+            "Cards": [
+              "card2"
+            ],
+            "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+            "GpuIndex": 1,
+            "LoadQuality": "sustained_extreme",
+            "MemoryBusyAvg": 0.0,
+            "MemoryBusyMax": 0.0,
+            "Name": "NVIDIA GeForce RTX 3080 #1",
+            "PowerAvgW": 318.67,
+            "PowerMaxW": 319.84,
+            "Slots": [
+              "0000:01:00.0"
+            ],
+            "TargetIds": [
+              "0000:01:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 99.9,
+            "UsageMax": 100.0,
+            "UsageMin": 98.0,
+            "VerificationPasses": 24,
+            "VramUsedAvgGB": 0.48,
+            "VramUsedMaxGB": 0.48,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          },
+          {
+            "AllocationPercent": null,
+            "Backends": [
+              "python_egl_gles2"
+            ],
+            "Cards": [
+              "card1"
+            ],
+            "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+            "GpuIndex": 0,
+            "LoadQuality": "sustained_extreme",
+            "MemoryBusyAvg": null,
+            "MemoryBusyMax": null,
+            "Name": "Granite Ridge [Radeon Graphics] #2",
+            "PowerAvgW": null,
+            "PowerMaxW": null,
+            "Slots": [
+              "0000:18:00.0"
+            ],
+            "TargetIds": [
+              "0000:18:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 99.42,
+            "UsageMax": 100.0,
+            "UsageMin": 0.0,
+            "VerificationPasses": 60,
+            "VramUsedAvgGB": 0.04,
+            "VramUsedMaxGB": 0.04,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          }
+        ],
+        "IntelGpuTopSidecar": null,
+        "Label": "GPU (EGL/GLES)",
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "gpu_saturation",
+        "ReportOnlyThresholdWouldWarnCount": 0,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 2
+        },
+        "TestType": "GPU (EGL/GLES)",
+        "Verdict": "pass",
+        "WarningCategoryCounts": {}
+      },
+      {
+        "BackendConfidence": "high",
+        "CoverageNotes": [],
+        "ErrorCategoryCounts": {},
+        "GpuHighlights": [
+          {
+            "AllocationPercent": null,
+            "Backends": [
+              "python_opencl_compute"
+            ],
+            "Cards": [
+              "card2"
+            ],
+            "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+            "GpuIndex": 1,
+            "LoadQuality": "sustained_high",
+            "MemoryBusyAvg": 1.94,
+            "MemoryBusyMax": 3.0,
+            "Name": "NVIDIA GeForce RTX 3080 #1",
+            "PowerAvgW": 315.24,
+            "PowerMaxW": 319.52,
+            "Slots": [
+              "0000:01:00.0"
+            ],
+            "TargetIds": [
+              "0000:01:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 97.69,
+            "UsageMax": 100.0,
+            "UsageMin": 68.0,
+            "VerificationPasses": 340,
+            "VramUsedAvgGB": 0.88,
+            "VramUsedMaxGB": 0.88,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          },
+          {
+            "AllocationPercent": null,
+            "Backends": [
+              "python_opencl_compute"
+            ],
+            "Cards": [
+              "card1"
+            ],
+            "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+            "GpuIndex": 0,
+            "LoadQuality": "sustained_high",
+            "MemoryBusyAvg": null,
+            "MemoryBusyMax": null,
+            "Name": "Granite Ridge [Radeon Graphics] #2",
+            "PowerAvgW": null,
+            "PowerMaxW": null,
+            "Slots": [
+              "0000:18:00.0"
+            ],
+            "TargetIds": [
+              "0000:18:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 94.98,
+            "UsageMax": 100.0,
+            "UsageMin": 0.0,
+            "VerificationPasses": 310,
+            "VramUsedAvgGB": 0.03,
+            "VramUsedMaxGB": 0.03,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          }
+        ],
+        "IntelGpuTopSidecar": null,
+        "Label": "GPU (OpenCL Compute)",
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "gpu_saturation",
+        "ReportOnlyThresholdWouldWarnCount": 0,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_high": 2
+        },
+        "TestType": "GPU (OpenCL Compute)",
+        "Verdict": "pass",
+        "WarningCategoryCounts": {}
+      },
+      {
+        "BackendConfidence": "validated_explicit",
+        "CoverageNotes": [],
+        "ErrorCategoryCounts": {},
+        "GpuHighlights": [
+          {
+            "AllocationPercent": 100.0,
+            "Backends": [
+              "python_vulkan_compute"
+            ],
+            "Cards": [
+              "card2"
+            ],
+            "DisplayName": "NVIDIA GeForce RTX 3080 #1",
+            "GpuIndex": 1,
+            "LoadQuality": "moderate_or_variable",
+            "MemoryBusyAvg": 93.02,
+            "MemoryBusyMax": 98.0,
+            "Name": "NVIDIA GeForce RTX 3080 #1",
+            "PowerAvgW": 303.14,
+            "PowerMaxW": 306.64,
+            "Slots": [
+              "0000:01:00.0"
+            ],
+            "TargetIds": [
+              "0000:01:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 80.72,
+            "UsageMax": 85.0,
+            "UsageMin": 72.0,
+            "VerificationPasses": 6851,
+            "VramUsedAvgGB": 8.42,
+            "VramUsedMaxGB": 8.42,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          },
+          {
+            "AllocationPercent": 100.0,
+            "Backends": [
+              "python_vulkan_compute"
+            ],
+            "Cards": [
+              "card1"
+            ],
+            "DisplayName": "Granite Ridge [Radeon Graphics] #2",
+            "GpuIndex": 0,
+            "LoadQuality": "sustained_high",
+            "MemoryBusyAvg": null,
+            "MemoryBusyMax": null,
+            "Name": "Granite Ridge [Radeon Graphics] #2",
+            "PowerAvgW": null,
+            "PowerMaxW": null,
+            "Slots": [
+              "0000:18:00.0"
+            ],
+            "TargetIds": [
+              "0000:18:00.0"
+            ],
+            "TelemetryMissing": false,
+            "UsageAvg": 96.06,
+            "UsageMax": 100.0,
+            "UsageMin": 0.0,
+            "VerificationPasses": 7604,
+            "VramUsedAvgGB": 0.39,
+            "VramUsedMaxGB": 0.39,
+            "Workloads": [
+              "gpu_3d"
+            ]
+          }
+        ],
+        "IntelGpuTopSidecar": null,
+        "Label": "VRAM (Vulkan Stateful Memory)",
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "vulkan_memory_path_validation",
+        "ReportOnlyThresholdWouldWarnCount": 0,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "moderate_or_variable": 1,
+          "sustained_high": 1
+        },
+        "TestType": "VRAM (Vulkan Stateful Memory)",
+        "Verdict": "pass",
+        "WarningCategoryCounts": {}
+      }
+    ],
+    "State": "unstable",
+    "WarningCategoryCounts": {
+      "gpu_vram_verification_coverage": 1
+    },
+    "WarningCount": 1
+  },
+  "Result": "Failed",
+  "SegmentDetails": {
+    "segment_1": {
+      "name": "GPU (3D Auto + VRAM)",
+      "type": "Combined",
+      "verdict": "fail"
+    },
+    "segment_2": {
+      "name": "GPU (EGL/GLES)",
+      "type": "3D Adaptive",
+      "verdict": "pass"
+    },
+    "segment_3": {
+      "name": "GPU (OpenCL Compute)",
+      "type": "3D Adaptive",
+      "verdict": "pass"
+    },
+    "segment_4": {
+      "name": "VRAM (Vulkan Stateful Memory)",
+      "type": "3D Adaptive",
+      "verdict": "pass"
+    }
+  },
+  "Segments": [
+    {
+      "Label": "GPU (3D Auto + VRAM)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "failed",
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Stage completed with error-level events or worker integrity failures.",
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "Result": "unstable",
+        "State": "unstable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 1,
+          "variable_high": 1
+        },
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      },
+      "TestDescription": "GPU (3D Auto + VRAM)",
+      "TestType": "GPU (3D Auto + VRAM)",
+      "Verdict": "fail"
+    },
+    {
+      "Label": "GPU (EGL/GLES)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "high",
+        "ErrorCategoryCounts": {},
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "gpu_saturation",
+        "Result": "stable",
+        "State": "stable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 2
+        },
+        "WarningCategoryCounts": {}
+      },
+      "TestDescription": "GPU (EGL/GLES)",
+      "TestType": "GPU (EGL/GLES)",
+      "Verdict": "pass"
+    },
+    {
+      "Label": "GPU (OpenCL Compute)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "high",
+        "ErrorCategoryCounts": {},
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "gpu_saturation",
+        "Result": "stable",
+        "State": "stable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_high": 2
+        },
+        "WarningCategoryCounts": {}
+      },
+      "TestDescription": "GPU (OpenCL Compute)",
+      "TestType": "GPU (OpenCL Compute)",
+      "Verdict": "pass"
+    },
+    {
+      "Label": "VRAM (Vulkan Stateful Memory)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "validated_explicit",
+        "ErrorCategoryCounts": {},
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "vulkan_memory_path_validation",
+        "Result": "stable",
+        "State": "stable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "moderate_or_variable": 1,
+          "sustained_high": 1
+        },
+        "WarningCategoryCounts": {}
+      },
+      "TestDescription": "VRAM (Vulkan Stateful Memory)",
+      "TestType": "VRAM (Vulkan Stateful Memory)",
+      "Verdict": "pass"
+    }
+  ],
+  "StabilityInterpretation": {
+    "BackendConfidenceCounts": {
+      "failed": 1,
+      "high": 2,
+      "validated_explicit": 1
+    },
+    "DiagnosticOnlyCount": 0,
+    "ErrorCategoryCounts": {
+      "worker_exit": 2
+    },
+    "InterpretedSegmentCount": 4,
+    "MemoryPathCandidateCount": 2,
+    "OutcomeClass": "workload_or_integrity_failure",
+    "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+    "OverallResult": "Failed",
+    "PrimaryPurposeCounts": {
+      "gpu_plus_vram_saturation": 1,
+      "gpu_saturation": 2,
+      "vulkan_memory_path_validation": 1
+    },
+    "ReportOnlyThresholdUnobservedCount": 0,
+    "ReportOnlyThresholdUnobservedDetails": [],
+    "ReportOnlyThresholdWouldWarnCount": 1,
+    "ReportOnlyThresholdWouldWarnDetails": [
+      {
+        "BackendConfidence": "failed",
+        "Check": "target_gpu_busy_saturation",
+        "GpuIndex": 1,
+        "Metric": "gpu_busy_percent",
+        "ObservedAvgPercent": 91.64,
+        "ObservedMaxPercent": 99.0,
+        "ObservedMinPercent": null,
+        "ObservedPercentAtOrAbove25": null,
+        "ObservedPercentAtOrAbove90": 42.32,
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "RecommendedMinAvgPercent": 85.0,
+        "RecommendedMinMaxPercent": 95.0,
+        "RecommendedMinPercent": null,
+        "RecommendedMinPercentAtOrAbove25": null,
+        "RecommendedMinPercentAtOrAbove90": 75.0,
+        "Result": "would_warn",
+        "Segment": "GPU (3D Auto + VRAM)",
+        "Target": "0000:01:00.0"
+      }
+    ],
+    "Result": "unstable",
+    "SaturationCandidateCount": 3,
+    "SegmentCount": 4,
+    "State": "unstable",
+    "StateCounts": {
+      "stable": 3,
+      "unstable": 1
+    },
+    "StrictThresholdRecommendationWarningsEnabled": true,
+    "WarningCategoryCounts": {
+      "gpu_vram_verification_coverage": 1
+    }
+  },
+  "Storage": {
+    "devices": [
+      {
+        "CapacityGB": 238,
+        "DevicePath": "/dev/nvme0n1",
+        "Interface": "NVMe",
+        "MediaType": "NVMe Drives",
+        "Model": "SAMSUNG MZVL2256HCHQ-00BH1"
+      }
+    ],
+    "tests": {
+      "Drive Temperature (Temperature)": [
+        {
+          "device": "SAMSUNG MZVL2256HCHQ-00BH1",
+          "results": {
+            "GPU (3D Auto + VRAM)": {
+              "avg": 35.12,
+              "max": 40.85,
+              "min": 26.85
+            },
+            "GPU (EGL/GLES)": {
+              "avg": 42.67,
+              "max": 42.85,
+              "min": 41.85
+            },
+            "GPU (OpenCL Compute)": {
+              "avg": 43.56,
+              "max": 43.85,
+              "min": 42.85
+            },
+            "VRAM (Vulkan Stateful Memory)": {
+              "avg": 44.29,
+              "max": 44.85,
+              "min": 43.85
+            }
+          }
+        }
+      ]
+    }
+  },
+  "SystemInfo": {
+    "Computer": {
+      "Manufacturer": "ASRock",
+      "Model": "X670E PG Lightning",
+      "Name": "rnd-linux-test"
+    },
+    "Hardware": {
+      "Cpu": {
+        "Name": "AMD Ryzen 9 9950X3D 16-Core Processor"
+      },
+      "Gpu": [
+        {
+          "Card": "card2",
+          "DeviceClass": "discrete",
+          "DriverVersion": "610.43.02",
+          "Interface": "0000:01:00.0",
+          "Memory": "10.0 GB",
+          "Name": "NVIDIA GeForce RTX 3080"
+        },
+        {
+          "Card": "card1",
+          "DeviceClass": "integrated",
+          "DriverVersion": "amdgpu",
+          "Interface": "0000:18:00.0",
+          "Memory": "0.5 GB",
+          "Name": "Granite Ridge [Radeon Graphics]"
+        }
+      ]
+    },
+    "TestInfo": {
+      "ConfigFile": "GPU Troubleshooting Extended.json",
+      "ProfileDisplayName": "GPU Troubleshooting Extended Linux Validation",
+      "ProfileName": "GPU Troubleshooting Extended"
+    }
+  },
+  "_FixtureNote": "Trimmed from real Linux Validation Suite parsed_results_custom.json for report/export contract smoke coverage.",
+  "_FixtureSource": "trimmed retained QA parsed-results fixture"
+}

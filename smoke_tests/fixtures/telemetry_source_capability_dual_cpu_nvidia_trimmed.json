@@ -1,0 +1,407 @@
+{
+  "_FixtureCapabilitySource": "trimmed retained QA run-manifest fixture",
+  "_FixtureSourceMapSource": "trimmed retained QA telemetry source-map fixture",
+  "telemetry_capabilities": {
+    "cpu_temp_c": {
+      "available": true,
+      "source": "hwmon:Tctl (/sys/class/hwmon/hwmon2/temp1_input)",
+      "thresholds": {
+        "derived_from_hardware": false,
+        "fail_c": 100.0,
+        "source": "suite_default",
+        "warn_c": 95.0
+      }
+    },
+    "cpu_power_w": {
+      "available": true,
+      "permission_issue": false,
+      "source": "aggregate_energy:sum(package-0, package-1 via sudo) (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj, /sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj)"
+    },
+    "cpu_clock_mhz": {
+      "available": true,
+      "source": "cpufreq:scaling_cur_freq (/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
+    },
+    "cpu_core_clock_mhz": {
+      "available": true,
+      "classification": {
+        "e_core_count": 0,
+        "has_e_cores": false,
+        "has_p_cores": true,
+        "logical_count": 96,
+        "p_core_count": 48,
+        "physical_count": 48,
+        "sources": {
+          "homogeneous_fallback": 96
+        }
+      },
+      "count": 96,
+      "source": "cpufreq_core:P-Core 0 Clock (/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
+    },
+    "memory_temp_c": {
+      "available": false,
+      "count": 0,
+      "source": "not found"
+    },
+    "storage_temp_c": {
+      "available": false,
+      "count": 0,
+      "source": "not found"
+    },
+    "gpu_temp_c": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:75:00.0)",
+      "thresholds": {
+        "derived_from_hardware": false,
+        "fail_c": 95.0,
+        "source": "suite_default",
+        "warn_c": 90.0
+      },
+      "thresholds_by_gpu": [
+        {
+          "gpu_index": 0,
+          "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:75:00.0)",
+          "thresholds": {
+            "derived_from_hardware": false,
+            "fail_c": 95.0,
+            "source": "suite_default",
+            "warn_c": 90.0
+          }
+        },
+        {
+          "gpu_index": 1,
+          "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:76:00.0)",
+          "thresholds": {
+            "derived_from_hardware": false,
+            "fail_c": 95.0,
+            "source": "suite_default",
+            "warn_c": 90.0
+          }
+        }
+      ]
+    },
+    "gpu_memory_temp_c": {
+      "available": false,
+      "count": 0,
+      "source": "not found",
+      "thresholds_by_gpu": []
+    },
+    "gpu_power_w": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition power (nvidia-smi:0000:06:00.0)"
+    },
+    "gpu_clock_mhz": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition graphics clock (nvidia-smi:0000:06:00.0)"
+    },
+    "gpu_memory_clock_mhz": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory clock (nvidia-smi:0000:06:00.0)"
+    },
+    "gpu_busy_percent": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition gpu utilization (nvidia-smi:0000:06:00.0)"
+    },
+    "gpu_memory_busy_percent": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory utilization (nvidia-smi:0000:06:00.0)"
+    },
+    "gpu_vram_used_gb": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:06:00.0)"
+    },
+    "memory_used_gb": {
+      "available": true,
+      "source": "/proc/meminfo"
+    },
+    "gpu_telemetry_by_gpu": {
+      "available": true,
+      "gpus": [
+        {
+          "card": "card1",
+          "driver": "nvidia",
+          "gpu_index": 0,
+          "metrics": {
+            "clock": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "clock_mhz",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition graphics clock (nvidia-smi:0000:75:00.0)"
+            },
+            "memory_temperature": {
+              "available": false,
+              "source": "not found"
+            },
+            "power": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "power_w",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition power (nvidia-smi:0000:75:00.0)"
+            },
+            "temperature": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "temp_core_c",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:75:00.0)"
+            },
+            "vram_used": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "vram_used_gb",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:75:00.0)"
+            }
+          },
+          "slot": "0000:75:00.0",
+          "vendor": "NVIDIA"
+        },
+        {
+          "card": "card2",
+          "driver": "nvidia",
+          "gpu_index": 1,
+          "metrics": {
+            "clock": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "clock_mhz",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition graphics clock (nvidia-smi:0000:76:00.0)"
+            },
+            "memory_temperature": {
+              "available": false,
+              "source": "not found"
+            },
+            "power": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "power_w",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition power (nvidia-smi:0000:76:00.0)"
+            },
+            "temperature": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "temp_core_c",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:76:00.0)"
+            },
+            "vram_used": {
+              "available": true,
+              "kind": "nvidia_smi",
+              "metric": "vram_used_gb",
+              "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:76:00.0)"
+            }
+          },
+          "slot": "0000:76:00.0",
+          "vendor": "NVIDIA"
+        }
+      ],
+      "source": "per-gpu telemetry source matrix"
+    }
+  },
+  "telemetry_source_map": {
+    "fields": {
+      "cpu_clock_mhz": {
+        "available": true,
+        "category": "cpu",
+        "field": "cpu_clock_mhz",
+        "kind": "cpufreq",
+        "label": "scaling_cur_freq",
+        "metric": "clock_mhz",
+        "path": "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        "source": "cpufreq:scaling_cur_freq (/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
+      },
+      "cpu_core_0_clock_mhz": {
+        "available": true,
+        "category": "cpu_core",
+        "field": "cpu_core_0_clock_mhz",
+        "kind": "cpufreq_core",
+        "label": "P-Core 0 Clock",
+        "metric": "clock_mhz",
+        "path": "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+        "source": "cpufreq_core:P-Core 0 Clock (/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)"
+      },
+      "cpu_core_95_clock_mhz": {
+        "available": true,
+        "category": "cpu_core",
+        "field": "cpu_core_95_clock_mhz",
+        "kind": "cpufreq_core",
+        "label": "P-Core 95 Clock",
+        "metric": "clock_mhz",
+        "path": "/sys/devices/system/cpu/cpu95/cpufreq/scaling_cur_freq",
+        "source": "cpufreq_core:P-Core 95 Clock (/sys/devices/system/cpu/cpu95/cpufreq/scaling_cur_freq)"
+      },
+      "cpu_package_0_power_w": {
+        "available": true,
+        "category": "cpu_package",
+        "field": "cpu_package_0_power_w",
+        "kind": "rapl",
+        "label": "package-0",
+        "metric": "power_w",
+        "package_id": "0",
+        "path": "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj",
+        "source": "rapl:package-0 (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj)"
+      },
+      "cpu_package_0_temp_c": {
+        "available": true,
+        "category": "cpu_package",
+        "field": "cpu_package_0_temp_c",
+        "kind": "hwmon",
+        "label": "Tctl",
+        "metric": "temperature_c",
+        "package_id": 0,
+        "path": "/sys/class/hwmon/hwmon2/temp1_input",
+        "source": "hwmon:Tctl (/sys/class/hwmon/hwmon2/temp1_input)"
+      },
+      "cpu_package_1_power_w": {
+        "available": true,
+        "category": "cpu_package",
+        "field": "cpu_package_1_power_w",
+        "kind": "sudo_rapl",
+        "label": "package-1 via sudo",
+        "metric": "power_w",
+        "package_id": "1",
+        "path": "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj",
+        "source": "sudo_rapl:package-1 via sudo (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj)"
+      },
+      "cpu_package_1_temp_c": {
+        "available": true,
+        "category": "cpu_package",
+        "field": "cpu_package_1_temp_c",
+        "kind": "hwmon",
+        "label": "Tctl",
+        "metric": "temperature_c",
+        "package_id": 1,
+        "path": "/sys/class/hwmon/hwmon3/temp1_input",
+        "source": "hwmon:Tctl (/sys/class/hwmon/hwmon3/temp1_input)"
+      },
+      "cpu_power_w": {
+        "available": true,
+        "category": "cpu",
+        "component_sources": [
+          "rapl:package-0 (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj)",
+          "sudo_rapl:package-1 via sudo (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj)"
+        ],
+        "field": "cpu_power_w",
+        "kind": "aggregate_energy",
+        "label": "sum(package-0, package-1 via sudo)",
+        "metric": "power_w",
+        "package_count": 2,
+        "path": "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj, /sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj",
+        "source": "aggregate_energy:sum(package-0, package-1 via sudo) (/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj, /sys/devices/virtual/powercap/intel-rapl/intel-rapl:1/energy_uj)"
+      },
+      "cpu_temp_c": {
+        "available": true,
+        "category": "cpu",
+        "field": "cpu_temp_c",
+        "kind": "hwmon",
+        "label": "Tctl",
+        "metric": "temperature_c",
+        "path": "/sys/class/hwmon/hwmon2/temp1_input",
+        "source": "hwmon:Tctl (/sys/class/hwmon/hwmon2/temp1_input)"
+      },
+      "gpu_0_clock_mhz": {
+        "available": true,
+        "category": "gpu",
+        "field": "gpu_0_clock_mhz",
+        "gpu_index": 0,
+        "kind": "nvidia_smi",
+        "label": "NVIDIA RTX PRO 6000 Blackwell Server Edition graphics clock",
+        "metric": "clock_mhz",
+        "path": "nvidia-smi:0000:75:00.0",
+        "query_field": "clocks.current.graphics",
+        "slot": "0000:75:00.0",
+        "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition graphics clock (nvidia-smi:0000:75:00.0)"
+      },
+      "gpu_0_power_w": {
+        "available": true,
+        "category": "gpu",
+        "field": "gpu_0_power_w",
+        "gpu_index": 0,
+        "kind": "nvidia_smi",
+        "label": "NVIDIA RTX PRO 6000 Blackwell Server Edition power",
+        "metric": "power_w",
+        "path": "nvidia-smi:0000:75:00.0",
+        "query_field": "power.draw",
+        "slot": "0000:75:00.0",
+        "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition power (nvidia-smi:0000:75:00.0)"
+      },
+      "gpu_0_temp_core_c": {
+        "available": true,
+        "category": "gpu",
+        "field": "gpu_0_temp_core_c",
+        "gpu_index": 0,
+        "kind": "nvidia_smi",
+        "label": "NVIDIA RTX PRO 6000 Blackwell Server Edition temperature",
+        "metric": "temp_core_c",
+        "path": "nvidia-smi:0000:75:00.0",
+        "query_field": "temperature.gpu",
+        "slot": "0000:75:00.0",
+        "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition temperature (nvidia-smi:0000:75:00.0)"
+      },
+      "gpu_0_vram_used_gb": {
+        "available": true,
+        "category": "gpu",
+        "field": "gpu_0_vram_used_gb",
+        "gpu_index": 0,
+        "kind": "nvidia_smi",
+        "label": "NVIDIA RTX PRO 6000 Blackwell Server Edition memory used",
+        "metric": "vram_used_gb",
+        "path": "nvidia-smi:0000:75:00.0",
+        "query_field": "memory.used",
+        "slot": "0000:75:00.0",
+        "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:75:00.0)"
+      },
+      "memory_used_gb": {
+        "available": true,
+        "category": "memory",
+        "field": "memory_used_gb",
+        "kind": "procfs",
+        "metric": "used_gb",
+        "path": "/proc/meminfo",
+        "source": "/proc/meminfo"
+      },
+      "timestamp": {
+        "available": true,
+        "category": "time",
+        "field": "timestamp",
+        "metric": "monotonic_seconds",
+        "source": "time.monotonic()"
+      }
+    },
+    "gpu_index_map": [
+      {
+        "card": "card1",
+        "driver": "nvidia",
+        "gpu_index": 0,
+        "slot": "0000:75:00.0",
+        "vendor": "NVIDIA"
+      },
+      {
+        "card": "card2",
+        "driver": "nvidia",
+        "gpu_index": 1,
+        "slot": "0000:76:00.0",
+        "vendor": "NVIDIA"
+      },
+      {
+        "card": "card3",
+        "driver": "nvidia",
+        "gpu_index": 2,
+        "slot": "0000:06:00.0",
+        "vendor": "NVIDIA"
+      },
+      {
+        "card": "card4",
+        "driver": "nvidia",
+        "gpu_index": 3,
+        "slot": "0000:07:00.0",
+        "vendor": "NVIDIA"
+      }
+    ],
+    "purpose": "Maps raw_telemetry.csv field names to hardware telemetry sources.",
+    "version": 1
+  }
+}

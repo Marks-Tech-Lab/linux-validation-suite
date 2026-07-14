@@ -1,0 +1,62 @@
+{
+  "batch": {
+    "contract_id": "linux_validation_suite.qa_review",
+    "contract_version": 1,
+    "counts": {
+      "total": 2
+    },
+    "items": [
+      {
+        "contract_id": "linux_validation_suite.qa_review",
+        "contract_version": 1,
+        "kind": "qa_result_review",
+        "result_folder": "/tmp/one"
+      },
+      {
+        "contract_id": "linux_validation_suite.qa_review",
+        "contract_version": 1,
+        "kind": "qa_result_review",
+        "result_folder": "/tmp/two"
+      }
+    ],
+    "kind": "qa_result_review_batch"
+  },
+  "review": {
+    "action_item_summary": {
+      "severity_counts": {}
+    },
+    "artifact_availability": {
+      "kind": "missing"
+    },
+    "comparison_folder": "/tmp/baseline",
+    "comparison_readiness": {
+      "status": "blocked"
+    },
+    "contract_id": "linux_validation_suite.qa_review",
+    "contract_version": 1,
+    "decisions": {
+      "review": {
+        "status": "blocked"
+      }
+    },
+    "identity": {
+      "folder_name": "missing",
+      "parsed_results_custom_exists": false
+    },
+    "import_readiness": {
+      "status": "fail"
+    },
+    "kind": "qa_result_review",
+    "result_folder": "/tmp/missing",
+    "summary_refresh_requested": false,
+    "telemetry_stability_warning_summary": {
+      "warning_categories": {}
+    },
+    "validation_status": {
+      "result": "fail"
+    },
+    "worker_failure_evidence": {
+      "worker_failure_count": 0
+    }
+  }
+}

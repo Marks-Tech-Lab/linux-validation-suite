@@ -1,0 +1,139 @@
+# Linux Validation Suite
+
+Linux Validation Suite is a hardware validation and stress-test orchestrator
+for Linux systems. It runs repeatable CPU, memory, GPU, and VRAM workloads,
+collects Linux telemetry, and exports structured result folders for later
+review.
+
+## Fresh Clone And First Run
+
+Start the interactive CLI from the repository root:
+
+```bash
+python3.14 linux_validation_suite.py
+```
+
+The TUI entrypoint is:
+
+```bash
+python3.14 linux_validation_suite_tui.py
+```
+
+On first launch, the suite uses `settings/global_settings.example.json` as the
+initial settings payload and writes the ignored local file
+`settings/global_settings.json`. The committed example uses end-user mode and
+leaves Google Drive credentials and destination settings empty, with upload
+prompts and move-after-upload disabled.
+
+Google Drive integration is optional. Without credentials and a configured
+destination it remains unavailable, while local execution and result review
+continue normally.
+
+The repository scaffolds these local runtime locations with `.gitkeep` files:
+
+- `results/`
+- `results/Archived/`
+- `results/Uploaded/`
+- `sensor_probe_logs/`
+
+Their runtime contents are ignored. Result, upload, archive, and sensor-probe
+workflows create their required output directories as needed.
+
+Old retained results are not required for normal use or public smoke tests.
+Maintainers may optionally keep ignored local retained-result mappings in
+`hardware_result_validation_state.json` and refresh them from current results
+with:
+
+```bash
+python3.14 -m Modules.lvs_hardware_matrix_state rebuild
+```
+
+## Current Focus
+
+- CPU and memory stress validation with Linux telemetry
+- suite-native Vulkan/OpenCL/EGL GPU workloads
+- VRAM allocation and verification workloads
+- result folder summaries and legacy-compatible JSON
+- diagnostics and dependency checks for field troubleshooting
+- QA review payloads for result readiness, import readiness, comparison
+  context, and escalation decisions
+
+## Supported Operator Entrypoints
+
+Use the QA wrapper for non-interactive JSON review payloads:
+
+```bash
+python3.14 linux_validation_suite_qa.py review "results/<result-folder>"
+python3.14 linux_validation_suite_qa.py batch "results/<result-a>" "results/<result-b>"
+```
+
+`linux_validation_suite.py` remains the CLI compatibility entrypoint.
+`linux_validation_suite_tui.py` is the operator TUI.
+`linux_validation_suite_qa.py` is for external QA tooling and should not be
+used as an import-policy automation layer or hardware-specification judge.
+
+## Result Folders And Artifacts
+
+Runs write timestamped folders under `results/` by default. A complete result
+commonly includes:
+
+- `run_summary.txt`
+- `parsed_results_custom.json`
+- `parsed_results_extended.json`
+- `run_manifest.json`
+- `telemetry_source_map.json`
+- `raw_telemetry.csv`
+- `system_info.json`
+- `profile_used.json`
+- `worker_results/`
+
+For QA review, prefer the QA wrapper payload over parsing report text or dense
+raw telemetry directly. The wrapper summarizes suite evidence and existing
+validation outcomes; it does not look up or infer external hardware standards.
+
+## Enhanced Telemetry
+
+Enhanced telemetry is session-scoped. At CLI or TUI launch, the suite may ask
+whether to enable it for that session. Enabling it prepares sudo-backed
+telemetry probes where available; the suite does not store the sudo password.
+
+Enhanced telemetry can produce
+`telemetry_privilege.source_mode: sudo_telemetry` when sudo-backed sources are
+actually used. Skipping it produces normal-user telemetry and should be
+expected to omit some privileged CPU package power or DIMM identity evidence
+on some systems.
+
+Advanced debug logging is separate from enhanced telemetry. Debug logging
+affects additional logs/artifacts; it is not the control for sudo telemetry.
+
+## Safety
+
+Stress testing can expose unstable hardware, cooling, driver, firmware, or
+power-delivery issues. Run with appropriate cooling, supervision, and data
+backups. The suite reports telemetry where Linux exposes it, but missing or
+limited telemetry is common across vendors and distributions.
+
+## Current Status
+
+Available workflows include:
+
+- CLI profile selection, dry run/dependency checks, run setup, execution,
+  result review, upload prompts, and pre-import sanity.
+- TUI operator workflow for profile review, setup recall, dry run, run launch
+  and cancellation, live status, post-run review, result review, validation,
+  pre-import sanity, comparison, artifacts, upload workflow, and core settings.
+- QA wrapper JSON contracts for single-result and batch review.
+- A public hardware/result coverage matrix with optional local result mappings.
+
+Still experimental or hardware-sensitive:
+
+- Future GUI support.
+- Some GPU backend variants and lab profiles.
+- Sensor coverage that depends on vendor/kernel exposure.
+- Automated packaging and dependency installation.
+
+## Default Configuration
+
+The committed settings example uses `environment_mode: "end_user"`, so the CLI
+starts with the public-facing operator workflow on a fresh clone. Local settings
+can be adjusted after their initial creation.

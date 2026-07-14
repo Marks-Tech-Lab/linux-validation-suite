@@ -1,0 +1,383 @@
+{
+  "_FixtureSource": "trimmed retained QA parsed-results fixture",
+  "Metadata": {
+    "CpuAggregate": {
+      "BaseName": "AMD EPYC 9255 24-Core Processor",
+      "LogicalCpuCount": 96,
+      "Name": "2x AMD EPYC 9255 24-Core Processor",
+      "PackageCount": 2,
+      "PhysicalCoreCount": 48
+    },
+    "CpuAggregateName": "2x AMD EPYC 9255 24-Core Processor",
+    "CpuLogicalCount": 96,
+    "CpuName": "2x AMD EPYC 9255 24-Core Processor",
+    "CpuPackageCount": 2,
+    "CpuPackageDevices": [
+      {
+        "DeviceId": "cpu_package_0",
+        "DisplayName": "CPU 0: AMD EPYC 9255 24-Core Processor",
+        "LogicalCpuCount": 48,
+        "LogicalCpuRange": "0-23,48-71",
+        "Name": "AMD EPYC 9255 24-Core Processor",
+        "PackageId": 0,
+        "PhysicalCoreCount": 24
+      },
+      {
+        "DeviceId": "cpu_package_1",
+        "DisplayName": "CPU 1: AMD EPYC 9255 24-Core Processor",
+        "LogicalCpuCount": 48,
+        "LogicalCpuRange": "24-47,72-95",
+        "Name": "AMD EPYC 9255 24-Core Processor",
+        "PackageId": 1,
+        "PhysicalCoreCount": 24
+      }
+    ],
+    "CpuPackageNames": [
+      "AMD EPYC 9255 24-Core Processor",
+      "AMD EPYC 9255 24-Core Processor"
+    ],
+    "CpuPhysicalCoreCount": 48,
+    "CpuTopology": {
+      "Aggregate": {
+        "BaseName": "AMD EPYC 9255 24-Core Processor",
+        "LogicalCpuCount": 96,
+        "Name": "2x AMD EPYC 9255 24-Core Processor",
+        "PackageCount": 2,
+        "PhysicalCoreCount": 48
+      },
+      "LogicalCpuCount": 96,
+      "NameSummary": "2x AMD EPYC 9255 24-Core Processor",
+      "PackageCount": 2,
+      "PackageDevices": [
+        {
+          "DeviceId": "cpu_package_0",
+          "DisplayName": "CPU 0: AMD EPYC 9255 24-Core Processor",
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "0-23,48-71",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 0,
+          "PhysicalCoreCount": 24
+        },
+        {
+          "DeviceId": "cpu_package_1",
+          "DisplayName": "CPU 1: AMD EPYC 9255 24-Core Processor",
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "24-47,72-95",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 1,
+          "PhysicalCoreCount": 24
+        }
+      ],
+      "PackageNames": [
+        "AMD EPYC 9255 24-Core Processor",
+        "AMD EPYC 9255 24-Core Processor"
+      ],
+      "Packages": [
+        {
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "0-23,48-71",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 0,
+          "PhysicalCoreCount": 24
+        },
+        {
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "24-47,72-95",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 1,
+          "PhysicalCoreCount": 24
+        }
+      ],
+      "PhysicalCoreCount": 48
+    },
+    "ProfileName": "PL Validation 24hr"
+  },
+  "SystemInfo": {
+    "Hardware": {
+      "Cpu": {
+        "AggregateName": "2x AMD EPYC 9255 24-Core Processor",
+        "BaseName": "AMD EPYC 9255 24-Core Processor",
+        "Name": "2x AMD EPYC 9255 24-Core Processor",
+        "PackageDevices": [
+          {
+            "DeviceId": "cpu_package_0",
+            "DisplayName": "CPU 0: AMD EPYC 9255 24-Core Processor",
+            "LogicalCpuCount": 48,
+            "LogicalCpuRange": "0-23,48-71",
+            "Name": "AMD EPYC 9255 24-Core Processor",
+            "PackageId": 0,
+            "PhysicalCoreCount": 24
+          },
+          {
+            "DeviceId": "cpu_package_1",
+            "DisplayName": "CPU 1: AMD EPYC 9255 24-Core Processor",
+            "LogicalCpuCount": 48,
+            "LogicalCpuRange": "24-47,72-95",
+            "Name": "AMD EPYC 9255 24-Core Processor",
+            "PackageId": 1,
+            "PhysicalCoreCount": 24
+          }
+        ],
+        "Topology": {
+          "LogicalCpuCount": 96,
+          "NameSummary": "2x AMD EPYC 9255 24-Core Processor",
+          "PackageCount": 2,
+          "Packages": [
+            {
+              "LogicalCpuCount": 48,
+              "LogicalCpuRange": "0-23,48-71",
+              "Name": "AMD EPYC 9255 24-Core Processor",
+              "PackageId": 0,
+              "PhysicalCoreCount": 24
+            },
+            {
+              "LogicalCpuCount": 48,
+              "LogicalCpuRange": "24-47,72-95",
+              "Name": "AMD EPYC 9255 24-Core Processor",
+              "PackageId": 1,
+              "PhysicalCoreCount": 24
+            }
+          ],
+          "PhysicalCoreCount": 48
+        }
+      },
+      "Memory": {
+        "Modules": [
+          {
+            "BaseSpeed": "5600 MT/s",
+            "CapacityGB": 32,
+            "Manufacturer": "Micron Technology",
+            "ModuleNumber": 0,
+            "PartNumber": "Micron Technology MTC20F2085S1RC56BG1",
+            "Position": "P0 CHANNEL A/CPU1_DIMM_A1",
+            "RawPartNumber": "MTC20F2085S1RC56BG1",
+            "Size": "32 GB",
+            "Speed": 5600,
+            "Type": "DDR5",
+            "source": "dmidecode -t memory"
+          },
+          {
+            "BaseSpeed": "5600 MT/s",
+            "CapacityGB": 32,
+            "Manufacturer": "Micron Technology",
+            "ModuleNumber": 1,
+            "PartNumber": "Micron Technology MTC20F2085S1RC56BG1",
+            "Position": "P0 CHANNEL B/CPU1_DIMM_B1",
+            "RawPartNumber": "MTC20F2085S1RC56BG1",
+            "Size": "32 GB",
+            "Speed": 5600,
+            "Type": "DDR5",
+            "source": "dmidecode -t memory"
+          }
+        ],
+        "TotalPhysicalMemoryGB": 377
+      }
+    }
+  },
+  "Cpu": {
+    "devices": {
+      "aggregate_cpu_model": "2x AMD EPYC 9255 24-Core Processor",
+      "cpu_model": "2x AMD EPYC 9255 24-Core Processor",
+      "cpu_package_count": 2,
+      "cpu_package_devices": [
+        {
+          "DeviceId": "cpu_package_0",
+          "DisplayName": "CPU 0: AMD EPYC 9255 24-Core Processor",
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "0-23,48-71",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 0,
+          "PhysicalCoreCount": 24
+        },
+        {
+          "DeviceId": "cpu_package_1",
+          "DisplayName": "CPU 1: AMD EPYC 9255 24-Core Processor",
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "24-47,72-95",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 1,
+          "PhysicalCoreCount": 24
+        }
+      ],
+      "cpu_package_names": [
+        "AMD EPYC 9255 24-Core Processor",
+        "AMD EPYC 9255 24-Core Processor"
+      ],
+      "cpu_packages": [
+        {
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "0-23,48-71",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 0,
+          "PhysicalCoreCount": 24
+        },
+        {
+          "LogicalCpuCount": 48,
+          "LogicalCpuRange": "24-47,72-95",
+          "Name": "AMD EPYC 9255 24-Core Processor",
+          "PackageId": 1,
+          "PhysicalCoreCount": 24
+        }
+      ],
+      "logical_cpu_count": 96,
+      "physical_core_count": 48
+    },
+    "tests": {
+      "CPU Package (Temperature)": [
+        {
+          "device": "2x AMD EPYC 9255 24-Core Processor",
+          "results": {
+            "Power (CPU + 3D)": {
+              "avg": 59.77,
+              "max": 60.75,
+              "min": 57.12
+            }
+          }
+        }
+      ],
+      "CPU Package Power (Power)": [
+        {
+          "device": "2x AMD EPYC 9255 24-Core Processor",
+          "results": {
+            "Power (CPU + 3D)": {
+              "avg": 353.62,
+              "max": 356.83,
+              "min": 350.09
+            }
+          }
+        }
+      ]
+    }
+  },
+  "Memory": {
+    "devices": [
+      {
+        "BaseSpeed": "5600 MT/s",
+        "CapacityGB": 32,
+        "Manufacturer": "Micron Technology",
+        "ModuleNumber": 0,
+        "PartNumber": "Micron Technology MTC20F2085S1RC56BG1",
+        "Position": "P0 CHANNEL A/CPU1_DIMM_A1",
+        "RawPartNumber": "MTC20F2085S1RC56BG1",
+        "Size": "32 GB",
+        "Speed": 5600,
+        "Type": "DDR5",
+        "source": "dmidecode -t memory"
+      },
+      {
+        "BaseSpeed": "5600 MT/s",
+        "CapacityGB": 32,
+        "Manufacturer": "Micron Technology",
+        "ModuleNumber": 1,
+        "PartNumber": "Micron Technology MTC20F2085S1RC56BG1",
+        "Position": "P0 CHANNEL B/CPU1_DIMM_B1",
+        "RawPartNumber": "MTC20F2085S1RC56BG1",
+        "Size": "32 GB",
+        "Speed": 5600,
+        "Type": "DDR5",
+        "source": "dmidecode -t memory"
+      }
+    ],
+    "tests": {
+      "System Memory Used (Usage)": [
+        {
+          "device": "System Memory",
+          "results": {
+            "Power (CPU + 3D)": {
+              "avg": 33.79,
+              "max": 34.22,
+              "min": 33.55
+            }
+          }
+        }
+      ]
+    }
+  },
+  "Segments": [
+    {
+      "Clocks": {
+        "AllCoreAverage": {
+          "Avg": 4269.19,
+          "Max": 4314.19,
+          "Min": 4072.52
+        }
+      },
+      "Cpu": {
+        "Combined": {
+          "AllCoreAverageClock": {
+            "Avg": 4269.19,
+            "Max": 4314.19,
+            "Min": 4072.52
+          },
+          "Power": {
+            "Avg": 348.82,
+            "Max": 356.28,
+            "Min": 339.32
+          },
+          "Temp": {
+            "Avg": 55.86,
+            "Max": 56.62,
+            "Min": 53.25
+          }
+        },
+        "Packages": [
+          {
+            "Clock": {
+              "Avg": 4268.52,
+              "Max": 4314.19,
+              "Min": 4072.52
+            },
+            "MetricTarget": "package_0",
+            "Name": "AMD EPYC 9255 24-Core Processor",
+            "PackageId": 0,
+            "Power": {
+              "Avg": 175.54,
+              "Max": 176.85,
+              "Min": 168.94
+            },
+            "Temp": {
+              "Avg": 55.84,
+              "Max": 56.62,
+              "Min": 52.62
+            }
+          },
+          {
+            "Clock": {
+              "Avg": 4269.86,
+              "Max": 4300.11,
+              "Min": 4182.3
+            },
+            "MetricTarget": "package_1",
+            "Name": "AMD EPYC 9255 24-Core Processor",
+            "PackageId": 1,
+            "Power": {
+              "Avg": 173.28,
+              "Max": 180.31,
+              "Min": 167.17
+            },
+            "Temp": {
+              "Avg": 55.36,
+              "Max": 56.38,
+              "Min": 53.25
+            }
+          }
+        ]
+      },
+      "Label": "Power (CPU + 3D)",
+      "Power": {
+        "Cpu": {
+          "Avg": 348.82,
+          "Max": 356.28,
+          "Min": 339.32
+        }
+      },
+      "Temperatures": {
+        "Cpu": {
+          "Avg": 55.86,
+          "Max": 56.62,
+          "Min": 53.25
+        }
+      }
+    }
+  ]
+}

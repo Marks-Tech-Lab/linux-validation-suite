@@ -1,0 +1,355 @@
+{
+  "_FixtureSource": "trimmed retained QA parsed-results fixture",
+  "StabilityInterpretation": {
+    "BackendConfidenceCounts": {
+      "failed": 1,
+      "high": 2,
+      "validated_explicit": 1
+    },
+    "ErrorCategoryCounts": {
+      "worker_exit": 2
+    },
+    "InterpretedSegmentCount": 4,
+    "OutcomeClass": "workload_or_integrity_failure",
+    "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+    "OverallResult": "Failed",
+    "ReportOnlyThresholdUnobservedCount": 0,
+    "ReportOnlyThresholdWouldWarnCount": 1,
+    "ReportOnlyThresholdWouldWarnDetails": [
+      {
+        "BackendConfidence": "failed",
+        "Check": "target_gpu_busy_saturation",
+        "GpuIndex": 1,
+        "Metric": "gpu_busy_percent",
+        "ObservedAvgPercent": 91.64,
+        "ObservedMaxPercent": 99.0,
+        "ObservedPercentAtOrAbove90": 42.32,
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "RecommendedMinAvgPercent": 85.0,
+        "RecommendedMinMaxPercent": 95.0,
+        "RecommendedMinPercentAtOrAbove90": 75.0,
+        "Result": "would_warn",
+        "Segment": "GPU (3D Auto + VRAM)",
+        "Target": "0000:01:00.0"
+      }
+    ],
+    "Result": "unstable",
+    "SegmentCount": 4,
+    "State": "unstable",
+    "StateCounts": {
+      "stable": 3,
+      "unstable": 1
+    },
+    "StrictThresholdRecommendationWarningsEnabled": true,
+    "WarningCategoryCounts": {
+      "gpu_vram_verification_coverage": 1
+    }
+  },
+  "Metadata": {
+    "Stability": {
+      "InterpretationSummary": {
+        "BackendConfidenceCounts": {
+          "failed": 1,
+          "high": 2,
+          "validated_explicit": 1
+        },
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "InterpretedSegmentCount": 4,
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+        "OverallResult": "Failed",
+        "ReportOnlyThresholdUnobservedCount": 0,
+        "ReportOnlyThresholdWouldWarnCount": 1,
+        "ReportOnlyThresholdWouldWarnDetails": [
+          {
+            "BackendConfidence": "failed",
+            "Check": "target_gpu_busy_saturation",
+            "GpuIndex": 1,
+            "Metric": "gpu_busy_percent",
+            "ObservedAvgPercent": 91.64,
+            "ObservedMaxPercent": 99.0,
+            "ObservedPercentAtOrAbove90": 42.32,
+            "PrimaryPurpose": "gpu_plus_vram_saturation",
+            "RecommendedMinAvgPercent": 85.0,
+            "RecommendedMinMaxPercent": 95.0,
+            "RecommendedMinPercentAtOrAbove90": 75.0,
+            "Result": "would_warn",
+            "Segment": "GPU (3D Auto + VRAM)",
+            "Target": "0000:01:00.0"
+          }
+        ],
+        "Result": "unstable",
+        "SegmentCount": 4,
+        "State": "unstable",
+        "StateCounts": {
+          "stable": 3,
+          "unstable": 1
+        },
+        "StrictThresholdRecommendationWarningsEnabled": true,
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      }
+    }
+  },
+  "ReportSummary": {
+    "ActionItemCategoryCounts": {
+      "report_only_threshold_recommendation": 1,
+      "workload_or_system_error": 1
+    },
+    "ActionItemDetails": [
+      {
+        "Category": "workload_or_system_error",
+        "Count": 2,
+        "Message": "Review error-level events before treating this run as passing.",
+        "Severity": "error",
+        "Source": "report_summary"
+      },
+      {
+        "Category": "report_only_threshold_recommendation",
+        "Count": 1,
+        "Message": "Review advisory performance threshold misses; workload verification passed, but sustained telemetry was below the preferred target.",
+        "Severity": "info",
+        "Source": "report_summary"
+      }
+    ],
+    "ActionItemSeverityCounts": {
+      "error": 1,
+      "info": 1
+    },
+    "ErrorCategoryCounts": {
+      "worker_exit": 2
+    },
+    "OutcomeClass": "workload_or_integrity_failure",
+    "OutcomeSummary": "Run contains error-level events or failed workload integrity checks.",
+    "ReportOnlyThresholdUnobservedCount": 0,
+    "ReportOnlyThresholdWouldWarnCount": 1,
+    "Result": "Failed",
+    "StageCount": 4,
+    "StageOutcomes": [
+      {
+        "BackendConfidence": "failed",
+        "CoverageNotes": [
+          "Separate concurrent VRAM worker omitted for Granite Ridge [Radeon Graphics]; standalone VRAM stage remains the VRAM integrity source for those target(s)."
+        ],
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "Label": "GPU (3D Auto + VRAM)",
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Stage completed with error-level events or worker integrity failures.",
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "ReportOnlyThresholdWouldWarnCount": 1,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 1,
+          "variable_high": 1
+        },
+        "Verdict": "fail",
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      },
+      {
+        "BackendConfidence": "validated_explicit",
+        "CoverageNotes": [],
+        "ErrorCategoryCounts": {},
+        "Label": "VRAM (Vulkan Stateful Memory)",
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "vulkan_memory_path_validation",
+        "ReportOnlyThresholdWouldWarnCount": 0,
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "moderate_or_variable": 1,
+          "sustained_high": 1
+        },
+        "Verdict": "pass",
+        "WarningCategoryCounts": {}
+      }
+    ],
+    "State": "unstable",
+    "WarningCategoryCounts": {
+      "gpu_vram_verification_coverage": 1
+    }
+  },
+  "Segments": [
+    {
+      "Label": "GPU (3D Auto + VRAM)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "failed",
+        "BackendLoadClasses": [
+          "high_load"
+        ],
+        "BackendRecommendedForSaturation": true,
+        "DiagnosticOnly": false,
+        "ErrorCategoryCounts": {
+          "worker_exit": 2
+        },
+        "MemoryPathCandidate": true,
+        "ObservedOnlyGpuCount": 0,
+        "OutcomeClass": "workload_or_integrity_failure",
+        "OutcomeSummary": "Stage completed with error-level events or worker integrity failures.",
+        "PrimaryPurpose": "gpu_plus_vram_saturation",
+        "Reasons": [
+          "worker integrity/API error count is 2",
+          "vram worker exited early with code 12",
+          "gpu worker exited early with code 12",
+          "one or more targeted GPUs showed variable load quality; this is informational unless explicit thresholds are enabled",
+          "VRAM allocation target was effectively met"
+        ],
+        "Result": "unstable",
+        "SaturationCandidate": true,
+        "State": "unstable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "sustained_extreme": 1,
+          "variable_high": 1
+        },
+        "ThresholdRecommendations": {
+          "Checks": [
+            {
+              "GpuIndex": 1,
+              "Metric": "gpu_busy_percent",
+              "Name": "target_gpu_busy_saturation",
+              "ObservedAvgPercent": 91.64,
+              "ObservedMaxPercent": 99.0,
+              "ObservedPercentAtOrAbove90": 42.32,
+              "RecommendedMinAvgPercent": 85.0,
+              "RecommendedMinMaxPercent": 95.0,
+              "RecommendedMinPercentAtOrAbove90": 75.0,
+              "Result": "would_warn",
+              "Target": "0000:01:00.0",
+              "WorkerEvidence": {
+                "Backends": [
+                  "python_vulkan_compute",
+                  "python_opencl"
+                ],
+                "MaxAllocationPercent": 99.4693,
+                "SuccessfulWorkerResultCount": 1,
+                "VerificationPasses": 3840,
+                "WorkerErrorCount": 2,
+                "WorkerResultCount": 2,
+                "Workloads": [
+                  "gpu_3d",
+                  "vram"
+                ]
+              }
+            },
+            {
+              "GpuIndex": 1,
+              "Metric": "gpu_memory_busy_percent",
+              "Name": "target_gpu_memory_path_activity",
+              "ObservedAvgPercent": 5.26,
+              "ObservedMaxPercent": 11.0,
+              "ObservedPercentAtOrAbove25": 0.0,
+              "Result": "observed_only",
+              "Target": "0000:01:00.0"
+            },
+            {
+              "Metric": "allocated_vram_percent",
+              "Name": "vram_allocation_attainment",
+              "ObservedMinPercent": 99.4693,
+              "RecommendedMinPercent": 95.0,
+              "Result": "meets_recommendation"
+            }
+          ],
+          "Mode": "report_only",
+          "StrictModeApplied": false,
+          "StrictModeDefault": false,
+          "StrictModeEffect": "none",
+          "StrictModeEnabled": true,
+          "UnobservedCount": 0,
+          "WorkerVerifiedNoTelemetryCount": 0,
+          "WouldWarnCount": 1
+        },
+        "WarningCategoryCounts": {
+          "gpu_vram_verification_coverage": 1
+        }
+      },
+      "Verdict": "fail"
+    },
+    {
+      "Label": "VRAM (Vulkan Stateful Memory)",
+      "StabilityInterpretation": {
+        "BackendConfidence": "validated_explicit",
+        "BackendLoadClasses": [
+          "high_load"
+        ],
+        "BackendRecommendedForSaturation": true,
+        "DiagnosticOnly": false,
+        "ErrorCategoryCounts": {},
+        "MemoryPathCandidate": true,
+        "ObservedOnlyGpuCount": 0,
+        "OutcomeClass": "verified_clean",
+        "OutcomeSummary": "Stage completed without warning or error events.",
+        "PrimaryPurpose": "vulkan_memory_path_validation",
+        "Reasons": [
+          "one or more targeted GPUs showed variable load quality; this is informational unless explicit thresholds are enabled",
+          "Vulkan stateful_memory variant is treated as a memory-path validation result"
+        ],
+        "Result": "stable",
+        "SaturationCandidate": false,
+        "State": "stable",
+        "TargetedGpuCount": 2,
+        "TargetedLoadQualityCounts": {
+          "moderate_or_variable": 1,
+          "sustained_high": 1
+        },
+        "ThresholdRecommendations": {
+          "Checks": [
+            {
+              "GpuIndex": 1,
+              "Metric": "gpu_memory_busy_percent",
+              "Name": "target_gpu_memory_path_activity",
+              "ObservedAvgPercent": 93.02,
+              "ObservedMaxPercent": 98.0,
+              "ObservedPercentAtOrAbove25": 100.0,
+              "RecommendedMinMaxPercent": 25.0,
+              "RecommendedMinPercentAtOrAbove25": 30.0,
+              "Result": "meets_recommendation",
+              "Target": "0000:01:00.0"
+            },
+            {
+              "GpuIndex": 0,
+              "Metric": "gpu_memory_busy_percent",
+              "Name": "target_gpu_memory_path_activity",
+              "ObservedAvgPercent": null,
+              "ObservedMaxPercent": null,
+              "ObservedPercentAtOrAbove25": null,
+              "RecommendedMinMaxPercent": 25.0,
+              "RecommendedMinPercentAtOrAbove25": 30.0,
+              "Result": "telemetry_unobserved_worker_verified",
+              "Target": "0000:18:00.0",
+              "WorkerEvidence": {
+                "Backends": [
+                  "python_vulkan_compute"
+                ],
+                "MaxAllocationPercent": 100.0,
+                "SuccessfulWorkerResultCount": 1,
+                "VerificationPasses": 7604,
+                "WorkerErrorCount": 0,
+                "WorkerResultCount": 1,
+                "Workloads": [
+                  "gpu_3d"
+                ]
+              }
+            }
+          ],
+          "Mode": "report_only",
+          "StrictModeApplied": false,
+          "StrictModeDefault": false,
+          "StrictModeEffect": "none",
+          "StrictModeEnabled": true,
+          "UnobservedCount": 0,
+          "WorkerVerifiedNoTelemetryCount": 1,
+          "WouldWarnCount": 0
+        },
+        "WarningCategoryCounts": {}
+      },
+      "Verdict": "pass"
+    }
+  ]
+}

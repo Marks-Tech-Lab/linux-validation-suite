@@ -1,0 +1,88 @@
+# Runtime output and retained/local test data
+results/*
+!results/.gitkeep
+!results/Archived/
+results/Archived/*
+!results/Archived/.gitkeep
+!results/Uploaded/
+results/Uploaded/*
+!results/Uploaded/.gitkeep
+results_*/
+results_gpu*/
+sensor_probe_logs/*
+!sensor_probe_logs/.gitkeep
+*_Diagnostics/
+*_Preflight/
+*.log
+error.txt
+
+# Generated result/report artifacts anywhere
+raw_telemetry.csv
+telemetry_source_map.json
+run_manifest.json
+run_metadata.json
+parsed_results_custom.json
+parsed_results_extended.json
+profile_used.json
+run_summary.txt
+google_drive_upload.json
+upload_manifest.json
+
+# Local settings and secrets
+settings/global_settings.json
+settings/run_setup_history.json
+settings/secrets/*
+!settings/secrets/.gitignore
+*.secret
+*.secrets
+*.token
+*.credentials
+*credentials*.json
+*service-account*.json
+.env
+.env.*
+
+# Google Drive/local credential locations
+Files/google-credentials.json
+
+# Internal/reference/vendor artifacts not public by default
+Files/OCCT C# Beta 8a/
+Files/OCCT Test Data/
+OCCT 16.1.8/
+Testing.sln
+linux_validation_suite_handoff_notes.md
+TUI_QA_MANUAL_OPERATOR_CHECKLIST.md
+hardware_result_validation_state.json
+
+# Build output and native binaries
+build/
+bin/
+obj/
+*.o
+*.so
+*.dll
+*.exe
+cpu_stress_helper
+memory_stress_helper
+
+# Python/cache/test local state
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor/agent state
+.codex
+.codex/
+.agents
+.agents/
+.vscode/
+.idea/
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,120 @@
+{
+  "contract_id": "linux_validation_suite.hardware_result_validation_matrix",
+  "contract_version": 2,
+  "kind": "public_coverage_definition",
+  "description": "Public hardware/result coverage categories for production-readiness review. This file is self-contained and does not require retained result folders to exist.",
+  "local_state_file": "hardware_result_validation_state.json",
+  "local_state_required": false,
+  "entries": [
+    {
+      "category": "single_cpu_clean_run",
+      "label": "Single CPU clean run",
+      "required": true,
+      "evidence_expectations": [
+        "single socket/package topology",
+        "clean completed result",
+        "legacy aggregate CPU fields present",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "dual_cpu_package_topology_run",
+      "label": "Dual CPU/package topology run",
+      "required": true,
+      "evidence_expectations": [
+        "multi-package CPU topology",
+        "combined CPU compatibility fields",
+        "per-package CPU evidence when available",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "nvidia_dgpu_clean_run",
+      "label": "NVIDIA dGPU clean run",
+      "required": true,
+      "evidence_expectations": [
+        "NVIDIA dGPU detected",
+        "GPU worker evidence present",
+        "clean completed result",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "nvidia_dgpu_warning_failure_run",
+      "label": "NVIDIA dGPU warning/failure run",
+      "required": true,
+      "evidence_expectations": [
+        "NVIDIA dGPU detected",
+        "warning or failure result",
+        "worker failure or escalation evidence where applicable",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "amd_gpu_or_igpu_run",
+      "label": "AMD GPU or iGPU run",
+      "required": true,
+      "evidence_expectations": [
+        "AMD GPU or integrated GPU detected",
+        "backend selection/fallback evidence",
+        "telemetry availability or fallback evidence",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "privileged_telemetry_run",
+      "label": "Privileged telemetry run",
+      "required": true,
+      "evidence_expectations": [
+        "telemetry_privilege source_mode indicates sudo/root/privileged source use",
+        "sudo_sources_used or equivalent source evidence when applicable",
+        "at least one privileged source/access-mode field when available",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "no_privileged_telemetry_run",
+      "label": "No-privileged telemetry run",
+      "required": true,
+      "evidence_expectations": [
+        "telemetry_privilege source_mode indicates unprivileged collection",
+        "sudo_sources_used is false or absent with clear fallback evidence",
+        "worker-verified/no-telemetry cases remain explainable",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "heatsoak_run",
+      "label": "Heatsoak run",
+      "required": true,
+      "evidence_expectations": [
+        "heatsoak enabled for the run",
+        "heatsoak lifecycle evidence in run artifacts",
+        "main run still finalizes normally",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "gpu_vram_warning_failure_case",
+      "label": "GPU/VRAM warning or failure case",
+      "required": true,
+      "evidence_expectations": [
+        "GPU or VRAM warning/failure evidence",
+        "worker result evidence where applicable",
+        "action item or escalation evidence",
+        "QA review payload loads"
+      ]
+    },
+    {
+      "category": "clean_passing_run",
+      "label": "Clean passing run",
+      "required": true,
+      "evidence_expectations": [
+        "complete passing result",
+        "summary/report artifacts present",
+        "pre-import sanity can evaluate the result",
+        "QA review payload loads"
+      ]
+    }
+  ]
+}

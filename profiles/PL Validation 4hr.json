@@ -1,0 +1,198 @@
+{
+  "profile_name": "PL Validation 4hr",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "PL Validation 4hr_info.txt",
+  "menu_group": "standard",
+  "defaults": {
+    "telemetry_interval_seconds": 2,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "segment_1",
+      "name": "Combined",
+      "duration_seconds": 3600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "mode": "extreme",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "high",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    },
+    {
+      "id": "segment_2",
+      "name": "Combined",
+      "duration_seconds": 3600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "sse",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": true,
+          "allocation_percent": 90,
+          "instruction_set": "sse",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": false,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "high",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    },
+    {
+      "id": "segment_3",
+      "name": "Combined",
+      "duration_seconds": 3600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "avx2",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": true,
+          "allocation_percent": 90,
+          "instruction_set": "avx2",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": false,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    },
+    {
+      "id": "segment_4",
+      "name": "Combined",
+      "duration_seconds": 3600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    }
+  ]
+}
