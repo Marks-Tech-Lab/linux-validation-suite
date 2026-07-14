@@ -1,0 +1,2 @@
+# Direct baseline dependency for the supported TUI entrypoint.
+textual==8.2.7

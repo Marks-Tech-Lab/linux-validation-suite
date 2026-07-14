@@ -406,9 +406,9 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
             bool(drive_status.get("ready")),
             detail="; ".join(part for part in detail_parts if part),
             fix=(
-                "place google-credentials.json at the configured path, install google-api-python-client/google-auth "
-                + "in a real venv (uv: uv venv --python 3.14 .venv; source .venv/bin/activate; "
-                + "uv pip install google-api-python-client google-auth), and share the target Drive folder with the service account"
+                "place google-credentials.json at the configured path, install the optional dependencies with "
+                + ".venv/bin/python -m pip install -r requirements-google.txt, and share the target Drive folder "
+                + "with the service account"
             ),
             preferred=True,
         )

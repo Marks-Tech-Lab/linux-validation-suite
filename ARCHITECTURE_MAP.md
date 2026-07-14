@@ -132,8 +132,8 @@ Focus here only when the change improves contracts, tests, troubleshooting, or s
 For runtime behavior changes, run:
 
 ```text
-python3.14 -m py_compile linux_validation_suite.py linux_validation_suite_tui.py Modules/*.py smoke_tests/run_smoke_tests.py
-python3.14 smoke_tests/run_smoke_tests.py
+.venv/bin/python -m py_compile linux_validation_suite.py linux_validation_suite_tui.py Modules/*.py smoke_tests/run_smoke_tests.py
+.venv/bin/python smoke_tests/run_smoke_tests.py
 ```
 
 For report/export/telemetry contract changes, add focused fixture assertions. Smoke tests are necessary but not sufficient for contract safety.

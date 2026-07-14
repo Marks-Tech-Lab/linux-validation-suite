@@ -7,16 +7,32 @@ review.
 
 ## Fresh Clone And First Run
 
-Start the interactive CLI from the repository root:
+Python 3.14 is the currently tested version. The code requires Python 3.10 or
+newer because it uses modern typing syntax. Newer Python versions are allowed,
+but run the smoke tests before relying on an untested interpreter version.
+
+From the repository root, create the ignored local virtual environment and
+install baseline dependencies:
 
 ```bash
-python3.14 linux_validation_suite.py
+./scripts/setup_venv.sh
 ```
 
-The TUI entrypoint is:
+The script prefers `python3.14`, falls back to `python3`, and stops with a clear
+error if the selected interpreter is older than Python 3.10. Override
+interpreter selection when needed:
 
 ```bash
-python3.14 linux_validation_suite_tui.py
+PYTHON=/path/to/python ./scripts/setup_venv.sh
+```
+
+Activate the environment, or call its Python directly:
+
+```bash
+source .venv/bin/activate
+.venv/bin/python linux_validation_suite.py
+.venv/bin/python linux_validation_suite_tui.py
+.venv/bin/python smoke_tests/run_smoke_tests.py
 ```
 
 On first launch, the suite uses `settings/global_settings.example.json` as the
@@ -27,7 +43,11 @@ prompts and move-after-upload disabled.
 
 Google Drive integration is optional. Without credentials and a configured
 destination it remains unavailable, while local execution and result review
-continue normally.
+continue normally. Install its optional Python dependencies only when needed:
+
+```bash
+.venv/bin/python -m pip install -r requirements-google.txt
+```
 
 The repository scaffolds these local runtime locations with `.gitkeep` files:
 
@@ -45,7 +65,7 @@ Maintainers may optionally keep ignored local retained-result mappings in
 with:
 
 ```bash
-python3.14 -m Modules.lvs_hardware_matrix_state rebuild
+.venv/bin/python -m Modules.lvs_hardware_matrix_state rebuild
 ```
 
 ## Current Focus
@@ -63,8 +83,8 @@ python3.14 -m Modules.lvs_hardware_matrix_state rebuild
 Use the QA wrapper for non-interactive JSON review payloads:
 
 ```bash
-python3.14 linux_validation_suite_qa.py review "results/<result-folder>"
-python3.14 linux_validation_suite_qa.py batch "results/<result-a>" "results/<result-b>"
+.venv/bin/python linux_validation_suite_qa.py review "results/<result-folder>"
+.venv/bin/python linux_validation_suite_qa.py batch "results/<result-a>" "results/<result-b>"
 ```
 
 `linux_validation_suite.py` remains the CLI compatibility entrypoint.

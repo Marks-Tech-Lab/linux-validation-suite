@@ -29,9 +29,9 @@ you need sudo-backed source evidence.
 .venv/bin/python linux_validation_suite_qa.py batch "results/<result-a>" "results/<result-b>"
 ```
 
-The direct `python3.14` commands remain useful for smoke tests and developer
-checks, but the `.venv` commands are the expected operator path when optional
-dependencies such as Textual live there.
+The repo-local `.venv` commands are the expected operator and smoke-test path.
+The setup script selects the preferred available interpreter and records the
+actual virtual-environment Python in its output.
 
 ## Which Profile To Use
 

@@ -13,10 +13,8 @@ from Modules.linux_validation_suite_service import SuiteAppService
 
 def _print_missing_textual_message() -> None:
     print("Textual is not installed.")
-    print("Install it in the suite Python environment, then run this file again.")
-    print("Examples:")
-    print("  .venv/bin/python -m pip install textual")
-    print("  uv pip install --python .venv/bin/python textual")
+    print("Run the repository setup, then run this file again:")
+    print("  ./scripts/setup_venv.sh")
     print("Launch with:")
     print("  .venv/bin/python linux_validation_suite_tui.py")
 

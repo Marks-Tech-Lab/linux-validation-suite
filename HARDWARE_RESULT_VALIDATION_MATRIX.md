@@ -55,7 +55,7 @@ back to missing entries while preserving the previous path for troubleshooting.
 From the repository root, run this explicit maintainer action:
 
 ```bash
-python3.14 -m Modules.lvs_hardware_matrix_state rebuild
+.venv/bin/python -m Modules.lvs_hardware_matrix_state rebuild
 ```
 
 The command loads `hardware_result_validation_matrix.json` and the existing
@@ -116,7 +116,7 @@ For each retained local matrix result, verify:
 - CLI result review and report generation load without errors.
 - TUI result review can show readiness and artifacts without duplicating backend logic.
 - `linux_validation_suite_qa.py review RESULT_DIR` returns contract JSON with `contract_id` and `contract_version`.
-- `python3.14 smoke_tests/run_smoke_tests.py` remains green after fixture updates.
+- `.venv/bin/python smoke_tests/run_smoke_tests.py` remains green after fixture updates.
 
 ## Stop Condition
 

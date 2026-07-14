@@ -12,6 +12,7 @@ scaffolds.
 - `linux_validation_suite_qa.py`
 - `Modules/`
 - `native/` helper source files
+- `requirements.txt`, optional requirements files, and `scripts/setup_venv.sh`
 - generic probe scripts
 - generic example profiles
 - `settings/global_settings.example.json`
@@ -38,7 +39,8 @@ scaffolds.
 - Keep Google Drive upload disabled or documented as user-configured.
 - Avoid organization-specific profile group labels.
 - Include a license only after the ownership/release decision is settled.
-- Document `python3.14 linux_validation_suite.py` and `python3.14 linux_validation_suite_tui.py` as the basic launch commands.
+- Document `./scripts/setup_venv.sh` and the repo-local `.venv/bin/python` entrypoints.
+- Keep `.venv/` ignored; never publish or copy a maintainer virtual environment.
 - Document enhanced telemetry as a session-scoped sudo-backed option, not a saved setting.
 
 ## Pre-Publish Checklist
