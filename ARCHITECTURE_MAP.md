@@ -1,4 +1,4 @@
-# Linux Validation Suite Architecture Map
+# Linux Validation Suite (LVS) Architecture Map
 
 ## Purpose
 
@@ -140,14 +140,11 @@ For report/export/telemetry contract changes, add focused fixture assertions. Sm
 
 ## Next Recommended Step
 
-Do not split another module by default.
+The next major project phase is CPU Cooler Testing v2. Start with planning:
+define the operator workflow, hardware and telemetry evidence, safety boundaries,
+result/report contracts, platform assumptions, and fixture/acceptance coverage
+before implementing runtime behavior or profiles.
 
-The safest production-focused next step is a real QA workflow trial using retained matrix results and one fresh operator-run result:
-
-- launch the TUI from `.venv`;
-- run or review a retained result;
-- run QA Review, Validation, Pre-Import Sanity, Comparison, and Artifact Detail;
-- run `linux_validation_suite_qa.py review` and `batch`;
-- record blockers in `TUI_QA_MANUAL_OPERATOR_CHECKLIST.md`.
-
-Only resume code changes for confirmed blockers, missing fixture coverage, or concrete QA integration gaps.
+Continue to avoid unrelated module splitting. Existing CLI, TUI, QA, result,
+telemetry, and hardware-matrix boundaries should remain stable unless CPU cooler
+v2 planning identifies a concrete contract or reuse requirement.

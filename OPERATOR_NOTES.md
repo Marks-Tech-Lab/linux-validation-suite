@@ -1,4 +1,4 @@
-# Linux Validation Suite Operator Notes
+# Linux Validation Suite (LVS) Operator Notes
 
 These notes are for technicians running local Linux validation workflows. They
 describe the generic public-alpha operator path; local deployments can keep

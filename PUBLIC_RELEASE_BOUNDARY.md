@@ -1,7 +1,12 @@
-# Public Release Boundary
+# Linux Validation Suite (LVS) Public Release Boundary
 
-Use this checklist when preparing the public repository. Publish only generic
-Linux Validation Suite code, examples, documentation, and empty runtime
+The public repository is
+[`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
+The published branch is `main`, mirrored at `origin/main`. The MIT License is
+included, and `v0.1.0-alpha` is published as a pre-release.
+
+Use this checklist when updating the public repository. Publish only generic
+Linux Validation Suite (LVS) code, examples, documentation, and empty runtime
 scaffolds.
 
 ## Keep Public
@@ -27,10 +32,14 @@ scaffolds.
 - `settings/global_settings.json`
 - `settings/run_setup_history.json`
 - `settings/secrets/`
+- `.venv/`
+- `hardware_result_validation_state.json`
+- Python, test, editor, and build caches
 - Google Drive credentials, shared-drive IDs, upload manifests, or tokens
 - Organization-specific inventory options or profile lists
 - Identifying unit or operator metadata, notes, or photos
-- Proprietary reference binaries, completed reference data, and non-public workflow files
+- OCCT/vendor/test data, proprietary reference binaries, completed reference
+  data, and non-public workflow files
 
 ## Public Branch Defaults
 
@@ -38,7 +47,7 @@ scaffolds.
 - Use generic profiles only.
 - Keep Google Drive upload disabled or documented as user-configured.
 - Avoid organization-specific profile group labels.
-- Include a license only after the ownership/release decision is settled.
+- Keep the MIT License and public release metadata current.
 - Document `./scripts/setup_venv.sh` and the repo-local `.venv/bin/python` entrypoints.
 - Keep `.venv/` ignored; never publish or copy a maintainer virtual environment.
 - Document enhanced telemetry as a session-scoped sudo-backed option, not a saved setting.
@@ -51,3 +60,6 @@ scaffolds.
 - Confirm sample profiles are generic and do not encode organization-specific workflows.
 - Confirm the README clearly describes hardware stress risk and telemetry caveats.
 - Confirm QA wrapper examples use generic result folder names and do not expose local filesystem paths.
+- Confirm x86_64 Linux remains identified as the primary validated target and
+  ARM64/Linux remains marked TBD/not fully validated until dedicated validation
+  is complete.

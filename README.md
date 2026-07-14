@@ -13,6 +13,17 @@ ARM64/Linux support is a goal, but it is not fully validated yet. Some telemetry
 sensor, GPU, stress-test, or dependency behavior may be incomplete or inconsistent
 on ARM systems until dedicated ARM validation is completed.
 
+## Public Alpha
+
+The public repository is
+[`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
+with `main` as the published branch. The initial `v0.1.0-alpha` release is
+published as a pre-release.
+
+Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
+intended for early validation and feedback; hardware-sensitive and experimental
+areas are identified below.
+
 ## Fresh Clone And First Run
 
 Python 3.14 is the currently tested version. The code requires Python 3.10 or
@@ -159,6 +170,9 @@ Still experimental or hardware-sensitive:
 - Some GPU backend variants and lab profiles.
 - Sensor coverage that depends on vendor/kernel exposure.
 - Automated packaging and dependency installation.
+
+The next planned major phase is CPU Cooler Testing v2, beginning with design
+and test-planning work before implementation.
 
 ## Default Configuration
 
