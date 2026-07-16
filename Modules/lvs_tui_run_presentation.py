@@ -46,6 +46,8 @@ class LiveSystemGpuMetrics:
     power_w: float | None = None
     clock_mhz: float | None = None
     vram_used_gib: float | None = None
+    vram_total_gib: float | None = None
+    vram_used_percent: float | None = None
     fan_percent: float | None = None
 
 
@@ -54,6 +56,8 @@ class LiveSystemMetrics:
     cpu_package_temp_c: float | None = None
     cpu_package_power_w: float | None = None
     memory_used_gib: float | None = None
+    memory_total_gib: float | None = None
+    memory_used_percent: float | None = None
     memory_module_temp_c: float | None = None
     storage_temp_c: float | None = None
 
@@ -108,6 +112,8 @@ def _gpu_summary_metrics(summary: object) -> list[LiveSystemGpuMetrics]:
             # Progress summaries derive this value from bytes / 1024**3 even
             # though their legacy rendered suffix is currently "GB".
             vram_used_gib=_metric_number(metrics.get("vram")),
+            vram_total_gib=_metric_number(metrics.get("gpu_vram_total_gib")),
+            vram_used_percent=_metric_number(metrics.get("gpu_vram_used_percent")),
             fan_percent=_metric_number(metrics.get("fan_percent")),
         )
         if any(
@@ -118,6 +124,8 @@ def _gpu_summary_metrics(summary: object) -> list[LiveSystemGpuMetrics]:
                 row.power_w,
                 row.clock_mhz,
                 row.vram_used_gib,
+                row.vram_total_gib,
+                row.vram_used_percent,
                 row.fan_percent,
             )
         ):
@@ -150,6 +158,8 @@ def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bo
             cpu_package_temp_c=_metric_number(fields.get("cpu_package_temp_c")),
             cpu_package_power_w=_metric_number(fields.get("cpu_package_power_w")),
             memory_used_gib=_metric_number(fields.get("memory_used_gib")),
+            memory_total_gib=_metric_number(fields.get("memory_total_gib")),
+            memory_used_percent=_metric_number(fields.get("memory_used_percent")),
             memory_module_temp_c=_metric_number(fields.get("memory_module_temp_c")),
             storage_temp_c=_metric_number(fields.get("storage_temp_c")),
         )
@@ -184,6 +194,10 @@ def live_system_text(events: Iterable[object]) -> str:
             lines.append(f"  Power  {_compact_number(system.cpu_package_power_w)} W")
     if system.memory_used_gib is not None:
         lines.extend(["", "RAM", f"  Used   {_compact_number(system.memory_used_gib)} GiB"])
+        if system.memory_total_gib is not None:
+            lines.append(f"  Total  {_compact_number(system.memory_total_gib)} GiB")
+        if system.memory_used_percent is not None:
+            lines.append(f"  Use    {_compact_number(system.memory_used_percent)}%")
     if system.memory_module_temp_c is not None:
         lines.extend(["", "DIMM", f"  Hot    {_compact_number(system.memory_module_temp_c)} °C"])
     if system.storage_temp_c is not None:
@@ -200,6 +214,10 @@ def live_system_text(events: Iterable[object]) -> str:
             lines.append(f"  Clock  {_compact_number(row.clock_mhz)} MHz")
         if row.vram_used_gib is not None:
             lines.append(f"  VRAM   {_compact_number(row.vram_used_gib)} GiB used")
+            if row.vram_total_gib is not None:
+                lines.append(f"         {_compact_number(row.vram_total_gib)} GiB total")
+            if row.vram_used_percent is not None:
+                lines.append(f"         {_compact_number(row.vram_used_percent)}% used")
         if row.fan_percent is not None:
             lines.append(f"  Fan    {_compact_number(row.fan_percent)}%")
     return "\n".join(lines)

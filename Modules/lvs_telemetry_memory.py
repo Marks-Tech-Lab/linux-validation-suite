@@ -20,6 +20,25 @@ ReadTemperature = Callable[[Path], Optional[float]]
 ReadIpmiTemperatures = Callable[[], Dict[str, Optional[float]]]
 
 
+def memory_usage_gib_from_meminfo(text: str) -> tuple[Optional[float], Optional[float]]:
+    values: Dict[str, int] = {}
+    for line in str(text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, raw = line.split(":", 1)
+        try:
+            values[key.strip()] = int(raw.strip().split()[0])
+        except (IndexError, ValueError):
+            continue
+    total_kib = values.get("MemTotal")
+    available_kib = values.get("MemAvailable")
+    if not total_kib or available_kib is None:
+        return None, None
+    total_gib = round(total_kib / (1024 * 1024), 2)
+    used_gib = round((total_kib - available_kib) / (1024 * 1024), 2)
+    return used_gib, total_gib
+
+
 def read_text_memory_sysfs(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8", errors="ignore").strip()

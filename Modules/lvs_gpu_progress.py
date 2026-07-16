@@ -63,6 +63,12 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     if memory_used_gib is not None:
         # The collector's legacy field is calculated using 1024**3 units.
         parts.append(f"memory_used_gib={round(memory_used_gib, 2)}")
+    memory_total_gib = _progress_number(getattr(telemetry, "memory_total_gib", None))
+    if memory_total_gib is not None and memory_total_gib > 0:
+        parts.append(f"memory_total_gib={round(memory_total_gib, 2)}")
+        if memory_used_gib is not None and memory_used_gib >= 0:
+            used_percent = min(100.0, (memory_used_gib / memory_total_gib) * 100.0)
+            parts.append(f"memory_used_percent={round(used_percent, 1)}")
 
     memory_temps = _matching_progress_values(values, r"memory_module_\d+_temp_c")
     if memory_temps:
@@ -74,7 +80,13 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     return parts
 
 
-def gpu_metric_progress_parts(values: Dict[str, Any], gpu_index: int, *, include_memory_clock: bool = False) -> list[str]:
+def gpu_metric_progress_parts(
+    values: Dict[str, Any],
+    gpu_index: int,
+    *,
+    include_memory_clock: bool = False,
+    vram_total_bytes: int = 0,
+) -> list[str]:
     metric_specs = [
         (f"gpu_{gpu_index}_busy_percent", "busy", "%"),
         (f"gpu_{gpu_index}_memory_busy_percent", "mem_busy", "%"),
@@ -91,17 +103,34 @@ def gpu_metric_progress_parts(values: Dict[str, Any], gpu_index: int, *, include
         value = values.get(key)
         if value is not None:
             parts.append(f"{label}={round(float(value), 2)}{suffix}")
+    if int(vram_total_bytes or 0) > 0:
+        total_gib = int(vram_total_bytes) / float(1024 ** 3)
+        parts.append(f"gpu_vram_total_gib={round(total_gib, 2)}")
+        used_gib = _progress_number(values.get(f"gpu_{gpu_index}_vram_used_gb"))
+        if used_gib is not None and used_gib >= 0:
+            used_percent = min(100.0, (used_gib / total_gib) * 100.0)
+            parts.append(f"gpu_vram_used_percent={round(used_percent, 1)}")
     return parts
 
 
-def target_gpu_metric_progress_parts(telemetry: Any, gpu_index: int) -> list[str]:
+def target_gpu_metric_progress_parts(
+    telemetry: Any,
+    gpu_index: int,
+    *,
+    vram_total_bytes: int = 0,
+) -> list[str]:
     samples = getattr(telemetry, "samples", [])
     if not samples:
         return []
     values = getattr(samples[-1], "values", {})
     if not isinstance(values, dict):
         return []
-    return gpu_metric_progress_parts(values, gpu_index, include_memory_clock=True)
+    return gpu_metric_progress_parts(
+        values,
+        gpu_index,
+        include_memory_clock=True,
+        vram_total_bytes=vram_total_bytes,
+    )
 
 
 def _first_payload_value(payloads: list[Dict[str, Any]], key: str) -> Any:
@@ -130,6 +159,19 @@ def _first_payload_int(payloads: list[Dict[str, Any]], key: str) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def gpu_vram_total_bytes_from_payloads(payloads: list[Dict[str, Any]]) -> int:
+    candidates: list[int] = []
+    for payload in payloads:
+        for key in ("target_vram_total", "device_global_mem_bytes", "device_local_heap_bytes"):
+            try:
+                value = int(payload.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                candidates.append(value)
+    return max(candidates, default=0)
 
 
 def _first_payload_text(payloads: list[Dict[str, Any]], key: str) -> str:

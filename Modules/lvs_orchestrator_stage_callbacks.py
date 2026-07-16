@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from Modules.lvs_faults import faults_for_stage_window
 from Modules.lvs_gpu_progress import (
+    gpu_vram_total_bytes_from_payloads,
     live_system_progress_parts,
     other_gpu_progress_summary,
     stage_gpu_progress_summary,
@@ -68,7 +69,11 @@ def stage_target_gpu_progress_summary(
             for entry in stage_processes
             if entry.gpu_spec is not None and int(entry.gpu_spec.gpu_index) == gpu_index
         ]
-        metrics = target_gpu_metric_progress_parts(telemetry, gpu_index)
+        metrics = target_gpu_metric_progress_parts(
+            telemetry,
+            gpu_index,
+            vram_total_bytes=gpu_vram_total_bytes_from_payloads(live_payloads),
+        )
         target_vram_total = max(
             [
                 int(entry.gpu_spec.target_vram_bytes)

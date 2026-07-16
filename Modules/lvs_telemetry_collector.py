@@ -64,6 +64,7 @@ from .lvs_telemetry_memory import (
     cached_ipmi_sensor_temperatures,
     discover_memory_temp_sources_with_ipmi,
     local_ipmi_device_available,
+    memory_usage_gib_from_meminfo,
     read_ipmi_sensor_temperatures,
     read_memory_temps,
     run_ipmitool_sensor_text,
@@ -138,6 +139,7 @@ class TelemetryCollector:
         self._gpu_sources = self._discover_gpu_sources()
         self._energy_source_state: Dict[str, Dict[str, float]] = {}
         self._last_cpu_package_power_values: Dict[str, float] = {}
+        self.memory_total_gib: Optional[float] = None
         self._intel_gpu_top_snapshot_cache: Optional[Dict[int, Dict[str, Optional[float]]]] = None
 
     def _command_env(self) -> Dict[str, str]:
@@ -257,20 +259,10 @@ class TelemetryCollector:
     def _read_memory_used_gb(self) -> Optional[float]:
         try:
             meminfo = Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore")
-            totals: Dict[str, int] = {}
-            for line in meminfo.splitlines():
-                if ":" not in line:
-                    continue
-                k, v = line.split(":", 1)
-                try:
-                    totals[k.strip()] = int(v.strip().split()[0])
-                except Exception:
-                    continue
-            total = totals.get("MemTotal")
-            available = totals.get("MemAvailable")
-            if total and available is not None:
-                used_kb = total - available
-                return round(used_kb / (1024 * 1024), 2)
+            used_gib, total_gib = memory_usage_gib_from_meminfo(meminfo)
+            if total_gib is not None:
+                self.memory_total_gib = total_gib
+            return used_gib
         except Exception:
             pass
         return None

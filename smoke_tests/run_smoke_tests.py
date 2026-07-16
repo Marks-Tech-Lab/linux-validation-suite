@@ -72,6 +72,7 @@ from Modules.lvs_gpu_stage_targets import (
 )
 from Modules.lvs_gpu_telemetry_warnings import gpu_telemetry_coverage_warnings
 from Modules.lvs_gpu_progress import (
+    gpu_vram_total_bytes_from_payloads,
     latest_sample_value,
     live_system_progress_parts,
     other_gpu_progress_summary,
@@ -787,6 +788,7 @@ from Modules.lvs_telemetry_memory import (
     read_memory_temps,
     run_ipmitool_sensor_text,
     looks_like_ipmi_memory_temperature,
+    memory_usage_gib_from_meminfo,
 )
 from Modules.lvs_telemetry_cpu import (
     add_privileged_cpu_power_sources,
@@ -3058,9 +3060,11 @@ def test_tui_run_presentation_helpers() -> None:
     live_progress = parse_progress_event(
         "2026-06-30T12:05:31-04:00 | stage=2 | elapsed=00:00:30 | remaining=00:04:30 | "
         "cpu_package_temp_c=72.0 | cpu_package_power_w=185.5 | memory_used_gib=31.25 | "
+        "memory_total_gib=64.0 | memory_used_percent=48.8 | "
         "memory_module_temp_c=48.0 | storage_temp_c=44.0 | "
         "gpu_target=gpu0@0000:04:00.0/python_vulkan_compute:busy=98.0%,mem_busy=1.0%,"
-        "pwr=116.0W,temp=68.0C,clk=2625.0MHz,fan_percent=55.0%,mclk=1000.0MHz,vram=2.83GB,state=load=79.9%,"
+        "pwr=116.0W,temp=68.0C,clk=2625.0MHz,fan_percent=55.0%,mclk=1000.0MHz,vram=2.83GB,"
+        "gpu_vram_total_gib=8.0,gpu_vram_used_percent=35.4,state=load=79.9%,"
         "comp_buf=1,buf=307.0MB,rounds=160"
     )
     assert_true(live_progress is not None, "TUI live stage progress line parsed")
@@ -3085,12 +3089,16 @@ def test_tui_run_presentation_helpers() -> None:
     assert_equal(live_gpu_rows[0].power_w, 116.0, "TUI Live System GPU power")
     assert_equal(live_gpu_rows[0].clock_mhz, 2625.0, "TUI Live System GPU clock")
     assert_equal(live_gpu_rows[0].vram_used_gib, 2.83, "TUI Live System GPU VRAM")
+    assert_equal(live_gpu_rows[0].vram_total_gib, 8.0, "TUI Live System GPU VRAM total")
+    assert_equal(live_gpu_rows[0].vram_used_percent, 35.4, "TUI Live System GPU VRAM percent")
     assert_equal(live_gpu_rows[0].fan_percent, 55.0, "TUI Live System GPU fan")
     assert_true(not live_gpu_stale, "TUI latest GPU progress sample is current")
     live_metrics, live_metrics_stale = live_system_metrics(tracker.events)
     assert_equal(live_metrics.cpu_package_temp_c, 72.0, "TUI Live System CPU package temperature")
     assert_equal(live_metrics.cpu_package_power_w, 185.5, "TUI Live System CPU package power")
     assert_equal(live_metrics.memory_used_gib, 31.25, "TUI Live System RAM used")
+    assert_equal(live_metrics.memory_total_gib, 64.0, "TUI Live System RAM total")
+    assert_equal(live_metrics.memory_used_percent, 48.8, "TUI Live System RAM percent")
     assert_equal(live_metrics.memory_module_temp_c, 48.0, "TUI Live System hottest DIMM temperature")
     assert_equal(live_metrics.storage_temp_c, 44.0, "TUI Live System hottest storage temperature")
     assert_true(not live_metrics_stale, "TUI latest system progress sample is current")
@@ -3102,6 +3110,8 @@ def test_tui_run_presentation_helpers() -> None:
         "Power  185.5 W",
         "RAM",
         "Used   31.2 GiB",
+        "Total  64 GiB",
+        "Use    48.8%",
         "DIMM",
         "Hot    48 °C",
         "Storage",
@@ -3112,6 +3122,8 @@ def test_tui_run_presentation_helpers() -> None:
         "116 W",
         "2625 MHz",
         "2.8 GiB used",
+        "8 GiB total",
+        "35.4% used",
         "Fan    55%",
     ):
         assert_true(expected in live_text, f"TUI Live System renders {expected}")
@@ -3124,6 +3136,14 @@ def test_tui_run_presentation_helpers() -> None:
         "Waiting for available" in live_system_text([missing_live_event]),
         "TUI Live System handles unavailable structured values",
     )
+    used_only_event = parse_progress_event(
+        "2026-06-30T12:05:45-04:00 | stage=2 | memory_used_gib=12.5 | gpu_target=gpu0:vram=1.25GB"
+    )
+    assert_true(used_only_event is not None, "TUI Live System used-only event parsed")
+    used_only_text = live_system_text([used_only_event])
+    assert_true("Used   12.5 GiB" in used_only_text, "TUI Live System renders RAM used without total")
+    assert_true("1.2 GiB used" in used_only_text, "TUI Live System renders VRAM used without total")
+    assert_true("GiB total" not in used_only_text, "TUI Live System omits missing totals")
     later_event = parse_progress_event("[phase] 2026-06-30T12:06:00 | stage-end | stage=2 | verdict=pass")
     assert_true(later_event is not None, "TUI later event parsed for stale telemetry check")
     stale_text = live_system_text([*tracker.events, later_event])
@@ -12775,6 +12795,12 @@ def test_telemetry_sample_csv_helpers() -> None:
 
 
 def test_telemetry_memory_helpers() -> None:
+    assert_equal(
+        memory_usage_gib_from_meminfo("MemTotal: 67108864 kB\nMemAvailable: 34393293 kB\n"),
+        (31.2, 64.0),
+        "memory usage parser retains total from existing meminfo read",
+    )
+    assert_equal(memory_usage_gib_from_meminfo("MemTotal: n/a\n"), (None, None), "memory usage parser missing values")
     labels = ["DIMM_B2 Temp", "DDR_A1 Temp", "DIMM_A2 Temp", "DDR_B1 Temp"]
     ordered = sorted(labels, key=ipmi_memory_sensor_sort_key)
     assert_equal(ordered, ["DDR_A1 Temp", "DDR_B1 Temp", "DIMM_A2 Temp", "DIMM_B2 Temp"], "IPMI DIMM sort order")
@@ -13954,6 +13980,7 @@ def test_cli_live_run_presenter_helpers() -> None:
 
 def test_gpu_progress_helpers() -> None:
     telemetry = SimpleNamespace(
+        memory_total_gib=64.0,
         samples=[
             Sample(0.0, {"gpu_0_busy_percent": 10.0}),
             Sample(
@@ -13995,7 +14022,7 @@ def test_gpu_progress_helpers() -> None:
         "other GPU progress suppresses target and low-noise GPUs",
     )
     assert_equal(
-        target_gpu_metric_progress_parts(telemetry, 2),
+        target_gpu_metric_progress_parts(telemetry, 2, vram_total_bytes=4 * 1024 ** 3),
         [
             "busy=12.35%",
             "mem_busy=30.0%",
@@ -14004,6 +14031,8 @@ def test_gpu_progress_helpers() -> None:
             "clk=2100.0MHz",
             "fan_percent=45.0%",
             "vram=1.25GB",
+            "gpu_vram_total_gib=4.0",
+            "gpu_vram_used_percent=31.2",
         ],
         "target GPU metric progress parts",
     )
@@ -14014,11 +14043,24 @@ def test_gpu_progress_helpers() -> None:
             "cpu_package_temp_c=72.0",
             "cpu_package_power_w=310.5",
             "memory_used_gib=31.25",
+            "memory_total_gib=64.0",
+            "memory_used_percent=48.8",
             "memory_module_temp_c=48.0",
             "storage_temp_c=44.0",
         ],
         "live system progress parts use latest collected sample",
     )
+    assert_equal(
+        gpu_vram_total_bytes_from_payloads(
+            [
+                {"target_vram_total": 8 * 1024 ** 3},
+                {"device_local_heap_bytes": 6 * 1024 ** 3},
+            ]
+        ),
+        8 * 1024 ** 3,
+        "GPU progress reuses the largest available worker VRAM total",
+    )
+    assert_equal(gpu_vram_total_bytes_from_payloads([{}]), 0, "GPU progress handles missing VRAM total")
     assert_equal(
         live_system_progress_parts(SimpleNamespace(samples=[])),
         [],
