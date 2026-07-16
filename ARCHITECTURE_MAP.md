@@ -72,7 +72,7 @@ Telemetry collection and system inventory feed raw evidence, parsed output, repo
 - CPU telemetry and package metrics: `lvs_telemetry_cpu.py`
 - GPU telemetry: `lvs_telemetry_gpu.py`, `lvs_telemetry_nvidia.py`, `lvs_telemetry_intel.py`
 - Memory and sensor telemetry: `lvs_telemetry_memory.py`, `lvs_telemetry_sensor_io.py`, `lvs_telemetry_sources.py`, `lvs_telemetry_samples.py`
-- Storage telemetry: `lvs_storage_sources.py`
+- Storage telemetry: `lvs_telemetry_storage_sources.py`
 - System inventory: `lvs_system_info.py`, `lvs_inventory_helpers.py`, `lvs_cpu_topology.py`, `lvs_cpu_power_limits.py`, `lvs_gpu_identity.py`, `lvs_storage_inventory.py`, `lvs_system_identity.py`
 
 Dense raw CSV is debug evidence and a fallback. Normal downstream consumers should use parsed report/export contracts where package-level CPU, GPU, storage, memory, and sensor summaries are promoted.

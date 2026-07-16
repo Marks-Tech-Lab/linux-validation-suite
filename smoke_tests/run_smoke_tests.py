@@ -25,6 +25,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from smoke_tests.module_organization_checks import (
+    test_modules_cold_import_manifest,
+    test_modules_compile_recursively,
+    test_modules_have_no_static_internal_import_cycles,
+    test_textual_is_confined_to_optional_tui_boundary,
+)
+
 from linux_validation_suite import (
     CompatibilityExporter,
     GoogleDriveUploader,
@@ -19153,6 +19160,10 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        test_modules_compile_recursively,
+        test_modules_have_no_static_internal_import_cycles,
+        test_modules_cold_import_manifest,
+        test_textual_is_confined_to_optional_tui_boundary,
         test_duplicate_gpu_temperature_names,
         test_storage_secondary_temperature_parsed_detail,
         test_segment_formatting_helpers,
