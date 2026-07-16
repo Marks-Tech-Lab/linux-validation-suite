@@ -59,6 +59,13 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     if cpu_power_w is not None:
         parts.append(f"cpu_package_power_w={round(cpu_power_w, 2)}")
 
+    cpu_clock_mhz = _progress_number(values.get("cpu_clock_mhz"))
+    if cpu_clock_mhz is None:
+        core_clocks = _matching_progress_values(values, r"cpu_core_\d+_clock_mhz")
+        cpu_clock_mhz = sum(core_clocks) / len(core_clocks) if core_clocks else None
+    if cpu_clock_mhz is not None:
+        parts.append(f"cpu_clock_mhz={round(cpu_clock_mhz, 2)}")
+
     memory_used_gib = _progress_number(values.get("memory_used_gb"))
     if memory_used_gib is not None:
         # The collector's legacy field is calculated using 1024**3 units.

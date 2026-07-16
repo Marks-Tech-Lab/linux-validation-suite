@@ -3144,7 +3144,8 @@ def test_tui_run_presentation_helpers() -> None:
     tracker.update_event(next_event)
     live_progress = parse_progress_event(
         "2026-06-30T12:05:31-04:00 | stage=2 | elapsed=00:00:30 | remaining=00:04:30 | "
-        "cpu_package_temp_c=72.0 | cpu_package_power_w=185.5 | memory_used_gib=31.25 | "
+        "cpu_package_temp_c=72.0 | cpu_package_power_w=185.5 | cpu_clock_mhz=5100.0 | "
+        "memory_used_gib=31.25 | "
         "memory_total_gib=64.0 | memory_used_percent=48.8 | "
         "memory_module_temp_c=48.0 | storage_temp_c=44.0 | "
         "gpu_target=gpu0@0000:04:00.0/python_vulkan_compute:busy=98.0%,mem_busy=1.0%,"
@@ -3181,6 +3182,7 @@ def test_tui_run_presentation_helpers() -> None:
     live_metrics, live_metrics_stale = live_system_metrics(tracker.events)
     assert_equal(live_metrics.cpu_package_temp_c, 72.0, "TUI Live System CPU package temperature")
     assert_equal(live_metrics.cpu_package_power_w, 185.5, "TUI Live System CPU package power")
+    assert_equal(live_metrics.cpu_clock_mhz, 5100.0, "TUI Live System CPU aggregate clock")
     assert_equal(live_metrics.memory_used_gib, 31.25, "TUI Live System RAM used")
     assert_equal(live_metrics.memory_total_gib, 64.0, "TUI Live System RAM total")
     assert_equal(live_metrics.memory_used_percent, 48.8, "TUI Live System RAM percent")
@@ -3193,6 +3195,7 @@ def test_tui_run_presentation_helpers() -> None:
         "CPU",
         "Temp   72 °C",
         "Power  185.5 W",
+        "Clock  5100 MHz",
         "RAM",
         "Used   31.2 GiB",
         "Total  64 GiB",
@@ -3236,6 +3239,13 @@ def test_tui_run_presentation_helpers() -> None:
         "Waiting for available" in live_system_text([missing_live_event]),
         "TUI Live System handles unavailable structured values",
     )
+    clock_missing_event = SimpleNamespace(
+        fields={"cpu_package_temp_c": "61.0", "cpu_utilization_percent": "94.0"}
+    )
+    clock_missing_text = live_system_text([clock_missing_event])
+    assert_true("Temp   61 °C" in clock_missing_text, "TUI Live System renders CPU without clock")
+    assert_true("Clock" not in clock_missing_text, "TUI Live System omits missing CPU clock safely")
+    assert_true("Load" not in clock_missing_text, "TUI Live System does not infer unavailable CPU load")
     used_only_event = parse_progress_event(
         "2026-06-30T12:05:45-04:00 | stage=2 | memory_used_gib=12.5 | gpu_target=gpu0:vram=1.25GB"
     )
@@ -14099,6 +14109,7 @@ def test_gpu_progress_helpers() -> None:
                     "cpu_package_0_temp_c": 68.0,
                     "cpu_package_1_temp_c": 72.0,
                     "cpu_power_w": 310.5,
+                    "cpu_clock_mhz": 5100.0,
                     "memory_used_gb": 31.25,
                     "memory_module_0_temp_c": 44.0,
                     "memory_module_1_temp_c": 48.0,
@@ -14142,6 +14153,7 @@ def test_gpu_progress_helpers() -> None:
         [
             "cpu_package_temp_c=72.0",
             "cpu_package_power_w=310.5",
+            "cpu_clock_mhz=5100.0",
             "memory_used_gib=31.25",
             "memory_total_gib=64.0",
             "memory_used_percent=48.8",
@@ -14149,6 +14161,16 @@ def test_gpu_progress_helpers() -> None:
             "storage_temp_c=44.0",
         ],
         "live system progress parts use latest collected sample",
+    )
+    per_core_clock_parts = live_system_progress_parts(
+        SimpleNamespace(
+            samples=[Sample(1.0, {"cpu_core_0_clock_mhz": 4800.0, "cpu_core_1_clock_mhz": 5000.0})]
+        )
+    )
+    assert_equal(
+        per_core_clock_parts,
+        ["cpu_clock_mhz=4900.0"],
+        "live system progress defensively averages collected per-core clocks",
     )
     assert_equal(
         gpu_vram_total_bytes_from_payloads(

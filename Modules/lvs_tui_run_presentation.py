@@ -55,6 +55,7 @@ class LiveSystemGpuMetrics:
 class LiveSystemMetrics:
     cpu_package_temp_c: float | None = None
     cpu_package_power_w: float | None = None
+    cpu_clock_mhz: float | None = None
     memory_used_gib: float | None = None
     memory_total_gib: float | None = None
     memory_used_percent: float | None = None
@@ -157,6 +158,7 @@ def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bo
         metrics = LiveSystemMetrics(
             cpu_package_temp_c=_metric_number(fields.get("cpu_package_temp_c")),
             cpu_package_power_w=_metric_number(fields.get("cpu_package_power_w")),
+            cpu_clock_mhz=_metric_number(fields.get("cpu_clock_mhz")),
             memory_used_gib=_metric_number(fields.get("memory_used_gib")),
             memory_total_gib=_metric_number(fields.get("memory_total_gib")),
             memory_used_percent=_metric_number(fields.get("memory_used_percent")),
@@ -186,12 +188,17 @@ def live_system_text(events: Iterable[object]) -> str:
     lines.extend(["", "Last progress sample" if stale else "Latest progress sample"])
     if stale:
         lines.append("(not current)")
-    if system.cpu_package_temp_c is not None or system.cpu_package_power_w is not None:
+    if any(
+        value is not None
+        for value in (system.cpu_package_temp_c, system.cpu_package_power_w, system.cpu_clock_mhz)
+    ):
         lines.extend(["", "CPU"])
         if system.cpu_package_temp_c is not None:
             lines.append(f"  Temp   {_compact_number(system.cpu_package_temp_c)} °C")
         if system.cpu_package_power_w is not None:
             lines.append(f"  Power  {_compact_number(system.cpu_package_power_w)} W")
+        if system.cpu_clock_mhz is not None:
+            lines.append(f"  Clock  {_compact_number(system.cpu_clock_mhz)} MHz")
     if system.memory_used_gib is not None:
         lines.extend(["", "RAM", f"  Used   {_compact_number(system.memory_used_gib)} GiB"])
         if system.memory_total_gib is not None:
