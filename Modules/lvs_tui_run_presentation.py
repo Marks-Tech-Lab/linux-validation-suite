@@ -52,6 +52,20 @@ class LiveSystemGpuMetrics:
 
 
 @dataclass(frozen=True)
+class LiveSystemCpuPackageMetrics:
+    package_index: int
+    temp_c: float | None = None
+    power_w: float | None = None
+    clock_mhz: float | None = None
+
+
+@dataclass(frozen=True)
+class LiveSystemDeviceTemp:
+    device_index: int
+    temp_c: float
+
+
+@dataclass(frozen=True)
 class LiveSystemMetrics:
     cpu_package_temp_c: float | None = None
     cpu_package_power_w: float | None = None
@@ -61,6 +75,12 @@ class LiveSystemMetrics:
     memory_used_percent: float | None = None
     memory_module_temp_c: float | None = None
     storage_temp_c: float | None = None
+    cpu_packages: tuple[LiveSystemCpuPackageMetrics, ...] = ()
+    cpu_package_count: int = 0
+    memory_modules: tuple[LiveSystemDeviceTemp, ...] = ()
+    memory_module_count: int = 0
+    storage_drives: tuple[LiveSystemDeviceTemp, ...] = ()
+    storage_drive_count: int = 0
 
 
 def live_system_layout(*, terminal_width: int | None, run_active: bool) -> TuiLiveSystemLayout:
@@ -80,6 +100,56 @@ def _metric_number(value: object) -> float | None:
         return float(match.group(1))
     except ValueError:
         return None
+
+
+def _metric_count(value: object) -> int:
+    number = _metric_number(value)
+    return max(0, int(number)) if number is not None else 0
+
+
+def _indexed_device_temps(fields: dict[str, object], pattern: str) -> tuple[LiveSystemDeviceTemp, ...]:
+    rows: list[LiveSystemDeviceTemp] = []
+    for key, value in fields.items():
+        match = re.fullmatch(pattern, str(key))
+        temp_c = _metric_number(value)
+        if match is not None and temp_c is not None:
+            rows.append(LiveSystemDeviceTemp(device_index=int(match.group(1)), temp_c=temp_c))
+    return tuple(sorted(rows, key=lambda row: row.device_index))
+
+
+def _cpu_package_metrics(fields: dict[str, object]) -> tuple[LiveSystemCpuPackageMetrics, ...]:
+    package_indexes: set[int] = set()
+    for key in fields:
+        match = re.fullmatch(r"cpu_package_(\d+)_(?:temp_c|power_w|clock_mhz)", str(key))
+        if match is not None:
+            package_indexes.add(int(match.group(1)))
+    rows = []
+    for package_index in sorted(package_indexes):
+        row = LiveSystemCpuPackageMetrics(
+            package_index=package_index,
+            temp_c=_metric_number(fields.get(f"cpu_package_{package_index}_temp_c")),
+            power_w=_metric_number(fields.get(f"cpu_package_{package_index}_power_w")),
+            clock_mhz=_metric_number(fields.get(f"cpu_package_{package_index}_clock_mhz")),
+        )
+        if any(value is not None for value in (row.temp_c, row.power_w, row.clock_mhz)):
+            rows.append(row)
+    return tuple(rows)
+
+
+def _has_live_system_metrics(metrics: LiveSystemMetrics) -> bool:
+    scalar_values = (
+        metrics.cpu_package_temp_c,
+        metrics.cpu_package_power_w,
+        metrics.cpu_clock_mhz,
+        metrics.memory_used_gib,
+        metrics.memory_total_gib,
+        metrics.memory_used_percent,
+        metrics.memory_module_temp_c,
+        metrics.storage_temp_c,
+    )
+    return any(value is not None for value in scalar_values) or bool(
+        metrics.cpu_packages or metrics.memory_modules or metrics.storage_drives
+    )
 
 
 def _gpu_summary_metrics(summary: object) -> list[LiveSystemGpuMetrics]:
@@ -164,8 +234,14 @@ def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bo
             memory_used_percent=_metric_number(fields.get("memory_used_percent")),
             memory_module_temp_c=_metric_number(fields.get("memory_module_temp_c")),
             storage_temp_c=_metric_number(fields.get("storage_temp_c")),
+            cpu_packages=_cpu_package_metrics(fields),
+            cpu_package_count=_metric_count(fields.get("cpu_package_count")),
+            memory_modules=_indexed_device_temps(fields, r"memory_module_(\d+)_temp_c"),
+            memory_module_count=_metric_count(fields.get("memory_module_temp_count")),
+            storage_drives=_indexed_device_temps(fields, r"storage_drive_(\d+)_temp_c"),
+            storage_drive_count=_metric_count(fields.get("storage_drive_temp_count")),
         )
-        if any(value is not None for value in metrics.__dict__.values()):
+        if _has_live_system_metrics(metrics):
             return metrics, reverse_index > 0
     return LiveSystemMetrics(), False
 
@@ -179,7 +255,7 @@ def live_system_text(events: Iterable[object]) -> str:
     event_list = list(events)
     gpu_rows, gpu_stale = live_system_gpu_metrics(event_list)
     system, system_stale = live_system_metrics(event_list)
-    has_system = any(value is not None for value in system.__dict__.values())
+    has_system = _has_live_system_metrics(system)
     lines = ["Live System", "==========="]
     if not gpu_rows and not has_system:
         lines.extend(["", "Waiting for available", "run telemetry..."])
@@ -188,7 +264,23 @@ def live_system_text(events: Iterable[object]) -> str:
     lines.extend(["", "Last progress sample" if stale else "Latest progress sample"])
     if stale:
         lines.append("(not current)")
-    if any(
+    if system.cpu_packages:
+        for package in system.cpu_packages:
+            lines.extend(["", f"CPU {package.package_index}"])
+            if package.temp_c is not None:
+                lines.append(f"  Temp   {_compact_number(package.temp_c)} °C")
+            if package.power_w is not None:
+                lines.append(f"  Power  {_compact_number(package.power_w)} W")
+            if package.clock_mhz is not None:
+                lines.append(f"  Clock  {_compact_number(package.clock_mhz)} MHz")
+        hidden_packages = max(0, system.cpu_package_count - len(system.cpu_packages))
+        if hidden_packages:
+            lines.append(f"  +{hidden_packages} more")
+        if system.cpu_clock_mhz is not None and not any(
+            package.clock_mhz is not None for package in system.cpu_packages
+        ):
+            lines.extend(["", "CPU Aggregate", f"  Clock  {_compact_number(system.cpu_clock_mhz)} MHz"])
+    elif any(
         value is not None
         for value in (system.cpu_package_temp_c, system.cpu_package_power_w, system.cpu_clock_mhz)
     ):
@@ -205,10 +297,32 @@ def live_system_text(events: Iterable[object]) -> str:
             lines.append(f"  Total  {_compact_number(system.memory_total_gib)} GiB")
         if system.memory_used_percent is not None:
             lines.append(f"  Use    {_compact_number(system.memory_used_percent)}%")
-    if system.memory_module_temp_c is not None:
-        lines.extend(["", "DIMM", f"  Hot    {_compact_number(system.memory_module_temp_c)} °C"])
-    if system.storage_temp_c is not None:
-        lines.extend(["", "Storage", f"  Hot    {_compact_number(system.storage_temp_c)} °C"])
+    if system.memory_modules:
+        lines.extend(["", "DIMM"])
+        for module in system.memory_modules:
+            lines.append(f"  DIMM {module.device_index}  {_compact_number(module.temp_c)} °C")
+        hidden_modules = max(0, system.memory_module_count - len(system.memory_modules))
+        if hidden_modules:
+            lines.append(f"  +{hidden_modules} more")
+        max_temp = system.memory_module_temp_c
+        if max_temp is None:
+            max_temp = max(module.temp_c for module in system.memory_modules)
+        lines.append(f"  Max     {_compact_number(max_temp)} °C")
+    elif system.memory_module_temp_c is not None:
+        lines.extend(["", "DIMM", f"  Max Temp  {_compact_number(system.memory_module_temp_c)} °C"])
+    if system.storage_drives:
+        lines.extend(["", "Storage"])
+        for drive in system.storage_drives:
+            lines.append(f"  Drive {drive.device_index}  {_compact_number(drive.temp_c)} °C")
+        hidden_drives = max(0, system.storage_drive_count - len(system.storage_drives))
+        if hidden_drives:
+            lines.append(f"  +{hidden_drives} more")
+        max_temp = system.storage_temp_c
+        if max_temp is None:
+            max_temp = max(drive.temp_c for drive in system.storage_drives)
+        lines.append(f"  Max      {_compact_number(max_temp)} °C")
+    elif system.storage_temp_c is not None:
+        lines.extend(["", "Storage", f"  Max Temp  {_compact_number(system.storage_temp_c)} °C"])
     for row in gpu_rows:
         lines.extend(["", f"GPU {row.gpu_index}"])
         if row.load_percent is not None:

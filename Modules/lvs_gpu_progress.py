@@ -10,6 +10,9 @@ from typing import Any, Dict
 from Modules.lvs_gpu_stage_targets import gpu_index_from_metric_key
 
 
+LIVE_SYSTEM_DEVICE_PROGRESS_LIMIT = 4
+
+
 def latest_sample_value(telemetry: Any, key: str) -> Any:
     samples = getattr(telemetry, "samples", [])
     if not samples:
@@ -35,6 +38,32 @@ def _matching_progress_values(values: Dict[str, Any], pattern: str) -> list[floa
         if number is not None:
             matched.append(number)
     return matched
+
+
+def _indexed_progress_values(values: Dict[str, Any], pattern: str) -> list[tuple[int, float]]:
+    matched: list[tuple[int, float]] = []
+    for key, value in values.items():
+        match = re.fullmatch(pattern, str(key))
+        number = _progress_number(value)
+        if match is not None and number is not None:
+            matched.append((int(match.group(1)), number))
+    return sorted(matched)
+
+
+def _cpu_package_clock_values(telemetry: Any, values: Dict[str, Any]) -> dict[int, float]:
+    package_clocks: dict[int, list[float]] = {}
+    for source in getattr(telemetry, "_cpu_core_clock_sources", []):
+        if not isinstance(source, dict):
+            continue
+        package_match = re.search(r"(?:^|:)package(\d+)(?::|$)", str(source.get("physical_core_key") or ""))
+        clock = _progress_number(values.get(str(source.get("key") or "")))
+        if package_match is not None and clock is not None:
+            package_clocks.setdefault(int(package_match.group(1)), []).append(clock)
+    return {
+        package_index: sum(clocks) / len(clocks)
+        for package_index, clocks in package_clocks.items()
+        if clocks
+    }
 
 
 def live_system_progress_parts(telemetry: Any) -> list[str]:
@@ -66,6 +95,23 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     if cpu_clock_mhz is not None:
         parts.append(f"cpu_clock_mhz={round(cpu_clock_mhz, 2)}")
 
+    package_temps_indexed = dict(_indexed_progress_values(values, r"cpu_package_(\d+)_temp_c"))
+    package_powers_indexed = dict(_indexed_progress_values(values, r"cpu_package_(\d+)_power_w"))
+    package_clocks_indexed = _cpu_package_clock_values(telemetry, values)
+    package_indexes = sorted(set(package_temps_indexed) | set(package_powers_indexed) | set(package_clocks_indexed))
+    if package_indexes:
+        parts.append(f"cpu_package_count={len(package_indexes)}")
+        for package_index in package_indexes[:LIVE_SYSTEM_DEVICE_PROGRESS_LIMIT]:
+            for metric, metric_values in (
+                ("temp_c", package_temps_indexed),
+                ("power_w", package_powers_indexed),
+                ("clock_mhz", package_clocks_indexed),
+            ):
+                if package_index in metric_values:
+                    parts.append(
+                        f"cpu_package_{package_index}_{metric}={round(metric_values[package_index], 2)}"
+                    )
+
     memory_used_gib = _progress_number(values.get("memory_used_gb"))
     if memory_used_gib is not None:
         # The collector's legacy field is calculated using 1024**3 units.
@@ -77,13 +123,21 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
             used_percent = min(100.0, (memory_used_gib / memory_total_gib) * 100.0)
             parts.append(f"memory_used_percent={round(used_percent, 1)}")
 
-    memory_temps = _matching_progress_values(values, r"memory_module_\d+_temp_c")
+    memory_temps_indexed = _indexed_progress_values(values, r"memory_module_(\d+)_temp_c")
+    memory_temps = [value for _index, value in memory_temps_indexed]
     if memory_temps:
         parts.append(f"memory_module_temp_c={round(max(memory_temps), 2)}")
+        parts.append(f"memory_module_temp_count={len(memory_temps_indexed)}")
+        for module_index, temp_c in memory_temps_indexed[:LIVE_SYSTEM_DEVICE_PROGRESS_LIMIT]:
+            parts.append(f"memory_module_{module_index}_temp_c={round(temp_c, 2)}")
 
-    storage_temps = _matching_progress_values(values, r"storage_drive_\d+_temp_c")
+    storage_temps_indexed = _indexed_progress_values(values, r"storage_drive_(\d+)_temp_c")
+    storage_temps = [value for _index, value in storage_temps_indexed]
     if storage_temps:
         parts.append(f"storage_temp_c={round(max(storage_temps), 2)}")
+        parts.append(f"storage_drive_temp_count={len(storage_temps_indexed)}")
+        for drive_index, temp_c in storage_temps_indexed[:LIVE_SYSTEM_DEVICE_PROGRESS_LIMIT]:
+            parts.append(f"storage_drive_{drive_index}_temp_c={round(temp_c, 2)}")
     return parts
 
 
