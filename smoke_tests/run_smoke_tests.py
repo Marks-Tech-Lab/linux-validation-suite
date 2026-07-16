@@ -31,6 +31,14 @@ from smoke_tests.module_organization_checks import (
     test_modules_have_no_static_internal_import_cycles,
     test_textual_is_confined_to_optional_tui_boundary,
 )
+from smoke_tests.output_contract_checks import (
+    QA_BATCH_REQUIRED_FIELDS,
+    QA_REVIEW_REQUIRED_FIELDS,
+    assert_contract_identity,
+    assert_legacy_custom_result_contract,
+    assert_required_fields,
+    assert_snake_case_keys,
+)
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -487,6 +495,7 @@ from Modules.lvs_result_reports import (
 )
 from Modules.lvs_result_validation import ResultValidationFacade
 from Modules.lvs_result_comparison import ResultComparisonFacade
+from Modules.lvs_result_report_adapters import list_result_entries, read_result_json, result_summary_text
 from Modules.lvs_pre_import_sanity import PreImportSanityFacade
 from Modules.lvs_result_artifacts import ResultArtifactFacade
 from Modules.lvs_result_artifact_view import (
@@ -826,6 +835,138 @@ def assert_equal(actual, expected, message: str) -> None:
 def assert_true(value, message: str) -> None:
     if not value:
         raise AssertionError(message)
+
+
+def test_output_contract_index_and_casing_policy() -> None:
+    document = (ROOT / "OUTPUT_CONTRACT_INDEX.md").read_text(encoding="utf-8")
+    for classification in (
+        "LVS-owned snake_case contract",
+        "OCCT/legacy compatibility contract",
+        "Embedded external/vendor/raw payload",
+        "Mixed compatibility artifact",
+        "Text/CSV companion",
+    ):
+        assert_true(classification in document, f"output contract classification documented: {classification}")
+    for artifact in (
+        "parsed_results_custom.json",
+        "parsed_results_extended.json",
+        "run_manifest.json",
+        "dependency_check.json",
+        "public_support_summary.json",
+        "migration_manifest.json",
+        "hardware_result_validation_matrix.json",
+        "hardware_result_validation_state.json",
+    ):
+        assert_true(artifact in document, f"output contract artifact documented: {artifact}")
+    for policy in (
+        "New LVS-owned JSON schema properties use `snake_case`",
+        "`contract_id`, `contract_version`, and",
+        "`parsed_results_custom.json` is frozen",
+        "Do not use blind recursive case conversion",
+    ):
+        assert_true(policy in document, f"output casing policy documented: {policy}")
+
+
+def test_lvs_owned_versioned_contract_key_casing() -> None:
+    matrix = json.loads((ROOT / "hardware_result_validation_matrix.json").read_text(encoding="utf-8"))
+    assert_contract_identity(
+        matrix,
+        contract_id="linux_validation_suite.hardware_result_validation_matrix",
+        contract_version=2,
+        kind="public_coverage_definition",
+        label="hardware validation matrix",
+    )
+    assert_snake_case_keys(matrix, label="hardware validation matrix")
+
+    state = empty_hardware_matrix_state(matrix)
+    assert_contract_identity(
+        state,
+        contract_id="linux_validation_suite.hardware_result_validation_state",
+        contract_version=1,
+        kind="local_retained_result_state",
+        label="hardware validation state",
+    )
+    assert_snake_case_keys(state, label="hardware validation state")
+
+    wrapper_fixture = json.loads(
+        (ROOT / "smoke_tests" / "fixtures" / "qa_review_cli_wrapper_shape_fixture.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for name, kind in (("review", "qa_result_review"), ("batch", "qa_result_review_batch")):
+        payload = wrapper_fixture[name]
+        assert_contract_identity(
+            payload,
+            contract_id=QA_REVIEW_CONTRACT_ID,
+            contract_version=QA_REVIEW_CONTRACT_VERSION,
+            kind=kind,
+            label=f"QA wrapper {name}",
+        )
+    assert_snake_case_keys(wrapper_fixture, label="QA wrapper fixture")
+
+
+def test_legacy_result_fixture_contract_and_consumer_paths() -> None:
+    fixture_path = ROOT / "smoke_tests" / "fixtures" / "report_export_contract_gpu_troubleshooting_extended_trimmed.json"
+    parsed = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert_legacy_custom_result_contract(parsed)
+    assert_equal(validate_export_contract_compatibility(parsed)["issues"], [], "legacy fixture importer contract")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        result_dir = root / "retained_fixture"
+        baseline_dir = root / "retained_baseline"
+        result_dir.mkdir()
+        baseline_dir.mkdir()
+        JsonStore.write(result_dir / "parsed_results_custom.json", parsed)
+        JsonStore.write(baseline_dir / "parsed_results_custom.json", parsed)
+
+        assert_equal(read_result_json(result_dir / "parsed_results_custom.json"), parsed, "result JSON adapter")
+        entries = list_result_entries(root)
+        selected = next(entry for entry in entries if entry.path == result_dir)
+        assert_equal(selected.profile_name, "GPU Troubleshooting Extended", "result list adapter profile")
+        assert_equal(selected.verdict, "Failed", "result list adapter verdict")
+
+        summary_exporter = RunSummaryTextExporter()
+        summary = result_summary_text(result_dir, summary_exporter)
+        assert_true("Linux Validation Suite Run Summary" in summary, "legacy fixture summary adapter")
+        assert_true("Result: Failed" in summary, "legacy fixture summary result")
+
+        validation_facade = ResultValidationFacade(root)
+        validation = validation_facade.validate_result_folder(result_dir, summary_exporter)
+        assert_equal(validation["kind"], "result_validation", "legacy fixture validation path")
+        assert_true(isinstance(validation.get("checks"), dict), "legacy fixture validation checks")
+
+        comparison = ResultComparisonFacade().compare_result_folders(baseline_dir, result_dir)
+        assert_equal(comparison["kind"], "result_comparison", "legacy fixture comparison path")
+        assert_equal(comparison["baseline"]["result"], "Failed", "legacy fixture comparison result")
+
+        service = SuiteAppService.__new__(SuiteAppService)
+        service.summary_exporter = summary_exporter
+        service.result_validation = validation_facade
+        service.result_comparison = ResultComparisonFacade()
+        service.pre_import_sanity = PreImportSanityFacade(root, validation_facade, summary_exporter)
+        service.result_artifacts = ResultArtifactFacade(root)
+        review = service.qa_result_review_payload(result_dir, refresh_summary=False)
+        assert_required_fields(review, QA_REVIEW_REQUIRED_FIELDS, label="QA retained-fixture review")
+        assert_contract_identity(
+            review,
+            contract_id=QA_REVIEW_CONTRACT_ID,
+            contract_version=QA_REVIEW_CONTRACT_VERSION,
+            kind="qa_result_review",
+            label="QA retained-fixture review",
+        )
+        assert_snake_case_keys(
+            review,
+            excluded_subtrees={
+                ("validation",),
+                ("pre_import_sanity",),
+                ("comparison",),
+                ("review_verdict",),
+                ("worker_failure_evidence", "raw_summary"),
+                ("action_item_summary", "details"),
+            },
+            label="QA retained-fixture LVS envelope",
+        )
 
 
 def test_duplicate_gpu_temperature_names() -> None:
@@ -9057,6 +9198,7 @@ def test_qa_result_review_facade_contract() -> None:
         }
         missing = sorted(required_top_level.difference(payload))
         assert_equal(missing, [], f"{label} QA result required top-level fields")
+        assert_required_fields(payload, QA_REVIEW_REQUIRED_FIELDS, label=f"{label} QA result")
         assert_equal(payload["contract_id"], QA_REVIEW_CONTRACT_ID, f"{label} QA result contract id")
         assert_equal(payload["contract_version"], QA_REVIEW_CONTRACT_VERSION, f"{label} QA result contract version")
         assert_equal(payload["kind"], "qa_result_review", f"{label} QA result kind")
@@ -9109,6 +9251,18 @@ def test_qa_result_review_facade_contract() -> None:
             "warning_categories" in payload["telemetry_stability_warning_summary"],
             f"{label} QA telemetry warning categories present",
         )
+        assert_snake_case_keys(
+            payload,
+            excluded_subtrees={
+                ("validation",),
+                ("pre_import_sanity",),
+                ("comparison",),
+                ("review_verdict",),
+                ("worker_failure_evidence", "raw_summary"),
+                ("action_item_summary", "details"),
+            },
+            label=f"{label} QA-owned envelope",
+        )
 
     def assert_qa_batch_contract(payload: dict) -> None:
         required_top_level = {
@@ -9128,6 +9282,7 @@ def test_qa_result_review_facade_contract() -> None:
             [],
             "QA batch required top-level fields",
         )
+        assert_required_fields(payload, QA_BATCH_REQUIRED_FIELDS, label="QA batch")
         assert_equal(payload["contract_id"], QA_REVIEW_CONTRACT_ID, "QA batch contract id")
         assert_equal(payload["contract_version"], QA_REVIEW_CONTRACT_VERSION, "QA batch contract version")
         assert_equal(payload["kind"], "qa_result_review_batch", "QA batch kind")
@@ -9146,6 +9301,18 @@ def test_qa_result_review_facade_contract() -> None:
         assert_true(isinstance(payload["items"], list), "QA batch items list")
         for index, item in enumerate(payload["items"]):
             assert_qa_result_contract(item, f"QA batch item {index}")
+        assert_snake_case_keys(
+            payload,
+            excluded_subtrees={
+                ("items", "*", "validation"),
+                ("items", "*", "pre_import_sanity"),
+                ("items", "*", "comparison"),
+                ("items", "*", "review_verdict"),
+                ("items", "*", "worker_failure_evidence", "raw_summary"),
+                ("items", "*", "action_item_summary", "details"),
+            },
+            label="QA batch-owned envelope",
+        )
 
     with TemporaryDirectory(dir="/tmp") as tmp:
         root = Path(tmp)
@@ -9698,6 +9865,14 @@ def test_public_support_export_generated_summary_shape() -> None:
 
         result = PublicSupportExporter(root).export()
         payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        assert_contract_identity(
+            payload,
+            contract_id=EXPORT_CONTRACT_ID,
+            contract_version=EXPORT_CONTRACT_VERSION,
+            kind="public_safe_local_environment_summary",
+            label="public support summary",
+        )
+        assert_snake_case_keys(payload, label="public support summary")
         assert_equal(payload["kind"], "public_safe_local_environment_summary", "local export summary kind")
         assert_equal(payload["results"]["active"]["directory_count"], 2, "local export active result count")
         assert_equal(payload["results"]["archived"]["directory_count"], 1, "local export archived count")
@@ -9759,6 +9934,14 @@ def test_private_migration_bundle_manifest_checksums_and_exclusions() -> None:
 
         result = manager.create_private_bundle(acknowledge_private_data=True)
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+        assert_contract_identity(
+            manifest,
+            contract_id=MIGRATION_CONTRACT_ID,
+            contract_version=MIGRATION_CONTRACT_VERSION,
+            kind="private_local_migration_bundle",
+            label="private migration manifest",
+        )
+        assert_snake_case_keys(manifest, label="private migration manifest")
         assert_equal(manifest["contract_id"], MIGRATION_CONTRACT_ID, "private bundle contract id")
         assert_equal(manifest["contract_version"], MIGRATION_CONTRACT_VERSION, "private bundle contract version")
         assert_equal(manifest["safe_to_share_publicly"], False, "private bundle marked not public-safe")
@@ -19164,6 +19347,9 @@ def main() -> int:
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,
         test_textual_is_confined_to_optional_tui_boundary,
+        test_output_contract_index_and_casing_policy,
+        test_lvs_owned_versioned_contract_key_casing,
+        test_legacy_result_fixture_contract_and_consumer_paths,
         test_duplicate_gpu_temperature_names,
         test_storage_secondary_temperature_parsed_detail,
         test_segment_formatting_helpers,

@@ -64,6 +64,13 @@ This is one of the remaining high-value areas because it defines what downstream
 
 Primary risk here is not file size by itself. The risk is unclear output contracts: which fields are stable, which are compatibility-only, and which downstream consumers should use.
 
+Output casing is part of those contracts. New LVS-owned JSON uses `snake_case`,
+but `parsed_results_custom.json` and artifacts embedding it intentionally retain
+OCCT/legacy PascalCase, snake_case, and display-name keys. Raw backend/vendor
+properties are also preserved verbatim inside explicit boundaries. Do not apply
+blind recursive case conversion or rename compatibility fields; see
+`OUTPUT_CONTRACT_INDEX.md` for the artifact classification and evolution policy.
+
 ## Telemetry and Inventory Flow
 
 Telemetry collection and system inventory feed raw evidence, parsed output, report summaries, and validation context.
