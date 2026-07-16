@@ -175,13 +175,46 @@ already follow the forward-only casing and unit policy in
 and other feature work so the deferred cleanup does not accumulate new schema
 debt.
 
+## Deferred NIC / Network Testing Roadmap
+
+NIC and network testing is deferred. Read-only NIC inventory and readiness are
+possible, but they are low priority until there is bandwidth to design and
+operate the external test infrastructure. Meaningful physical-NIC throughput,
+thermal, and power validation requires a user-provided peer/server, a known-good
+cable and switch path, a loopback adapter, or a dedicated traffic generator.
+Host-local loopback traffic does not validate the physical NIC, cable/switch
+path, link throughput, or NIC thermal load.
+
+Future NIC work is divided into these phases:
+
+1. NIC inventory and readiness.
+2. `iperf3` client throughput testing against a user-provided server or peer.
+3. A long-duration `iperf3` NIC stress workload for power and full-system tests.
+4. Optional advanced modes, including reverse/bidirectional traffic, UDP,
+   interface error counters, and multi-peer testing.
+
+Future execution requirements and boundaries:
+
+- The operator supplies and manages the `iperf3` server or peer.
+- The operator supplies a known-good cable and switch path.
+- A future workflow may allow explicit interface or source-IP binding.
+- LVS must not scan the LAN, change firewall rules, change MTU or offload
+  settings, run internet speed tests, or manage the server lifecycle.
+
+Any future NIC output must follow the forward-only policy in
+`OUTPUT_CONTRACT_INDEX.md`: LVS-owned fields use `snake_case`, units are encoded
+in field names, and unnormalized vendor evidence remains only inside explicit
+`raw_*` boundaries. Expected field forms include `link_speed_mbps`,
+`throughput_mbps`, `throughput_gbps`, `rx_mbps`, `tx_mbps`, `mtu_bytes`,
+`pcie_link_speed_gt_s`, and `nic_temp_c`.
+
 ## Next Recommended Step
 
-The next major project phase is CPU Cooler Testing v2. Start with planning:
-define the operator workflow, hardware and telemetry evidence, safety boundaries,
-result/report contracts, platform assumptions, and fixture/acceptance coverage
-before implementing runtime behavior or profiles.
+Storage Testing is the next area to plan. Begin with operator workflow, device
+selection and safety boundaries, workload scope, telemetry and health evidence,
+result/report contracts, platform assumptions, and fixture/acceptance coverage.
+This roadmap designation does not authorize storage-testing implementation yet.
 
 Continue to avoid unrelated module splitting. Existing CLI, TUI, QA, result,
-telemetry, and hardware-matrix boundaries should remain stable unless CPU cooler
-v2 planning identifies a concrete contract or reuse requirement.
+telemetry, and hardware-matrix boundaries should remain stable unless Storage
+Testing planning identifies a concrete contract or reuse requirement.

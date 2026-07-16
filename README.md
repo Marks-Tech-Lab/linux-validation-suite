@@ -188,8 +188,11 @@ Still experimental or hardware-sensitive:
 - Sensor coverage that depends on vendor/kernel exposure.
 - Automated packaging and dependency installation.
 
-The next planned major phase is CPU Cooler Testing v2, beginning with design
-and test-planning work before implementation.
+The next planned area is Storage Testing, beginning with design and test-planning
+work before implementation. NIC / Network Testing is explicitly deferred until
+an operator-managed external peer/server and known-good network path are
+available; the phased plan and safety boundaries are documented in
+`ARCHITECTURE_MAP.md`.
 
 A breaking output-schema stabilization milestone is deferred, not abandoned.
 Its future canonical parsed-result target is `parsed_results.json`, while the
