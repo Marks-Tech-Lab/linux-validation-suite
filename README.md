@@ -191,6 +191,13 @@ Still experimental or hardware-sensitive:
 The next planned major phase is CPU Cooler Testing v2, beginning with design
 and test-planning work before implementation.
 
+A breaking output-schema stabilization milestone is deferred, not abandoned.
+Its future canonical parsed-result target is `parsed_results.json`, while the
+existing `parsed_results_custom.json` behavior remains unchanged until that
+coordinated migration. New feature fields must already follow the forward-only
+snake_case and semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`, including
+future NIC, storage, and CPU cooler fields.
+
 ## Default Configuration
 
 The committed settings example uses `environment_mode: "end_user"`, so the CLI

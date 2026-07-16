@@ -97,8 +97,8 @@ review as output files.
 4. Compatibility-sensitive PascalCase fields inside legacy envelopes must not
    be renamed. This includes additive LVS fields already consumed under names
    such as `ExportContract`, `ReportSummary`, `GpuWorkerSummary`, and
-   `StabilityInterpretation`. Existing aliases such as `ReportSummary` and
-   `report_summary` must also be preserved.
+   `StabilityInterpretation`. Existing aliases remain unchanged until the
+   breaking schema milestone, but no new duplicate case aliases may be added.
 5. Raw backend, operating-system, kernel, and vendor properties are preserved
    verbatim inside explicit boundaries. New schemas should name those
    boundaries clearly, for example `vendor_payload`, `raw_properties`, or
@@ -108,8 +108,87 @@ review as output files.
    property names.
 7. Do not use blind recursive case conversion. It can change vendor contracts,
    break importers, and create collisions such as `serial` versus `Serial`.
-8. A future normalized result must be a separate, versioned additive artifact.
-   It must not replace or rewrite `parsed_results_custom.json`.
+8. The future breaking schema milestone will replace the canonical target with
+   `parsed_results.json`. It will not add a redundant normalized alias beside
+   every legacy field. Until that coordinated cutover, it must not replace or
+   rewrite `parsed_results_custom.json`.
+
+## Forward-Only Key And Unit Policy
+
+Any new LVS-owned JSON or CSV field added before the breaking milestone must use
+the eventual target conventions now:
+
+- Fixed keys use `snake_case` and lowercase acronyms: `cpu`, `gpu`, `bios`,
+  `pcie`, `nvme`, `vram`, and `wifi`.
+- Do not add new PascalCase or camelCase LVS-owned keys, or duplicate aliases
+  whose only difference is case.
+- Raw vendor/backend properties may retain source spelling only within explicit
+  boundaries such as `raw_properties`, `vendor_payload`, or
+  `backend_raw_payload`.
+- Binary capacities use `_gib` or `_mib`; `_gb` and `_mb` are reserved for true
+  decimal gigabytes and megabytes.
+- Network bit rates use `_gbps` (and `_mbps` at the corresponding scale).
+- Binary byte throughput uses `_gib_per_s` (or `_mib_per_s`).
+- Temperature, power, voltage, current, clock, memory transfer rate, and fan
+  speed use `_temp_c`, `_power_w`, `_voltage_v`, `_current_a`, `_clock_mhz`,
+  `_mt_s`, and `_fan_rpm`, respectively.
+
+Human-facing labels may continue to use conventional acronym and unit spelling,
+such as CPU, GPU, BIOS, PCIe, NVMe, VRAM, GiB, Gb/s, MHz, W, V, A, °C, and RPM.
+This policy governs machine-facing fixed keys and does not turn display labels
+into schema keys.
+
+## Future Canonical Parsed-Result Milestone
+
+The breaking cleanup is deferred, not abandoned. When it is scheduled:
+
+- The canonical parsed-result filename becomes `parsed_results.json`.
+- `parsed_results_custom.json` is treated as the old OCCT/custom
+  compatibility-era artifact, not as the name of the new canonical contract.
+- Fixed LVS-owned keys are normalized without redundant old/new alias fields.
+- Semantic unit suffixes are corrected and internal readers, tests, fixtures,
+  report adapters, validation, comparison, QA, and importer-facing adapters are
+  migrated together.
+- Raw/vendor/backend properties remain verbatim only inside documented
+  boundaries; there is no blind recursive conversion.
+
+The cleanup must preserve the OCCT-style parsed-results layout rather than
+redesigning it. The protected structural sequence is:
+
+```text
+root metadata
+metadata
+system_info
+motherboard/devices/tests
+memory/devices/tests
+storage/devices/tests
+gpu/devices/tests
+cpu/devices/tests
+cpu_cores/devices/tests
+segments
+segment_details
+gpu_details
+stability
+stability_interpretation
+report_summary
+tests -> dynamic test label -> device/results -> dynamic stage label -> min/avg/max
+```
+
+Dynamic test and stage labels may remain labels. They are explicit dynamic
+boundaries, not fixed LVS-owned keys that should be mechanically renamed.
+
+The implementation milestone must deliver an importer migration package with:
+
+- before/after sample parsed results;
+- an `old_path -> new_path` mapping;
+- an `old_unit -> new_unit` mapping and conversion notes;
+- dynamic-label boundary documentation;
+- raw/vendor boundary documentation; and
+- Apps Script and SQL importer migration notes.
+
+Future NIC, storage, CPU cooler, and all other feature work must follow the
+forward-only key and unit policy for every new LVS-owned field, even before the
+full cleanup is implemented.
 
 ## Required Change Process
 
@@ -119,5 +198,7 @@ Before changing an output contract:
    fixtures, and known external consumers.
 2. Update contract documentation and fixture assertions first.
 3. Preserve compatibility fields or introduce a new versioned artifact and a
-   dual-read/dual-write migration period.
+   dual-read/dual-write migration period, except for an explicitly approved
+   breaking milestone with an atomic reader migration and importer map. Do not
+   introduce duplicate case aliases as a substitute for that migration.
 4. Run the full smoke suite, recursive `compileall`, and `git diff --check`.

@@ -71,6 +71,11 @@ properties are also preserved verbatim inside explicit boundaries. Do not apply
 blind recursive case conversion or rename compatibility fields; see
 `OUTPUT_CONTRACT_INDEX.md` for the artifact classification and evolution policy.
 
+The planned breaking cleanup is deferred, not abandoned. Its future canonical
+parsed-result filename is `parsed_results.json`; until that milestone,
+`parsed_results_custom.json` remains the compatibility-era artifact and its
+runtime behavior is unchanged.
+
 ## Telemetry and Inventory Flow
 
 Telemetry collection and system inventory feed raw evidence, parsed output, report summaries, and validation context.
@@ -144,6 +149,31 @@ For runtime behavior changes, run:
 ```
 
 For report/export/telemetry contract changes, add focused fixture assertions. Smoke tests are necessary but not sufficient for contract safety.
+
+## Deferred Output Schema Stabilization Milestone
+
+Schedule a breaking output-schema cleanup as a future milestone, separate from
+near-term hardware feature work. The milestone must:
+
+- preserve the OCCT-style parsed-results layout and nesting, including the
+  devices/tests/results and dynamic test/stage-label boundaries;
+- make `parsed_results.json` the canonical parsed-result artifact without
+  redundant old/new case aliases;
+- normalize fixed LVS-owned JSON and CSV keys to `snake_case`, with lowercase
+  acronyms, and correct semantic unit suffixes;
+- preserve raw vendor/backend properties verbatim only inside explicit raw or
+  vendor boundaries;
+- update internal readers, adapters, fixtures, and tests as one coordinated
+  migration; and
+- publish before/after samples plus path, unit, and external importer migration
+  maps for Apps Script and SQL consumers.
+
+This milestone is deferred, not abandoned, and does not authorize output changes
+in current feature work. Before the milestone, every new LVS-owned field must
+already follow the forward-only casing and unit policy in
+`OUTPUT_CONTRACT_INDEX.md`. That rule applies to future NIC, storage, CPU cooler,
+and other feature work so the deferred cleanup does not accumulate new schema
+debt.
 
 ## Next Recommended Step
 
