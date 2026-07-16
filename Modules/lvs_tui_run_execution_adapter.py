@@ -316,8 +316,9 @@ class TuiRunExecutionAdapterMixin:
             prompt_for_upload=(result is not None and self._should_post_run_upload_prompt()),
         )
         if transition.action == POST_RUN_ACTION_WALL_WATTAGE:
-            asyncio.create_task(self._restore_profiles_sidebar_after_post_run())
-            self._begin_post_run_wall_wattage_prompt(transition.detail)
+            asyncio.create_task(
+                self._restore_profiles_sidebar_and_begin_wall_wattage_prompt(transition.detail)
+            )
             return
         if transition.action == POST_RUN_ACTION_UPLOAD_PROMPT:
             if self._queue_post_run_upload_prompt(transition.detail):
@@ -351,6 +352,15 @@ class TuiRunExecutionAdapterMixin:
             )
         )
         self._set_status(spec.status)
+
+    async def _restore_profiles_sidebar_and_begin_wall_wattage_prompt(
+        self,
+        completed_text: str,
+    ) -> None:
+        # Sidebar restoration focuses the list, so it must complete before the
+        # wall-wattage input takes final focus.
+        await self._restore_profiles_sidebar_after_post_run()
+        self._begin_post_run_wall_wattage_prompt(completed_text)
 
     def _should_post_run_upload_prompt(self) -> bool:
         return should_prompt_for_post_run_upload(

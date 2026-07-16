@@ -2300,6 +2300,60 @@ def test_tui_run_execution_adapter_helpers() -> None:
 
     asyncio.run(run_finish_unlock_check())
 
+    class WallPromptFocusTui(TuiRunExecutionAdapterMixin):
+        def __init__(self) -> None:
+            self.run_in_progress = True
+            self.run_cancel_requested = False
+            self.run_cancel_event = threading.Event()
+            self.confirm_run = False
+            self.last_run_dir = None
+            self.last_run_metadata = None
+            self.run_setup = None
+            self.pending_input_field = None
+            self.pending_input_blank_default = ""
+            self.post_run_upload_prompt_text = ""
+            self.focused_area = "left-list"
+            self.focus_order: list[str] = []
+            self.status = ""
+            self.service = SimpleNamespace(
+                settings=SimpleNamespace(prompt_for_wall_wattage=True, google_drive_prompt_after_run=False),
+                wall_wattage_prompt_outcome=lambda _run_dir, _text: SimpleNamespace(
+                    status="Run complete | Waiting for wall wattage",
+                    text="Enter wall wattage",
+                ),
+            )
+
+        async def _restore_profiles_sidebar_after_post_run(self) -> None:
+            self.focused_area = "left-list"
+            self.focus_order.append(self.focused_area)
+            self.view_mode = "profiles"
+
+        def _apply_input_state(self, state) -> None:
+            self.pending_input_field = state.pending_field
+            self.input_enabled = state.enabled
+            if state.focus:
+                self.focused_area = "wall-wattage-input"
+                self.focus_order.append(self.focused_area)
+
+        def _set_status(self, text: str) -> None:
+            self.status = text
+
+    async def run_wall_prompt_focus_check() -> None:
+        tui = WallPromptFocusTui()
+        result = SimpleNamespace(run_dir=Path("/tmp/result"), metadata=SimpleNamespace())
+        tui._finish_run_from_thread("Run complete", result)
+        await asyncio.sleep(0)
+        assert_equal(
+            tui.focus_order,
+            ["left-list", "wall-wattage-input"],
+            "TUI wall prompt takes focus after sidebar restoration",
+        )
+        assert_equal(tui.focused_area, "wall-wattage-input", "TUI wall prompt retains final focus")
+        assert_equal(tui.pending_input_field, "__post_wall_wattage", "TUI wall prompt activates wattage field")
+        assert_true(tui.input_enabled, "TUI wall prompt enables wattage input")
+
+    asyncio.run(run_wall_prompt_focus_check())
+
 
 def test_tui_app_actions_adapter_helpers() -> None:
     class FakeService:
@@ -2796,6 +2850,37 @@ def test_tui_event_adapter_helpers() -> None:
 
     asyncio.run(run_result_route_check())
 
+    class WallWattageKeyTui(TuiEventAdapterMixin):
+        def __init__(self) -> None:
+            self.run_in_progress = False
+            self.upload_in_progress = False
+            self.pending_input_field = "__post_wall_wattage"
+            self.view_mode = "profiles"
+            self.profile_keys: list[str] = []
+            self.cancel_seen = False
+            self.service = SimpleNamespace(profile_action_for_key=self._profile_action_for_key)
+
+        def _profile_action_for_key(self, key: str) -> FrontendActionSpec:
+            self.profile_keys.append(key)
+            return FrontendActionSpec(key, "new_profile")
+
+        async def action_cancel_setup_input(self) -> None:
+            self.cancel_seen = True
+
+    async def run_wall_wattage_key_check() -> None:
+        wall_tui = WallWattageKeyTui()
+        input_event = KeyEvent()
+        await wall_tui.on_key(input_event)
+        assert_equal(wall_tui.profile_keys, [], "TUI wall prompt prevents left-nav key routing")
+        assert_true(not input_event.stopped, "TUI wall prompt leaves normal key input for the focused field")
+        escape_event = KeyEvent()
+        escape_event.key = "escape"
+        await wall_tui.on_key(escape_event)
+        assert_true(wall_tui.cancel_seen, "TUI wall prompt preserves Escape cancellation")
+        assert_true(escape_event.stopped, "TUI wall prompt consumes Escape after cancellation")
+
+    asyncio.run(run_wall_wattage_key_check())
+
     class ProfileRecallPromptTui(TuiEventAdapterMixin):
         def __init__(self, has_history: bool) -> None:
             self.run_in_progress = False
@@ -3131,6 +3216,21 @@ def test_tui_run_presentation_helpers() -> None:
         "Waiting for available" in live_system_text([]),
         "TUI Live System handles missing telemetry",
     )
+    heatsoak_waiting = parse_progress_event("[heatsoak] elapsed=00:00:05 | remaining=00:00:55")
+    assert_true(heatsoak_waiting is not None, "TUI heatsoak pre-sample event parsed")
+    assert_true(
+        "Waiting for available" in live_system_text([heatsoak_waiting]),
+        "TUI Live System waits safely before a heatsoak telemetry sample exists",
+    )
+    heatsoak_live = parse_progress_event(
+        "[heatsoak] elapsed=00:00:30 | remaining=00:00:30 | "
+        "cpu_package_temp_c=70.0 | memory_used_gib=24.0 | memory_total_gib=64.0 | "
+        "memory_used_percent=37.5 | gpu_target=gpu0:busy=95.0%,temp=67.0C,pwr=110.0W"
+    )
+    assert_true(heatsoak_live is not None, "TUI heatsoak telemetry event parsed")
+    heatsoak_live_text = live_system_text([heatsoak_live])
+    for expected in ("CPU", "Temp   70 °C", "RAM", "Total  64 GiB", "GPU 0", "Load   95%"):
+        assert_true(expected in heatsoak_live_text, f"TUI heatsoak Live System renders {expected}")
     missing_live_event = SimpleNamespace(fields={"cpu_package_temp_c": None, "memory_used_gib": "n/a"})
     assert_true(
         "Waiting for available" in live_system_text([missing_live_event]),

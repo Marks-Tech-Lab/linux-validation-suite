@@ -185,6 +185,11 @@ class TuiEventAdapterMixin:
             self._show_locked_interaction_message()
             event.stop()
             return
+        if getattr(self, "pending_input_field", None) == "__post_wall_wattage":
+            if is_escape_key(event):
+                await self.action_cancel_setup_input()
+                event.stop()
+            return
         if self.view_mode == "results":
             action = self.service.result_action_for_key(event_key(event))
             if action.action == "inventory":
