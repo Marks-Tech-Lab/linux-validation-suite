@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_pcie_link import pcie_link_info_for_path
+from .lvs_storage_health import StorageHealthEnricher
 
 
 ReadSysfs = Callable[[Path], Optional[str]]
@@ -133,10 +134,20 @@ def build_storage_device_entry(
 def collect_storage_info(
     sys_block: Path = Path("/sys/block"),
     read_sysfs: ReadSysfs = read_text_sysfs,
+    *,
+    health_enricher: Optional[StorageHealthEnricher] = None,
+    privileged_helper_enabled: bool = False,
 ) -> List[Dict[str, Any]]:
     devices: List[Dict[str, Any]] = []
     if not sys_block.exists():
         return devices
+    if health_enricher is None:
+        enricher = StorageHealthEnricher(
+            read_sysfs=read_sysfs,
+            privileged_helper_enabled=privileged_helper_enabled,
+        )
+    else:
+        enricher = health_enricher
     skip_prefixes = ("loop", "ram", "zram", "dm-", "md")
     for block_dir in sorted(sys_block.iterdir()):
         name = block_dir.name
@@ -146,5 +157,7 @@ def collect_storage_info(
             continue
         if block_device_capacity_gb(block_dir, read_sysfs) <= 0:
             continue
-        devices.append(build_storage_device_entry(block_dir, read_sysfs))
+        entry = build_storage_device_entry(block_dir, read_sysfs)
+        entry.update(enricher.enrich(block_dir, entry))
+        devices.append(entry)
     return devices

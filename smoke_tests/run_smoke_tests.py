@@ -393,10 +393,19 @@ from Modules.lvs_native_helpers import (
 )
 from Modules.lvs_storage_inventory import (
     block_device_capacity_gb,
+    build_storage_device_entry,
     clean_storage_value,
     collect_storage_info,
     storage_interface_type,
     storage_media_type,
+)
+from Modules.lvs_storage_health import (
+    StorageHealthEnricher,
+    merge_health,
+    nvme_data_units_to_tb,
+    parse_nvme_cli_health,
+    parse_smartctl_health,
+    storage_health_capability,
 )
 from Modules.lvs_pcie_link import pcie_link_info_for_path, read_pcie_link_info, trusted_pcie_link_for_slot
 from Modules.lvs_telemetry_storage_sources import discover_storage_temp_sources, read_storage_temps
@@ -6172,7 +6181,23 @@ def test_compatibility_export_document_builder() -> None:
             },
             "Bios": {"Name": "Document BIOS", "Version": "D1", "FullName": "Document BIOS D1"},
             "Memory": {"TotalPhysicalMemoryGB": 64, "Modules": [{"Name": "DIMM 0"}]},
-            "Storage": [{"DeviceName": "nvme0n1", "Model": "Document NVMe", "CapacityGB": 1024}],
+            "Storage": [
+                {
+                    "DeviceName": "nvme0n1",
+                    "Model": "Document NVMe",
+                    "CapacityGB": 1024,
+                    "is_internal": True,
+                    "is_removable": False,
+                    "is_usb": False,
+                    "storage_health": {
+                        "smart_available": True,
+                        "smart_health": "passed",
+                        "smart_source": "smartctl",
+                        "query_status": "available",
+                        "query_notes": [],
+                    },
+                }
+            ],
             "Gpu": [{"Name": "Document GPU", "DisplayName": "Document GPU #1"}],
         },
         "OperatingSystem": {"Name": "DocumentOS Linux"},
@@ -6253,6 +6278,12 @@ def test_compatibility_export_document_builder() -> None:
     assert_equal(output["ReportSummary"], output["Metadata"]["ReportSummary"], "compat document report mirror")
     assert_equal(output["Recovery"], recovery, "compat document recovery")
     assert_true("CPU Package Power (Power)" in output["Cpu"]["tests"], "compat document CPU power tests")
+    assert_equal(output["SystemInfo"], system_info, "compat document preserves complete SystemInfo")
+    assert_equal(
+        output["Storage"]["devices"],
+        system_info["Hardware"]["Storage"],
+        "compat document mirrors enriched storage devices unchanged",
+    )
 
 
 def test_linux_fault_collector_classification() -> None:
@@ -10012,6 +10043,7 @@ def test_public_support_export_redacts_private_values() -> None:
         "private-customer-name",
         "private-operator-name",
         "private-result-folder-name",
+        "private-drive-serial",
     }
     with TemporaryDirectory(dir="/tmp") as tmp:
         root = Path(tmp)
@@ -10045,6 +10077,21 @@ def test_public_support_export_redacts_private_values() -> None:
                         "path": "results/private-result-folder-name",
                     }
                 ]
+            },
+        )
+        private_result = root / "results" / "private-result-folder-name"
+        private_result.mkdir(parents=True)
+        JsonStore.write(
+            private_result / "system_info.json",
+            {
+                "Hardware": {
+                    "Storage": [
+                        {
+                            "SerialNumber": "private-drive-serial",
+                            "storage_health": {"smart_health": "passed", "query_status": "available"},
+                        }
+                    ]
+                }
             },
         )
 
@@ -11837,6 +11884,21 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
         runtime_environment={"RUSTICL_ENABLE": "radeonsi"},
         privileged_helper_enabled=True,
     )
+    fake_storage_health = {
+        "baseline_sysfs_inventory": {"available": True, "drive_count": 2, "source": "sysfs"},
+        "internal_drive_count": 2,
+        "eligible_internal_drive_count": 2,
+        "successfully_queried_drive_count": 1,
+        "permission_limited_count": 1,
+        "unsupported_controller_count": 0,
+        "status": "partial",
+        "tools": {
+            "lsblk": {"available": True, "path": "/usr/bin/lsblk", "version": "lsblk 2.40"},
+            "udevadm": {"available": True, "path": "/usr/bin/udevadm", "version": "256"},
+            "smartctl": {"available": True, "path": "/usr/bin/smartctl", "version": "smartctl 7.4"},
+            "nvme_cli": {"available": False, "path": "", "version": ""},
+        },
+    }
     manager = DependencyReportManager(
         settings,
         SimpleNamespace(workload_runner=workload_runner),
@@ -11850,6 +11912,7 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
         memory_modules_factory=lambda privileged: [
             {"position": "DIMM A1", "part_number": "ABC123", "source": "dmidecode" if privileged else "inxi"}
         ],
+        storage_health_factory=lambda _privileged: fake_storage_health,
     )
 
     text = manager.dependency_summary_text()
@@ -11862,6 +11925,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("- GPU temp: OK (nvidia-smi temperature, count=2)" in text, "dependency GPU temp count")
     assert_true("- Ready: no" in text, "dependency drive readiness status")
     assert_true("- Missing: googleapiclient.discovery" in text, "dependency drive missing list")
+    assert_true("Storage Health / SMART:" in text, "dependency quick storage health heading")
+    assert_true("- Coverage: 1/2 eligible internal drive(s)" in text, "dependency quick storage coverage")
     built_payload = manager.dependency_check_payload(sudo_noninteractive_ready=lambda: True)
     assert_equal(built_payload["app_name"], "Linux Validation Suite", "dependency payload app name")
     assert_true(built_payload["execution_context"]["privileged_helper_effective"], "dependency payload helper effective")
@@ -11872,6 +11937,7 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
         "dependency payload memory identity count",
     )
     assert_equal(len(built_payload["gpu_opencl_coverage"]), 2, "dependency payload OpenCL coverage count")
+    assert_equal(built_payload["storage_health"], fake_storage_health, "dependency payload storage health")
     assert_true(built_payload["gpu_opencl_coverage"][0]["available"], "dependency payload OpenCL covered GPU")
     assert_true(not built_payload["gpu_opencl_coverage"][1]["available"], "dependency payload OpenCL missing GPU")
     detail_text = manager.dependency_check_detail_text(built_payload)
@@ -11880,6 +11946,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("  [missing preferred] Memory native helper" in detail_text, "dependency detail preferred missing format")
     assert_true("Per-GPU OpenCL coverage:" in detail_text, "dependency detail OpenCL coverage")
     assert_true("DIMM A1 | ABC123" in detail_text, "dependency detail memory module line")
+    assert_true("Storage Health / SMART" in detail_text, "dependency detail storage health section")
+    assert_true("[WARN] Coverage - 1/2 eligible internal drive(s)" in detail_text, "dependency storage warning")
     service = SuiteAppService()
     service.dependency_reports = manager
     service_payload = service.dependency_check_payload()
@@ -11932,6 +12000,7 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
             {"target_id": "0000:01:00.0", "available": True},
             {"target_id": "0000:02:00.0", "available": False, "fix": "missing OpenCL device"},
         ],
+        "storage_health": fake_storage_health,
         "google_drive_upload": {
             "ready": False,
             "credential_path": "settings/secrets/google-credentials.json",
@@ -11941,6 +12010,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     summary = manager.dependency_check_summary_text(payload)
     assert_true("Dependency Check Summary" in summary, "dependency check summary heading")
     assert_true("Covered GPUs: 1/2" in summary, "dependency check OpenCL coverage")
+    assert_true("Storage Health / SMART:" in summary, "dependency summary storage health heading")
+    assert_true("Permission-limited: 1" in summary, "dependency summary storage permission count")
     assert_true("Privileged Helper Suggestions" in summary, "dependency check helper hints")
     with TemporaryDirectory() as tmp:
         report_dir = manager.save_dependency_check_report(Path(tmp), "Full dependency text", payload)
@@ -13712,18 +13783,29 @@ def test_storage_inventory_helpers() -> None:
         (pci_device / "current_link_width").write_text("4", encoding="utf-8")
         (pci_device / "uevent").write_text("PCI_SLOT_NAME=0000:06:00.0\n", encoding="utf-8")
         (nvme / "queue" / "rotational").write_text("0", encoding="utf-8")
+        (nvme / "removable").write_text("0", encoding="utf-8")
         (sata / "size").write_text(str((512 * 1024 ** 3) // 512), encoding="utf-8")
         (sata / "device" / "vendor").write_text("ATA", encoding="utf-8")
         (sata / "device" / "model").write_text("Smoke SATA", encoding="utf-8")
         (sata / "device" / "rev").write_text("R2", encoding="utf-8")
         (sata / "queue" / "rotational").write_text("1", encoding="utf-8")
+        (sata / "removable").write_text("0", encoding="utf-8")
         (ignored / "size").write_text(str((64 * 1024 ** 3) // 512), encoding="utf-8")
 
         assert_equal(block_device_capacity_gb(nvme), 1024, "storage capacity")
         assert_equal(storage_interface_type("nvme0n1", nvme), "NVMe", "nvme interface")
         assert_equal(storage_media_type("sda", sata, "SCSI/SATA"), "Hard Disk Drive", "rotational media")
 
-        devices = collect_storage_info(root)
+        legacy_entries = {
+            name: build_storage_device_entry(root / name)
+            for name in ("nvme0n1", "sda")
+        }
+        health_enricher = StorageHealthEnricher(
+            read_sysfs=lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None,
+            which_command=lambda _name: None,
+            sys_class_nvme=Path(tmp) / "class" / "nvme",
+        )
+        devices = collect_storage_info(root, health_enricher=health_enricher)
         assert_equal([device["Name"] for device in devices], ["nvme0n1", "sda"], "storage device filtering")
         assert_equal(devices[0]["Model"], "Smoke NVMe", "nvme model")
         assert_equal(devices[0]["CapacityGB"], 1024, "nvme capacity")
@@ -13740,6 +13822,21 @@ def test_storage_inventory_helpers() -> None:
         assert_equal(devices[1]["Model"], "ATA Smoke SATA", "sata vendor model")
         assert_equal(devices[1]["Firmware"], "R2", "sata firmware fallback")
         assert_equal(devices[1]["MediaType"], "Hard Disk Drive", "sata media")
+        for device in devices:
+            baseline = legacy_entries[device["Name"]]
+            assert_equal(
+                {key: device[key] for key in baseline},
+                baseline,
+                f"storage enrichment preserves all existing keys for {device['Name']}",
+            )
+            assert_true(device["is_internal"] is True, "storage internal classification")
+            assert_true(device["is_removable"] is False, "storage removable classification")
+            assert_true(device["is_usb"] is False, "storage USB classification")
+            assert_equal(
+                device["storage_health"]["query_status"],
+                "unavailable",
+                "sysfs-only storage health fallback",
+            )
 
         hwmon_root = Path(tmp) / "devices" / "pci0000:00" / "nvme" / "nvme0" / "nvme0n1" / "hwmon"
         hwmon = hwmon_root / "hwmon0"
@@ -13782,6 +13879,192 @@ def test_storage_inventory_helpers() -> None:
             },
             "storage telemetry value reader",
         )
+
+
+def test_storage_health_helpers() -> None:
+    nvme_payload = {
+        "smart_support": {"available": True, "enabled": True},
+        "smart_status": {"passed": True},
+        "temperature": {"current": 41},
+        "power_on_time": {"hours": 1234},
+        "nvme_smart_health_information_log": {
+            "critical_warning": 0,
+            "available_spare": 99,
+            "percentage_used": 7,
+            "data_units_read": 2_000_000,
+            "data_units_written": 1_000_000,
+            "unsafe_shutdowns": 3,
+            "media_errors": 1,
+        },
+    }
+    nvme_health = parse_smartctl_health(nvme_payload)
+    assert_equal(nvme_health["smart_health"], "passed", "smartctl NVMe health")
+    assert_equal(nvme_health["temperature_c"], 41.0, "smartctl NVMe temperature")
+    assert_equal(nvme_health["power_on_hours"], 1234, "smartctl NVMe hours")
+    assert_equal(nvme_health["wear_percent_used"], 7, "smartctl NVMe wear")
+    assert_equal(nvme_health["available_spare_percent"], 99, "smartctl NVMe spare")
+    assert_equal(nvme_health["host_writes_tb"], 0.512, "smartctl NVMe decimal TB writes")
+    assert_equal(nvme_health["host_reads_tb"], 1.024, "smartctl NVMe decimal TB reads")
+    assert_equal(nvme_data_units_to_tb(1_000_000), 0.512, "NVMe data-unit conversion")
+    assert_true(
+        "nvme_smart_health_information_log" not in nvme_health,
+        "raw smartctl payload is not retained",
+    )
+
+    nvme_cli_health = parse_nvme_cli_health(
+        {
+            "critical_warning": 0,
+            "temperature": 312,
+            "power_on_hours": 88,
+            "percentage_used": 2,
+            "available_spare": 100,
+            "data_units_read": 4_000,
+            "data_units_written": 5_000,
+            "unsafe_shutdowns": 0,
+            "media_errors": 0,
+        }
+    )
+    assert_equal(nvme_cli_health["smart_source"], "nvme_cli", "nvme-cli source")
+    assert_equal(nvme_cli_health["temperature_c"], 38.85, "nvme-cli Kelvin temperature conversion")
+    assert_equal(nvme_cli_health["host_writes_tb"], 0.00256, "nvme-cli decimal TB writes")
+    merged = merge_health(
+        {"smart_available": False, "smart_health": "unknown", "smart_source": "smartctl", "query_status": "unavailable", "query_notes": []},
+        nvme_cli_health,
+    )
+    assert_true(merged["smart_available"], "nvme-cli fallback marks SMART available")
+    assert_equal(merged["smart_source"], "nvme_cli", "nvme-cli fallback replaces unusable source")
+
+    for media_label, rotation_rate in (("ATA SSD", 0), ("ATA HDD", 7200)):
+        ata_health = parse_smartctl_health(
+            {
+                "smart_support": {"available": True, "enabled": True},
+                "smart_status": {"passed": True},
+                "temperature": {"current": 34},
+                "power_on_time": {"hours": 5678},
+                "rotation_rate": rotation_rate,
+                "ata_smart_attributes": {
+                    "table": [
+                        {"id": 177, "name": "Wear_Leveling_Count", "raw": {"value": 23}},
+                        {"id": 241, "name": "Total_LBAs_Written", "raw": {"value": 999999}},
+                    ]
+                },
+            }
+        )
+        assert_equal(ata_health["smart_health"], "passed", f"{media_label} SMART fixture")
+        assert_true("wear_percent_used" not in ata_health, f"{media_label} vendor wear is not guessed")
+        assert_true("host_writes_tb" not in ata_health, f"{media_label} vendor TBW is not guessed")
+
+    def no_tools(_name: str) -> None:
+        return None
+
+    def read_sysfs(path: Path) -> Optional[str]:
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        tmp_path = Path(tmp)
+        block_root = tmp_path / "block"
+        backing = tmp_path / "devices"
+        cases = {
+            "sda": (backing / "pci0000:00" / "ata1", "0", False),
+            "sdb": (backing / "pci0000:00" / "usb1" / "1-1", "0", False),
+            "sdc": (backing / "pci0000:00" / "ata2", "1", False),
+            "sdd": (backing / "virtual" / "block" / "sdd", "0", False),
+            "sde": (backing / "pci0000:00" / "ata3", "0", True),
+        }
+        for name, (device_target, removable, partition) in cases.items():
+            device_target.mkdir(parents=True, exist_ok=True)
+            block_dir = block_root / name
+            block_dir.mkdir(parents=True, exist_ok=True)
+            os.symlink(device_target, block_dir / "device")
+            (block_dir / "removable").write_text(removable, encoding="utf-8")
+            if partition:
+                (block_dir / "partition").write_text("1", encoding="utf-8")
+        enricher = StorageHealthEnricher(read_sysfs=read_sysfs, which_command=no_tools)
+        classifications = {
+            name: enricher.classify(block_root / name, {"Name": name, "DevicePath": f"/dev/{name}"})
+            for name in cases
+        }
+        assert_true(classifications["sda"]["is_internal"] is True, "local disk is internal")
+        assert_true(classifications["sdb"]["is_usb"], "USB ancestor is detected")
+        assert_true(classifications["sdb"]["is_internal"] is False, "USB disk is external")
+        assert_true(classifications["sdc"]["is_internal"] is False, "removable disk is external")
+        assert_true(not classifications["sdd"]["is_whole_physical_disk"], "virtual disk is excluded")
+        assert_true(not classifications["sde"]["is_whole_physical_disk"], "partition is excluded")
+        uncertain_dir = block_root / "sdf"
+        uncertain_device = backing / "pci0000:00" / "ata4"
+        uncertain_device.mkdir(parents=True)
+        uncertain_dir.mkdir()
+        os.symlink(uncertain_device, uncertain_dir / "device")
+        uncertain = enricher.enrich(uncertain_dir, {"Name": "sdf", "DevicePath": "/dev/sdf"})
+        assert_true(uncertain["is_internal"] is None, "uncertain internal classification")
+        assert_equal(uncertain["storage_health"]["query_status"], "skipped_uncertain", "uncertain query skipped")
+        external = enricher.enrich(block_root / "sdb", {"Name": "sdb", "DevicePath": "/dev/sdb"})
+        assert_equal(external["storage_health"]["query_status"], "skipped_external", "external query skipped")
+
+    class CommandResult:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    classification = {"is_internal": True, "transport": "sata", "classification_detail": "internal"}
+    query_cases = (
+        ("permission denied opening device", 2, "permission_denied"),
+        ("SMART support is: Unavailable - device unsupported", 1, "unsupported"),
+        ("Device is in STANDBY mode", 2, "unavailable"),
+    )
+    for message, returncode, expected in query_cases:
+        commands = []
+
+        def runner(command, **_kwargs):
+            commands.append(command)
+            return CommandResult(returncode, json.dumps({"messages": [{"string": message}]}), "")
+
+        query_enricher = StorageHealthEnricher(
+            read_sysfs=lambda _path: None,
+            run_command=runner,
+            which_command=lambda name: f"/usr/bin/{name}" if name == "smartctl" else None,
+        )
+        health = query_enricher.query_health({"Name": "sda", "DevicePath": "/dev/sda"}, classification)
+        assert_equal(health["query_status"], expected, f"SMART query status for {message}")
+        assert_true("{\"messages\"" not in str(health["query_notes"]), "raw SMART error JSON is not retained")
+        assert_true("--nocheck" in commands[0] and "standby,now" in commands[0], "ATA query avoids waking standby disk")
+        assert_true("--set" not in commands[0] and "--test" not in commands[0], "SMART query remains read-only")
+
+    valid_nonzero = StorageHealthEnricher(
+        read_sysfs=lambda _path: None,
+        run_command=lambda _command, **_kwargs: CommandResult(8, json.dumps(nvme_payload), ""),
+        which_command=lambda name: f"/usr/bin/{name}" if name == "smartctl" else None,
+    ).query_health({"Name": "sda", "DevicePath": "/dev/sda"}, classification)
+    assert_equal(valid_nonzero["query_status"], "available", "valid SMART JSON survives nonzero bitmask status")
+    assert_true("smartctl exit status 8" in valid_nonzero["query_notes"], "nonzero SMART status is documented")
+
+    tool_state = {
+        "lsblk": {"available": True},
+        "udevadm": {"available": True},
+        "smartctl": {"available": False},
+        "nvme_cli": {"available": False},
+    }
+    limited_entry = {
+        "is_internal": True,
+        "is_whole_physical_disk": True,
+        "storage_health": {"query_status": "unavailable"},
+    }
+    capability = storage_health_capability([limited_entry], tool_state)
+    assert_equal(capability["status"], "unavailable", "missing optional health tools do not fabricate coverage")
+    partial = storage_health_capability(
+        [
+            {**limited_entry, "storage_health": {"query_status": "available"}},
+            {**limited_entry, "storage_health": {"query_status": "permission_denied"}},
+        ],
+        {**tool_state, "smartctl": {"available": True}},
+    )
+    assert_equal(partial["status"], "partial", "partial health coverage is a warning capability")
+    assert_equal(partial["permission_limited_count"], 1, "permission-limited drive count")
+    assert_equal(storage_health_capability([], tool_state)["status"], "not_applicable", "no internal drives is N/A")
 
 
 def test_system_info_gpu_pcie_attribution() -> None:
@@ -19812,6 +20095,7 @@ def main() -> int:
         test_gpu_capability_profile_helpers,
         test_inventory_memory_helpers,
         test_storage_inventory_helpers,
+        test_storage_health_helpers,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,

@@ -45,18 +45,21 @@ class DependencyReportManager:
         drive_readiness: Callable[[], Dict[str, Any]],
         telemetry_factory: Optional[Callable[..., Any]] = None,
         memory_modules_factory: Optional[Callable[[bool], list[Dict[str, Any]]]] = None,
+        storage_health_factory: Optional[Callable[[bool], Dict[str, Any]]] = None,
     ) -> None:
         self.settings = settings
         self.orchestrator = orchestrator
         self.drive_readiness = drive_readiness
         self.telemetry_factory = telemetry_factory or self._default_telemetry_factory()
         self.memory_modules_factory = memory_modules_factory or self._memory_modules
+        self.storage_health_factory = storage_health_factory
         self.payload_builder = DependencyCheckPayloadBuilder(
             settings,
             orchestrator,
             drive_readiness,
             self.telemetry_factory,
             self.memory_modules_factory,
+            self.storage_health_factory,
         )
 
     def _default_telemetry_factory(self) -> Callable[..., Any]:
@@ -73,8 +76,17 @@ class DependencyReportManager:
             privileged_helper_enabled=bool(self.settings.privileged_helper_enabled),
         )
         capabilities = telemetry.detect_capabilities()
+        storage_health = self.payload_builder.storage_health_factory(
+            bool(self.settings.privileged_helper_enabled)
+        )
         drive = self.drive_readiness()
-        return render_dependency_summary_text(backends, details, capabilities, drive)
+        return render_dependency_summary_text(
+            backends,
+            details,
+            capabilities,
+            drive,
+            storage_health=storage_health,
+        )
 
     def dependency_check_payload(
         self,

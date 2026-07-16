@@ -34,6 +34,12 @@ breaking change even when the producing module is internal.
 | `raw_telemetry.csv` | Text/CSV companion | Dense timestamped telemetry. Metric column names are a compatibility surface even though they currently use snake_case. |
 | `run_summary.txt` | Text/CSV companion | Human-readable rendering of the compatibility result. |
 
+`Hardware.Storage` retains every established compatibility key. Eligible
+internal-drive entries may additionally contain snake_case classification
+fields and a normalized `storage_health` object. This object contains only
+read-only, normalized health values and source/status notes; raw `smartctl` or
+`nvme-cli` payloads are not embedded in `system_info.json`.
+
 ### Worker, sidecar, and debug artifacts
 
 | Artifact | Classification | Ownership and compatibility notes |

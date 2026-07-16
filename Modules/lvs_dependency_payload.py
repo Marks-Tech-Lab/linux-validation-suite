@@ -23,12 +23,14 @@ class DependencyCheckPayloadBuilder:
         drive_readiness: Callable[[], Dict[str, Any]],
         telemetry_factory: Callable[..., Any],
         memory_modules_factory: Callable[[bool], list[Dict[str, Any]]],
+        storage_health_factory: Optional[Callable[[bool], Dict[str, Any]]] = None,
     ) -> None:
         self.settings = settings
         self.orchestrator = orchestrator
         self.drive_readiness = drive_readiness
         self.telemetry_factory = telemetry_factory
         self.memory_modules_factory = memory_modules_factory
+        self.storage_health_factory = storage_health_factory or storage_health_capability_default
 
     def dependency_check_payload(
         self,
@@ -104,6 +106,7 @@ class DependencyCheckPayloadBuilder:
                 "identified_module_count": memory_identity_count,
                 "source": ", ".join(memory_identity_sources) if memory_identity_sources else "not found",
             },
+            "storage_health": self.storage_health_factory(helper_effective),
             "gpu_opencl_coverage": gpu_opencl_coverage(workload_runner),
             "google_drive_upload": self.drive_readiness(),
         }
@@ -121,6 +124,23 @@ def memory_modules_default(privileged_helper_enabled: bool) -> list[Dict[str, An
     from .lvs_system_info import SystemInfoCollector
 
     return SystemInfoCollector(privileged_helper_enabled=privileged_helper_enabled)._memory_modules()
+
+
+def storage_health_capability_default(privileged_helper_enabled: bool) -> Dict[str, Any]:
+    from .lvs_storage_health import StorageHealthEnricher, storage_health_capability
+    from .lvs_storage_inventory import collect_storage_info, read_text_sysfs
+
+    sys_block = Path("/sys/block")
+    enricher = StorageHealthEnricher(
+        read_sysfs=read_text_sysfs,
+        privileged_helper_enabled=privileged_helper_enabled,
+    )
+    entries = collect_storage_info(sys_block, read_text_sysfs, health_enricher=enricher)
+    return storage_health_capability(
+        entries,
+        enricher.tool_capabilities(),
+        baseline_available=sys_block.exists(),
+    )
 
 
 def gpu_opencl_coverage(workload_runner: Any) -> list[Dict[str, Any]]:

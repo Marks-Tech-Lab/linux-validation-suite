@@ -36,6 +36,8 @@ def dependency_summary_text(
     details: Dict[str, Any],
     capabilities: Dict[str, Any],
     drive: Dict[str, Any],
+    *,
+    storage_health: Optional[Dict[str, Any]] = None,
 ) -> str:
     def status(key: str) -> str:
         return "OK" if bool(backends.get(key)) else "missing"
@@ -74,6 +76,18 @@ def dependency_summary_text(
         count = cap.get("count")
         suffix = f", count={count}" if count else ""
         lines.append(f"- {label}: {'OK' if cap.get('available') else 'missing'} ({source}{suffix})")
+    storage_health = storage_health if isinstance(storage_health, dict) else {}
+    if storage_health:
+        lines.extend(
+            [
+                "",
+                "Storage Health / SMART:",
+                f"- Status: {storage_health.get('status') or 'unavailable'}",
+                "- Coverage: "
+                + f"{storage_health.get('successfully_queried_drive_count', 0)}/"
+                + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s)",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -335,6 +349,52 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
             lines.append(f"    {node}")
 
     lines.append("")
+    lines.append("Storage Health / SMART")
+    storage_health = payload.get("storage_health") if isinstance(payload.get("storage_health"), dict) else {}
+    baseline = (
+        storage_health.get("baseline_sysfs_inventory")
+        if isinstance(storage_health.get("baseline_sysfs_inventory"), dict)
+        else {}
+    )
+    lines.extend(
+        dependency_item_lines(
+            "Baseline sysfs storage inventory",
+            bool(baseline.get("available")),
+            detail=f"{baseline.get('drive_count', 0)} drive(s), source={baseline.get('source') or 'sysfs'}",
+            fix="ensure /sys/block is mounted and readable",
+        )
+    )
+    storage_tools = storage_health.get("tools") if isinstance(storage_health.get("tools"), dict) else {}
+    tool_specs = (
+        ("lsblk", "lsblk identity/classification", "install util-linux", False),
+        ("udevadm", "udevadm identity/classification", "install systemd-udev", False),
+        ("smartctl", "smartctl SMART health", "install smartmontools", True),
+        ("nvme_cli", "nvme-cli NVMe health", "install nvme-cli", True),
+    )
+    for key, label, fix, preferred in tool_specs:
+        tool = storage_tools.get(key) if isinstance(storage_tools.get(key), dict) else {}
+        detail = str(tool.get("version") or tool.get("path") or "")
+        lines.extend(
+            dependency_item_lines(
+                label,
+                bool(tool.get("available")),
+                detail=detail,
+                fix=fix,
+                preferred=preferred,
+            )
+        )
+    storage_status = str(storage_health.get("status") or "unavailable")
+    status_label = "OK" if storage_status == "available" else "N/A" if storage_status == "not_applicable" else "WARN"
+    lines.append(
+        f"  [{status_label}] Coverage - "
+        + f"{storage_health.get('successfully_queried_drive_count', 0)}/"
+        + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s), "
+        + f"internal={storage_health.get('internal_drive_count', 0)}, "
+        + f"permission-limited={storage_health.get('permission_limited_count', 0)}, "
+        + f"unsupported={storage_health.get('unsupported_controller_count', 0)}, status={storage_status}"
+    )
+
+    lines.append("")
     lines.append("Telemetry")
     telemetry_labels = {
         "cpu_temp_c": "CPU temperature",
@@ -525,6 +585,22 @@ def dependency_check_summary_text(payload: Dict[str, Any], report_dir: Optional[
             + f" ({memory_identity.get('identified_module_count', 0)}/{memory_identity.get('module_count', 0)} identified)"
             + f", source={memory_identity.get('source') or 'not found'}"
         )
+
+    storage_health = payload.get("storage_health") if isinstance(payload.get("storage_health"), dict) else {}
+    if storage_health:
+        lines.append("")
+        lines.append("Storage Health / SMART:")
+        status_text = str(storage_health.get("status") or "unavailable")
+        lines.append(f"  - Status: {status_text}")
+        lines.append(
+            "  - Coverage: "
+            + f"{storage_health.get('successfully_queried_drive_count', 0)}/"
+            + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s)"
+        )
+        if storage_health.get("permission_limited_count"):
+            lines.append(f"  - Permission-limited: {storage_health.get('permission_limited_count')}")
+        if storage_health.get("unsupported_controller_count"):
+            lines.append(f"  - Unsupported controllers: {storage_health.get('unsupported_controller_count')}")
 
     required_telemetry = (
         "cpu_temp_c",

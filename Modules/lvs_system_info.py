@@ -258,7 +258,10 @@ class SystemInfoCollector:
             return 0
 
     def _storage_info(self) -> List[Dict[str, Any]]:
-        return collect_storage_info(read_sysfs=self._read_sysfs)
+        return collect_storage_info(
+            read_sysfs=self._read_sysfs,
+            privileged_helper_enabled=self._privileged_helper_enabled,
+        )
 
     def _block_device_capacity_gb(self, block_dir: Path) -> int:
         return block_device_capacity_gb(block_dir, self._read_sysfs)
