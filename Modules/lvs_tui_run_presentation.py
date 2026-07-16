@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Dict, Iterable, Tuple
 
 from .lvs_run_progress import run_event_history_text, run_status_detail_text, short_status_text
@@ -14,6 +15,8 @@ RUN_ACTIVE_SIDEBAR_ROWS: Tuple[str, str] = (
     "Run in progress\n  navigation locked",
     "Esc / Back\n  request safe cancel",
 )
+LIVE_SYSTEM_PANE_WIDTH = 32
+LIVE_SYSTEM_MIN_TERMINAL_WIDTH = 124
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,125 @@ class TuiRunActivePresentation:
 @dataclass(frozen=True)
 class TuiRunConfirmationPresentation:
     detail: str
+
+
+@dataclass(frozen=True)
+class TuiLiveSystemLayout:
+    visible: bool
+    pane_width: int = 0
+
+
+@dataclass(frozen=True)
+class LiveSystemGpuMetrics:
+    gpu_index: int
+    load_percent: float | None = None
+    temp_c: float | None = None
+    power_w: float | None = None
+    clock_mhz: float | None = None
+    vram_used_gib: float | None = None
+
+
+def live_system_layout(*, terminal_width: int | None, run_active: bool) -> TuiLiveSystemLayout:
+    try:
+        width = int(terminal_width or 0)
+    except (TypeError, ValueError):
+        width = 0
+    visible = bool(run_active and width >= LIVE_SYSTEM_MIN_TERMINAL_WIDTH)
+    return TuiLiveSystemLayout(visible=visible, pane_width=LIVE_SYSTEM_PANE_WIDTH if visible else 0)
+
+
+def _metric_number(value: object) -> float | None:
+    match = re.match(r"^\s*(-?\d+(?:\.\d+)?)", str(value or ""))
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _gpu_summary_metrics(summary: object) -> list[LiveSystemGpuMetrics]:
+    rows: list[LiveSystemGpuMetrics] = []
+    for chunk in str(summary or "").split(";"):
+        text = chunk.strip()
+        gpu_match = re.search(r"\bgpu(\d+)\b", text, flags=re.IGNORECASE)
+        metric_start = re.search(r":(?=(?:busy|mem_busy|pwr|temp|clk|mclk|vram)=)", text)
+        if gpu_match is None or metric_start is None:
+            continue
+        metric_text, _separator, state_text = text[metric_start.end():].partition("|state=")
+        metrics: dict[str, str] = {}
+        for part in metric_text.split(","):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                metrics[key.strip()] = value.strip()
+        state: dict[str, str] = {}
+        for part in state_text.split(","):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                state[key.strip()] = value.strip()
+        load_percent = _metric_number(metrics.get("busy"))
+        if load_percent is None:
+            load_percent = _metric_number(state.get("load"))
+        row = LiveSystemGpuMetrics(
+            gpu_index=int(gpu_match.group(1)),
+            load_percent=load_percent,
+            temp_c=_metric_number(metrics.get("temp")),
+            power_w=_metric_number(metrics.get("pwr")),
+            clock_mhz=_metric_number(metrics.get("clk")),
+            # Progress summaries derive this value from bytes / 1024**3 even
+            # though their legacy rendered suffix is currently "GB".
+            vram_used_gib=_metric_number(metrics.get("vram")),
+        )
+        if any(
+            value is not None
+            for value in (row.load_percent, row.temp_c, row.power_w, row.clock_mhz, row.vram_used_gib)
+        ):
+            rows.append(row)
+    return rows
+
+
+def live_system_gpu_metrics(events: Iterable[object]) -> tuple[list[LiveSystemGpuMetrics], bool]:
+    event_list = list(events)
+    for reverse_index, event in enumerate(reversed(event_list)):
+        fields = getattr(event, "fields", {})
+        if not isinstance(fields, dict):
+            continue
+        rows: list[LiveSystemGpuMetrics] = []
+        rows.extend(_gpu_summary_metrics(fields.get("gpu_target")))
+        rows.extend(_gpu_summary_metrics(fields.get("gpu_other")))
+        if rows:
+            by_index = {row.gpu_index: row for row in rows}
+            return [by_index[index] for index in sorted(by_index)], reverse_index > 0
+    return [], False
+
+
+def _compact_number(value: float) -> str:
+    rounded = round(float(value), 1)
+    return str(int(rounded)) if rounded.is_integer() else f"{rounded:.1f}"
+
+
+def live_system_text(events: Iterable[object]) -> str:
+    gpu_rows, stale = live_system_gpu_metrics(events)
+    lines = ["Live System", "==========="]
+    if not gpu_rows:
+        lines.extend(["", "Waiting for available", "run telemetry..."])
+        return "\n".join(lines)
+    lines.extend(["", "Last progress sample" if stale else "Latest progress sample"])
+    if stale:
+        lines.append("(not current)")
+    for row in gpu_rows:
+        lines.extend(["", f"GPU {row.gpu_index}"])
+        if row.load_percent is not None:
+            lines.append(f"  Load   {_compact_number(row.load_percent)}%")
+        if row.temp_c is not None:
+            lines.append(f"  Temp   {_compact_number(row.temp_c)} °C")
+        if row.power_w is not None:
+            lines.append(f"  Power  {_compact_number(row.power_w)} W")
+        if row.clock_mhz is not None:
+            lines.append(f"  Clock  {_compact_number(row.clock_mhz)} MHz")
+        if row.vram_used_gib is not None:
+            lines.append(f"  VRAM   {_compact_number(row.vram_used_gib)} GiB used")
+    return "\n".join(lines)
 
 
 def run_confirmation_presentation(

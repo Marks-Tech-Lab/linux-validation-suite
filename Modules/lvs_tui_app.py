@@ -37,6 +37,7 @@ from Modules.lvs_tui_navigation_state import TuiNavigationReset
 from Modules.lvs_tui_profile_edit_adapter import TuiProfileEditAdapterMixin
 from Modules.lvs_tui_results_adapter import TuiResultsAdapterMixin
 from Modules.lvs_tui_run_execution_adapter import TuiRunExecutionAdapterMixin
+from Modules.lvs_tui_run_presentation import live_system_layout, live_system_text
 from Modules.lvs_tui_run_setup_adapter import TuiRunSetupAdapterMixin
 from Modules.lvs_tui_settings_adapter import TuiSettingsAdapterMixin
 
@@ -70,11 +71,28 @@ class LinuxValidationSuiteTui(
         height: 1fr;
         border: solid $primary;
     }
-    #detail {
+    #run-detail-area {
         height: 1fr;
         width: 100%;
+    }
+    #detail {
+        height: 1fr;
+        width: 1fr;
         overflow: auto;
         padding: 1 3;
+    }
+    #live-system {
+        display: none;
+        height: 1fr;
+        width: 32;
+        min-width: 28;
+        max-width: 36;
+        overflow: auto;
+        padding: 1 2;
+        border-left: solid $primary;
+    }
+    #live-system.live-system-visible {
+        display: block;
     }
     #actions {
         height: 7;
@@ -215,7 +233,11 @@ class LinuxValidationSuiteTui(
                 id="sidebar",
             ),
             Vertical(
-                Static("", id="detail"),
+                Horizontal(
+                    Static("", id="detail"),
+                    Static("", id="live-system"),
+                    id="run-detail-area",
+                ),
                 Static("", id="action-help"),
                 Vertical(
                     *(
@@ -259,6 +281,7 @@ class LinuxValidationSuiteTui(
             self._last_global_action_width = width
             self._rendered_global_action_width = None
         self._set_action_help()
+        self._refresh_live_system_pane()
         self._refresh_global_action_buttons()
 
     async def on_unmount(self) -> None:
@@ -323,7 +346,26 @@ class LinuxValidationSuiteTui(
 
     def _set_detail(self, text: str) -> None:
         self.query_one("#detail", Static).update(text)
+        self._refresh_live_system_pane()
         self._set_action_help()
+
+    def _refresh_live_system_pane(self) -> None:
+        try:
+            widget = self.query_one("#live-system", Static)
+            terminal_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)
+            layout = live_system_layout(
+                terminal_width=terminal_width,
+                run_active=bool(getattr(self, "run_in_progress", False))
+                and str(getattr(self, "view_mode", "")) == "run_active",
+            )
+            widget.set_class(layout.visible, "live-system-visible")
+            if layout.visible:
+                tracker = getattr(self, "run_status_tracker", None)
+                widget.update(live_system_text(getattr(tracker, "events", ())))
+            else:
+                widget.update("")
+        except Exception:
+            pass
 
     def _set_action_help(self) -> None:
         try:

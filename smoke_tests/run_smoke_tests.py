@@ -689,6 +689,9 @@ from Modules.lvs_tui_run_presentation import (
     RUN_ACTIVE_SIDEBAR_TITLE,
     active_stage_line_text,
     initial_run_active_presentation,
+    live_system_gpu_metrics,
+    live_system_layout,
+    live_system_text,
     locked_post_run_upload_text,
     locked_post_run_wall_wattage_text,
     locked_run_detail_text,
@@ -3056,6 +3059,37 @@ def test_tui_run_presentation_helpers() -> None:
     assert_true(live_progress is not None, "TUI live stage progress line parsed")
     assert_equal(live_progress.event_type, "stage-progress", "TUI live stage progress event type")
     tracker.update_event(live_progress)
+    wide_live_layout = live_system_layout(terminal_width=160, run_active=True)
+    assert_true(wide_live_layout.visible, "TUI wide active-run layout shows Live System pane")
+    assert_equal(wide_live_layout.pane_width, 32, "TUI Live System pane uses compact width")
+    assert_true(
+        not live_system_layout(terminal_width=100, run_active=True).visible,
+        "TUI narrow active-run layout hides Live System pane",
+    )
+    assert_true(
+        not live_system_layout(terminal_width=160, run_active=False).visible,
+        "TUI inactive layout hides Live System pane",
+    )
+    live_gpu_rows, live_gpu_stale = live_system_gpu_metrics(tracker.events)
+    assert_equal(len(live_gpu_rows), 1, "TUI Live System parses one GPU progress row")
+    assert_equal(live_gpu_rows[0].gpu_index, 0, "TUI Live System GPU index")
+    assert_equal(live_gpu_rows[0].load_percent, 98.0, "TUI Live System GPU load")
+    assert_equal(live_gpu_rows[0].temp_c, 68.0, "TUI Live System GPU temperature")
+    assert_equal(live_gpu_rows[0].power_w, 116.0, "TUI Live System GPU power")
+    assert_equal(live_gpu_rows[0].clock_mhz, 2625.0, "TUI Live System GPU clock")
+    assert_equal(live_gpu_rows[0].vram_used_gib, 2.83, "TUI Live System GPU VRAM")
+    assert_true(not live_gpu_stale, "TUI latest GPU progress sample is current")
+    live_text = live_system_text(tracker.events)
+    for expected in ("Live System", "GPU 0", "Load   98%", "68 °C", "116 W", "2625 MHz", "2.8 GiB used"):
+        assert_true(expected in live_text, f"TUI Live System renders {expected}")
+    assert_true(
+        "Waiting for available" in live_system_text([]),
+        "TUI Live System handles missing telemetry",
+    )
+    later_event = parse_progress_event("[phase] 2026-06-30T12:06:00 | stage-end | stage=2 | verdict=pass")
+    assert_true(later_event is not None, "TUI later event parsed for stale telemetry check")
+    stale_text = live_system_text([*tracker.events, later_event])
+    assert_true("(not current)" in stale_text, "TUI Live System marks retained telemetry stale")
     assert_equal(tracker.snapshot.elapsed, "00:00:30", "TUI live stage progress updates elapsed")
     assert_equal(tracker.snapshot.remaining, "00:04:30", "TUI live stage progress updates remaining")
     stage_progress = stage_progress_table_text(tracker.events)
