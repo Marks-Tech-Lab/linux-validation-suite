@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from Modules.lvs_faults import faults_for_stage_window
 from Modules.lvs_gpu_progress import (
+    live_system_progress_parts,
     other_gpu_progress_summary,
     stage_gpu_progress_summary,
     target_gpu_metric_progress_parts,
@@ -51,8 +52,6 @@ def stage_target_gpu_progress_summary(
     stage_elapsed_seconds: float = 0.0,
 ) -> str:
     targets = stage_target_gpu_details_from_processes(stage_processes)
-    if not targets:
-        return ""
 
     summaries: List[str] = []
     for gpu_index in sorted(targets):
@@ -87,7 +86,11 @@ def stage_target_gpu_progress_summary(
         )
         summaries.append(target_gpu_progress_summary(gpu_index, target, metrics, state_details))
     other_summary = other_gpu_progress_summary(telemetry, targets)
-    return stage_gpu_progress_summary(summaries, other_summary)
+    return stage_gpu_progress_summary(
+        summaries,
+        other_summary,
+        live_system_progress_parts(telemetry),
+    )
 
 
 def stage_target_gpu_utilization_events(

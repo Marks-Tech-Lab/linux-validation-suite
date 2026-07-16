@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any, Dict
 
 from Modules.lvs_gpu_stage_targets import gpu_index_from_metric_key
@@ -16,6 +18,62 @@ def latest_sample_value(telemetry: Any, key: str) -> Any:
     return values.get(key) if isinstance(values, dict) else None
 
 
+def _progress_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _matching_progress_values(values: Dict[str, Any], pattern: str) -> list[float]:
+    matched: list[float] = []
+    for key, value in values.items():
+        if re.fullmatch(pattern, str(key)) is None:
+            continue
+        number = _progress_number(value)
+        if number is not None:
+            matched.append(number)
+    return matched
+
+
+def live_system_progress_parts(telemetry: Any) -> list[str]:
+    """Format already-collected non-GPU values for the active-run progress event."""
+    samples = getattr(telemetry, "samples", [])
+    if not samples:
+        return []
+    values = getattr(samples[-1], "values", {})
+    if not isinstance(values, dict):
+        return []
+
+    parts: list[str] = []
+    package_temps = _matching_progress_values(values, r"cpu_package_\d+_temp_c")
+    cpu_temp_c = max(package_temps) if package_temps else _progress_number(values.get("cpu_temp_c"))
+    if cpu_temp_c is not None:
+        parts.append(f"cpu_package_temp_c={round(cpu_temp_c, 2)}")
+
+    cpu_power_w = _progress_number(values.get("cpu_power_w"))
+    if cpu_power_w is None:
+        package_powers = _matching_progress_values(values, r"cpu_package_\d+_power_w")
+        cpu_power_w = sum(package_powers) if package_powers else None
+    if cpu_power_w is not None:
+        parts.append(f"cpu_package_power_w={round(cpu_power_w, 2)}")
+
+    memory_used_gib = _progress_number(values.get("memory_used_gb"))
+    if memory_used_gib is not None:
+        # The collector's legacy field is calculated using 1024**3 units.
+        parts.append(f"memory_used_gib={round(memory_used_gib, 2)}")
+
+    memory_temps = _matching_progress_values(values, r"memory_module_\d+_temp_c")
+    if memory_temps:
+        parts.append(f"memory_module_temp_c={round(max(memory_temps), 2)}")
+
+    storage_temps = _matching_progress_values(values, r"storage_drive_\d+_temp_c")
+    if storage_temps:
+        parts.append(f"storage_temp_c={round(max(storage_temps), 2)}")
+    return parts
+
+
 def gpu_metric_progress_parts(values: Dict[str, Any], gpu_index: int, *, include_memory_clock: bool = False) -> list[str]:
     metric_specs = [
         (f"gpu_{gpu_index}_busy_percent", "busy", "%"),
@@ -23,6 +81,7 @@ def gpu_metric_progress_parts(values: Dict[str, Any], gpu_index: int, *, include
         (f"gpu_{gpu_index}_power_w", "pwr", "W"),
         (f"gpu_{gpu_index}_temp_core_c", "temp", "C"),
         (f"gpu_{gpu_index}_clock_mhz", "clk", "MHz"),
+        (f"gpu_{gpu_index}_fan_percent", "fan_percent", "%"),
     ]
     if include_memory_clock:
         metric_specs.append((f"gpu_{gpu_index}_memory_clock_mhz", "mclk", "MHz"))
@@ -207,8 +266,12 @@ def target_gpu_progress_summary(
     return summary
 
 
-def stage_gpu_progress_summary(target_summaries: list[str], other_summary: str = "") -> str:
-    payload_parts: list[str] = []
+def stage_gpu_progress_summary(
+    target_summaries: list[str],
+    other_summary: str = "",
+    live_system_parts: list[str] | None = None,
+) -> str:
+    payload_parts: list[str] = list(live_system_parts or [])
     if target_summaries:
         payload_parts.append("gpu_target=" + " ; ".join(target_summaries))
     if other_summary:

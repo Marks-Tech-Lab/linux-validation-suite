@@ -46,6 +46,16 @@ class LiveSystemGpuMetrics:
     power_w: float | None = None
     clock_mhz: float | None = None
     vram_used_gib: float | None = None
+    fan_percent: float | None = None
+
+
+@dataclass(frozen=True)
+class LiveSystemMetrics:
+    cpu_package_temp_c: float | None = None
+    cpu_package_power_w: float | None = None
+    memory_used_gib: float | None = None
+    memory_module_temp_c: float | None = None
+    storage_temp_c: float | None = None
 
 
 def live_system_layout(*, terminal_width: int | None, run_active: bool) -> TuiLiveSystemLayout:
@@ -98,10 +108,18 @@ def _gpu_summary_metrics(summary: object) -> list[LiveSystemGpuMetrics]:
             # Progress summaries derive this value from bytes / 1024**3 even
             # though their legacy rendered suffix is currently "GB".
             vram_used_gib=_metric_number(metrics.get("vram")),
+            fan_percent=_metric_number(metrics.get("fan_percent")),
         )
         if any(
             value is not None
-            for value in (row.load_percent, row.temp_c, row.power_w, row.clock_mhz, row.vram_used_gib)
+            for value in (
+                row.load_percent,
+                row.temp_c,
+                row.power_w,
+                row.clock_mhz,
+                row.vram_used_gib,
+                row.fan_percent,
+            )
         ):
             rows.append(row)
     return rows
@@ -122,20 +140,54 @@ def live_system_gpu_metrics(events: Iterable[object]) -> tuple[list[LiveSystemGp
     return [], False
 
 
+def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bool]:
+    event_list = list(events)
+    for reverse_index, event in enumerate(reversed(event_list)):
+        fields = getattr(event, "fields", {})
+        if not isinstance(fields, dict):
+            continue
+        metrics = LiveSystemMetrics(
+            cpu_package_temp_c=_metric_number(fields.get("cpu_package_temp_c")),
+            cpu_package_power_w=_metric_number(fields.get("cpu_package_power_w")),
+            memory_used_gib=_metric_number(fields.get("memory_used_gib")),
+            memory_module_temp_c=_metric_number(fields.get("memory_module_temp_c")),
+            storage_temp_c=_metric_number(fields.get("storage_temp_c")),
+        )
+        if any(value is not None for value in metrics.__dict__.values()):
+            return metrics, reverse_index > 0
+    return LiveSystemMetrics(), False
+
+
 def _compact_number(value: float) -> str:
     rounded = round(float(value), 1)
     return str(int(rounded)) if rounded.is_integer() else f"{rounded:.1f}"
 
 
 def live_system_text(events: Iterable[object]) -> str:
-    gpu_rows, stale = live_system_gpu_metrics(events)
+    event_list = list(events)
+    gpu_rows, gpu_stale = live_system_gpu_metrics(event_list)
+    system, system_stale = live_system_metrics(event_list)
+    has_system = any(value is not None for value in system.__dict__.values())
     lines = ["Live System", "==========="]
-    if not gpu_rows:
+    if not gpu_rows and not has_system:
         lines.extend(["", "Waiting for available", "run telemetry..."])
         return "\n".join(lines)
+    stale = (bool(gpu_rows) and gpu_stale) or (has_system and system_stale)
     lines.extend(["", "Last progress sample" if stale else "Latest progress sample"])
     if stale:
         lines.append("(not current)")
+    if system.cpu_package_temp_c is not None or system.cpu_package_power_w is not None:
+        lines.extend(["", "CPU"])
+        if system.cpu_package_temp_c is not None:
+            lines.append(f"  Temp   {_compact_number(system.cpu_package_temp_c)} °C")
+        if system.cpu_package_power_w is not None:
+            lines.append(f"  Power  {_compact_number(system.cpu_package_power_w)} W")
+    if system.memory_used_gib is not None:
+        lines.extend(["", "RAM", f"  Used   {_compact_number(system.memory_used_gib)} GiB"])
+    if system.memory_module_temp_c is not None:
+        lines.extend(["", "DIMM", f"  Hot    {_compact_number(system.memory_module_temp_c)} °C"])
+    if system.storage_temp_c is not None:
+        lines.extend(["", "Storage", f"  Hot    {_compact_number(system.storage_temp_c)} °C"])
     for row in gpu_rows:
         lines.extend(["", f"GPU {row.gpu_index}"])
         if row.load_percent is not None:
@@ -148,6 +200,8 @@ def live_system_text(events: Iterable[object]) -> str:
             lines.append(f"  Clock  {_compact_number(row.clock_mhz)} MHz")
         if row.vram_used_gib is not None:
             lines.append(f"  VRAM   {_compact_number(row.vram_used_gib)} GiB used")
+        if row.fan_percent is not None:
+            lines.append(f"  Fan    {_compact_number(row.fan_percent)}%")
     return "\n".join(lines)
 
 

@@ -73,6 +73,7 @@ from Modules.lvs_gpu_stage_targets import (
 from Modules.lvs_gpu_telemetry_warnings import gpu_telemetry_coverage_warnings
 from Modules.lvs_gpu_progress import (
     latest_sample_value,
+    live_system_progress_parts,
     other_gpu_progress_summary,
     stage_gpu_progress_summary,
     target_gpu_metric_progress_parts,
@@ -88,6 +89,9 @@ from Modules.lvs_gpu_retune import (
 )
 from Modules.lvs_gpu_retune_policy import gpu_worker_retune_decision
 from Modules.lvs_gpu_retune_process import replace_gpu_process_for_retune
+from Modules.lvs_orchestrator_stage_callbacks import (
+    stage_target_gpu_progress_summary as orchestrator_stage_progress_summary,
+)
 from Modules.lvs_gpu_stage_events import (
     gpu_backend_effectiveness_events,
     target_gpu_utilization_events,
@@ -691,6 +695,7 @@ from Modules.lvs_tui_run_presentation import (
     initial_run_active_presentation,
     live_system_gpu_metrics,
     live_system_layout,
+    live_system_metrics,
     live_system_text,
     locked_post_run_upload_text,
     locked_post_run_wall_wattage_text,
@@ -3052,8 +3057,10 @@ def test_tui_run_presentation_helpers() -> None:
     tracker.update_event(next_event)
     live_progress = parse_progress_event(
         "2026-06-30T12:05:31-04:00 | stage=2 | elapsed=00:00:30 | remaining=00:04:30 | "
+        "cpu_package_temp_c=72.0 | cpu_package_power_w=185.5 | memory_used_gib=31.25 | "
+        "memory_module_temp_c=48.0 | storage_temp_c=44.0 | "
         "gpu_target=gpu0@0000:04:00.0/python_vulkan_compute:busy=98.0%,mem_busy=1.0%,"
-        "pwr=116.0W,temp=68.0C,clk=2625.0MHz,mclk=1000.0MHz,vram=2.83GB,state=load=79.9%,"
+        "pwr=116.0W,temp=68.0C,clk=2625.0MHz,fan_percent=55.0%,mclk=1000.0MHz,vram=2.83GB,state=load=79.9%,"
         "comp_buf=1,buf=307.0MB,rounds=160"
     )
     assert_true(live_progress is not None, "TUI live stage progress line parsed")
@@ -3078,13 +3085,44 @@ def test_tui_run_presentation_helpers() -> None:
     assert_equal(live_gpu_rows[0].power_w, 116.0, "TUI Live System GPU power")
     assert_equal(live_gpu_rows[0].clock_mhz, 2625.0, "TUI Live System GPU clock")
     assert_equal(live_gpu_rows[0].vram_used_gib, 2.83, "TUI Live System GPU VRAM")
+    assert_equal(live_gpu_rows[0].fan_percent, 55.0, "TUI Live System GPU fan")
     assert_true(not live_gpu_stale, "TUI latest GPU progress sample is current")
+    live_metrics, live_metrics_stale = live_system_metrics(tracker.events)
+    assert_equal(live_metrics.cpu_package_temp_c, 72.0, "TUI Live System CPU package temperature")
+    assert_equal(live_metrics.cpu_package_power_w, 185.5, "TUI Live System CPU package power")
+    assert_equal(live_metrics.memory_used_gib, 31.25, "TUI Live System RAM used")
+    assert_equal(live_metrics.memory_module_temp_c, 48.0, "TUI Live System hottest DIMM temperature")
+    assert_equal(live_metrics.storage_temp_c, 44.0, "TUI Live System hottest storage temperature")
+    assert_true(not live_metrics_stale, "TUI latest system progress sample is current")
     live_text = live_system_text(tracker.events)
-    for expected in ("Live System", "GPU 0", "Load   98%", "68 °C", "116 W", "2625 MHz", "2.8 GiB used"):
+    for expected in (
+        "Live System",
+        "CPU",
+        "Temp   72 °C",
+        "Power  185.5 W",
+        "RAM",
+        "Used   31.2 GiB",
+        "DIMM",
+        "Hot    48 °C",
+        "Storage",
+        "Hot    44 °C",
+        "GPU 0",
+        "Load   98%",
+        "68 °C",
+        "116 W",
+        "2625 MHz",
+        "2.8 GiB used",
+        "Fan    55%",
+    ):
         assert_true(expected in live_text, f"TUI Live System renders {expected}")
     assert_true(
         "Waiting for available" in live_system_text([]),
         "TUI Live System handles missing telemetry",
+    )
+    missing_live_event = SimpleNamespace(fields={"cpu_package_temp_c": None, "memory_used_gib": "n/a"})
+    assert_true(
+        "Waiting for available" in live_system_text([missing_live_event]),
+        "TUI Live System handles unavailable structured values",
     )
     later_event = parse_progress_event("[phase] 2026-06-30T12:06:00 | stage-end | stage=2 | verdict=pass")
     assert_true(later_event is not None, "TUI later event parsed for stale telemetry check")
@@ -13930,6 +13968,16 @@ def test_gpu_progress_helpers() -> None:
                     "gpu_2_temp_core_c": 55.0,
                     "gpu_2_clock_mhz": 2100.0,
                     "gpu_2_vram_used_gb": 1.25,
+                    "gpu_2_fan_percent": 45.0,
+                    "cpu_package_0_temp_c": 68.0,
+                    "cpu_package_1_temp_c": 72.0,
+                    "cpu_power_w": 310.5,
+                    "memory_used_gb": 31.25,
+                    "memory_module_0_temp_c": 44.0,
+                    "memory_module_1_temp_c": 48.0,
+                    "storage_drive_0_temp_c": 41.0,
+                    "storage_drive_1_temp_c": 44.0,
+                    "storage_drive_1_sensor_1_temp_c": 70.0,
                 },
             ),
         ],
@@ -13938,7 +13986,7 @@ def test_gpu_progress_helpers() -> None:
     assert_equal(latest_sample_value(SimpleNamespace(samples=[]), "gpu_0_busy_percent"), None, "empty latest sample")
     assert_equal(
         other_gpu_progress_summary(telemetry, {0: {"target_id": "0000:01:00.0"}}),
-        "gpu_other=gpu2:busy=12.35%,mem_busy=30.0%,pwr=40.0W,temp=55.0C,clk=2100.0MHz,vram=1.25GB",
+        "gpu_other=gpu2:busy=12.35%,mem_busy=30.0%,pwr=40.0W,temp=55.0C,clk=2100.0MHz,fan_percent=45.0%,vram=1.25GB",
         "other GPU progress summary",
     )
     assert_equal(
@@ -13948,8 +13996,43 @@ def test_gpu_progress_helpers() -> None:
     )
     assert_equal(
         target_gpu_metric_progress_parts(telemetry, 2),
-        ["busy=12.35%", "mem_busy=30.0%", "pwr=40.0W", "temp=55.0C", "clk=2100.0MHz", "vram=1.25GB"],
+        [
+            "busy=12.35%",
+            "mem_busy=30.0%",
+            "pwr=40.0W",
+            "temp=55.0C",
+            "clk=2100.0MHz",
+            "fan_percent=45.0%",
+            "vram=1.25GB",
+        ],
         "target GPU metric progress parts",
+    )
+    live_parts = live_system_progress_parts(telemetry)
+    assert_equal(
+        live_parts,
+        [
+            "cpu_package_temp_c=72.0",
+            "cpu_package_power_w=310.5",
+            "memory_used_gib=31.25",
+            "memory_module_temp_c=48.0",
+            "storage_temp_c=44.0",
+        ],
+        "live system progress parts use latest collected sample",
+    )
+    assert_equal(
+        live_system_progress_parts(SimpleNamespace(samples=[])),
+        [],
+        "live system progress parts handle missing samples",
+    )
+    system_only_progress = orchestrator_stage_progress_summary(
+        SimpleNamespace(),
+        SimpleNamespace(samples=[Sample(1.0, {"cpu_temp_c": 64.0, "memory_used_gb": 12.5})]),
+        [],
+    )
+    assert_equal(
+        system_only_progress,
+        " | cpu_package_temp_c=64.0 | memory_used_gib=12.5",
+        "orchestrator progress exposes collected system values without GPU targets",
     )
     state_parts = target_gpu_state_progress_parts(
         [
@@ -14015,6 +14098,11 @@ def test_gpu_progress_helpers() -> None:
         "stage GPU progress summary",
     )
     assert_equal(stage_gpu_progress_summary([], ""), "", "empty stage GPU progress summary")
+    assert_equal(
+        stage_gpu_progress_summary([], "", ["cpu_package_temp_c=72.0", "memory_used_gib=31.25"]),
+        " | cpu_package_temp_c=72.0 | memory_used_gib=31.25",
+        "stage progress includes live system fields without GPU targets",
+    )
 
 
 def test_gpu_retune_helpers() -> None:
