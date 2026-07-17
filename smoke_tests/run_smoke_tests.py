@@ -12299,6 +12299,111 @@ def test_storage_benchmark_cli_discoverability() -> None:
                 "CLI Run Tests menu exposes standalone Storage Benchmark")
 
 
+def test_quick_test_final_storage_benchmark_stage() -> None:
+    from Modules.lvs_profile_models import stage_execution_mode
+    from Modules.lvs_profile_report_text import profile_execution_summary_lines, profile_summary_text
+    from Modules.lvs_profile_validation import ProfileValidator
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+
+    profile_path = ROOT / "profiles" / "Quick Test.json"
+    raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    expected_existing_stages = [
+        ("segment_1", "Combined", 90, {"cpu", "gpu_3d"}),
+        ("segment_2", "Combined", 90, {"cpu", "vram"}),
+        ("segment_3", "Combined", 90, {"cpu", "memory"}),
+        ("segment_4", "Combined", 90, {"gpu_3d", "vram"}),
+    ]
+    assert_equal(len(raw["stages"]), 5, "Quick Test appends exactly one stage")
+    for stage_raw, (stage_id, name, duration, enabled_modules) in zip(
+        raw["stages"][:4], expected_existing_stages
+    ):
+        assert_equal(
+            (stage_raw["id"], stage_raw["name"], stage_raw["duration_seconds"]),
+            (stage_id, name, duration),
+            f"Quick Test preserves existing stage {stage_id}",
+        )
+        assert_equal(
+            {key for key, value in stage_raw["modules"].items() if value.get("enabled")},
+            enabled_modules,
+            f"Quick Test preserves enabled workloads for {stage_id}",
+        )
+
+    storage_raw = raw["stages"][-1]
+    assert_equal(storage_raw["id"], "storage_benchmark_1", "Quick Test storage stage is final")
+    assert_equal(storage_raw.get("duration_seconds"), None, "Quick Test storage stage is completion-based")
+    assert_equal(set(storage_raw["modules"]), {"storage_benchmark"},
+                 "Quick Test does not mix timed and completion modules")
+    assert_equal(storage_raw["modules"]["storage_benchmark"], {
+        "enabled": True,
+        "profile_id": "storage_kdiskmark_cdm_style_v1",
+        "target_mode": "all_internal",
+        "target_path": "",
+        "drive_execution": "sequential",
+        "test_size_gib": 1,
+        "runs": 1,
+        "allow_system_drive": True,
+    }, "Quick Test storage settings")
+
+    loader = ProfileLoader(ROOT / "profiles")
+    profile = loader.load_profile(profile_path)
+    labels = loader.load_segment_labels(profile_path, profile)
+    assert_equal(len(labels), 5, "Quick Test sidecar retains one label per stage")
+    assert_true("bounded LVS-owned temp files" in labels[-1] and "CoW/Btrfs" in labels[-1],
+                "Quick Test storage label documents bounded temp files and CoW behavior")
+    storage_stage = profile.stages[-1]
+    assert_equal(stage_execution_mode(storage_stage), "completion", "Quick Test final stage execution mode")
+    validation = ProfileValidator().validate(profile, labels)
+    assert_equal(validation["errors"], [], "Quick Test loads and validates")
+    assert_true(any("root/system drive" in warning for warning in validation["warnings"]),
+                "Quick Test validation warns about root/system drive inclusion")
+
+    summary = profile_summary_text(profile_path, profile, labels, loader.menu_group_label)
+    assert_true("5." in summary and "completion-based" in summary
+                and "StorageBenchmark/all_internal/sequential/1GiB/1runs" in summary,
+                "Quick Test profile summary shows the final completion-based storage stage")
+
+    class StorageDryRunRunner:
+        @staticmethod
+        def _enabled_workloads(_stage):
+            return ["storage_benchmark"]
+
+    storage_diagnostic = build_stage_diagnostics_payload(
+        StorageDryRunRunner(), storage_stage, labels[-1]
+    )
+    dry_plan = [
+        {
+            "stage_id": stage.id,
+            "label": labels[index],
+            "type": stage.name,
+            "execution_mode": "duration",
+            "duration_seconds": stage.duration_seconds,
+            "enabled": stage.enabled,
+            "runnable": True,
+            "workloads": [
+                name for name in ("cpu", "memory", "gpu_3d", "vram")
+                if getattr(stage.modules, name).enabled
+            ],
+            "backend_usage": {},
+        }
+        for index, stage in enumerate(profile.stages[:-1])
+    ] + [storage_diagnostic]
+    dry_text = "\n".join(profile_execution_summary_lines({
+        "profile_name": profile.profile_name,
+        "runnable": True,
+        "enabled_stage_count": len(dry_plan),
+        "runnable_stage_count": len(dry_plan),
+        "plan": dry_plan,
+    }))
+    assert_true(dry_text.rfind("completion-based") > dry_text.rfind("90s"),
+                "Quick Test dry run places completion storage after timed stages")
+    assert_true("target_mode=all_internal" in dry_text and "runs=1" in dry_text
+                and "allow_system_drive=True" in dry_text,
+                "Quick Test dry run shows required storage settings")
+    assert_true("explicitly allows the root/system drive" in dry_text
+                and "at least WARN if it is used" in dry_text,
+                "Quick Test dry run warns about root/system drive inclusion and verdict")
+
+
 def test_checked_in_storage_benchmark_profiles() -> None:
     from Modules.lvs_profile_report_text import profile_execution_summary_lines, profile_summary_text
     from Modules.lvs_profile_reports import ProfileReportManager
@@ -21088,6 +21193,7 @@ def main() -> int:
         test_dependency_report_summary_with_injected_telemetry,
         test_storage_benchmark_profile_fio_and_aggregation,
         test_storage_benchmark_cli_discoverability,
+        test_quick_test_final_storage_benchmark_stage,
         test_checked_in_storage_benchmark_profiles,
         test_storage_benchmark_profile_module_integration,
         test_storage_benchmark_target_safety_and_result_discovery,

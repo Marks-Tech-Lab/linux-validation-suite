@@ -193,6 +193,29 @@
         "trim_end_seconds": 30
       },
       "strict_threshold_recommendation_warnings": null
+    },
+    {
+      "id": "storage_benchmark_1",
+      "name": "Storage Benchmark",
+      "duration_seconds": null,
+      "enabled": true,
+      "modules": {
+        "storage_benchmark": {
+          "enabled": true,
+          "profile_id": "storage_kdiskmark_cdm_style_v1",
+          "target_mode": "all_internal",
+          "target_path": "",
+          "drive_execution": "sequential",
+          "test_size_gib": 1,
+          "runs": 1,
+          "allow_system_drive": true
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
     }
   ]
 }
