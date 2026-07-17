@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,8 +16,9 @@ _REJECTED_PREFIXES = ("loop", "ram", "zram", "nbd", "rbd", "sr", "fd")
 _REJECTED_FILESYSTEMS = {
     "overlay", "tmpfs", "ramfs", "squashfs", "nfs", "nfs4", "cifs", "9p",
     "proc", "sysfs", "devtmpfs", "fuse.sshfs", "ceph", "glusterfs",
-    "btrfs", "zfs",
+    "zfs", "bcachefs",
 }
+_COW_FILESYSTEMS = {"btrfs"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,11 @@ class StorageBenchmarkTarget:
     is_system_drive: bool
     free_bytes: int
     stat_device: int
+    filesystem_type: str = ""
+    is_cow: bool = False
+    filesystem_policy: str = "supported_direct_io"
+    mapping_source: str = "sys_dev_block"
+    resolution_warning: str = ""
 
     @property
     def primary_block_name(self) -> str:
@@ -90,12 +96,14 @@ class StorageTargetResolver:
         sys_dev_block: Path = Path("/sys/dev/block"),
         sys_class_block: Path = Path("/sys/class/block"),
         sys_class_nvme: Path = Path("/sys/class/nvme"),
+        sys_fs_btrfs: Path = Path("/sys/fs/btrfs"),
         disk_usage: Callable[[str | Path], shutil._ntuple_diskusage] = shutil.disk_usage,
     ) -> None:
         self.mountinfo_path = mountinfo_path
         self.sys_dev_block = sys_dev_block
         self.sys_class_block = sys_class_block
         self.sys_class_nvme = sys_class_nvme
+        self.sys_fs_btrfs = sys_fs_btrfs
         self.disk_usage = disk_usage
 
     def _mount_for(self, path: Path) -> MountRecord:
@@ -165,11 +173,73 @@ class StorageTargetResolver:
                 if transport not in {"pcie", "pci"}:
                     raise ValueError(f"remote NVMe transport is not supported: {transport or 'unknown'}")
 
-    def _mount_leaves(self, mount: MountRecord) -> set[str]:
+    def _mapper_block_name(self, mapper_name: str) -> str | None:
+        if not self.sys_class_block.exists():
+            return None
+        for link in self.sys_class_block.iterdir():
+            name_path = link / "dm" / "name"
+            try:
+                if name_path.read_text(encoding="utf-8").strip() == mapper_name:
+                    return link.name
+            except OSError:
+                continue
+        return None
+
+    def _mount_block_name(self, mount: MountRecord) -> tuple[str, str]:
         dev_link = self.sys_dev_block / mount.major_minor
-        if not dev_link.exists():
-            raise ValueError("mount cannot be mapped through /sys/dev/block")
-        return self._leaves(dev_link.resolve().name)
+        if dev_link.exists():
+            return dev_link.resolve().name, "sys_dev_block"
+        source = str(mount.source or "")
+        if source.startswith("/dev/mapper/"):
+            block_name = self._mapper_block_name(Path(source).name)
+            if block_name:
+                return block_name, "mount_source_device_mapper"
+        if source.startswith("/dev/"):
+            block_name = Path(source).name
+            if (self.sys_class_block / block_name).exists():
+                return block_name, "mount_source_sysfs"
+        raise ValueError("mount cannot be mapped through /sys/dev/block or its named mount source")
+
+    def _btrfs_leaves(self, source_block: str) -> set[str]:
+        if not self.sys_fs_btrfs.is_dir():
+            raise ValueError("cannot confirm that the btrfs workspace uses exactly one physical device")
+        matches: list[set[str]] = []
+        for filesystem in self.sys_fs_btrfs.iterdir():
+            devices = filesystem / "devices"
+            if not devices.is_dir():
+                continue
+            names = {entry.name for entry in devices.iterdir()}
+            if source_block not in names:
+                continue
+            leaves: set[str] = set()
+            for name in names:
+                leaves.update(self._leaves(name))
+            matches.append(leaves)
+        if len(matches) != 1:
+            raise ValueError("cannot uniquely identify the btrfs device set for this workspace")
+        return matches[0]
+
+    def _mount_leaves_with_source(self, mount: MountRecord) -> tuple[set[str], str]:
+        block_name, mapping_source = self._mount_block_name(mount)
+        if mount.filesystem.lower() == "btrfs":
+            return self._btrfs_leaves(block_name), f"{mapping_source}+btrfs_devices"
+        return self._leaves(block_name), mapping_source
+
+    def _mount_leaves(self, mount: MountRecord) -> set[str]:
+        return self._mount_leaves_with_source(mount)[0]
+
+    @staticmethod
+    def _filesystem_policy(filesystem: str) -> tuple[str, bool, str]:
+        normalized = str(filesystem or "").strip().lower()
+        if normalized in _REJECTED_FILESYSTEMS or normalized.startswith("fuse"):
+            return "unsupported", False, f"unsupported target filesystem: {normalized or 'unknown'}"
+        if normalized in _COW_FILESYSTEMS:
+            return (
+                "cow_supported_with_warning",
+                True,
+                f"{normalized} is copy-on-write; benchmark results can differ from raw-device behavior",
+            )
+        return "supported_direct_io", False, ""
 
     def _device_model(self, name: str) -> str:
         path = self.sys_class_block / name / "device" / "model"
@@ -196,27 +266,41 @@ class StorageTargetResolver:
         return names
 
     @staticmethod
-    def _mount_choice_key(record: MountRecord) -> tuple[int, int, str]:
-        # Multiple bind mounts of the same source are equivalent for physical
-        # ownership. Prefer the filesystem root, then the shortest stable path.
-        return (0 if record.mount_point == Path("/") else 1, len(record.mount_point.parts), str(record.mount_point))
+    def _mount_choice_key(record: MountRecord, path: Path, workspace_source: str) -> tuple[int, int, str]:
+        # Prefer a writable path the operator is already using, then their home,
+        # then a writable mount root. Physical ownership is validated separately.
+        source_rank = {"current_working_directory": 0, "user_home": 1, "mount_point": 2}
+        return (source_rank.get(workspace_source, 3), len(path.parts), str(path))
 
-    def _writable_directory_for_mount(self, record: MountRecord) -> Path | None:
-        if record.mount_point.exists() and record.mount_point.is_dir() and os.access(record.mount_point, os.W_OK | os.X_OK):
-            return record.mount_point
-        try:
-            cwd = Path.cwd().resolve(strict=True)
-            cwd_mount = self._mount_for(cwd)
-        except (OSError, ValueError):
-            return None
-        if (
-            cwd_mount.major_minor == record.major_minor
-            and cwd_mount.source == record.source
-            and cwd.is_dir()
-            and os.access(cwd, os.W_OK | os.X_OK)
+    def _writable_directories_for_mount(self, record: MountRecord) -> list[tuple[Path, str]]:
+        candidates: list[tuple[Path, str]] = []
+        for candidate, source in (
+            (Path.cwd(), "current_working_directory"),
+            (Path.home(), "user_home"),
+            (record.mount_point, "mount_point"),
         ):
-            return cwd
-        return None
+            try:
+                path = candidate.expanduser().resolve(strict=True)
+                candidate_mount = self._mount_for(path)
+                same_physical_device = self._mount_leaves(candidate_mount) == self._mount_leaves(record)
+            except (OSError, ValueError):
+                continue
+            if same_physical_device and path.is_dir() and os.access(path, os.W_OK | os.X_OK):
+                if path not in {item[0] for item in candidates}:
+                    candidates.append((path, source))
+        return candidates
+
+    def _system_leaves(self, records: list[MountRecord]) -> set[str]:
+        leaves: set[str] = set()
+        system_mounts = {Path("/"), Path("/etc"), Path("/usr"), Path("/var"), Path("/sysroot")}
+        for record in records:
+            if record.mount_point not in system_mounts:
+                continue
+            try:
+                leaves.update(self._mount_leaves(record))
+            except ValueError:
+                continue
+        return leaves
 
     def discover_all_eligible(
         self,
@@ -264,28 +348,22 @@ class StorageTargetResolver:
                 )
                 skipped.append(StorageBenchmarkSkippedTarget(device, model, reason, True))
                 continue
-            safe_candidates = [
-                (record, self._writable_directory_for_mount(record)) for record in candidates
-                if record.filesystem.lower() not in _REJECTED_FILESYSTEMS
-                and not record.filesystem.lower().startswith("fuse")
-            ]
-            safe_candidates = [(record, path) for record, path in safe_candidates if path is not None]
+            safe_candidates: list[tuple[MountRecord, Path, str]] = []
+            for record in candidates:
+                policy, _is_cow, _warning = self._filesystem_policy(record.filesystem)
+                if policy == "unsupported":
+                    continue
+                for path, workspace_source in self._writable_directories_for_mount(record):
+                    safe_candidates.append((record, path, workspace_source))
             if not safe_candidates:
                 skipped.append(StorageBenchmarkSkippedTarget(
                     device, model, "mounted paths are not writable or use an unsupported filesystem", True
                 ))
                 continue
-            source_groups = {(record.major_minor, record.source) for record, _path in safe_candidates}
-            if len(source_groups) != 1:
-                paths = ", ".join(
-                    str(record.mount_point)
-                    for record, _path in sorted(safe_candidates, key=lambda item: self._mount_choice_key(item[0]))
-                )
-                skipped.append(StorageBenchmarkSkippedTarget(
-                    device, model, f"ambiguous multiple mounted storage mappings: {paths}", True
-                ))
-                continue
-            selected, selected_path = min(safe_candidates, key=lambda item: self._mount_choice_key(item[0]))
+            selected, selected_path, workspace_source = min(
+                safe_candidates,
+                key=lambda item: self._mount_choice_key(item[0], item[1], item[2]),
+            )
             try:
                 target = self.resolve(
                     selected_path,
@@ -297,6 +375,25 @@ class StorageTargetResolver:
                     root_required = True
                 skipped.append(StorageBenchmarkSkippedTarget(device, model, str(exc), True))
                 continue
+            selection_warnings: list[str] = []
+            if workspace_source != "mount_point":
+                selection_warnings.append(
+                    f"Writable workspace selected from {workspace_source.replace('_', ' ')} "
+                    "because the filesystem mount root is not the benchmark workspace."
+                )
+            distinct_paths = {path for _record, path, _source in safe_candidates}
+            if len(distinct_paths) > 1:
+                selection_warnings.append(
+                    f"Multiple safe workspaces map to {device}; selected {selected_path} deterministically."
+                )
+            if selection_warnings:
+                target = replace(
+                    target,
+                    mapping_source=f"{target.mapping_source}+{workspace_source}",
+                    resolution_warning="; ".join(
+                        filter(None, (target.resolution_warning, *selection_warnings))
+                    ),
+                )
             targets.append(target)
         targets.sort(key=lambda item: (item.primary_block_name, str(item.target_path)))
         skipped.sort(key=lambda item: item.device)
@@ -324,9 +421,11 @@ class StorageTargetResolver:
         if not 1 <= int(test_size_gib) <= MAX_TEST_SIZE_GIB:
             raise ValueError("test size must be between 1 and 8 GiB")
         mount = self._mount_for(path)
-        if mount.filesystem.lower() in _REJECTED_FILESYSTEMS or mount.filesystem.lower().startswith("fuse"):
-            raise ValueError(f"unsupported target filesystem: {mount.filesystem}")
-        leaves = sorted(self._mount_leaves(mount))
+        filesystem_policy, is_cow, resolution_warning = self._filesystem_policy(mount.filesystem)
+        if filesystem_policy == "unsupported":
+            raise ValueError(resolution_warning)
+        leaves_set, mapping_source = self._mount_leaves_with_source(mount)
+        leaves = sorted(leaves_set)
         if len(leaves) != 1:
             raise ValueError("v1 requires exactly one confidently resolved physical storage device")
         self._validate_leaf(leaves[0])
@@ -335,20 +434,8 @@ class StorageTargetResolver:
         required = 2 * size_bytes + max(2 * GIB, size_bytes)
         if usage.free < required:
             raise ValueError(f"insufficient free space: {required} bytes required")
-        is_system = mount.mount_point == Path("/")
-        if not is_system:
-            root_mount = next(
-                (record for record in parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
-                 if record.mount_point == Path("/")),
-                None,
-            )
-            if root_mount is not None:
-                try:
-                    is_system = bool(set(leaves) & self._mount_leaves(root_mount))
-                except ValueError:
-                    # An unresolvable root mapping must not weaken validation of
-                    # an otherwise confidently isolated non-root target.
-                    pass
+        records = parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
+        is_system = mount.mount_point == Path("/") or bool(set(leaves) & self._system_leaves(records))
         if is_system:
             if root_confirmation != "BENCHMARK ROOT":
                 raise ValueError("root/system drive requires typed confirmation: BENCHMARK ROOT")
@@ -363,10 +450,22 @@ class StorageTargetResolver:
             is_system_drive=is_system,
             free_bytes=usage.free,
             stat_device=path.stat().st_dev,
+            filesystem_type=mount.filesystem.lower(),
+            is_cow=is_cow,
+            filesystem_policy=filesystem_policy,
+            mapping_source=mapping_source,
+            resolution_warning=resolution_warning,
         )
 
     def revalidate(self, target: StorageBenchmarkTarget) -> None:
         path = target.target_path.resolve(strict=True)
         mount = self._mount_for(path)
-        if path.stat().st_dev != target.stat_device or mount.major_minor != target.major_minor or mount.source != target.mount_source:
+        leaves = tuple(sorted(f"/dev/{name}" for name in self._mount_leaves(mount)))
+        if (
+            path.stat().st_dev != target.stat_device
+            or mount.major_minor != target.major_minor
+            or mount.source != target.mount_source
+            or leaves != tuple(sorted(target.physical_devices))
+            or (target.filesystem_type and mount.filesystem.lower() != target.filesystem_type)
+        ):
             raise RuntimeError("benchmark target mount changed during the run")

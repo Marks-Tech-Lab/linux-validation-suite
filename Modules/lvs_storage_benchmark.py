@@ -304,13 +304,28 @@ class StorageBenchmarkService:
         result_dir.mkdir(parents=True, exist_ok=False)
         raw_dir = result_dir / "raw_fio"
         raw_dir.mkdir(mode=0o700)
-        manifest = {"contract_id": "lvs.storage_benchmark.manifest", "contract_version": 1, "kind": "storage_benchmark",
-                    "status": "active", "started": started.isoformat(), "artifacts": []}
+        manifest = {
+            "contract_id": "lvs.storage_benchmark.manifest",
+            "contract_version": 1,
+            "kind": "storage_benchmark",
+            "status": "active",
+            "started": started.isoformat(),
+            "target_workspace_path": str(target.target_path),
+            "target_filesystem_type": target.filesystem_type,
+            "target_filesystem_policy": target.filesystem_policy,
+            "target_is_cow": target.is_cow,
+            "target_mapping_source": target.mapping_source,
+            "target_physical_devices": list(target.physical_devices),
+            "target_resolution_warning": target.resolution_warning or None,
+            "artifacts": [],
+        }
         self._write_json(result_dir / "storage_benchmark_manifest.json", manifest)
         warnings: list[str] = []
         errors: list[str] = []
         if target.is_system_drive:
             warnings.append("Benchmark target is the root/system drive.")
+        if target.resolution_warning:
+            warnings.append(target.resolution_warning)
         before = self._health(target.primary_block_name)
         self._write_json(result_dir / "storage_health_before.json", before)
         before_query = (before.get("storage_health") or {}).get("query_status")
@@ -475,6 +490,12 @@ class StorageBenchmarkService:
             "started": started.isoformat(), "ended": ended.isoformat(), "status": status, "verdict": verdict,
             "target_path": str(target.target_path), "target_mount_point": str(target.mount_point),
             "target_device": target.mount_source, "target_physical_devices": list(target.physical_devices),
+            "target_workspace_path": str(target.target_path),
+            "target_filesystem_type": target.filesystem_type,
+            "target_filesystem_policy": target.filesystem_policy,
+            "target_is_cow": target.is_cow,
+            "target_mapping_source": target.mapping_source,
+            "target_resolution_warning": target.resolution_warning or None,
             "target_is_system_drive": target.is_system_drive, "test_size_gib": profile.test_size_gib, "runs": profile.runs,
             "measure_time_seconds": profile.measure_time_seconds, "interval_seconds": profile.interval_seconds,
             "direct_io": profile.direct_io, "ioengine": profile.ioengine, "test_data": profile.test_data,

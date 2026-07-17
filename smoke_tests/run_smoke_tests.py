@@ -12636,6 +12636,155 @@ def test_storage_benchmark_target_safety_and_result_discovery() -> None:
                      "benchmark summary", "benchmark summary discovery")
 
 
+def test_storage_benchmark_cow_workspace_resolution() -> None:
+    from Modules.lvs_storage_benchmark_target import GIB, StorageTargetResolver
+
+    with TemporaryDirectory(dir="/tmp") as temp_dir:
+        root = Path(temp_dir)
+        sys_block = root / "sys_block"
+        sys_dev = root / "sys_dev"
+        sys_nvme = root / "sys_nvme"
+        sys_btrfs = root / "sys_btrfs"
+        devices = root / "devices"
+        for path in (sys_block, sys_dev, sys_nvme, sys_btrfs, devices):
+            path.mkdir()
+
+        physical = {}
+        for name in ("sda", "sdb"):
+            block = devices / "pci0000:00" / "block" / name
+            block.mkdir(parents=True)
+            (block / "removable").write_text("0\n", encoding="utf-8")
+            (block / "size").write_text("200000000\n", encoding="utf-8")
+            (sys_block / name).symlink_to(block, target_is_directory=True)
+            physical[name] = block
+
+        def add_mapper(name: str, mapper_name: str, leaf: str) -> Path:
+            mapper = devices / "virtual" / "block" / name
+            (mapper / "dm").mkdir(parents=True)
+            (mapper / "slaves").mkdir()
+            (mapper / "dm" / "name").write_text(mapper_name + "\n", encoding="utf-8")
+            (mapper / "slaves" / leaf).symlink_to(physical[leaf], target_is_directory=True)
+            (sys_block / name).symlink_to(mapper, target_is_directory=True)
+            return mapper
+
+        dm0 = add_mapper("dm-0", "luks-workspace", "sda")
+        dm1 = add_mapper("dm-1", "luks-second", "sdb")
+        filesystem = sys_btrfs / "single" / "devices"
+        filesystem.mkdir(parents=True)
+        (filesystem / "dm-0").symlink_to(dm0, target_is_directory=True)
+
+        target = root / "workspace"
+        target.mkdir()
+        bind_target = target / "bind"
+        bind_target.mkdir()
+        mountinfo = root / "mountinfo"
+        mountinfo.write_text(
+            "\n".join((
+                "1 0 0:42 / / rw - overlay composefs rw",
+                f"2 1 0:79 / {target} rw - btrfs /dev/mapper/luks-workspace rw",
+                f"3 2 0:79 /bind {bind_target} rw - btrfs /dev/mapper/luks-workspace rw",
+            )) + "\n",
+            encoding="utf-8",
+        )
+        resolver = StorageTargetResolver(
+            mountinfo_path=mountinfo,
+            sys_dev_block=sys_dev,
+            sys_class_block=sys_block,
+            sys_class_nvme=sys_nvme,
+            sys_fs_btrfs=sys_btrfs,
+            disk_usage=lambda _path: SimpleNamespace(total=100 * GIB, used=10 * GIB, free=90 * GIB),
+        )
+
+        selected = resolver.resolve(bind_target, test_size_gib=1)
+        assert_equal(selected.physical_devices, ("/dev/sda",), "single-device btrfs maps to one physical leaf")
+        assert_equal(selected.filesystem_policy, "cow_supported_with_warning", "btrfs CoW filesystem policy")
+        assert_true(selected.is_cow and "copy-on-write" in selected.resolution_warning,
+                    "selected CoW workspace is accepted with warning")
+        assert_true("mount_source_device_mapper" in selected.mapping_source,
+                    "sandbox mount-id gap falls back to named device-mapper source")
+        assert_equal(selected.target_path, bind_target, "writable btrfs bind workspace is retained")
+
+        plan = resolver.discover_all_eligible(test_size_gib=1)
+        assert_equal([item.physical_devices for item in plan.targets], [("/dev/sda",)],
+                     "all-internal discovery accepts exact single-leaf CoW workspace")
+        assert_true(plan.targets[0].is_cow, "all-internal target records CoW status")
+
+        # A CoW filesystem spanning two physical leaves must remain rejected.
+        (filesystem / "dm-1").symlink_to(dm1, target_is_directory=True)
+        try:
+            resolver.resolve(bind_target, test_size_gib=1)
+            raise AssertionError("multi-device btrfs workspace accepted")
+        except ValueError as exc:
+            assert_true("exactly one" in str(exc), "multi-device btrfs rejection reason")
+        (filesystem / "dm-1").unlink()
+
+        overlay = root / "overlay_workspace"
+        overlay.mkdir()
+        mountinfo.write_text(
+            f"1 0 0:42 / {overlay} rw - overlay composefs rw\n",
+            encoding="utf-8",
+        )
+        try:
+            resolver.resolve(overlay, test_size_gib=1)
+            raise AssertionError("unattributed overlay workspace accepted")
+        except ValueError as exc:
+            assert_true("unsupported target filesystem" in str(exc), "overlay remains unsupported")
+
+        # On an OSTree-style overlay root, a writable /var mapping still marks
+        # the same physical leaf as the system drive.
+        mountinfo.write_text(
+            "\n".join((
+                "1 0 0:42 / / rw - overlay composefs rw",
+                "2 1 0:79 /var /var rw - btrfs /dev/mapper/luks-workspace rw",
+                f"3 1 0:79 / {target} rw - btrfs /dev/mapper/luks-workspace rw",
+            )) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            resolver.resolve(target, test_size_gib=1)
+            raise AssertionError("immutable-system drive accepted without confirmation")
+        except ValueError as exc:
+            assert_true("BENCHMARK ROOT" in str(exc), "OSTree /var mapping preserves root-drive policy")
+        confirmed = resolver.resolve(target, test_size_gib=1, root_confirmation="BENCHMARK ROOT")
+        assert_true(confirmed.is_system_drive, "confirmed immutable-system workspace is marked system drive")
+
+        usb_workspace = root / "usb_workspace"
+        usb_workspace.mkdir()
+        usb_block = devices / "pci0000:00" / "usb1" / "block" / "sdc"
+        usb_block.mkdir(parents=True)
+        (usb_block / "removable").write_text("0\n", encoding="utf-8")
+        (usb_block / "size").write_text("200000000\n", encoding="utf-8")
+        (sys_block / "sdc").symlink_to(usb_block, target_is_directory=True)
+        (sys_dev / "8:32").symlink_to(usb_block, target_is_directory=True)
+        mountinfo.write_text(
+            f"1 0 8:32 / {usb_workspace} rw - ext4 /dev/sdc rw\n",
+            encoding="utf-8",
+        )
+        try:
+            resolver.resolve(usb_workspace, test_size_gib=1)
+            raise AssertionError("USB workspace accepted")
+        except ValueError as exc:
+            assert_true("USB storage" in str(exc), "USB restriction remains enforced")
+
+        virtual_workspace = root / "virtual_workspace"
+        virtual_workspace.mkdir()
+        virtual_block = devices / "virtual" / "block" / "nbd0"
+        virtual_block.mkdir(parents=True)
+        (virtual_block / "removable").write_text("0\n", encoding="utf-8")
+        (virtual_block / "size").write_text("200000000\n", encoding="utf-8")
+        (sys_block / "nbd0").symlink_to(virtual_block, target_is_directory=True)
+        (sys_dev / "43:0").symlink_to(virtual_block, target_is_directory=True)
+        mountinfo.write_text(
+            f"1 0 43:0 / {virtual_workspace} rw - ext4 /dev/nbd0 rw\n",
+            encoding="utf-8",
+        )
+        try:
+            resolver.resolve(virtual_workspace, test_size_gib=1)
+            raise AssertionError("virtual/network block workspace accepted")
+        except ValueError as exc:
+            assert_true("virtual storage" in str(exc), "virtual/network storage restriction remains enforced")
+
+
 def test_storage_benchmark_all_internal_discovery() -> None:
     from Modules.lvs_storage_benchmark_target import GIB, StorageTargetResolver
 
@@ -12674,15 +12823,14 @@ def test_storage_benchmark_all_internal_discovery() -> None:
             disk_usage=lambda _path: SimpleNamespace(total=100 * GIB, used=10 * GIB, free=90 * GIB),
         )
         plan = resolver.discover_all_eligible(test_size_gib=1)
-        assert_equal([target.physical_devices[0] for target in plan.targets], ["/dev/sda"],
-                     "root excluded until explicitly confirmed")
+        assert_equal([target.physical_devices[0] for target in plan.targets], ["/dev/sda", "/dev/sdc"],
+                     "root excluded and multiple same-drive mountpoints choose a deterministic workspace")
         assert_true(plan.root_confirmation_required, "batch discovery reports root confirmation requirement")
         reasons = {item.device: item.reason for item in plan.skipped_targets}
         assert_true("no mounted writable directory" in reasons["/dev/sdb"], "unmounted drive skipped")
-        assert_true("ambiguous multiple mounted" in reasons["/dev/sdc"], "ambiguous drive skipped")
         assert_true("BENCHMARK ROOT" in reasons["/dev/nvme0n1"], "root drive skipped without confirmation")
         confirmed = resolver.discover_all_eligible(test_size_gib=1, root_confirmation="BENCHMARK ROOT")
-        assert_equal([target.physical_devices[0] for target in confirmed.targets], ["/dev/nvme0n1", "/dev/sda"],
+        assert_equal([target.physical_devices[0] for target in confirmed.targets], ["/dev/nvme0n1", "/dev/sda", "/dev/sdc"],
                      "multiple eligible drives discovered in deterministic order")
         assert_true(confirmed.targets[0].is_system_drive, "confirmed root drive marked system")
 
@@ -12735,6 +12883,24 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
         single_dir = single_service.run(target_path, test_size_gib=1, runs=1, confirmed=True)
         assert_true((single_dir / "storage_benchmark.json").is_file(), "single benchmark JSON artifact")
         assert_true((single_dir / "storage_benchmark_summary.txt").is_file(), "single benchmark text artifact")
+        single_payload = json.loads((single_dir / "storage_benchmark.json").read_text(encoding="utf-8"))
+        single_manifest = json.loads((single_dir / "storage_benchmark_manifest.json").read_text(encoding="utf-8"))
+        assert_true("target_filesystem_policy" in single_payload and "target_mapping_source" in single_payload,
+                    "normalized result records workspace filesystem attribution")
+        assert_true("target_workspace_path" in single_manifest and "target_is_cow" in single_manifest,
+                    "benchmark manifest records workspace and CoW status")
+
+        session, token = single_service._make_session(target, 1)
+        unexpected = session / "unexpected.txt"
+        unexpected.write_text("do not remove recursively\n", encoding="utf-8")
+        try:
+            single_service._cleanup(session, token, target)
+            raise AssertionError("cleanup accepted an unexpected session file")
+        except RuntimeError as exc:
+            assert_true("cleanup safety violation" in str(exc), "cleanup keeps exact-file safety checks")
+        unexpected.unlink()
+        single_service._cleanup(session, token, target)
+        assert_true(not session.exists(), "verified owned session cleanup succeeds")
 
         class FakeBatchService:
             def __init__(self, results_dir: Path, cancel_after_first: threading.Event | None = None) -> None:
@@ -20925,6 +21091,7 @@ def main() -> int:
         test_checked_in_storage_benchmark_profiles,
         test_storage_benchmark_profile_module_integration,
         test_storage_benchmark_target_safety_and_result_discovery,
+        test_storage_benchmark_cow_workspace_resolution,
         test_storage_benchmark_all_internal_discovery,
         test_storage_benchmark_single_and_batch_artifacts,
         test_telemetry_source_helpers,

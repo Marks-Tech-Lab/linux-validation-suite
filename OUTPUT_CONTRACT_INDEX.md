@@ -208,6 +208,13 @@ embedded in normalized results or system information. The associated manifest,
 summary, before/after storage-health snapshots, and optional telemetry CSV are
 siblings of the normalized result.
 
+Workspace attribution is recorded with `target_workspace_path`,
+`target_filesystem_type`, `target_filesystem_policy`, `target_is_cow`, `target_mapping_source`,
+`target_physical_devices`, and `target_resolution_warning`. A single-device
+copy-on-write workspace may be represented with a warning; unresolved,
+multi-device, virtual, removable, USB, and network-backed mappings remain
+ineligible.
+
 Explicit sequential all-internal-drive runs additionally write an aggregate
 `storage_benchmark_all_internal.json` with `contract_id:
 lvs.storage_benchmark_batch`, `contract_version: 1`, and `kind:
