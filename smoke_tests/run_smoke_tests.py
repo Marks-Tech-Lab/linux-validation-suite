@@ -58,6 +58,7 @@ from linux_validation_suite import (
     WorkloadRunner,
 )
 from Modules.lvs_dependency_reports import DependencyReportManager
+from Modules.lvs_dependency_report_text import storage_health_provider_lines
 from Modules.lvs_diagnostics_cli import DiagnosticsCliAdapter
 from Modules.lvs_advanced_debug import AdvancedDebugLogger
 from Modules import lvs_telemetry_intel
@@ -12209,8 +12210,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
         "tools": {
             "lsblk": {"available": True, "path": "/usr/bin/lsblk", "version": "lsblk 2.40"},
             "udevadm": {"available": True, "path": "/usr/bin/udevadm", "version": "256"},
-            "smartctl": {"available": True, "path": "/usr/bin/smartctl", "version": "smartctl 7.4"},
-            "nvme_cli": {"available": False, "path": "", "version": ""},
+            "smartctl": {"available": False, "path": "", "version": ""},
+            "nvme_cli": {"available": True, "path": "/usr/bin/nvme", "version": "nvme version 2.16"},
         },
     }
     manager = DependencyReportManager(
@@ -12241,6 +12242,22 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("- Missing: googleapiclient.discovery" in text, "dependency drive missing list")
     assert_true("Storage Health / SMART:" in text, "dependency quick storage health heading")
     assert_true("- Coverage: 1/2 eligible internal drive(s)" in text, "dependency quick storage coverage")
+    assert_true(
+        "- smartctl: missing preferred — install smartmontools for ATA/SATA/SAS and fallback SMART coverage" in text,
+        "dependency quick summary exposes optional missing smartctl",
+    )
+    assert_true("- nvme-cli: OK — NVMe SMART available; nvme version 2.16" in text,
+                "dependency quick summary exposes nvme-cli version")
+    smartctl_present_lines = storage_health_provider_lines({
+        "tools": {
+            "smartctl": {"available": True, "version": "smartctl 7.4"},
+            "nvme_cli": {"available": False},
+        }
+    })
+    assert_true("smartctl: OK — smartctl 7.4" in smartctl_present_lines[0],
+                "dependency provider summary exposes smartctl version")
+    assert_true("nvme-cli: missing preferred" in smartctl_present_lines[1],
+                "dependency provider summary exposes optional missing nvme-cli")
     built_payload = manager.dependency_check_payload(sudo_noninteractive_ready=lambda: True)
     assert_equal(built_payload["app_name"], "Linux Validation Suite", "dependency payload app name")
     assert_true(built_payload["execution_context"]["privileged_helper_effective"], "dependency payload helper effective")
@@ -12261,6 +12278,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("Per-GPU OpenCL coverage:" in detail_text, "dependency detail OpenCL coverage")
     assert_true("DIMM A1 | ABC123" in detail_text, "dependency detail memory module line")
     assert_true("Storage Health / SMART" in detail_text, "dependency detail storage health section")
+    assert_true("smartctl: missing preferred" in detail_text and "nvme-cli: OK" in detail_text,
+                "dependency detail includes both SMART providers")
     assert_true("[WARN] Coverage - 1/2 eligible internal drive(s)" in detail_text, "dependency storage warning")
 
 
@@ -12327,6 +12346,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("Dependency Check Summary" in summary, "dependency check summary heading")
     assert_true("Covered GPUs: 1/2" in summary, "dependency check OpenCL coverage")
     assert_true("Storage Health / SMART:" in summary, "dependency summary storage health heading")
+    assert_true("smartctl: missing preferred" in summary and "nvme-cli: OK" in summary,
+                "saved dependency summary includes both SMART providers")
     assert_true("Permission-limited: 1" in summary, "dependency summary storage permission count")
     assert_true("Privileged Helper Suggestions" in summary, "dependency check helper hints")
     with TemporaryDirectory() as tmp:
@@ -15140,6 +15161,34 @@ def test_storage_health_helpers() -> None:
     assert_true(merged["smart_available"], "nvme-cli fallback marks SMART available")
     assert_equal(merged["smart_source"], "nvme_cli", "nvme-cli fallback replaces unusable source")
 
+    nvme_only_enricher = StorageHealthEnricher(
+        read_sysfs=lambda _path: None,
+        run_command=lambda _command, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "critical_warning": 0,
+                "temperature": 312,
+                "power_on_hours": 88,
+                "percentage_used": 2,
+                "available_spare": 100,
+                "data_units_read": 4_000,
+                "data_units_written": 5_000,
+                "unsafe_shutdowns": 0,
+                "media_errors": 0,
+            }),
+            stderr="",
+        ),
+        which_command=lambda name: "/usr/bin/nvme" if name == "nvme" else None,
+    )
+    nvme_only_health = nvme_only_enricher.query_health(
+        {"Name": "nvme0n1", "DevicePath": "/dev/nvme0n1"},
+        {"is_internal": True, "transport": "pcie", "classification_detail": "internal"},
+    )
+    assert_equal(nvme_only_health["query_status"], "available",
+                 "missing smartctl does not block successful nvme-cli health")
+    assert_true(any("smartctl: missing preferred" in note for note in nvme_only_health["query_notes"]),
+                "successful NVMe result explains optional smartctl coverage without contradiction")
+
     for media_label, rotation_rate in (("ATA SSD", 0), ("ATA HDD", 7200)):
         ata_health = parse_smartctl_health(
             {
@@ -15261,6 +15310,32 @@ def test_storage_health_helpers() -> None:
     }
     capability = storage_health_capability([limited_entry], tool_state)
     assert_equal(capability["status"], "unavailable", "missing optional health tools do not fabricate coverage")
+    nvme_tools = {
+        **tool_state,
+        "nvme_cli": {"available": True, "version": "nvme version 2.16"},
+    }
+    nvme_available_entry = {
+        **limited_entry,
+        "transport": "pcie",
+        "storage_health": {"query_status": "available"},
+    }
+    all_nvme = storage_health_capability([nvme_available_entry, nvme_available_entry], nvme_tools)
+    assert_equal(all_nvme["status"], "available",
+                 "nvme-cli full NVMe coverage remains available without smartctl")
+    assert_equal(all_nvme["successfully_queried_drive_count"], 2, "nvme-cli full coverage count")
+    sata_unavailable_entry = {
+        **limited_entry,
+        "transport": "sata",
+        "storage_health": {"query_status": "unavailable"},
+    }
+    mixed_without_smartctl = storage_health_capability(
+        [nvme_available_entry, sata_unavailable_entry], nvme_tools
+    )
+    assert_equal(mixed_without_smartctl["status"], "partial",
+                 "missing smartctl makes mixed NVMe/SATA health coverage partial")
+    sata_only_without_smartctl = storage_health_capability([sata_unavailable_entry], nvme_tools)
+    assert_equal(sata_only_without_smartctl["status"], "unavailable",
+                 "missing smartctl leaves SATA-only health coverage unavailable")
     partial = storage_health_capability(
         [
             {**limited_entry, "storage_health": {"query_status": "available"}},

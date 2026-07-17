@@ -31,6 +31,34 @@ def dependency_item_lines(
     return lines
 
 
+def storage_health_provider_lines(
+    storage_health: Dict[str, Any],
+    *,
+    indent: str = "",
+) -> list[str]:
+    tools = storage_health.get("tools") if isinstance(storage_health.get("tools"), dict) else {}
+    smartctl = tools.get("smartctl") if isinstance(tools.get("smartctl"), dict) else {}
+    nvme_cli = tools.get("nvme_cli") if isinstance(tools.get("nvme_cli"), dict) else {}
+
+    smartctl_version = str(smartctl.get("version") or smartctl.get("path") or "").strip()
+    if smartctl.get("available"):
+        smartctl_detail = smartctl_version or "ATA/SATA/SAS and fallback SMART coverage available"
+        smartctl_line = f"{indent}- smartctl: OK — {smartctl_detail}"
+    else:
+        smartctl_line = (
+            f"{indent}- smartctl: missing preferred — install smartmontools for "
+            "ATA/SATA/SAS and fallback SMART coverage"
+        )
+
+    nvme_version = str(nvme_cli.get("version") or nvme_cli.get("path") or "").strip()
+    if nvme_cli.get("available"):
+        nvme_detail = "NVMe SMART available" + (f"; {nvme_version}" if nvme_version else "")
+        nvme_line = f"{indent}- nvme-cli: OK — {nvme_detail}"
+    else:
+        nvme_line = f"{indent}- nvme-cli: missing preferred — install nvme-cli for NVMe SMART coverage"
+    return [smartctl_line, nvme_line]
+
+
 def dependency_summary_text(
     backends: Dict[str, Any],
     details: Dict[str, Any],
@@ -89,6 +117,7 @@ def dependency_summary_text(
                 + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s)",
             ]
         )
+        lines.extend(storage_health_provider_lines(storage_health))
     storage_benchmark = storage_benchmark if isinstance(storage_benchmark, dict) else {}
     if storage_benchmark:
         available = bool(storage_benchmark.get("benchmark_mode_available"))
@@ -379,8 +408,6 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
     tool_specs = (
         ("lsblk", "lsblk identity/classification", "install util-linux", False),
         ("udevadm", "udevadm identity/classification", "install systemd-udev", False),
-        ("smartctl", "smartctl SMART health", "install smartmontools", True),
-        ("nvme_cli", "nvme-cli NVMe health", "install nvme-cli", True),
     )
     for key, label, fix, preferred in tool_specs:
         tool = storage_tools.get(key) if isinstance(storage_tools.get(key), dict) else {}
@@ -394,6 +421,7 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
                 preferred=preferred,
             )
         )
+    lines.extend(storage_health_provider_lines(storage_health, indent="  "))
     storage_status = str(storage_health.get("status") or "unavailable")
     status_label = "OK" if storage_status == "available" else "N/A" if storage_status == "not_applicable" else "WARN"
     lines.append(
@@ -632,6 +660,7 @@ def dependency_check_summary_text(payload: Dict[str, Any], report_dir: Optional[
             + f"{storage_health.get('successfully_queried_drive_count', 0)}/"
             + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s)"
         )
+        lines.extend(storage_health_provider_lines(storage_health, indent="  "))
         if storage_health.get("permission_limited_count"):
             lines.append(f"  - Permission-limited: {storage_health.get('permission_limited_count')}")
         if storage_health.get("unsupported_controller_count"):

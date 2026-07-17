@@ -28,6 +28,9 @@ UNSUPPORTED_MARKERS = (
     "smart support is: unavailable",
 )
 STANDBY_MARKERS = ("standby", "sleeping")
+SMARTCTL_MISSING_PREFERRED_NOTE = (
+    "smartctl: missing preferred — install smartmontools for ATA/SATA/SAS and fallback SMART coverage"
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -473,7 +476,7 @@ class StorageHealthEnricher:
         device_path = str(entry.get("device_path") or entry.get("DevicePath") or "")
         transport = str(classification.get("transport") or "").lower()
         smartctl_path = self.tool_paths.get("smartctl")
-        health = _base_health("unavailable", "smartctl is not installed")
+        health = _base_health("unavailable", SMARTCTL_MISSING_PREFERRED_NOTE)
         if smartctl_path:
             command = [smartctl_path, "--json", "--info", "--health", "--attributes"]
             if transport not in {"nvme", "pcie"}:
