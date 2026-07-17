@@ -41,6 +41,7 @@ ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
     ("settings", "Settings"),
     ("migration-support", "Migration"),
     ("refresh", "Refresh"),
+    ("storage-benchmark-info", "Storage Bench (CLI)"),
 )
 
 
@@ -60,8 +61,67 @@ ACTION_BUTTON_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
         ("settings", "Settings"),
         ("migration-support", "Migration"),
         ("refresh", "Refresh"),
+        ("storage-benchmark-info", "Storage (CLI)"),
     ),
 )
+
+
+SETTINGS_ACTION_BUTTON_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
+    (
+        ("settings-key-e", "E Mode"),
+        ("settings-key-b", "B Department"),
+        ("settings-key-i", "I Interval"),
+        ("settings-key-2", "2 Trim Start"),
+        ("settings-key-3", "3 Trim End"),
+        ("settings-key-4", "4 Compat"),
+    ),
+    (
+        ("settings-key-5", "5 Extended"),
+        ("settings-key-6", "6 Raw Telemetry"),
+        ("settings-key-7", "7 Wall Prompt"),
+        ("settings-key-g", "G Upload Prompt"),
+        ("settings-key-u", "U Move Uploads"),
+        ("settings-key-m", "M Drive Check"),
+    ),
+    (
+        ("settings-key-8", "8 Abort Fail"),
+        ("settings-key-9", "9 Abort Worker"),
+        ("settings-key-0", "0 Stop Abort"),
+        ("settings-key-n", "N Strict Warn"),
+    ),
+    (
+        ("settings-key-a", "A Case/SKU List"),
+        ("settings-key-y", "Y PSU List"),
+        ("settings-key-k", "K Cooler List"),
+    ),
+)
+
+
+SETTINGS_SIDEBAR_ACTIONS: Tuple[Tuple[str, str], ...] = (
+    ("e", "E  Toggle Production / End User mode"),
+    ("b", "B  Edit department"),
+    ("i", "I  Edit sample interval"),
+    ("2", "2  Edit default trim start"),
+    ("3", "3  Edit default trim end"),
+    ("4", "4  Toggle compatibility export"),
+    ("5", "5  Toggle extended export"),
+    ("6", "6  Toggle raw telemetry retention"),
+    ("7", "7  Toggle wall-wattage prompt"),
+    ("8", "8  Toggle abort on fail thresholds"),
+    ("9", "9  Toggle abort on worker errors"),
+    ("0", "0  Toggle stop after an aborted stage"),
+    ("n", "N  Toggle strict threshold warnings"),
+    ("g", "G  Toggle upload prompt"),
+    ("u", "U  Toggle move uploaded results"),
+    ("m", "M  Check Google Drive readiness"),
+    ("a", "A  Edit Case/SKU list"),
+    ("y", "Y  Edit PSU list"),
+    ("k", "K  Edit CPU cooler list"),
+)
+
+
+def context_action_button_rows(view_mode: str) -> Tuple[Tuple[Tuple[str, str], ...], ...]:
+    return SETTINGS_ACTION_BUTTON_ROWS if str(view_mode or "") == "settings" else ACTION_BUTTON_ROWS
 
 
 GLOBAL_ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
@@ -231,7 +291,7 @@ def results_sidebar_state(
 def settings_sidebar_state() -> TuiSidebarListState:
     return TuiSidebarListState(
         title="Settings",
-        rows=("Settings summary",),
+        rows=tuple(label for _key, label in SETTINGS_SIDEBAR_ACTIONS),
         selected_index=0,
     )
 
@@ -279,7 +339,7 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
     elif mode == "settings":
         return _wrap_help_text(
             "Settings keys",
-            "Enter toggle/edit | G upload prompt | W wall watts | R raw telemetry | P profiles",
+            "Enter selected action | E mode | B department | I interval | 2/3 trim | 4 compat | 6 raw | 7 wall",
             terminal_width,
         )
     elif mode == "migration_support":
@@ -302,7 +362,7 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
         )
     return _wrap_help_text(
         "Main keys",
-        "Enter setup/review | D dry run | K migration/support | S results | X settings | R refresh | Q quit",
+        "Enter setup/review | Storage (CLI) button | D dry run | S results | X settings | R refresh | Q quit",
         terminal_width,
     )
 

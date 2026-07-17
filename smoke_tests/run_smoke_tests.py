@@ -639,8 +639,11 @@ from Modules.lvs_tui_app_actions_flow import (
     ACTION_BUTTON_ROWS,
     GLOBAL_ACTION_BUTTONS,
     GLOBAL_ACTION_BAR_ROWS,
+    SETTINGS_ACTION_BUTTON_ROWS,
+    SETTINGS_SIDEBAR_ACTIONS,
     action_layout_width,
     compact_action_help_text,
+    context_action_button_rows,
     global_action_cell_rows,
     global_action_keypress,
     global_action_markup,
@@ -2417,13 +2420,19 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_equal(latest_state.selected_index, 1, "TUI result sidebar selects latest result path")
     assert_equal(latest_state.first_item, latest_results[1], "TUI result sidebar latest result item")
     settings_state = settings_sidebar_state()
-    assert_equal(settings_state.rows, ("Settings summary",), "TUI app actions settings sidebar row")
+    assert_equal(
+        settings_state.rows,
+        tuple(label for _key, label in SETTINGS_SIDEBAR_ACTIONS),
+        "TUI settings sidebar exposes real actions",
+    )
     migration_state = migration_support_sidebar_state()
     assert_equal(migration_state.title, "Migration / Support", "TUI migration sidebar title")
     assert_equal(len(migration_state.rows), 4, "TUI migration sidebar action count")
     assert_true(("results", "Results") in ACTION_BUTTONS, "TUI right-pane buttons keep Results action")
     assert_true(("settings", "Settings") in ACTION_BUTTONS, "TUI right-pane buttons keep Settings action")
     assert_true(("migration-support", "Migration") in ACTION_BUTTONS, "TUI right-pane buttons expose migration support")
+    assert_true(("storage-benchmark-info", "Storage Bench (CLI)") in ACTION_BUTTONS,
+                "TUI right-pane exposes standalone storage benchmark")
     assert_equal(len(ACTION_BUTTON_ROWS), 2, "TUI right-pane buttons use restored two-row layout")
     assert_equal(
         ACTION_BUTTON_ROWS[0],
@@ -2446,9 +2455,18 @@ def test_tui_app_actions_adapter_helpers() -> None:
             ("settings", "Settings"),
             ("migration-support", "Migration"),
             ("refresh", "Refresh"),
+            ("storage-benchmark-info", "Storage (CLI)"),
         ),
         "TUI right-pane second button row matches restored layout",
     )
+    assert_equal(context_action_button_rows("settings"), SETTINGS_ACTION_BUTTON_ROWS,
+                 "TUI Settings view replaces generic panel with settings controls")
+    assert_equal(context_action_button_rows("profiles"), ACTION_BUTTON_ROWS,
+                 "TUI non-settings views retain generic action panel")
+    assert_true(any(button_id == "settings-key-i" for row in SETTINGS_ACTION_BUTTON_ROWS for button_id, _label in row),
+                "TUI Settings panel exposes sample interval input")
+    assert_true(any(button_id == "settings-key-4" for row in SETTINGS_ACTION_BUTTON_ROWS for button_id, _label in row),
+                "TUI Settings panel exposes compatibility toggle")
     tui_app_source = (ROOT / "Modules" / "lvs_tui_app.py").read_text(encoding="utf-8")
     assert_true(".action-row {\n        height: 3;\n        width: 100%;" in tui_app_source, "TUI action rows span panel width")
     assert_true("#actions Button {\n        width: 1fr;" in tui_app_source, "TUI right-pane buttons share row width")
@@ -2805,6 +2823,10 @@ def test_tui_event_adapter_helpers() -> None:
     assert_equal(button_action("global-upload"), "upload_last_result", "TUI event global upload button routing")
     assert_equal(button_action("global-wall-wattage"), "edit_wall_wattage", "TUI event global wall wattage button routing")
     assert_equal(button_action("migration-support"), "show_migration_support", "TUI event migration support routing")
+    assert_equal(button_action("storage-benchmark-info"), "show_storage_benchmark_info",
+                 "TUI event storage benchmark information routing")
+    assert_equal(button_action("settings-key-i"), "settings_key:i",
+                 "TUI settings action button routing")
     assert_equal(button_action("global-back"), "cancel_setup_input", "TUI event global back button routing")
     assert_equal(button_action("global-quit"), "quit", "TUI event global quit button routing")
     for button_id, label in GLOBAL_ACTION_BUTTONS:
@@ -2858,6 +2880,68 @@ def test_tui_event_adapter_helpers() -> None:
         assert_true(event.stopped, "TUI event stops result artifact detail action")
 
     asyncio.run(run_result_route_check())
+
+    class SettingsRouteService:
+        settings = SimpleNamespace(sample_interval_seconds=5.0)
+
+        @staticmethod
+        def settings_action_for_key(key: str) -> FrontendActionSpec:
+            mapping = {
+                "i": FrontendActionSpec("i", "input", "sample_interval_seconds", "edit sample interval"),
+                "4": FrontendActionSpec("4", "toggle_bool", "export_compatibility_json", "toggle compatibility"),
+            }
+            return mapping.get(key, FrontendActionSpec(key, ""))
+
+        @staticmethod
+        def settings_input_label(field: str) -> str:
+            return "Sample interval seconds" if field == "sample_interval_seconds" else field
+
+        @staticmethod
+        def toggle_bool_setting_text(_field: str) -> str:
+            return "settings toggled"
+
+    class SettingsRouteTui(TuiEventAdapterMixin):
+        def __init__(self, view_mode: str = "settings") -> None:
+            self.run_in_progress = False
+            self.upload_in_progress = False
+            self.pending_input_field = None
+            self.view_mode = view_mode
+            self.service = SettingsRouteService()
+            self.input_target = ""
+            self.detail = ""
+            self.status = ""
+
+        def _begin_settings_input(self, target: str) -> None:
+            self.input_target = target
+
+        def _set_detail(self, text: str) -> None:
+            self.detail = text
+
+        def _set_status(self, text: str) -> None:
+            self.status = text
+
+    async def run_settings_route_check() -> None:
+        settings_tui = SettingsRouteTui()
+        input_event = KeyEvent()
+        input_event.key = "i"
+        await settings_tui.on_key(input_event)
+        assert_equal(settings_tui.input_target, "sample_interval_seconds",
+                     "TUI Settings I hotkey opens sample interval input")
+        assert_true(input_event.stopped, "TUI Settings input hotkey consumes the event")
+        button_event = SimpleNamespace(button=SimpleNamespace(id="settings-key-4"))
+        settings_tui._interaction_locked = lambda: False
+        await settings_tui.on_button_pressed(button_event)
+        assert_equal(settings_tui.detail, "settings toggled", "TUI Settings button invokes toggle")
+        settings_tui.input_target = ""
+        await settings_tui.on_list_view_selected(SimpleNamespace(list_view=SimpleNamespace(index=2)))
+        assert_equal(settings_tui.input_target, "sample_interval_seconds",
+                     "TUI Settings sidebar Enter routes selected edit action")
+        unrelated = SettingsRouteTui(view_mode="profiles")
+        handled = await unrelated._dispatch_settings_key("4")
+        assert_true(not handled, "settings action routing is disabled outside Settings view")
+        assert_equal(unrelated.detail, "", "unrelated page does not mutate a setting")
+
+    asyncio.run(run_settings_route_check())
 
     class WallWattageKeyTui(TuiEventAdapterMixin):
         def __init__(self) -> None:
@@ -8071,6 +8155,9 @@ def test_settings_and_result_action_specs() -> None:
         settings_action = service.settings_action_for_key("4")
         assert_equal(settings_action.action, "toggle_bool", "settings action kind")
         assert_equal(settings_action.target, "export_compatibility_json", "settings action target")
+        interval_action = service.settings_action_for_key("i")
+        assert_equal(interval_action.action, "input", "settings I action kind")
+        assert_equal(interval_action.target, "sample_interval_seconds", "settings I sample interval target")
         raw_action = service.settings_action_for_key("6")
         assert_equal(raw_action.target, "keep_raw_telemetry", "settings raw telemetry toggle target")
         wall_action = service.settings_action_for_key("7")
@@ -12084,6 +12171,23 @@ def test_storage_benchmark_profile_fio_and_aggregation() -> None:
     missing = storage_benchmark_capability(which=lambda _name: None)
     assert_equal(missing["status"], "unavailable", "missing fio is optional unavailable")
     assert_equal(missing["severity"], "warn", "missing fio is warning")
+
+
+def test_storage_benchmark_cli_discoverability() -> None:
+    class FakeLauncher:
+        def __init__(self) -> None:
+            self.inputs = iter(["4"])
+
+        def _input(self, _prompt: str) -> str:
+            return next(self.inputs)
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        RunCliAdapter(FakeLauncher()).run_tests_menu()
+    text = output.getvalue()
+    assert_true("Run Tests" in text, "CLI exposes Run Tests menu")
+    assert_true("2. Run Storage Benchmark" in text,
+                "CLI Run Tests menu exposes standalone Storage Benchmark")
 
 
 def test_storage_benchmark_target_safety_and_result_discovery() -> None:
@@ -20375,6 +20479,7 @@ def main() -> int:
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,
         test_storage_benchmark_profile_fio_and_aggregation,
+        test_storage_benchmark_cli_discoverability,
         test_storage_benchmark_target_safety_and_result_discovery,
         test_storage_benchmark_all_internal_discovery,
         test_storage_benchmark_single_and_batch_artifacts,

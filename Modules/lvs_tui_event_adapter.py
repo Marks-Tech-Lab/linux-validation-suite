@@ -16,6 +16,7 @@ from Modules.lvs_tui_event_flow import (
     view_uses_escape_cancel,
 )
 from Modules.lvs_tui_navigation_state import tui_navigation_reset
+from Modules.lvs_tui_app_actions_flow import SETTINGS_SIDEBAR_ACTIONS
 
 
 class TuiEventAdapterMixin:
@@ -65,6 +66,11 @@ class TuiEventAdapterMixin:
             await self.action_show_results()
         elif action == "show_settings":
             await self.action_show_settings()
+        elif action == "show_storage_benchmark_info":
+            await self.action_show_storage_benchmark_info()
+        elif action.startswith("settings_key:"):
+            if self.view_mode == "settings":
+                await self._dispatch_settings_key(action.split(":", 1)[1])
         elif action == "refresh":
             await self.action_refresh()
         elif action == "upload_last_result":
@@ -121,6 +127,10 @@ class TuiEventAdapterMixin:
             return
         if self.view_mode == "settings_list":
             self.setting_list_selected_index = max(0, index)
+            return
+        if self.view_mode == "settings":
+            if index_in_range(index, SETTINGS_SIDEBAR_ACTIONS):
+                await self._dispatch_settings_key(SETTINGS_SIDEBAR_ACTIONS[index][0])
             return
         if self.view_mode == "migration_support":
             await self._select_migration_support_action(index)
@@ -233,21 +243,8 @@ class TuiEventAdapterMixin:
                 event.stop()
             return
         if self.view_mode == "settings":
-            action = self.service.settings_action_for_key(event_key(event))
-            if action.action == "toggle_environment":
-                self._set_detail(self.service.toggle_environment_mode_text())
-                event.stop()
-            elif action.action == "input":
-                self._begin_settings_input(action.target)
-                event.stop()
-            elif action.action == "toggle_bool":
-                self._set_detail(self.service.toggle_bool_setting_text(action.target))
-                event.stop()
-            elif action.action == "settings_list":
-                await self._open_settings_list(action.target)
-                event.stop()
-            elif action.action == "google_drive_readiness":
-                self._set_detail(self.service.google_drive_readiness_text())
+            handled = await self._dispatch_settings_key(event_key(event))
+            if handled:
                 event.stop()
             return
         if self.view_mode == "settings_list":
@@ -349,6 +346,9 @@ class TuiEventAdapterMixin:
         if self.view_mode == "settings_list":
             await self.action_show_settings()
             return
+        if self.view_mode in {"settings", "storage_benchmark_info"} and not self.pending_input_field:
+            await self.action_show_profiles()
+            return
         if self.view_mode == "setup_history":
             await self._restore_setup_sidebar()
             return
@@ -384,6 +384,28 @@ class TuiEventAdapterMixin:
         elif self.last_run_dir is not None:
             self._set_detail(self._post_run_operator_text(self.last_run_dir, self._post_run_text(self.last_run_dir)))
             self._set_status("Run complete | Prompt cancelled")
+
+    async def _dispatch_settings_key(self, key: str) -> bool:
+        if self.view_mode != "settings":
+            return False
+        action = self.service.settings_action_for_key(key)
+        if action.action == "toggle_environment":
+            self._set_detail(self.service.toggle_environment_mode_text())
+            self._set_status("Settings updated | Environment mode")
+        elif action.action == "input":
+            self._begin_settings_input(action.target)
+            self._set_status(f"Editing setting | {self.service.settings_input_label(action.target)}")
+        elif action.action == "toggle_bool":
+            self._set_detail(self.service.toggle_bool_setting_text(action.target))
+            self._set_status(f"Settings updated | {action.label}")
+        elif action.action == "settings_list":
+            await self._open_settings_list(action.target)
+        elif action.action == "google_drive_readiness":
+            self._set_detail(self.service.google_drive_readiness_text())
+            self._set_status("Settings | Google Drive readiness")
+        else:
+            return False
+        return True
 
     async def _commit_setup_input(self) -> None:
         if not self.pending_input_field:

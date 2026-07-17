@@ -27,6 +27,7 @@ from Modules.lvs_tui_app_actions_flow import (
     GLOBAL_ACTION_BUTTONS,
     action_layout_width,
     compact_action_help_text,
+    context_action_button_rows,
     global_action_markup,
     layout_action_button_rows,
 )
@@ -99,6 +100,9 @@ class LinuxValidationSuiteTui(
         width: 100%;
         padding: 0 1;
         border-top: solid $primary;
+    }
+    #actions.settings-actions {
+        height: 13;
     }
     .action-row {
         height: 3;
@@ -212,6 +216,7 @@ class LinuxValidationSuiteTui(
         self.post_run_upload_prompt_text = ""
         self._last_global_action_width: Optional[int] = None
         self._rendered_global_action_width: Optional[int] = None
+        self._rendered_context_action_mode: Optional[str] = None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self.run_in_progress:
@@ -221,7 +226,7 @@ class LinuxValidationSuiteTui(
         if self.pending_input_field or self.setup_picker_key:
             return True if action == "cancel_setup_input" else None
         if action == "cancel_setup_input":
-            return False
+            return True if self.view_mode in {"settings", "settings_list", "storage_benchmark_info"} else False
         return True
 
     def compose(self) -> ComposeResult:
@@ -348,6 +353,26 @@ class LinuxValidationSuiteTui(
         self.query_one("#detail", Static).update(text)
         self._refresh_live_system_pane()
         self._set_action_help()
+        self._refresh_context_action_buttons()
+
+    def _refresh_context_action_buttons(self) -> None:
+        try:
+            mode = "settings" if self.view_mode == "settings" else "default"
+            if mode == self._rendered_context_action_mode:
+                return
+            self._rendered_context_action_mode = mode
+            container = self.query_one("#actions")
+            container.set_class(mode == "settings", "settings-actions")
+            container.remove_children()
+            for row in context_action_button_rows(self.view_mode):
+                container.mount(
+                    Horizontal(
+                        *(Button(label, id=button_id) for button_id, label in row),
+                        classes="action-row",
+                    )
+                )
+        except Exception:
+            pass
 
     def _refresh_live_system_pane(self) -> None:
         try:

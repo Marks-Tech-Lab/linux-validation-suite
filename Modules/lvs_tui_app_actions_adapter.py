@@ -107,6 +107,31 @@ class TuiAppActionsAdapterMixin:
         self._set_detail(self.service.settings_summary_text())
         self._focus_items()
 
+    async def action_show_storage_benchmark_info(self) -> None:
+        self.view_mode = "storage_benchmark_info"
+        self._set_status("Storage Benchmark | CLI-only workflow")
+        self._apply_navigation_reset(
+            tui_navigation_reset(clear_selected_profile=True, clear_selected_result=True)
+        )
+        self.query_one("#sidebar-title").update("Storage Benchmark")
+        await self._replace_sidebar_labels(
+            self.query_one("#items"),
+            ["Standalone Storage Benchmark (CLI-only)"],
+            selected_index=0,
+        )
+        self._set_detail(
+            "Storage Benchmark\n"
+            "=================\n\n"
+            "This is a standalone KDiskMark/CDM-style fio workflow. It is intentionally not a validation "
+            "profile or StageModule.\n\n"
+            "TUI execution is not enabled yet. Use the CLI path:\n"
+            "Main menu -> Run Tests -> Run Storage Benchmark\n\n"
+            "The CLI offers one selected target or all eligible internal drives. Completed benchmark "
+            "folders remain visible under Results.\n\n"
+            "Press Esc or P to return to Profiles."
+        )
+        self._focus_items()
+
     def action_dry_run(self) -> None:
         if self.selected_profile is None:
             self._set_detail("Select a profile first.")
@@ -159,6 +184,9 @@ class TuiAppActionsAdapterMixin:
             self._set_status("Dependency check failed")
 
     async def action_show_migration_support(self) -> None:
+        if self.view_mode == "settings":
+            await self._open_settings_list("cpu_cooler_options")
+            return
         self.view_mode = "migration_support"
         self.pending_migration_bundle_path = None
         self._set_status("Ready | Migration / Support")
@@ -304,6 +332,10 @@ class TuiAppActionsAdapterMixin:
         await self._show_run_setup_sidebar()
 
     async def action_edit_profile(self) -> None:
+        if self.view_mode == "settings":
+            self._set_detail(self.service.google_drive_readiness_text())
+            self._set_status("Settings | Google Drive readiness")
+            return
         if self.selected_profile is None:
             self._set_detail("Select a profile first.")
             return
@@ -316,6 +348,15 @@ class TuiAppActionsAdapterMixin:
             self._set_detail(f"Unable to open profile editor:\n{exc}")
 
     async def action_new_profile(self) -> None:
+        if self.view_mode == "settings_list":
+            self._begin_settings_list_input("rename")
+            return
+        if self.view_mode == "settings":
+            self._set_detail(
+                self.service.toggle_bool_setting_text("strict_threshold_recommendation_warnings")
+            )
+            self._set_status("Settings updated | strict threshold recommendation warnings")
+            return
         self._set_status("Creating new profile")
         self._apply_navigation_reset(tui_navigation_reset(clear_selected_profile=True))
         try:

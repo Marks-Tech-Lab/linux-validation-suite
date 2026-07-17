@@ -117,11 +117,13 @@ class TuiSettingsAdapterMixin:
         if field == "__settings_department":
             self._set_detail(self.service.set_department_text(value))
             self._clear_setup_input(focus_items=True)
+            self._set_status("Settings updated | Department")
             return True
         if field.startswith("__settings_numeric:"):
             attr_name = field.split(":", 1)[1]
             self._set_detail(self.service.set_numeric_setting_text(attr_name, value))
             self._clear_setup_input(focus_items=True)
+            self._set_status(f"Settings updated | {self.service.settings_input_label(attr_name)}")
             return True
         if field == "__settings_list_add":
             list_key = self.setting_list_key or ""

@@ -75,6 +75,10 @@ class TuiRunExecutionAdapterMixin:
         self._set_status(presentation.status)
 
     def action_run_selected(self) -> None:
+        if self.view_mode == "settings":
+            self._set_detail(self.service.toggle_bool_setting_text("google_drive_move_to_uploaded_on_success"))
+            self._set_status("Settings updated | toggle move successful uploads")
+            return
         if self.view_mode not in {"profiles", "setup"} or self.selected_profile is None:
             self._set_detail("Select a profile first.")
             return
@@ -147,6 +151,10 @@ class TuiRunExecutionAdapterMixin:
         thread.start()
 
     def action_edit_wall_wattage(self) -> None:
+        if self.view_mode == "settings":
+            self._set_detail(self.service.toggle_bool_setting_text("prompt_for_wall_wattage"))
+            self._set_status("Settings updated | wall-wattage prompt")
+            return
         if self.last_run_dir is None or self.last_run_metadata is None:
             self._set_detail("No completed TUI run is available for wall-wattage entry yet.")
             return
@@ -167,6 +175,10 @@ class TuiRunExecutionAdapterMixin:
         self._set_status(spec.status)
 
     def action_upload_last_result(self) -> None:
+        if self.view_mode == "settings":
+            self._set_detail(self.service.toggle_bool_setting_text("google_drive_prompt_after_run"))
+            self._set_status("Settings updated | Google Drive upload prompt")
+            return
         self._start_upload_last_result()
 
     def _start_upload_last_result(self) -> bool:

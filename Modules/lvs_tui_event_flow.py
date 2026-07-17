@@ -26,6 +26,7 @@ BUTTON_ACTIONS = {
     "esc-back": "cancel_setup_input",
     "cancel": "cancel_setup_input",
     "quit": "quit",
+    "storage-benchmark-info": "show_storage_benchmark_info",
 }
 
 ESCAPE_CANCEL_VIEW_MODES = {
@@ -43,6 +44,8 @@ STAGE_INPUT_FIELDS = {"stage_duration", "trim_start", "trim_end", "segment_label
 
 def button_action(button_id: object) -> str:
     value = str(button_id or "")
+    if value.startswith("settings-key-"):
+        return f"settings_key:{value.removeprefix('settings-key-')}"
     if value.startswith("global-"):
         value = value.removeprefix("global-")
     return BUTTON_ACTIONS.get(value, "")
