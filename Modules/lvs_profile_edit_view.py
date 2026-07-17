@@ -363,6 +363,21 @@ class ProfileEditPresenter:
                 f"Stage {stage_index + 1} trim end seconds",
                 str(stage.normalization.trim_end_seconds),
             ),
+            "storage_target_path": (
+                "__profile_stage_storage_target_path",
+                f"Stage {stage_index + 1} Storage Benchmark target directory",
+                str(stage.modules.storage_benchmark.target_path),
+            ),
+            "storage_test_size": (
+                "__profile_stage_storage_test_size",
+                f"Stage {stage_index + 1} Storage Benchmark test size GiB (1-8)",
+                str(stage.modules.storage_benchmark.test_size_gib),
+            ),
+            "storage_runs": (
+                "__profile_stage_storage_runs",
+                f"Stage {stage_index + 1} Storage Benchmark runs (1-9)",
+                str(stage.modules.storage_benchmark.runs),
+            ),
         }
         if normalized not in field_map:
             raise ValueError("")
@@ -372,6 +387,8 @@ class ProfileEditPresenter:
             raise ValueError("Selected stage does not have a VRAM workload.")
         if normalized == "memory_allocation" and not stage.modules.memory.enabled:
             raise ValueError("Selected stage does not have a memory workload.")
+        if normalized.startswith("storage_") and not stage.modules.storage_benchmark.enabled:
+            raise ValueError("Selected stage does not have a Storage Benchmark module.")
         pending, label, initial = field_map[normalized]
         return SetupInputSpec(field=pending, label=label, initial_value=initial)
 
@@ -389,10 +406,17 @@ class ProfileEditPresenter:
                 f"Strict warnings: {profile.defaults.strict_threshold_recommendation_warnings}",
             ),
         ]
-        for template in self.profile_editor.stage_templates():
+        templates = self.profile_editor.stage_templates()
+        templates.sort(key=lambda item: 0 if item.get("key") == "storage_benchmark" else 1)
+        for template in templates:
             key = str(template.get("key") or "cpu")
             label = str(template.get("label") or key)
-            rows.append(ProfileEditItem("add_template", f"Add {label} stage", template_key=key))
+            action_label = (
+                "Add Storage Benchmark Stage (completion-based)"
+                if key == "storage_benchmark"
+                else f"Add {label} stage"
+            )
+            rows.append(ProfileEditItem("add_template", action_label, template_key=key))
         for index, stage in enumerate(profile.stages):
             label = labels[index] if index < len(labels) else stage.name
             state = "enabled" if stage.enabled else "disabled"
@@ -404,6 +428,35 @@ class ProfileEditPresenter:
                     index=index,
                 )
             )
+            if stage.modules.storage_benchmark.enabled:
+                storage = stage.modules.storage_benchmark
+                rows.extend([
+                    ProfileEditItem(
+                        "storage_target_mode",
+                        f"  Storage target mode: {storage.target_mode}",
+                        index=index,
+                    ),
+                    ProfileEditItem(
+                        "storage_target_path",
+                        f"  Storage target path: {storage.target_path or '(not used for all_internal)'}",
+                        index=index,
+                    ),
+                    ProfileEditItem(
+                        "storage_test_size",
+                        f"  Storage test size: {storage.test_size_gib} GiB",
+                        index=index,
+                    ),
+                    ProfileEditItem(
+                        "storage_runs",
+                        f"  Storage runs: {storage.runs}",
+                        index=index,
+                    ),
+                    ProfileEditItem(
+                        "storage_allow_system",
+                        f"  Allow system drive: {storage.allow_system_drive}",
+                        index=index,
+                    ),
+                ])
         return rows
 
     def summary_text(self, edit: ProfileEditState) -> str:
@@ -452,6 +505,8 @@ class ProfileEditPresenter:
                 "",
                 "Actions:",
                 "- Enter activates the highlighted edit action.",
+                "- Choose Add Storage Benchmark Stage (completion-based) to add storage_benchmark to this JSON profile.",
+                "- Storage Benchmark configuration is edited through the indented rows beneath its stage.",
                 "- S saves the profile after validation.",
                 "- D edits selected stage duration.",
                 "- L edits selected stage label.",

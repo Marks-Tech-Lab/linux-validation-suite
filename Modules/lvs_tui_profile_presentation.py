@@ -18,8 +18,8 @@ def profile_summary_presentation(
         + str(profile_summary)
         + "\n\nActions:\n"
         "- Enter opens Run Setup for this profile.\n"
-        "- N creates a new profile in the Profile Edit screen.\n"
-        "- M opens Profile Edit for persistent profile changes.\n"
+        "- N creates a new profile; choose Add Storage Benchmark Stage in the Profile Edit list.\n"
+        "- M opens Profile Edit; choose Add Storage Benchmark Stage to add the completion-based module.\n"
         "- D runs Dry Run / Diagnostics.\n"
         "- U starts run confirmation.\n"
         "- A audits all profiles.\n"

@@ -431,6 +431,28 @@ class ProfileEditor:
         stage.modules.vram.allocation_percent = self._clamp_int(value, 1, 95, stage.modules.vram.allocation_percent)
         return stage.modules.vram.allocation_percent
 
+    def cycle_storage_target_mode(self, stage: StageConfig) -> str:
+        storage = stage.modules.storage_benchmark
+        storage.target_mode = "selected_target" if storage.target_mode == "all_internal" else "all_internal"
+        return storage.target_mode
+
+    def set_storage_target_path(self, stage: StageConfig, value: str) -> str:
+        stage.modules.storage_benchmark.target_path = str(value or "").strip()
+        return stage.modules.storage_benchmark.target_path
+
+    def set_storage_test_size_gib(self, stage: StageConfig, value: int) -> int:
+        stage.modules.storage_benchmark.test_size_gib = self._clamp_int(value, 1, 8, 1)
+        return stage.modules.storage_benchmark.test_size_gib
+
+    def set_storage_runs(self, stage: StageConfig, value: int) -> int:
+        stage.modules.storage_benchmark.runs = self._clamp_int(value, 1, 9, 5)
+        return stage.modules.storage_benchmark.runs
+
+    def toggle_storage_allow_system_drive(self, stage: StageConfig) -> bool:
+        storage = stage.modules.storage_benchmark
+        storage.allow_system_drive = not bool(storage.allow_system_drive)
+        return storage.allow_system_drive
+
     def _stage(self, profile: ValidationProfile, index: int) -> StageConfig:
         self._require_stage_index(profile, index)
         return profile.stages[index]

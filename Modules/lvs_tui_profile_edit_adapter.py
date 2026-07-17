@@ -91,6 +91,14 @@ class TuiProfileEditAdapterMixin:
         if kind == "add_template":
             await self._add_profile_stage_from_template(item.template_key or "cpu")
             return
+        if kind in {"storage_target_mode", "storage_allow_system"} and item.index is not None:
+            action = "storage_target_mode" if kind == "storage_target_mode" else "storage_allow_system"
+            changed = self.service.apply_profile_storage_action(self.profile_edit, item.index, action)
+            await self._show_profile_edit(f"Storage Benchmark stage {item.index + 1} updated: {changed}")
+            return
+        if kind in {"storage_target_path", "storage_test_size", "storage_runs"} and item.index is not None:
+            self._begin_profile_stage_input(kind, stage_index=item.index)
+            return
         if kind == "stage":
             self._set_detail(selected_stage_detail_text(self.service.profile_edit_summary_text(self.profile_edit)))
 
@@ -247,10 +255,10 @@ class TuiProfileEditAdapterMixin:
             )
         )
 
-    def _begin_profile_stage_input(self, field: str) -> None:
+    def _begin_profile_stage_input(self, field: str, *, stage_index: Optional[int] = None) -> None:
         if self.profile_edit is None:
             return
-        index = self._selected_profile_edit_stage_index()
+        index = stage_index if stage_index is not None else self._selected_profile_edit_stage_index()
         if index is None:
             self._set_detail("Select a stage row first.")
             return

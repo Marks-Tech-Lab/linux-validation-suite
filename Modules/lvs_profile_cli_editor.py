@@ -567,4 +567,23 @@ class ProfileCliEditor:
             return True, host._choose_vram_backend_preference(stage.modules.vram.backend_preference)
         if action == "vram_allocation":
             return True, host._choose_allocation_percent("VRAM", stage.modules.vram.allocation_percent)
+        if action == "storage_target_mode":
+            return True, None
+        if action == "storage_target_path":
+            value = host._input(
+                f"Storage target directory [{stage.modules.storage_benchmark.target_path}]: "
+            ).strip()
+            return bool(value), value
+        if action == "storage_test_size":
+            value = host._input(
+                f"Storage test size GiB 1-8 [{stage.modules.storage_benchmark.test_size_gib}]: "
+            ).strip()
+            return bool(value), value
+        if action == "storage_runs":
+            value = host._input(
+                f"Storage benchmark runs 1-9 [{stage.modules.storage_benchmark.runs}]: "
+            ).strip()
+            return bool(value), value
+        if action == "storage_allow_system":
+            return True, None
         return True, None

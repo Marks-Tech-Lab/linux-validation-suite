@@ -118,6 +118,17 @@ class SuiteProfileServiceMixin:
             trim_start=trim_start,
         ).value
 
+    def apply_profile_storage_action(self, edit: ProfileEditState, stage_index: int, action: str) -> Any:
+        result = self.profile_edit_controller.apply_stage_action(
+            edit.profile,
+            edit.labels,
+            stage_index,
+            action,
+        )
+        edit.labels = result.labels
+        edit.dirty = True
+        return result.value
+
     def save_profile_edit(self, edit: ProfileEditState) -> str:
         preparation = self.profile_save.prepare(edit.profile, edit.labels)
         edit.labels = preparation.labels

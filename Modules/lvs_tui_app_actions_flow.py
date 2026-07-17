@@ -41,7 +41,6 @@ ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
     ("settings", "Settings"),
     ("migration-support", "Migration"),
     ("refresh", "Refresh"),
-    ("storage-benchmark-info", "Storage Benchmark"),
 )
 
 
@@ -61,7 +60,6 @@ ACTION_BUTTON_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
         ("settings", "Settings"),
         ("migration-support", "Migration"),
         ("refresh", "Refresh"),
-        ("storage-benchmark-info", "Storage Bench"),
     ),
 )
 
@@ -362,7 +360,7 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
         )
     return _wrap_help_text(
         "Main keys",
-        "Enter setup/review | Storage Bench info | D dry run | S results | X settings | R refresh | Q quit",
+        "N new profile | M edit profile | Add Storage Benchmark Stage in editor | D dry run | S results | Q quit",
         terminal_width,
     )
 

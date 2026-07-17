@@ -363,7 +363,10 @@ class TuiAppActionsAdapterMixin:
         try:
             self.profile_edit = self.service.create_new_profile_edit()
             self.profile_edit_selected_index = 0
-            await self._show_profile_edit("New profile created in memory. Rename it, add stages, then press S to save.")
+            await self._show_profile_edit(
+                "New profile created in memory. Rename it, then choose Add Storage Benchmark Stage "
+                "(or another stage template) from the left list and press S to save the JSON profile."
+            )
         except Exception as exc:
             self._set_detail(f"Unable to create profile:\n{exc}")
 

@@ -42,6 +42,11 @@ class ProfileEditController:
         ProfileStageAction("gpu_allocation", "Edit 3D VRAM allocation percent"),
         ProfileStageAction("vram_backend", "Edit VRAM backend preference"),
         ProfileStageAction("vram_allocation", "Edit VRAM allocation percent"),
+        ProfileStageAction("storage_target_mode", "Cycle Storage Benchmark target mode"),
+        ProfileStageAction("storage_target_path", "Edit Storage Benchmark target path"),
+        ProfileStageAction("storage_test_size", "Edit Storage Benchmark test size GiB"),
+        ProfileStageAction("storage_runs", "Edit Storage Benchmark run count"),
+        ProfileStageAction("storage_allow_system", "Toggle Storage Benchmark system-drive permission"),
         ProfileStageAction("strict", "Cycle stage strict threshold warnings override"),
         ProfileStageAction("back", "Back"),
     )
@@ -110,6 +115,8 @@ class ProfileEditController:
             return "3D module is not enabled on this stage."
         if action in {"vram_backend", "vram_allocation"} and not stage.modules.vram.enabled:
             return "VRAM module is not enabled on this stage."
+        if action.startswith("storage_") and not stage.modules.storage_benchmark.enabled:
+            return "Storage Benchmark module is not enabled on this stage."
         return ""
 
     def apply_stage_action(
@@ -163,6 +170,16 @@ class ProfileEditController:
             changed = self.profile_editor.set_gpu_3d_allocation_percent(stage, int(value))
         elif action == "vram_allocation":
             changed = self.profile_editor.set_vram_allocation_percent(stage, int(value))
+        elif action == "storage_target_mode":
+            changed = self.profile_editor.cycle_storage_target_mode(stage)
+        elif action == "storage_target_path":
+            changed = self.profile_editor.set_storage_target_path(stage, str(value or ""))
+        elif action == "storage_test_size":
+            changed = self.profile_editor.set_storage_test_size_gib(stage, int(value))
+        elif action == "storage_runs":
+            changed = self.profile_editor.set_storage_runs(stage, int(value))
+        elif action == "storage_allow_system":
+            changed = self.profile_editor.toggle_storage_allow_system_drive(stage)
         elif action == "trim":
             self.profile_editor.set_stage_trim(profile, index, int(value), int(secondary_value))
             changed = stage
@@ -233,6 +250,9 @@ class ProfileEditController:
                 "__profile_stage_label": "label",
                 "__profile_stage_vram_allocation": "vram_allocation",
                 "__profile_stage_memory_allocation": "memory_allocation",
+                "__profile_stage_storage_target_path": "storage_target_path",
+                "__profile_stage_storage_test_size": "storage_test_size",
+                "__profile_stage_storage_runs": "storage_runs",
             }
             if normalized == "__profile_stage_trim_end":
                 if trim_start is None:
@@ -248,7 +268,7 @@ class ProfileEditController:
             elif normalized in action_map:
                 action = action_map[normalized]
                 parsed: Any = value
-                if action in {"duration", "vram_allocation", "memory_allocation"}:
+                if action in {"duration", "vram_allocation", "memory_allocation", "storage_test_size", "storage_runs"}:
                     parsed = int(float(value or "0"))
                 result = self.apply_stage_action(edit.profile, edit.labels, stage_index, action, parsed)
             else:

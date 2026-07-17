@@ -1341,8 +1341,8 @@ def test_tui_profile_presentation_helpers() -> None:
         "Profile summary\n\n"
         "Actions:\n"
         "- Enter opens Run Setup for this profile.\n"
-        "- N creates a new profile in the Profile Edit screen.\n"
-        "- M opens Profile Edit for persistent profile changes.\n"
+        "- N creates a new profile; choose Add Storage Benchmark Stage in the Profile Edit list.\n"
+        "- M opens Profile Edit; choose Add Storage Benchmark Stage to add the completion-based module.\n"
         "- D runs Dry Run / Diagnostics.\n"
         "- U starts run confirmation.\n"
         "- A audits all profiles.\n"
@@ -1870,6 +1870,113 @@ def test_tui_profile_edit_adapter_helpers() -> None:
         None,
         "TUI profile edit trim start ignores non-trim fields",
     )
+
+    class AuthoringTui(TuiProfileEditAdapterMixin):
+        def __init__(self, service, edit) -> None:
+            self.service = service
+            self.profile_edit = edit
+            self.profile_edit_items = service.profile_edit_items(edit)
+            self.profile_edit_selected_index = 0
+            self.profile_edit_discard_confirm = False
+            self.pending_stage_index = None
+            self.pending_trim_start = None
+            self.pending_input_field = None
+            self.detail = ""
+            self.last_input_state = None
+
+        async def _show_profile_edit(self, detail: str = "") -> None:
+            self.profile_edit_items = self.service.profile_edit_items(self.profile_edit)
+            self.detail = detail or self.service.profile_edit_summary_text(self.profile_edit)
+
+        def _apply_input_state(self, state) -> None:
+            self.last_input_state = state
+            self.pending_input_field = state.pending_field
+
+        def _clear_setup_input(self, *args, **kwargs) -> None:
+            self.pending_input_field = None
+
+        def _focus_items(self) -> None:
+            return
+
+        def _set_detail(self, text: str) -> None:
+            self.detail = text
+
+    async def run_storage_authoring_check() -> None:
+        with TemporaryDirectory(dir="/tmp") as tmp:
+            root = Path(tmp)
+            service = SuiteAppService()
+            service.settings.profiles_dir = str(root)
+            service.profile_loader.profiles_dir = root
+            edit = service.create_new_profile_edit("TUI Storage Authoring")
+            tui = AuthoringTui(service, edit)
+            template_index = next(
+                index for index, item in enumerate(tui.profile_edit_items)
+                if item.kind == "add_template" and item.template_key == "storage_benchmark"
+            )
+            assert_equal(
+                tui.profile_edit_items[template_index].label,
+                "Add Storage Benchmark Stage (completion-based)",
+                "TUI Profile Edit renders prominent storage template action",
+            )
+            first_template = next(item for item in tui.profile_edit_items if item.kind == "add_template")
+            assert_equal(first_template.template_key, "storage_benchmark", "TUI promotes storage template to top of add actions")
+            await tui._activate_profile_edit_item(template_index)
+            storage_stage = edit.profile.stages[-1]
+            assert_true(storage_stage.modules.storage_benchmark.enabled,
+                        "Enter on TUI storage template adds storage_benchmark module")
+            assert_equal(storage_stage.duration_seconds, None, "TUI-created storage stage has no fake duration")
+            storage_rows = {
+                item.kind: item for item in tui.profile_edit_items
+                if item.index == len(edit.profile.stages) - 1 and item.kind.startswith("storage_")
+            }
+            assert_equal(
+                set(storage_rows),
+                {"storage_target_mode", "storage_target_path", "storage_test_size", "storage_runs", "storage_allow_system"},
+                "TUI renders all indented storage configuration rows",
+            )
+
+            await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_target_mode"]))
+            assert_equal(storage_stage.modules.storage_benchmark.target_mode, "selected_target",
+                         "TUI storage target mode cycles to selected_target")
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_allow_system"]))
+            assert_true(storage_stage.modules.storage_benchmark.allow_system_drive,
+                        "TUI storage allow-system row toggles")
+
+            for kind, entered, expected_field in (
+                ("storage_target_path", "/safe/mounted/path", "__profile_stage_storage_target_path"),
+                ("storage_test_size", "99", "__profile_stage_storage_test_size"),
+                ("storage_runs", "0", "__profile_stage_storage_runs"),
+            ):
+                storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+                await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows[kind]))
+                assert_equal(tui.pending_input_field, expected_field, f"TUI {kind} opens its input prompt")
+                await tui._commit_profile_edit_input(expected_field, entered)
+            assert_equal(storage_stage.modules.storage_benchmark.target_path, "/safe/mounted/path",
+                         "TUI storage target path input commits")
+            assert_equal(storage_stage.modules.storage_benchmark.test_size_gib, 8,
+                         "TUI storage test size clamps to 8 GiB")
+            assert_equal(storage_stage.modules.storage_benchmark.runs, 1,
+                         "TUI storage runs clamp to 1")
+
+            stage_row_index = next(
+                index for index, item in enumerate(tui.profile_edit_items)
+                if item.kind == "stage" and item.index == 1
+            )
+            tui.profile_edit_selected_index = stage_row_index
+            tui._begin_profile_stage_input("duration")
+            assert_true("completion-based" in tui.detail and "no stage duration" in tui.detail,
+                        "TUI disables duration input for Storage Benchmark")
+
+            service.save_profile_edit(edit)
+            saved = json.loads(edit.profile_path.read_text(encoding="utf-8"))
+            saved_storage = saved["stages"][1]["modules"]["storage_benchmark"]
+            assert_true(saved_storage["enabled"], "TUI-authored profile JSON contains storage_benchmark")
+            assert_equal(saved["stages"][1]["duration_seconds"], None,
+                         "TUI-authored JSON retains null completion duration")
+            assert_equal(saved_storage["target_mode"], "selected_target", "TUI-authored JSON retains target mode")
+
+    asyncio.run(run_storage_authoring_check())
 
 
 def test_tui_results_adapter_helpers() -> None:
@@ -2431,8 +2538,8 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_true(("results", "Results") in ACTION_BUTTONS, "TUI right-pane buttons keep Results action")
     assert_true(("settings", "Settings") in ACTION_BUTTONS, "TUI right-pane buttons keep Settings action")
     assert_true(("migration-support", "Migration") in ACTION_BUTTONS, "TUI right-pane buttons expose migration support")
-    assert_true(("storage-benchmark-info", "Storage Benchmark") in ACTION_BUTTONS,
-                "TUI right-pane exposes standalone storage benchmark")
+    assert_true(not any(button_id == "storage-benchmark-info" for button_id, _label in ACTION_BUTTONS),
+                "TUI Profiles actions do not present standalone storage benchmark as primary integration")
     assert_equal(len(ACTION_BUTTON_ROWS), 2, "TUI right-pane buttons use restored two-row layout")
     assert_equal(
         ACTION_BUTTON_ROWS[0],
@@ -2455,7 +2562,6 @@ def test_tui_app_actions_adapter_helpers() -> None:
             ("settings", "Settings"),
             ("migration-support", "Migration"),
             ("refresh", "Refresh"),
-            ("storage-benchmark-info", "Storage Bench"),
         ),
         "TUI right-pane second button row matches restored layout",
     )
@@ -2468,6 +2574,9 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_true(any(button_id == "settings-key-4" for row in SETTINGS_ACTION_BUTTON_ROWS for button_id, _label in row),
                 "TUI Settings panel exposes compatibility toggle")
     tui_app_source = (ROOT / "Modules" / "lvs_tui_app.py").read_text(encoding="utf-8")
+    tui_actions_source = (ROOT / "Modules" / "lvs_tui_app_actions_adapter.py").read_text(encoding="utf-8")
+    assert_true("choose Add Storage Benchmark Stage" in tui_actions_source,
+                "TUI New Profile guidance directs users to normal storage stage authoring")
     assert_true(".action-row {\n        height: 3;\n        width: 100%;" in tui_app_source, "TUI action rows span panel width")
     assert_true("#actions Button {\n        width: 1fr;" in tui_app_source, "TUI right-pane buttons share row width")
     assert_true("margin-right: 0;" in tui_app_source, "TUI right-pane buttons avoid standalone gaps")
@@ -11456,7 +11565,7 @@ def test_profile_edit_controller_dispatch() -> None:
     labels = ["Combined Stage"]
 
     assert_equal(controller.stage_action("1").key, "detail", "profile controller first action")
-    assert_equal(controller.stage_action("17").key, "back", "profile controller final action")
+    assert_equal(controller.stage_action(str(len(controller.STAGE_ACTIONS))).key, "back", "profile controller final action")
     assert_equal(controller.stage_action("bad"), None, "profile controller invalid action")
     disabled = editor.create_stage(profile, test_type="Combined", duration_seconds=60)
     assert_equal(
@@ -12191,6 +12300,7 @@ def test_storage_benchmark_cli_discoverability() -> None:
 
 
 def test_storage_benchmark_profile_module_integration() -> None:
+    from Modules.lvs_profile_cli_editor import ProfileCliEditor, TEST_TYPE_CATALOG
     from Modules.lvs_profile_editor import ProfileEditor
     from Modules.lvs_profile_models import (
         ModuleCpu,
@@ -12205,6 +12315,25 @@ def test_storage_benchmark_profile_module_integration() -> None:
     from Modules.lvs_profile_validation import ProfileValidator
     from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
     from Modules.lvs_storage_benchmark_stage import run_storage_benchmark_stage
+
+    assert_true("Storage Benchmark" in TEST_TYPE_CATALOG,
+                "CLI profile creation catalog exposes Storage Benchmark")
+    assert_true(any(action.key == "storage_target_mode" for action in ProfileEditController.STAGE_ACTIONS),
+                "CLI profile stage editor exposes Storage Benchmark settings")
+
+    class FakeProfileCliHost:
+        def __init__(self) -> None:
+            self.profile_editor = ProfileEditor()
+            self.inputs = iter(("2", "1", "5", "n"))
+
+        def _input(self, _prompt: str) -> str:
+            return next(self.inputs)
+
+    cli_modules = ProfileCliEditor(FakeProfileCliHost()).build_stage_modules("Storage Benchmark")
+    assert_true(cli_modules.storage_benchmark.enabled, "CLI profile authoring builds storage_benchmark module")
+    assert_equal(cli_modules.storage_benchmark.target_mode, "all_internal", "CLI profile authoring target mode")
+    assert_equal(cli_modules.storage_benchmark.test_size_gib, 1, "CLI profile authoring test size")
+    assert_equal(cli_modules.storage_benchmark.runs, 5, "CLI profile authoring runs")
 
     with TemporaryDirectory(dir="/tmp") as temp_dir:
         root = Path(temp_dir)
@@ -20287,6 +20416,12 @@ def test_service_new_profile_round_trip() -> None:
         items = service.profile_edit_items(edit)
         assert_true(any(item.kind == "save" for item in items), "new profile edit save row")
         assert_true(any(item.kind == "stage" and item.index == 0 for item in items), "new profile edit stage row")
+        assert_true(any(
+            item.kind == "add_template"
+            and item.template_key == "storage_benchmark"
+            and item.label == "Add Storage Benchmark Stage (completion-based)"
+            for item in items
+        ), "new profile edit visibly exposes Storage Benchmark stage")
         service.set_profile_name(edit.profile, "Renamed Smoke Profile")
         stage, label = service.create_profile_stage_from_template(edit.profile, "gpu_vram", duration_seconds=300)
         edit.labels = service.add_profile_stage(edit.profile, edit.labels, stage, label)
