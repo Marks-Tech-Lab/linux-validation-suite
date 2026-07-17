@@ -24,10 +24,10 @@ from Modules.lvs_service_models import (
 from Modules.lvs_tui_app_actions_adapter import TuiAppActionsAdapterMixin
 from Modules.lvs_tui_app_actions_flow import (
     ACTION_BUTTON_ROWS,
-    GLOBAL_ACTION_BUTTONS,
     action_layout_width,
     compact_action_help_text,
     context_action_button_rows,
+    global_action_buttons_for_view,
     global_action_markup,
     layout_action_button_rows,
 )
@@ -191,6 +191,7 @@ class LinuxValidationSuiteTui(
         self.run_cancel_event = threading.Event()
         self.dry_run_in_progress = False
         self.upload_in_progress = False
+        self.upload_return_view_mode = "results"
         self.run_setup: Optional[RunSetupState] = None
         self.pending_input_field: Optional[str] = None
         self.pending_input_blank_default = ""
@@ -216,6 +217,7 @@ class LinuxValidationSuiteTui(
         self.post_run_upload_prompt_text = ""
         self._last_global_action_width: Optional[int] = None
         self._rendered_global_action_width: Optional[int] = None
+        self._rendered_global_action_mode: Optional[str] = None
         self._rendered_context_action_mode: Optional[str] = None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -357,7 +359,7 @@ class LinuxValidationSuiteTui(
 
     def _refresh_context_action_buttons(self) -> None:
         try:
-            mode = "settings" if self.view_mode == "settings" else "default"
+            mode = self.view_mode if self.view_mode in {"settings", "upload_active"} else "default"
             if mode == self._rendered_context_action_mode:
                 return
             self._rendered_context_action_mode = mode
@@ -434,14 +436,19 @@ class LinuxValidationSuiteTui(
     def _refresh_global_action_buttons(self) -> None:
         try:
             terminal_width = self._current_global_action_width()
-            if terminal_width == getattr(self, "_rendered_global_action_width", None):
+            mode = "upload_active" if self.view_mode == "upload_active" else "default"
+            if (
+                terminal_width == getattr(self, "_rendered_global_action_width", None)
+                and mode == getattr(self, "_rendered_global_action_mode", None)
+            ):
                 return
             rows = layout_action_button_rows(
-                GLOBAL_ACTION_BUTTONS,
+                global_action_buttons_for_view(self.view_mode),
                 available_width=terminal_width,
                 preferred_rows=2,
             )
             self._rendered_global_action_width = terminal_width
+            self._rendered_global_action_mode = mode
             container = self.query_one("#global-actions")
             container.remove_children()
             for row in rows[:4]:

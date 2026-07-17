@@ -119,7 +119,10 @@ SETTINGS_SIDEBAR_ACTIONS: Tuple[Tuple[str, str], ...] = (
 
 
 def context_action_button_rows(view_mode: str) -> Tuple[Tuple[Tuple[str, str], ...], ...]:
-    return SETTINGS_ACTION_BUTTON_ROWS if str(view_mode or "") == "settings" else ACTION_BUTTON_ROWS
+    mode = str(view_mode or "")
+    if mode == "upload_active":
+        return tuple()
+    return SETTINGS_ACTION_BUTTON_ROWS if mode == "settings" else ACTION_BUTTON_ROWS
 
 
 GLOBAL_ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
@@ -138,6 +141,13 @@ GLOBAL_ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
     ("global-back", "Esc Back"),
     ("global-quit", "Q Quit"),
 )
+
+
+def global_action_buttons_for_view(view_mode: str) -> Tuple[Tuple[str, str], ...]:
+    """Hide idle navigation controls while a background upload owns the TUI."""
+    if str(view_mode or "") == "upload_active":
+        return tuple()
+    return GLOBAL_ACTION_BUTTONS
 
 
 GLOBAL_ACTION_BAR_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
@@ -356,6 +366,12 @@ def compact_action_help_text(view_mode: str, *, terminal_width: int | None = Non
         return _wrap_help_text(
             "Run keys",
             "monitor progress here | Esc shows cancel unavailable | wait for post-run actions",
+            terminal_width,
+        )
+    elif mode == "upload_active":
+        return _wrap_help_text(
+            "Upload active",
+            "navigation is locked until Google Drive upload completes",
             terminal_width,
         )
     return _wrap_help_text(

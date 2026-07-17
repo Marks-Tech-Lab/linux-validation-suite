@@ -644,6 +644,7 @@ from Modules.lvs_tui_app_actions_flow import (
     action_layout_width,
     compact_action_help_text,
     context_action_button_rows,
+    global_action_buttons_for_view,
     global_action_cell_rows,
     global_action_keypress,
     global_action_markup,
@@ -722,8 +723,10 @@ from Modules.lvs_tui_run_presentation import (
 from Modules.lvs_tui_run_execution_flow import (
     apply_run_output_line,
     upload_active_detail,
+    upload_active_presentation,
     upload_finish_result,
     upload_not_ready_detail,
+    upload_return_view_mode,
     upload_workflow_detail,
     uploaded_result_dir,
 )
@@ -2247,6 +2250,15 @@ def test_tui_run_execution_adapter_helpers() -> None:
     not_ready = upload_not_ready_detail(Path("result"), {"missing": ["credentials"], "credential_path": "/tmp/creds.json"})
     assert_true("Missing: credentials" in not_ready, "TUI upload readiness missing detail")
     assert_true("Uploading: result" in upload_active_detail(Path("result")), "TUI upload active detail")
+    active = upload_active_presentation(Path("result"))
+    assert_equal(active.view_mode, "upload_active", "TUI upload uses a dedicated active view mode")
+    assert_true("Google Drive Upload | Active" in active.sidebar_title,
+                "TUI upload active presentation owns the sidebar")
+    assert_true(any("Navigation locked" in row for row in active.sidebar_rows),
+                "TUI upload active sidebar explains navigation lock")
+    assert_equal(upload_return_view_mode("profiles"), "profiles", "TUI upload returns to Profiles when started there")
+    assert_equal(upload_return_view_mode("post_run_upload_picker"), "results",
+                 "TUI post-run upload restores normal Results navigation")
     workflow = upload_workflow_detail(
         title="Google Drive Upload Prompt",
         result_dir=Path("result"),
@@ -2261,6 +2273,93 @@ def test_tui_run_execution_adapter_helpers() -> None:
     assert_equal(status, "Google Drive upload success", "TUI upload finish status")
     assert_equal(detail, "Upload summary", "TUI upload finish detail")
     assert_equal(uploaded_result_dir({"moved_to": "/tmp/uploaded"}), Path("/tmp/uploaded"), "TUI upload moved dir")
+
+    class UploadStateTui(TuiRunExecutionAdapterMixin):
+        def __init__(self) -> None:
+            self.service = SimpleNamespace(
+                google_drive_readiness=lambda: {"ready": True},
+                upload_result_outcome=lambda payload: SimpleNamespace(
+                    status=f"Upload {payload.get('result')}", text="Upload finished"
+                ),
+            )
+            self.last_run_dir = Path("result")
+            self.upload_in_progress = False
+            self.upload_return_view_mode = "results"
+            self.view_mode = "profiles"
+            self.pending_input_field = None
+            self.pending_input_blank_default = ""
+            self.post_run_upload_prompt_text = ""
+            self._rendered_context_action_mode = "default"
+            self._rendered_global_action_mode = "default"
+            self.status = ""
+            self.detail = ""
+            self.sidebar_rows = []
+            self.sidebar_title = SimpleNamespace(update=lambda value: setattr(self, "title", value))
+            self.items = SimpleNamespace(disabled=False)
+            self.global_refreshes = 0
+            self.restored_view = ""
+
+        def _set_status(self, value: str) -> None:
+            self.status = value
+
+        def _set_detail(self, value: str) -> None:
+            self.detail = value
+
+        def _refresh_global_action_buttons(self) -> None:
+            self.global_refreshes += 1
+
+        def query_one(self, selector: str):
+            return self.sidebar_title if selector == "#sidebar-title" else self.items
+
+        async def _replace_sidebar_labels(self, _list_view, labels, selected_index=None, focus=False):
+            self.sidebar_rows = list(labels)
+            return int(selected_index or 0)
+
+        def _upload_last_result_thread(self, _result_dir) -> None:
+            return
+
+        async def action_show_profiles(self) -> None:
+            self.restored_view = "profiles"
+            self.view_mode = "profiles"
+
+        async def action_show_results(self) -> None:
+            self.restored_view = "results"
+            self.view_mode = "results"
+
+    async def run_upload_active_state_check() -> None:
+        upload_tui = UploadStateTui()
+        assert_true(upload_tui._start_upload_last_result(), "TUI starts ready Google Drive upload")
+        await asyncio.sleep(0)
+        assert_true(upload_tui.upload_in_progress, "TUI marks upload active")
+        assert_equal(upload_tui.view_mode, "upload_active", "TUI upload replaces Profiles active view")
+        assert_equal(upload_tui.upload_return_view_mode, "profiles", "TUI remembers safe return view")
+        assert_true(upload_tui.items.disabled, "TUI upload disables left navigation widget")
+        assert_true(any("Navigation locked" in row for row in upload_tui.sidebar_rows),
+                    "TUI upload replaces profile rows with active status")
+        assert_true("navigation locked" in upload_tui.status, "TUI upload status exposes navigation lock")
+
+        upload_tui._finish_upload_from_thread("fallback", {"result": "uploaded"})
+        await asyncio.sleep(0)
+        assert_true(not upload_tui.upload_in_progress, "TUI clears upload-active state on completion")
+        assert_equal(upload_tui.restored_view, "profiles", "TUI restores previous normal navigation")
+        assert_true(not upload_tui.items.disabled, "TUI re-enables left navigation after upload")
+        assert_true("Google Drive Upload Complete" in upload_tui.detail,
+                    "TUI preserves upload completion detail after restoring navigation")
+
+        picker_tui = UploadStateTui()
+        picker_tui.view_mode = "post_run_upload_picker"
+        restore_calls = []
+        async def restore_profiles():
+            restore_calls.append("restored")
+        picker_tui._restore_profiles_sidebar_after_post_run = restore_profiles
+        await picker_tui._select_post_run_upload_option(0)
+        await asyncio.sleep(0)
+        assert_equal(restore_calls, [], "TUI upload choice does not flash Profiles before active upload")
+        assert_equal(picker_tui.view_mode, "upload_active", "TUI upload prompt enters active view directly")
+        assert_equal(picker_tui.upload_return_view_mode, "results",
+                     "TUI post-run upload will restore Results navigation")
+
+    asyncio.run(run_upload_active_state_check())
 
     class FakePostRunArtifactService:
         def result_artifact_inventory_item(self, result_dir):
@@ -2569,6 +2668,14 @@ def test_tui_app_actions_adapter_helpers() -> None:
                  "TUI Settings view replaces generic panel with settings controls")
     assert_equal(context_action_button_rows("profiles"), ACTION_BUTTON_ROWS,
                  "TUI non-settings views retain generic action panel")
+    assert_equal(context_action_button_rows("upload_active"), (),
+                 "TUI upload-active view hides normal context action grid")
+    assert_equal(global_action_buttons_for_view("upload_active"), (),
+                 "TUI upload-active view hides normal global navigation footer")
+    assert_equal(global_action_buttons_for_view("profiles"), GLOBAL_ACTION_BUTTONS,
+                 "TUI idle Profiles view retains normal global navigation")
+    assert_true("navigation is locked" in compact_action_help_text("upload_active"),
+                "TUI upload-active help reports the navigation lock")
     assert_true(any(button_id == "settings-key-i" for row in SETTINGS_ACTION_BUTTON_ROWS for button_id, _label in row),
                 "TUI Settings panel exposes sample interval input")
     assert_true(any(button_id == "settings-key-4" for row in SETTINGS_ACTION_BUTTON_ROWS for button_id, _label in row),
@@ -3215,7 +3322,9 @@ def test_tui_event_adapter_helpers() -> None:
     class UploadLockedTui(TuiEventAdapterMixin):
         def __init__(self) -> None:
             self.actions = []
+            self.run_in_progress = False
             self.upload_in_progress = True
+            self.view_mode = "profiles"
 
         def _interaction_locked(self) -> bool:
             return True
@@ -3236,6 +3345,15 @@ def test_tui_event_adapter_helpers() -> None:
         upload_locked = UploadLockedTui()
         await upload_locked.on_button_pressed(ButtonEvent("global-back"))
         assert_equal(upload_locked.actions, ["upload-locked"], "TUI upload lock blocks back button during active upload")
+        upload_key = UploadLockedTui()
+        key_event = KeyEvent()
+        key_event.key = "p"
+        await upload_key.on_key(key_event)
+        assert_equal(upload_key.actions, ["upload-locked"], "TUI upload lock blocks profile keyboard navigation")
+        assert_true(key_event.stopped, "TUI upload lock consumes profile navigation key")
+        upload_click = UploadLockedTui()
+        await upload_click.on_list_view_selected(ListEvent(0))
+        assert_equal(upload_click.actions, ["upload-locked"], "TUI upload lock blocks sidebar profile clicks")
 
     asyncio.run(run_cancel_and_upload_lock_checks())
 

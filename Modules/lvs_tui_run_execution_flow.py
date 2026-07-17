@@ -119,6 +119,32 @@ def upload_active_detail(result_dir: Any) -> str:
     )
 
 
+@dataclass(frozen=True)
+class UploadActivePresentation:
+    view_mode: str
+    sidebar_title: str
+    sidebar_rows: tuple[str, ...]
+    status: str
+
+
+def upload_active_presentation(result_dir: Any) -> UploadActivePresentation:
+    return UploadActivePresentation(
+        view_mode="upload_active",
+        sidebar_title="Google Drive Upload | Active",
+        sidebar_rows=(
+            "Upload in progress",
+            f"Result: {result_dir or '-'}",
+            "Navigation locked until upload completes",
+        ),
+        status="Google Drive upload active | navigation locked",
+    )
+
+
+def upload_return_view_mode(view_mode: Any) -> str:
+    mode = str(view_mode or "")
+    return mode if mode in {"profiles", "results"} else "results"
+
+
 def upload_workflow_detail(
     *,
     title: str,

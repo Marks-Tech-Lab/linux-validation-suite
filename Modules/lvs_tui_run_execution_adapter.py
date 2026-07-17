@@ -39,9 +39,11 @@ from Modules.lvs_tui_run_execution_flow import (
     run_success_thread_text,
     tail_text,
     upload_active_detail,
+    upload_active_presentation,
     upload_finish_result,
     upload_not_ready_detail,
     upload_thread_failure_text,
+    upload_return_view_mode,
     upload_workflow_detail,
     uploaded_result_dir,
 )
@@ -208,8 +210,13 @@ class TuiRunExecutionAdapterMixin:
             )
             self._set_status("Google Drive not ready")
             return False
+        self.upload_return_view_mode = upload_return_view_mode(self.view_mode)
         self.upload_in_progress = True
-        self._set_status("Google Drive upload active")
+        presentation = upload_active_presentation(self.last_run_dir)
+        self.view_mode = presentation.view_mode
+        self._rendered_context_action_mode = None
+        self._rendered_global_action_mode = None
+        self._set_status(presentation.status)
         self._set_detail(
             upload_workflow_detail(
                 title="Google Drive Upload",
@@ -218,6 +225,8 @@ class TuiRunExecutionAdapterMixin:
                 body=upload_active_detail(self.last_run_dir),
             )
         )
+        self._refresh_global_action_buttons()
+        asyncio.create_task(self._show_upload_active_sidebar(presentation))
         thread = threading.Thread(target=self._upload_last_result_thread, args=(self.last_run_dir,), daemon=True)
         thread.start()
         return True
@@ -411,8 +420,9 @@ class TuiRunExecutionAdapterMixin:
         self.pending_input_field = None
         self.pending_input_blank_default = ""
         if index == 0:
-            await self._restore_profiles_sidebar_after_post_run()
-            self._start_upload_last_result()
+            self.post_run_upload_prompt_text = ""
+            if not self._start_upload_last_result():
+                await self._restore_profiles_sidebar_after_post_run()
             return
         await self._skip_post_run_upload_prompt()
 
@@ -466,6 +476,20 @@ class TuiRunExecutionAdapterMixin:
             selected_index=0,
         )
 
+    async def _show_upload_active_sidebar(self, presentation=None) -> None:
+        if not self.upload_in_progress or self.view_mode != "upload_active":
+            return
+        current = presentation or upload_active_presentation(self.last_run_dir)
+        self.query_one("#sidebar-title").update(current.sidebar_title)
+        list_view = self.query_one("#items")
+        list_view.disabled = False
+        await self._replace_sidebar_labels(
+            list_view,
+            list(current.sidebar_rows),
+            selected_index=0,
+        )
+        list_view.disabled = True
+
     def _interaction_locked(self) -> bool:
         return interaction_locked(self.run_in_progress, self.pending_input_field) or bool(
             getattr(self, "upload_in_progress", False)
@@ -516,18 +540,34 @@ class TuiRunExecutionAdapterMixin:
         if moved_to is not None:
             self.last_run_dir = moved_to
         status, detail, _outcome = upload_finish_result(payload, text, self.service)
-        self._set_status(status)
         upload_status = ""
         if isinstance(payload, dict) and payload.get("result"):
             upload_status = str(payload.get("result"))
-        self._set_detail(
-            upload_workflow_detail(
-                title="Google Drive Upload Complete",
-                result_dir=self.last_run_dir,
-                status=upload_status or status,
-                body=detail,
-            )
+        completed_detail = upload_workflow_detail(
+            title="Google Drive Upload Complete",
+            result_dir=self.last_run_dir,
+            status=upload_status or status,
+            body=detail,
         )
+        return_mode = upload_return_view_mode(getattr(self, "upload_return_view_mode", "results"))
+        self.view_mode = return_mode
+        asyncio.create_task(self._restore_navigation_after_upload(return_mode, status, completed_detail))
+
+    async def _restore_navigation_after_upload(self, return_mode: str, status: str, detail: str) -> None:
+        try:
+            self.query_one("#items").disabled = False
+        except Exception:
+            pass
+        if return_mode == "profiles":
+            await self.action_show_profiles()
+        else:
+            await self.action_show_results()
+        self.upload_return_view_mode = "results"
+        self._rendered_context_action_mode = None
+        self._rendered_global_action_mode = None
+        self._set_status(status)
+        self._set_detail(detail)
+        self._refresh_global_action_buttons()
 
     def _post_run_text(self, result_dir: Path) -> str:
         return self.service.run_complete_outcome(result_dir).text
