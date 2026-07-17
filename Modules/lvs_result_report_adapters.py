@@ -38,11 +38,14 @@ def list_result_entries(results_dir: Path) -> List[ResultListEntry]:
         parsed_path = path / "parsed_results_custom.json"
         manifest_path = path / "run_manifest.json"
         benchmark_path = path / "storage_benchmark.json"
+        benchmark_batch_path = path / "storage_benchmark_all_internal.json"
         payload = (
             read_result_json(parsed_path)
             if parsed_path.exists()
             else read_result_json(benchmark_path)
             if benchmark_path.exists()
+            else read_result_json(benchmark_batch_path)
+            if benchmark_batch_path.exists()
             else read_result_json(manifest_path)
         )
         entries.append(
@@ -59,6 +62,7 @@ def list_result_entries(results_dir: Path) -> List[ResultListEntry]:
                 profile_name=str(
                     payload.get("ProfileName")
                     or payload.get("profile_name")
+                    or payload.get("profile_id")
                     or (payload.get("Metadata") or {}).get("ProfileName")
                     or "-"
                 ),
@@ -104,6 +108,9 @@ def result_summary_text(result_dir: Path, summary_exporter: Any) -> str:
     benchmark_summary = result_dir / "storage_benchmark_summary.txt"
     if benchmark_summary.exists():
         return benchmark_summary.read_text(encoding="utf-8", errors="replace")
+    benchmark_batch_summary = result_dir / "storage_benchmark_all_internal_summary.txt"
+    if benchmark_batch_summary.exists():
+        return benchmark_batch_summary.read_text(encoding="utf-8", errors="replace")
     parsed_path = result_dir / "parsed_results_custom.json"
     if parsed_path.exists():
         payload = read_result_json(parsed_path)

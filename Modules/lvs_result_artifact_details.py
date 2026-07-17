@@ -124,6 +124,25 @@ class ResultArtifactDetailBuilder:
             "errors": list(benchmark.get("errors") or []),
         }
 
+    def storage_benchmark_batch_detail_payload(self, result_dir: Path) -> Dict[str, Any]:
+        batch = safe_json_read(result_dir / "storage_benchmark_all_internal.json")
+        targets = batch.get("targets") if isinstance(batch.get("targets"), list) else []
+        return {
+            "details": {
+                "result": batch.get("verdict"),
+                "status": batch.get("status"),
+                "profile_name": batch.get("profile_id"),
+                "target_count": len(targets),
+                "completed_targets": batch.get("completed_targets"),
+                "passed_targets": batch.get("passed_targets"),
+                "warned_targets": batch.get("warned_targets"),
+                "failed_targets": batch.get("failed_targets"),
+                "cancelled_targets": batch.get("cancelled_targets"),
+            },
+            "targets": targets,
+            "skipped_targets": list(batch.get("skipped_targets") or []),
+        }
+
     def profile_audit_detail_payload(self, result_dir: Path) -> Dict[str, Any]:
         audit = safe_json_read(result_dir / "profile_audit.json")
         counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
@@ -193,6 +212,7 @@ class ResultArtifactDetailBuilder:
             "diagnostics": self.diagnostics_detail_payload,
             "dependency_check": self.dependency_detail_payload,
             "storage_benchmark": self.storage_benchmark_detail_payload,
+            "storage_benchmark_batch": self.storage_benchmark_batch_detail_payload,
             "profile_audit": self.profile_audit_detail_payload,
             "results_inventory": self.results_inventory_detail_payload,
             "result_validation_batch": self.result_validation_batch_detail_payload,

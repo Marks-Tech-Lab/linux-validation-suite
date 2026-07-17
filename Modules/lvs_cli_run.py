@@ -44,11 +44,12 @@ class RunCliAdapter:
         clear_cli_screen()
         print("\nStorage Benchmark")
         print("KDiskMark/CDM-style fio benchmark (file-backed, non-destructive)")
-        target_raw = self._input("Eligible internal-drive directory or mount: ").strip()
-        if not target_raw:
-            print("Benchmark cancelled.")
-            return
+        print("1. Benchmark one selected target")
+        print("2. Benchmark all eligible internal drives")
+        mode = self._input("Select mode [1]: ").strip() or "1"
         try:
+            if mode not in {"1", "2"}:
+                raise ValueError("invalid storage benchmark mode")
             profile_raw = self._input("Profile [1: KDiskMark/CDM-style fio benchmark]: ").strip()
             if profile_raw not in {"", "1"}:
                 raise ValueError("only the built-in Storage Benchmark v1 profile is available")
@@ -56,38 +57,96 @@ class RunCliAdapter:
             runs_raw = self._input("Run count [5, range 1-9]: ").strip()
             test_size = int(size_raw or "1")
             runs = int(runs_raw or "5")
-            profile = self.storage_benchmark_service
-            root_confirmation = None
-            try:
-                target = profile.preflight(Path(target_raw), test_size_gib=test_size)
-            except ValueError as exc:
-                if "BENCHMARK ROOT" not in str(exc):
-                    raise
-                root_confirmation = self._input("System drive selected. Type BENCHMARK ROOT: ").strip()
-                target = profile.preflight(Path(target_raw), test_size_gib=test_size, root_confirmation=root_confirmation)
-            estimate = profile.estimated_maximum_written_gib(test_size, runs)
-            print(f"Target: {target.target_path} ({target.physical_devices[0]})")
-            print(f"Estimated maximum data written, including initialization: {estimate} GiB")
-            confirmation = self._input("Type BENCHMARK to begin: ").strip()
-            if confirmation != "BENCHMARK":
-                print("Benchmark cancelled.")
-                return
-            result_dir = profile.run(
-                target.target_path,
-                test_size_gib=test_size,
-                runs=runs,
-                root_confirmation=root_confirmation,
-                confirmed=True,
-                progress=lambda event: print(self._storage_benchmark_progress_text(event)),
-            )
-            print(f"Storage benchmark result: {result_dir}")
+            if mode == "1":
+                self._storage_benchmark_one(test_size, runs)
+            else:
+                self._storage_benchmark_all(test_size, runs)
         except (OSError, ValueError) as exc:
             print(f"Storage benchmark unavailable: {exc}")
 
+    def _storage_benchmark_one(self, test_size: int, runs: int) -> None:
+        target_raw = self._input("Eligible internal-drive directory or mount: ").strip()
+        if not target_raw:
+            print("Benchmark cancelled.")
+            return
+        service = self.storage_benchmark_service
+        root_confirmation = None
+        try:
+            target = service.preflight(Path(target_raw), test_size_gib=test_size)
+        except ValueError as exc:
+            if "BENCHMARK ROOT" not in str(exc):
+                raise
+            root_confirmation = self._input("System drive selected. Type BENCHMARK ROOT: ").strip()
+            target = service.preflight(
+                Path(target_raw), test_size_gib=test_size, root_confirmation=root_confirmation
+            )
+        estimate = service.estimated_maximum_written_gib(test_size, runs)
+        print(f"Target: {target.target_path} ({target.physical_devices[0]})")
+        print(f"Estimated maximum data written, including initialization: {estimate} GiB")
+        confirmation = self._input("Type BENCHMARK to begin: ").strip()
+        if confirmation != "BENCHMARK":
+            print("Benchmark cancelled.")
+            return
+        result_dir = service.run(
+            target.target_path,
+            test_size_gib=test_size,
+            runs=runs,
+            root_confirmation=root_confirmation,
+            confirmed=True,
+            progress=lambda event: print(self._storage_benchmark_progress_text(event)),
+        )
+        print(f"Storage benchmark result: {result_dir}")
+
+    def _storage_benchmark_all(self, test_size: int, runs: int) -> None:
+        service = self.storage_benchmark_service
+        root_confirmation = None
+        plan = service.discover_all_eligible(test_size_gib=test_size)
+        if plan.root_confirmation_required:
+            print("\nA root/system drive is eligible but is excluded by default.")
+            root_raw = self._input("Type BENCHMARK ROOT to include it, or Enter to skip: ").strip()
+            if root_raw == "BENCHMARK ROOT":
+                root_confirmation = root_raw
+                plan = service.discover_all_eligible(
+                    test_size_gib=test_size,
+                    root_confirmation=root_confirmation,
+                )
+        per_drive_gib = service.estimated_maximum_written_gib(test_size, runs)
+        total_gib = per_drive_gib * len(plan.targets)
+        print("\nAll eligible internal drives preview")
+        print(f"Drives to benchmark: {len(plan.targets)}")
+        for target in plan.targets:
+            model = plan.target_models.get(target.physical_devices[0], target.primary_block_name)
+            suffix = " [ROOT/SYSTEM DRIVE]" if target.is_system_drive else ""
+            print(f"- {target.physical_devices[0]} ({model}): {target.target_path}{suffix}")
+        print(f"Test size: {test_size} GiB")
+        print(f"Run count: {runs}")
+        print(f"Estimated maximum writes per drive: {per_drive_gib} GiB")
+        print(f"Estimated total maximum writes: {total_gib} GiB ({total_gib * 1024**3 / 1_000_000_000_000:.3f} TB)")
+        if plan.skipped_targets:
+            print("Skipped drives:")
+            for skipped in plan.skipped_targets:
+                print(f"- {skipped.device} ({skipped.model}): {skipped.reason}")
+        confirmation = self._input("Type BENCHMARK ALL INTERNAL to begin: ").strip()
+        if confirmation != "BENCHMARK ALL INTERNAL":
+            print("Benchmark cancelled.")
+            return
+        result_dir = service.run_all_internal(
+            plan,
+            test_size_gib=test_size,
+            runs=runs,
+            confirmation=confirmation,
+            root_confirmation=root_confirmation,
+            progress=lambda event: print(self._storage_benchmark_progress_text(event)),
+        )
+        print(f"All-internal storage benchmark result: {result_dir}")
+
     @staticmethod
     def _storage_benchmark_progress_text(event: dict[str, Any]) -> str:
+        if event.get("phase") == "batch_target":
+            return f"Starting {event.get('device')}: target {event.get('target_index')}/{event.get('target_count')}"
         if event.get("phase") == "benchmark":
-            return f"{event.get('row')}: run {event.get('run')}/{event.get('runs')}"
+            prefix = f"{event.get('device')} " if event.get("device") else ""
+            return f"{prefix}{event.get('row')}: run {event.get('run')}/{event.get('runs')}"
         return str(event.get("message") or event.get("phase") or "Storage benchmark")
 
     def new_run(self) -> None:

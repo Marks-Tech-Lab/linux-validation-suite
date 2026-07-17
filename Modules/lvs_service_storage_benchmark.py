@@ -16,3 +16,9 @@ class SuiteStorageBenchmarkServiceMixin:
 
     def run_storage_benchmark(self, target_path: Path, **kwargs: Any) -> Path:
         return self.storage_benchmark_service.run(target_path, **kwargs)
+
+    def discover_all_storage_benchmark_targets(self, **kwargs: Any) -> Any:
+        return self.storage_benchmark_service.discover_all_eligible(**kwargs)
+
+    def run_all_internal_storage_benchmarks(self, plan: Any, **kwargs: Any) -> Path:
+        return self.storage_benchmark_service.run_all_internal(plan, **kwargs)

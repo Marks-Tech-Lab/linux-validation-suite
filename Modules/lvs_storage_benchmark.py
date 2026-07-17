@@ -22,7 +22,12 @@ from .lvs_fio_backend import (
     storage_benchmark_capability,
 )
 from .lvs_storage_benchmark_profile import STORAGE_BENCHMARK_V1, storage_benchmark_execution_rows
-from .lvs_storage_benchmark_target import GIB, StorageBenchmarkTarget, StorageTargetResolver
+from .lvs_storage_benchmark_target import (
+    GIB,
+    StorageBenchmarkBatchPlan,
+    StorageBenchmarkTarget,
+    StorageTargetResolver,
+)
 from .lvs_storage_health import StorageHealthEnricher
 from .lvs_storage_inventory import build_storage_device_entry, read_text_sysfs
 from .lvs_telemetry_collector import TelemetryCollector
@@ -72,6 +77,18 @@ class StorageBenchmarkService:
 
     def preflight(self, target_path: Path, *, test_size_gib: int, root_confirmation: str | None = None) -> StorageBenchmarkTarget:
         return self.resolver.resolve(target_path, test_size_gib=test_size_gib, root_confirmation=root_confirmation)
+
+    def discover_all_eligible(
+        self, *, test_size_gib: int, root_confirmation: str | None = None
+    ) -> StorageBenchmarkBatchPlan:
+        return self.resolver.discover_all_eligible(
+            test_size_gib=test_size_gib,
+            root_confirmation=root_confirmation,
+        )
+
+    def run_all_internal(self, plan: StorageBenchmarkBatchPlan, **kwargs: Any) -> Path:
+        from .lvs_storage_benchmark_batch import run_all_internal
+        return run_all_internal(self, plan, **kwargs)
 
     @staticmethod
     def estimated_maximum_written_gib(test_size_gib: int, runs: int) -> int:

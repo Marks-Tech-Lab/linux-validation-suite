@@ -12136,6 +12136,200 @@ def test_storage_benchmark_target_safety_and_result_discovery() -> None:
                      "benchmark summary", "benchmark summary discovery")
 
 
+def test_storage_benchmark_all_internal_discovery() -> None:
+    from Modules.lvs_storage_benchmark_target import GIB, StorageTargetResolver
+
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        sys_block, sys_dev, sys_nvme = root / "sys_block", root / "sys_dev", root / "sys_nvme"
+        sys_block.mkdir(); sys_dev.mkdir(); sys_nvme.mkdir()
+        device_roots = {}
+        for name in ("nvme0n1", "sda", "sdb", "sdc"):
+            physical = root / "devices" / "pci0000:00" / "block" / name
+            (physical / "device").mkdir(parents=True)
+            (physical / "removable").write_text("0\n", encoding="utf-8")
+            (physical / "size").write_text("200000000\n", encoding="utf-8")
+            (physical / "device" / "model").write_text(f"Model {name}\n", encoding="utf-8")
+            (sys_block / name).symlink_to(physical, target_is_directory=True)
+            device_roots[name] = physical
+        for major_minor, name in (("259:0", "nvme0n1"), ("8:0", "sda"), ("8:32", "sdc"), ("8:33", "sdc")):
+            (sys_dev / major_minor).symlink_to(device_roots[name], target_is_directory=True)
+        target_sda, target_c1, target_c2 = root / "mnt_sda", root / "mnt_c1", root / "mnt_c2"
+        target_sda.mkdir(); target_c1.mkdir(); target_c2.mkdir()
+        mountinfo = root / "mountinfo"
+        mountinfo.write_text(
+            "\n".join((
+                "1 0 259:0 / / rw - ext4 /dev/nvme0n1 rw",
+                f"2 1 8:0 / {target_sda} rw - ext4 /dev/sda rw",
+                f"3 1 8:32 / {target_c1} rw - ext4 /dev/sdc1 rw",
+                f"4 1 8:33 / {target_c2} rw - ext4 /dev/sdc2 rw",
+            )) + "\n",
+            encoding="utf-8",
+        )
+        resolver = StorageTargetResolver(
+            mountinfo_path=mountinfo,
+            sys_dev_block=sys_dev,
+            sys_class_block=sys_block,
+            sys_class_nvme=sys_nvme,
+            disk_usage=lambda _path: SimpleNamespace(total=100 * GIB, used=10 * GIB, free=90 * GIB),
+        )
+        plan = resolver.discover_all_eligible(test_size_gib=1)
+        assert_equal([target.physical_devices[0] for target in plan.targets], ["/dev/sda"],
+                     "root excluded until explicitly confirmed")
+        assert_true(plan.root_confirmation_required, "batch discovery reports root confirmation requirement")
+        reasons = {item.device: item.reason for item in plan.skipped_targets}
+        assert_true("no mounted writable directory" in reasons["/dev/sdb"], "unmounted drive skipped")
+        assert_true("ambiguous multiple mounted" in reasons["/dev/sdc"], "ambiguous drive skipped")
+        assert_true("BENCHMARK ROOT" in reasons["/dev/nvme0n1"], "root drive skipped without confirmation")
+        confirmed = resolver.discover_all_eligible(test_size_gib=1, root_confirmation="BENCHMARK ROOT")
+        assert_equal([target.physical_devices[0] for target in confirmed.targets], ["/dev/nvme0n1", "/dev/sda"],
+                     "multiple eligible drives discovered in deterministic order")
+        assert_true(confirmed.targets[0].is_system_drive, "confirmed root drive marked system")
+
+
+def test_storage_benchmark_single_and_batch_artifacts() -> None:
+    from Modules.lvs_storage_benchmark import StorageBenchmarkService
+    from Modules.lvs_storage_benchmark_batch import run_all_internal
+    from Modules.lvs_result_artifact_inventory import ResultArtifactInventoryBuilder
+    from Modules.lvs_result_report_adapters import list_result_entries, result_summary_text
+    from Modules.lvs_storage_benchmark_target import (
+        StorageBenchmarkBatchPlan, StorageBenchmarkSkippedTarget, StorageBenchmarkTarget,
+    )
+
+    class FakeResolver:
+        def __init__(self, target: StorageBenchmarkTarget) -> None:
+            self.target = target
+
+        def resolve(self, _path, **_kwargs):
+            return self.target
+
+        def revalidate(self, _target):
+            return None
+
+    class EmptyTelemetry:
+        def __init__(self, interval_seconds=5, **_kwargs):
+            self.interval_seconds = interval_seconds
+            self.samples = []
+            self._storage_temp_sources = []
+
+        def collect_once(self):
+            return None
+
+        def write_csv(self, _path):
+            return None
+
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        target_path = root / "target"
+        target_path.mkdir()
+        target = StorageBenchmarkTarget(
+            target_path=target_path, mount_point=target_path, mount_source="/dev/sda",
+            major_minor="8:0", physical_devices=("/dev/sda",), is_system_drive=False,
+            free_bytes=100 * 1024**3, stat_device=target_path.stat().st_dev,
+        )
+        single_service = StorageBenchmarkService(
+            root / "single_results", resolver=FakeResolver(target), telemetry_factory=EmptyTelemetry,
+            which=lambda _name: None,
+        )
+        single_service._health = lambda _name: {"storage_health": {"query_status": "unavailable"}}
+        single_dir = single_service.run(target_path, test_size_gib=1, runs=1, confirmed=True)
+        assert_true((single_dir / "storage_benchmark.json").is_file(), "single benchmark JSON artifact")
+        assert_true((single_dir / "storage_benchmark_summary.txt").is_file(), "single benchmark text artifact")
+
+        class FakeBatchService:
+            def __init__(self, results_dir: Path, cancel_after_first: threading.Event | None = None) -> None:
+                self.results_dir = results_dir
+                self.results_dir.mkdir()
+                self.order = []
+                self.active = 0
+                self.max_active = 0
+                self.cancel_after_first = cancel_after_first
+
+            @staticmethod
+            def estimated_maximum_written_gib(size, runs):
+                return size * (1 + 4 * runs)
+
+            @staticmethod
+            def _write_json(path, payload):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            def run(self, target_path, **kwargs):
+                device = Path(target_path).name
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                self.order.append(device)
+                result_dir = self.results_dir / f"result_{device}"
+                result_dir.mkdir()
+                verdict = "WARN" if device == "drive_b" else "PASS"
+                payload = {
+                    "verdict": verdict, "status": "completed",
+                    "rows": [{"test_name": f"row_{index}", "display_name": f"Row {index}",
+                              "average_mb_per_s": float(index)} for index in range(8)],
+                    "warnings": ["partial health"] if verdict == "WARN" else [], "errors": [],
+                    "media_errors_delta": 0, "unsafe_shutdowns_delta": 0,
+                }
+                self._write_json(result_dir / "storage_benchmark.json", payload)
+                (result_dir / "storage_benchmark_summary.txt").write_text("single summary\n", encoding="utf-8")
+                self.active -= 1
+                if self.cancel_after_first is not None and len(self.order) == 1:
+                    self.cancel_after_first.set()
+                return result_dir
+
+        drive_a, drive_b = root / "drive_a", root / "drive_b"
+        drive_a.mkdir(); drive_b.mkdir()
+        target_a = StorageBenchmarkTarget(drive_a, drive_a, "/dev/sda", "8:0", ("/dev/sda",), False, 1, drive_a.stat().st_dev)
+        target_b = StorageBenchmarkTarget(drive_b, drive_b, "/dev/sdb", "8:16", ("/dev/sdb",), False, 1, drive_b.stat().st_dev)
+        skipped = StorageBenchmarkSkippedTarget("/dev/sdc", "Model C", "not mounted", True)
+        plan = StorageBenchmarkBatchPlan((target_a, target_b), {"/dev/sda": "Model A", "/dev/sdb": "Model B"}, (skipped,))
+        batch_service = FakeBatchService(root / "batch_results")
+        try:
+            run_all_internal(batch_service, plan, test_size_gib=1, runs=1, confirmation="wrong")
+            raise AssertionError("batch accepted incorrect typed confirmation")
+        except ValueError:
+            pass
+        batch_dir = run_all_internal(
+            batch_service, plan, test_size_gib=1, runs=1, confirmation="BENCHMARK ALL INTERNAL"
+        )
+        aggregate_path = batch_dir / "storage_benchmark_all_internal.json"
+        assert_true(aggregate_path.is_file(), "batch JSON artifact")
+        assert_true((batch_dir / "storage_benchmark_all_internal_summary.txt").is_file(), "batch text artifact")
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        assert_equal(aggregate["contract_id"], "lvs.storage_benchmark_batch", "batch contract id")
+        assert_equal(aggregate["verdict"], "WARN", "warning/skipped batch verdict")
+        assert_equal(batch_service.order, ["drive_a", "drive_b"], "batch executes targets sequentially")
+        assert_equal(batch_service.max_active, 1, "batch never launches concurrent targets")
+        assert_equal(len(aggregate["targets"][0].get("key_row_results", [])), 8, "batch key row results")
+        assert_equal(ResultArtifactInventoryBuilder().inventory_item(batch_dir)["kind"],
+                     "storage_benchmark_batch", "batch result artifact kind")
+        batch_entry = next(entry for entry in list_result_entries(batch_service.results_dir) if entry.path == batch_dir)
+        assert_equal(batch_entry.verdict, "WARN", "batch result list verdict")
+        assert_true("Storage Benchmark - All Eligible Internal Drives" in result_summary_text(
+            batch_dir, SimpleNamespace(build=lambda _payload: "bad")
+        ), "batch summary result discovery")
+
+        root_plan = StorageBenchmarkBatchPlan((StorageBenchmarkTarget(
+            drive_a, Path("/"), "/dev/sda", "8:0", ("/dev/sda",), True, 1, drive_a.stat().st_dev,
+        ),), {"/dev/sda": "Model A"}, ())
+        try:
+            run_all_internal(batch_service, root_plan, test_size_gib=1, runs=1,
+                             confirmation="BENCHMARK ALL INTERNAL")
+            raise AssertionError("batch accepted root drive without root confirmation")
+        except ValueError:
+            pass
+
+        cancel_event = threading.Event()
+        cancel_service = FakeBatchService(root / "cancel_results", cancel_after_first=cancel_event)
+        cancel_dir = run_all_internal(
+            cancel_service, StorageBenchmarkBatchPlan((target_a, target_b), plan.target_models, ()),
+            test_size_gib=1, runs=1, confirmation="BENCHMARK ALL INTERNAL", cancel_event=cancel_event,
+        )
+        cancelled = json.loads((cancel_dir / "storage_benchmark_all_internal.json").read_text(encoding="utf-8"))
+        assert_equal(cancelled["verdict"], "CANCELLED", "batch cancellation verdict")
+        assert_true((cancel_service.results_dir / "result_drive_a" / "storage_benchmark.json").is_file(),
+                    "completed per-drive result preserved after cancellation")
+        assert_equal(cancel_service.order, ["drive_a"], "cancellation stops before next drive")
+
+
 def test_telemetry_source_helpers() -> None:
     sources = [
         {
@@ -20182,6 +20376,8 @@ def main() -> int:
         test_dependency_report_summary_with_injected_telemetry,
         test_storage_benchmark_profile_fio_and_aggregation,
         test_storage_benchmark_target_safety_and_result_discovery,
+        test_storage_benchmark_all_internal_discovery,
+        test_storage_benchmark_single_and_batch_artifacts,
         test_telemetry_source_helpers,
         test_telemetry_source_capability_fixture_contract,
         test_telemetry_sensor_io_helpers,

@@ -222,7 +222,7 @@ Every other TUI helper must remain importable without Textual installed.
 | --- | --- | --- |
 | `lvs_dependency_reports.py` | Internal facade | Coordinates dependency and readiness reports. |
 | `lvs_dependency_payload.py`, `lvs_dependency_report_text.py`, `lvs_dependency_report_artifacts.py` | Internal contract | Build dependency payloads, text, and artifacts. |
-| `lvs_storage_benchmark_profile.py`, `lvs_storage_benchmark_target.py`, `lvs_fio_backend.py`, `lvs_storage_benchmark.py` | Internal/public workflow contract | Define, safely resolve, execute, and serialize the standalone file-backed Storage Benchmark v1 workflow. |
+| `lvs_storage_benchmark_profile.py`, `lvs_storage_benchmark_target.py`, `lvs_fio_backend.py`, `lvs_storage_benchmark.py`, `lvs_storage_benchmark_batch.py` | Internal/public workflow contract | Define, safely resolve, execute, and serialize standalone single-target and sequential all-internal Storage Benchmark v1 workflows. |
 | `lvs_backend_readiness.py` | Internal | Summarizes executable backend readiness. |
 | `lvs_advanced_debug.py` | Internal | Captures optional per-run hardware debug evidence. |
 | `lvs_local_environment_export.py` | Internal support contract | Builds redacted public support exports. |

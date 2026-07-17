@@ -7,7 +7,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 
 GIB = 1024**3
@@ -42,6 +42,22 @@ class StorageBenchmarkTarget:
     @property
     def primary_block_name(self) -> str:
         return Path(self.physical_devices[0]).name
+
+
+@dataclass(frozen=True)
+class StorageBenchmarkSkippedTarget:
+    device: str
+    model: str
+    reason: str
+    eligible_internal: bool
+
+
+@dataclass(frozen=True)
+class StorageBenchmarkBatchPlan:
+    targets: tuple[StorageBenchmarkTarget, ...]
+    target_models: dict[str, str]
+    skipped_targets: tuple[StorageBenchmarkSkippedTarget, ...]
+    root_confirmation_required: bool = False
 
 
 def _unescape_mount(value: str) -> str:
@@ -154,6 +170,142 @@ class StorageTargetResolver:
         if not dev_link.exists():
             raise ValueError("mount cannot be mapped through /sys/dev/block")
         return self._leaves(dev_link.resolve().name)
+
+    def _device_model(self, name: str) -> str:
+        path = self.sys_class_block / name / "device" / "model"
+        try:
+            return path.read_text(encoding="utf-8", errors="replace").strip() or name
+        except OSError:
+            return name
+
+    def _whole_disk_names(self) -> list[str]:
+        names: list[str] = []
+        if not self.sys_class_block.exists():
+            return names
+        for link in sorted(self.sys_class_block.iterdir(), key=lambda item: item.name):
+            name = link.name
+            if name.startswith(_REJECTED_PREFIXES) or name.startswith(("dm-", "md")):
+                continue
+            try:
+                resolved = link.resolve()
+            except OSError:
+                continue
+            if (link / "partition").exists() or (resolved / "partition").exists():
+                continue
+            names.append(name)
+        return names
+
+    @staticmethod
+    def _mount_choice_key(record: MountRecord) -> tuple[int, int, str]:
+        # Multiple bind mounts of the same source are equivalent for physical
+        # ownership. Prefer the filesystem root, then the shortest stable path.
+        return (0 if record.mount_point == Path("/") else 1, len(record.mount_point.parts), str(record.mount_point))
+
+    def _writable_directory_for_mount(self, record: MountRecord) -> Path | None:
+        if record.mount_point.exists() and record.mount_point.is_dir() and os.access(record.mount_point, os.W_OK | os.X_OK):
+            return record.mount_point
+        try:
+            cwd = Path.cwd().resolve(strict=True)
+            cwd_mount = self._mount_for(cwd)
+        except (OSError, ValueError):
+            return None
+        if (
+            cwd_mount.major_minor == record.major_minor
+            and cwd_mount.source == record.source
+            and cwd.is_dir()
+            and os.access(cwd, os.W_OK | os.X_OK)
+        ):
+            return cwd
+        return None
+
+    def discover_all_eligible(
+        self,
+        *,
+        test_size_gib: int,
+        root_confirmation: str | None = None,
+    ) -> StorageBenchmarkBatchPlan:
+        """Discover one deterministic safe mounted directory per internal drive."""
+        if not 1 <= int(test_size_gib) <= MAX_TEST_SIZE_GIB:
+            raise ValueError("test size must be between 1 and 8 GiB")
+        records = parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
+        mounts_by_leaf: dict[str, list[MountRecord]] = {}
+        ambiguous_by_leaf: dict[str, list[str]] = {}
+        for record in records:
+            try:
+                leaves = self._mount_leaves(record)
+            except ValueError:
+                continue
+            if len(leaves) != 1:
+                for leaf in leaves:
+                    ambiguous_by_leaf.setdefault(leaf, []).append(str(record.mount_point))
+                continue
+            leaf = next(iter(leaves))
+            mounts_by_leaf.setdefault(leaf, []).append(record)
+
+        targets: list[StorageBenchmarkTarget] = []
+        skipped: list[StorageBenchmarkSkippedTarget] = []
+        models: dict[str, str] = {}
+        root_required = False
+        for name in self._whole_disk_names():
+            device = f"/dev/{name}"
+            model = self._device_model(name)
+            models[device] = model
+            try:
+                self._validate_leaf(name)
+            except ValueError as exc:
+                skipped.append(StorageBenchmarkSkippedTarget(device, model, str(exc), False))
+                continue
+            candidates = mounts_by_leaf.get(name, [])
+            if not candidates:
+                reason = (
+                    "only ambiguous multi-device storage stacks are mounted"
+                    if ambiguous_by_leaf.get(name)
+                    else "no mounted writable directory maps to this internal drive"
+                )
+                skipped.append(StorageBenchmarkSkippedTarget(device, model, reason, True))
+                continue
+            safe_candidates = [
+                (record, self._writable_directory_for_mount(record)) for record in candidates
+                if record.filesystem.lower() not in _REJECTED_FILESYSTEMS
+                and not record.filesystem.lower().startswith("fuse")
+            ]
+            safe_candidates = [(record, path) for record, path in safe_candidates if path is not None]
+            if not safe_candidates:
+                skipped.append(StorageBenchmarkSkippedTarget(
+                    device, model, "mounted paths are not writable or use an unsupported filesystem", True
+                ))
+                continue
+            source_groups = {(record.major_minor, record.source) for record, _path in safe_candidates}
+            if len(source_groups) != 1:
+                paths = ", ".join(
+                    str(record.mount_point)
+                    for record, _path in sorted(safe_candidates, key=lambda item: self._mount_choice_key(item[0]))
+                )
+                skipped.append(StorageBenchmarkSkippedTarget(
+                    device, model, f"ambiguous multiple mounted storage mappings: {paths}", True
+                ))
+                continue
+            selected, selected_path = min(safe_candidates, key=lambda item: self._mount_choice_key(item[0]))
+            try:
+                target = self.resolve(
+                    selected_path,
+                    test_size_gib=test_size_gib,
+                    root_confirmation=root_confirmation,
+                )
+            except ValueError as exc:
+                if "BENCHMARK ROOT" in str(exc):
+                    root_required = True
+                skipped.append(StorageBenchmarkSkippedTarget(device, model, str(exc), True))
+                continue
+            targets.append(target)
+        targets.sort(key=lambda item: (item.primary_block_name, str(item.target_path)))
+        skipped.sort(key=lambda item: item.device)
+        return StorageBenchmarkBatchPlan(
+            targets=tuple(targets),
+            target_models=models,
+            skipped_targets=tuple(skipped),
+            root_confirmation_required=root_required,
+        )
 
     def resolve(
         self,

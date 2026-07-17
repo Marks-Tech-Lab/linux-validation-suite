@@ -208,6 +208,13 @@ embedded in normalized results or system information. The associated manifest,
 summary, before/after storage-health snapshots, and optional telemetry CSV are
 siblings of the normalized result.
 
+Explicit sequential all-internal-drive runs additionally write an aggregate
+`storage_benchmark_all_internal.json` with `contract_id:
+lvs.storage_benchmark_batch`, `contract_version: 1`, and `kind:
+storage_benchmark_batch`, plus `storage_benchmark_all_internal_summary.txt`.
+Each selected drive retains its independent v1 result folder and raw fio
+boundary; raw fio payloads are not copied into the batch contract.
+
 ## Required Change Process
 
 Before changing an output contract:

@@ -42,6 +42,8 @@ EXACT_ARTIFACT_NAMES = (
     "storage_health_before.json",
     "storage_health_after.json",
     "storage_telemetry.csv",
+    "storage_benchmark_all_internal.json",
+    "storage_benchmark_all_internal_summary.txt",
 )
 
 
@@ -92,6 +94,19 @@ class ResultArtifactInventoryBuilder:
             })
             if payload.get("_read_error"):
                 item["notes"].append(f"storage_benchmark.json read error: {payload.get('_read_error')}")
+            return item
+        if (result_dir / "storage_benchmark_all_internal.json").exists():
+            payload = safe_json_read(result_dir / "storage_benchmark_all_internal.json")
+            item.update({
+                "kind": "storage_benchmark_batch",
+                "profile_name": str(payload.get("profile_id") or ""),
+                "result": str(payload.get("verdict") or payload.get("status") or ""),
+                "stage_count": len(payload.get("targets") or []),
+            })
+            if payload.get("_read_error"):
+                item["notes"].append(
+                    f"storage_benchmark_all_internal.json read error: {payload.get('_read_error')}"
+                )
             return item
         if (result_dir / "preflight_report.json").exists():
             return self._preflight_inventory_item(result_dir, item)
