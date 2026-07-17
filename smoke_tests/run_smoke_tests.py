@@ -11948,6 +11948,8 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("DIMM A1 | ABC123" in detail_text, "dependency detail memory module line")
     assert_true("Storage Health / SMART" in detail_text, "dependency detail storage health section")
     assert_true("[WARN] Coverage - 1/2 eligible internal drive(s)" in detail_text, "dependency storage warning")
+
+
     service = SuiteAppService()
     service.dependency_reports = manager
     service_payload = service.dependency_check_payload()
@@ -12032,6 +12034,106 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
         service_result = service.run_dependency_check()
         assert_equal(service_result.payload["kind"], "dependency_check", "service dependency action payload kind")
         assert_true(service_result.report_dir.exists(), "service dependency action report dir")
+
+
+def test_storage_benchmark_profile_fio_and_aggregation() -> None:
+    from Modules.lvs_fio_backend import (
+        aggregate_row, build_fio_command, build_fio_prepare_command, parse_fio_json, storage_benchmark_capability
+    )
+    from Modules.lvs_storage_benchmark_profile import STORAGE_BENCHMARK_V1, storage_benchmark_execution_rows
+
+    profile = STORAGE_BENCHMARK_V1
+    assert_equal(len(profile.rows), 8, "storage benchmark row count")
+    assert_equal([row.operation for row in profile.rows],
+                 ["read", "write", "read", "write", "randread", "randwrite", "randread", "randwrite"],
+                 "public CDM-style row order")
+    assert_equal([row.operation for row in storage_benchmark_execution_rows(profile)],
+                 ["read", "read", "randread", "randread", "write", "write", "randwrite", "randwrite"],
+                 "read rows execute before write rows")
+    with TemporaryDirectory() as temp_dir:
+        session = Path(temp_dir)
+        (session / "read.bin").touch()
+        output = session / "result.json"
+        command = build_fio_command("/usr/bin/fio", profile, profile.rows[0], filename=session / "read.bin",
+                                    output_path=output, job_name="row", session_dir=session)
+        expected = {"--ioengine=libaio", "--direct=1", "--size=1073741824", "--runtime=5", "--readonly",
+                    "--randrepeat=0", "--refill_buffers=0", "--zero_buffers=0", "--end_fsync=1",
+                    "--group_reporting=1", "--percentile_list=95:99", "--output-format=json"}
+        assert_true(expected.issubset(set(command)), "fio v1 command options")
+        assert_true(not any("time_based" in item for item in command), "fio command is size based")
+        prepare = build_fio_prepare_command("fio", profile, filename=session / "read.bin", output_path=output,
+                                            session_dir=session)
+        assert_true(not any(item.startswith("--runtime=") for item in prepare), "read-file preparation completes size")
+        try:
+            build_fio_command("fio", profile, profile.rows[0], filename=Path("/dev/nvme0n1"),
+                              output_path=output, job_name="bad", session_dir=session)
+            raise AssertionError("raw block path reached fio")
+        except ValueError:
+            pass
+    first = parse_fio_json({"jobs": [{"error": 0, "read": {"bw_bytes": 2_500_000_000, "iops": 2500,
+        "total_ios": 100, "clat_ns": {"mean": 2000, "percentile": {"95.000000": 3000, "99.000000": 4000}}}}]},
+        profile.rows[0], run_number=1)
+    second = parse_fio_json({"jobs": [{"error": 0, "read": {"bw": 1_000_000, "iops": 1000,
+        "total_ios": 300, "clat_usec": {"mean": 4, "percentile": {"95.000000": 8, "99.000000": 9}}}}]},
+        profile.rows[0], run_number=2)
+    aggregate = aggregate_row(profile.rows[0], [first, second], "row")
+    assert_equal(first["mb_per_s"], 2500.0, "fio bw_bytes decimal MB/s")
+    assert_equal(second["mb_per_s"], 1024.0, "fio KiB/s fallback decimal MB/s")
+    assert_equal(aggregate["average_latency_us"], 3.5, "IO-weighted latency")
+    assert_equal(aggregate["p99_latency_us"], 9.0, "worst observed percentile")
+    missing = storage_benchmark_capability(which=lambda _name: None)
+    assert_equal(missing["status"], "unavailable", "missing fio is optional unavailable")
+    assert_equal(missing["severity"], "warn", "missing fio is warning")
+
+
+def test_storage_benchmark_target_safety_and_result_discovery() -> None:
+    from Modules.lvs_result_artifact_inventory import ResultArtifactInventoryBuilder
+    from Modules.lvs_result_report_adapters import list_result_entries, result_summary_text
+    from Modules.lvs_storage_benchmark_target import GIB, StorageTargetResolver
+
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        target = root / "target"
+        target.mkdir()
+        physical = root / "devices" / "pci0000:00" / "block" / "nvme0n1"
+        physical.mkdir(parents=True)
+        (physical / "removable").write_text("0\n", encoding="utf-8")
+        (physical / "size").write_text("200000000\n", encoding="utf-8")
+        sys_block, sys_dev, sys_nvme = root / "sys_block", root / "sys_dev", root / "sys_nvme"
+        sys_block.mkdir(); sys_dev.mkdir(); sys_nvme.mkdir()
+        (sys_block / "nvme0n1").symlink_to(physical, target_is_directory=True)
+        (sys_dev / "259:0").symlink_to(physical, target_is_directory=True)
+        mountinfo = root / "mountinfo"
+        mountinfo.write_text(f"1 0 259:0 / {target} rw - ext4 /dev/nvme0n1 rw\n", encoding="utf-8")
+        resolver = StorageTargetResolver(mountinfo_path=mountinfo, sys_dev_block=sys_dev,
+            sys_class_block=sys_block, sys_class_nvme=sys_nvme,
+            disk_usage=lambda _path: SimpleNamespace(total=100 * GIB, used=10 * GIB, free=90 * GIB))
+        resolved = resolver.resolve(target, test_size_gib=1)
+        assert_equal(resolved.physical_devices, ("/dev/nvme0n1",), "physical target resolution")
+        resolver.revalidate(resolved)
+        for rejected in (Path("/dev/nvme0n1"),):
+            try:
+                resolver.resolve(rejected, test_size_gib=1)
+                raise AssertionError("raw target accepted")
+            except ValueError:
+                pass
+        (physical / "removable").write_text("1\n", encoding="utf-8")
+        try:
+            resolver.resolve(target, test_size_gib=1)
+            raise AssertionError("removable target accepted")
+        except ValueError:
+            pass
+        result_dir = root / "results" / "bench"
+        result_dir.mkdir(parents=True)
+        benchmark = {"kind": "storage_benchmark", "profile_name": "KDiskMark/CDM-style fio benchmark",
+                     "verdict": "PASS", "status": "completed", "started": "2026-01-01", "rows": []}
+        (result_dir / "storage_benchmark.json").write_text(json.dumps(benchmark), encoding="utf-8")
+        (result_dir / "storage_benchmark_summary.txt").write_text("benchmark summary", encoding="utf-8")
+        assert_equal(ResultArtifactInventoryBuilder().inventory_item(result_dir)["kind"], "storage_benchmark",
+                     "benchmark artifact kind")
+        assert_equal(list_result_entries(result_dir.parent)[0].verdict, "PASS", "benchmark result list verdict")
+        assert_equal(result_summary_text(result_dir, SimpleNamespace(build=lambda _payload: "bad")),
+                     "benchmark summary", "benchmark summary discovery")
 
 
 def test_telemetry_source_helpers() -> None:
@@ -20078,6 +20180,8 @@ def main() -> int:
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,
+        test_storage_benchmark_profile_fio_and_aggregation,
+        test_storage_benchmark_target_safety_and_result_discovery,
         test_telemetry_source_helpers,
         test_telemetry_source_capability_fixture_contract,
         test_telemetry_sensor_io_helpers,

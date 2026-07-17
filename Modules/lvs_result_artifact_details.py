@@ -108,6 +108,22 @@ class ResultArtifactDetailBuilder:
             "checks": checks,
         }
 
+    def storage_benchmark_detail_payload(self, result_dir: Path) -> Dict[str, Any]:
+        benchmark = safe_json_read(result_dir / "storage_benchmark.json")
+        rows = benchmark.get("rows") if isinstance(benchmark.get("rows"), list) else []
+        return {
+            "details": {
+                "result": benchmark.get("verdict"),
+                "status": benchmark.get("status"),
+                "profile_name": benchmark.get("profile_name"),
+                "row_count": len(rows),
+                "backend": benchmark.get("backend"),
+            },
+            "rows": rows,
+            "warnings": list(benchmark.get("warnings") or []),
+            "errors": list(benchmark.get("errors") or []),
+        }
+
     def profile_audit_detail_payload(self, result_dir: Path) -> Dict[str, Any]:
         audit = safe_json_read(result_dir / "profile_audit.json")
         counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
@@ -176,6 +192,7 @@ class ResultArtifactDetailBuilder:
             "preflight": self.preflight_detail_payload,
             "diagnostics": self.diagnostics_detail_payload,
             "dependency_check": self.dependency_detail_payload,
+            "storage_benchmark": self.storage_benchmark_detail_payload,
             "profile_audit": self.profile_audit_detail_payload,
             "results_inventory": self.results_inventory_detail_payload,
             "result_validation_batch": self.result_validation_batch_detail_payload,

@@ -196,6 +196,18 @@ Future NIC, storage, CPU cooler, and all other feature work must follow the
 forward-only key and unit policy for every new LVS-owned field, even before the
 full cleanup is implemented.
 
+## Storage Benchmark v1 Contract
+
+Standalone file-backed storage benchmarks write `storage_benchmark.json` with
+`contract_id: lvs.storage_benchmark`, `contract_version: 1`, and
+`kind: storage_benchmark`. This is separate from validation-stage and
+`system_info.json` contracts. Fixed keys are snake_case; throughput headlines
+use decimal `average_mb_per_s`, `best_mb_per_s`, and `worst_mb_per_s`. Raw fio
+JSON is retained only as separate files beneath `raw_fio/` and must not be
+embedded in normalized results or system information. The associated manifest,
+summary, before/after storage-health snapshots, and optional telemetry CSV are
+siblings of the normalized result.
+
 ## Required Change Process
 
 Before changing an output contract:

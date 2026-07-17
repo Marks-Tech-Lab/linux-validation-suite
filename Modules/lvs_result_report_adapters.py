@@ -37,7 +37,14 @@ def list_result_entries(results_dir: Path) -> List[ResultListEntry]:
             continue
         parsed_path = path / "parsed_results_custom.json"
         manifest_path = path / "run_manifest.json"
-        payload = read_result_json(parsed_path) if parsed_path.exists() else read_result_json(manifest_path)
+        benchmark_path = path / "storage_benchmark.json"
+        payload = (
+            read_result_json(parsed_path)
+            if parsed_path.exists()
+            else read_result_json(benchmark_path)
+            if benchmark_path.exists()
+            else read_result_json(manifest_path)
+        )
         entries.append(
             ResultListEntry(
                 path=path,
@@ -94,6 +101,9 @@ def result_summary_text(result_dir: Path, summary_exporter: Any) -> str:
     summary_path = result_dir / "run_summary.txt"
     if summary_path.exists():
         return summary_path.read_text(encoding="utf-8", errors="replace")
+    benchmark_summary = result_dir / "storage_benchmark_summary.txt"
+    if benchmark_summary.exists():
+        return benchmark_summary.read_text(encoding="utf-8", errors="replace")
     parsed_path = result_dir / "parsed_results_custom.json"
     if parsed_path.exists():
         payload = read_result_json(parsed_path)

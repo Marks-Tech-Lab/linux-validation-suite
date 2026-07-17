@@ -24,9 +24,11 @@ from .lvs_service_profiles import SuiteProfileServiceMixin
 from .lvs_service_results import SuiteResultServiceMixin
 from .lvs_service_run import SuiteRunServiceMixin
 from .lvs_service_settings import SuiteSettingsServiceMixin
+from .lvs_service_storage_benchmark import SuiteStorageBenchmarkServiceMixin
 
 
 class SuiteAppService(
+    SuiteStorageBenchmarkServiceMixin,
     SuiteProfileReadinessServiceMixin,
     SuiteProfileServiceMixin,
     SuiteRunServiceMixin,

@@ -28,6 +28,7 @@ from .lvs_run_launch import RunLaunchCoordinator
 from .lvs_run_preflight import RunPreflightManager
 from .lvs_run_setup import RunSetupManager
 from .lvs_summary_text import SummaryTextBuilder
+from .lvs_storage_benchmark import StorageBenchmarkService
 
 
 def normalize_runtime_settings(
@@ -68,6 +69,7 @@ class RuntimeServices:
     run_setup_manager: RunSetupManager
     run_executor: RunExecutor
     run_launcher: RunLaunchCoordinator
+    storage_benchmark_service: StorageBenchmarkService
 
     def bind_to(self, target: Any) -> None:
         for field in fields(self):
@@ -132,6 +134,11 @@ def build_runtime_services(
         run_heatsoak_if_requested=run_heatsoak_if_requested,
     )
     run_launcher = RunLaunchCoordinator(run_executor)
+    storage_benchmark_service = StorageBenchmarkService(
+        Path(settings.results_dir),
+        runtime_environment=getattr(settings, "runtime_environment", {}),
+        privileged_helper_enabled=bool(getattr(settings, "privileged_helper_enabled", False)),
+    )
     return RuntimeServices(
         profile_loader=profile_loader,
         orchestrator=orchestrator,
@@ -155,4 +162,5 @@ def build_runtime_services(
         run_setup_manager=run_setup_manager,
         run_executor=run_executor,
         run_launcher=run_launcher,
+        storage_benchmark_service=storage_benchmark_service,
     )

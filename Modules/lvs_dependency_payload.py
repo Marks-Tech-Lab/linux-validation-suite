@@ -24,6 +24,7 @@ class DependencyCheckPayloadBuilder:
         telemetry_factory: Callable[..., Any],
         memory_modules_factory: Callable[[bool], list[Dict[str, Any]]],
         storage_health_factory: Optional[Callable[[bool], Dict[str, Any]]] = None,
+        storage_benchmark_factory: Optional[Callable[[bool], Dict[str, Any]]] = None,
     ) -> None:
         self.settings = settings
         self.orchestrator = orchestrator
@@ -31,6 +32,7 @@ class DependencyCheckPayloadBuilder:
         self.telemetry_factory = telemetry_factory
         self.memory_modules_factory = memory_modules_factory
         self.storage_health_factory = storage_health_factory or storage_health_capability_default
+        self.storage_benchmark_factory = storage_benchmark_factory or storage_benchmark_capability_default
 
     def dependency_check_payload(
         self,
@@ -107,6 +109,7 @@ class DependencyCheckPayloadBuilder:
                 "source": ", ".join(memory_identity_sources) if memory_identity_sources else "not found",
             },
             "storage_health": self.storage_health_factory(helper_effective),
+            "storage_benchmark": self.storage_benchmark_factory(helper_effective),
             "gpu_opencl_coverage": gpu_opencl_coverage(workload_runner),
             "google_drive_upload": self.drive_readiness(),
         }
@@ -141,6 +144,11 @@ def storage_health_capability_default(privileged_helper_enabled: bool) -> Dict[s
         enricher.tool_capabilities(),
         baseline_available=sys_block.exists(),
     )
+
+
+def storage_benchmark_capability_default(_privileged_helper_enabled: bool) -> Dict[str, Any]:
+    from .lvs_fio_backend import storage_benchmark_capability
+    return storage_benchmark_capability()
 
 
 def gpu_opencl_coverage(workload_runner: Any) -> list[Dict[str, Any]]:

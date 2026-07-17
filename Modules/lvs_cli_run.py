@@ -27,15 +27,68 @@ class RunCliAdapter:
             clear_cli_screen()
             print("\nRun Tests")
             print("1. Start Validation Run")
-            print("2. Dry Run Selected Profile")
-            print("3. Back")
+            print("2. Run Storage Benchmark")
+            print("3. Dry Run Selected Profile")
+            print("4. Back")
             choice = self._input("Select: ").strip()
             if choice == "1":
                 self.new_run()
             elif choice == "2":
-                self._dry_run_diagnostics()
+                self.storage_benchmark()
             elif choice == "3":
+                self._dry_run_diagnostics()
+            elif choice == "4":
                 return
+
+    def storage_benchmark(self) -> None:
+        clear_cli_screen()
+        print("\nStorage Benchmark")
+        print("KDiskMark/CDM-style fio benchmark (file-backed, non-destructive)")
+        target_raw = self._input("Eligible internal-drive directory or mount: ").strip()
+        if not target_raw:
+            print("Benchmark cancelled.")
+            return
+        try:
+            profile_raw = self._input("Profile [1: KDiskMark/CDM-style fio benchmark]: ").strip()
+            if profile_raw not in {"", "1"}:
+                raise ValueError("only the built-in Storage Benchmark v1 profile is available")
+            size_raw = self._input("Test size GiB [1, maximum 8]: ").strip()
+            runs_raw = self._input("Run count [5, range 1-9]: ").strip()
+            test_size = int(size_raw or "1")
+            runs = int(runs_raw or "5")
+            profile = self.storage_benchmark_service
+            root_confirmation = None
+            try:
+                target = profile.preflight(Path(target_raw), test_size_gib=test_size)
+            except ValueError as exc:
+                if "BENCHMARK ROOT" not in str(exc):
+                    raise
+                root_confirmation = self._input("System drive selected. Type BENCHMARK ROOT: ").strip()
+                target = profile.preflight(Path(target_raw), test_size_gib=test_size, root_confirmation=root_confirmation)
+            estimate = profile.estimated_maximum_written_gib(test_size, runs)
+            print(f"Target: {target.target_path} ({target.physical_devices[0]})")
+            print(f"Estimated maximum data written, including initialization: {estimate} GiB")
+            confirmation = self._input("Type BENCHMARK to begin: ").strip()
+            if confirmation != "BENCHMARK":
+                print("Benchmark cancelled.")
+                return
+            result_dir = profile.run(
+                target.target_path,
+                test_size_gib=test_size,
+                runs=runs,
+                root_confirmation=root_confirmation,
+                confirmed=True,
+                progress=lambda event: print(self._storage_benchmark_progress_text(event)),
+            )
+            print(f"Storage benchmark result: {result_dir}")
+        except (OSError, ValueError) as exc:
+            print(f"Storage benchmark unavailable: {exc}")
+
+    @staticmethod
+    def _storage_benchmark_progress_text(event: dict[str, Any]) -> str:
+        if event.get("phase") == "benchmark":
+            return f"{event.get('row')}: run {event.get('run')}/{event.get('runs')}"
+        return str(event.get("message") or event.get("phase") or "Storage benchmark")
 
     def new_run(self) -> None:
         self.launcher._pending_heatsoak_minutes = 0.0

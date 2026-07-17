@@ -38,6 +38,7 @@ def dependency_summary_text(
     drive: Dict[str, Any],
     *,
     storage_health: Optional[Dict[str, Any]] = None,
+    storage_benchmark: Optional[Dict[str, Any]] = None,
 ) -> str:
     def status(key: str) -> str:
         return "OK" if bool(backends.get(key)) else "missing"
@@ -88,6 +89,16 @@ def dependency_summary_text(
                 + f"{storage_health.get('eligible_internal_drive_count', 0)} eligible internal drive(s)",
             ]
         )
+    storage_benchmark = storage_benchmark if isinstance(storage_benchmark, dict) else {}
+    if storage_benchmark:
+        available = bool(storage_benchmark.get("benchmark_mode_available"))
+        lines.extend([
+            "",
+            "Storage Benchmark (optional):",
+            f"- Status: {'available' if available else 'unavailable (preferred dependency missing)'}",
+            f"- fio: {storage_benchmark.get('fio_version') or 'not found'}",
+            f"- libaio: {'available' if storage_benchmark.get('libaio_available') else 'unavailable'}",
+        ])
     lines.extend(
         [
             "",
@@ -395,6 +406,30 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
     )
 
     lines.append("")
+    lines.append("Storage Benchmark (optional)")
+    storage_benchmark = payload.get("storage_benchmark") if isinstance(payload.get("storage_benchmark"), dict) else {}
+    fio_available = bool(storage_benchmark.get("fio_available"))
+    libaio_available = bool(storage_benchmark.get("libaio_available"))
+    lines.extend(dependency_item_lines(
+        "fio backend",
+        fio_available,
+        detail=str(storage_benchmark.get("fio_version") or ""),
+        fix="install fio to enable the standalone Storage Benchmark workflow",
+        preferred=True,
+    ))
+    lines.extend(dependency_item_lines(
+        "fio libaio engine",
+        libaio_available,
+        detail="required for the built-in v1 profile",
+        fix="install a fio build with Linux native AIO/libaio support",
+        preferred=True,
+    ))
+    lines.append(
+        f"  [{'OK' if storage_benchmark.get('benchmark_mode_available') else 'WARN'}] Benchmark mode - "
+        f"{storage_benchmark.get('status') or 'unavailable'}"
+    )
+
+    lines.append("")
     lines.append("Telemetry")
     telemetry_labels = {
         "cpu_temp_c": "CPU temperature",
@@ -601,6 +636,14 @@ def dependency_check_summary_text(payload: Dict[str, Any], report_dir: Optional[
             lines.append(f"  - Permission-limited: {storage_health.get('permission_limited_count')}")
         if storage_health.get("unsupported_controller_count"):
             lines.append(f"  - Unsupported controllers: {storage_health.get('unsupported_controller_count')}")
+
+    storage_benchmark = payload.get("storage_benchmark") if isinstance(payload.get("storage_benchmark"), dict) else {}
+    if storage_benchmark:
+        lines.append("")
+        lines.append("Storage Benchmark:")
+        lines.append(f"  - Mode: {storage_benchmark.get('status') or 'unavailable'} (optional)")
+        lines.append(f"  - fio: {storage_benchmark.get('fio_version') or 'not found'}")
+        lines.append(f"  - libaio: {'available' if storage_benchmark.get('libaio_available') else 'unavailable'}")
 
     required_telemetry = (
         "cpu_temp_c",

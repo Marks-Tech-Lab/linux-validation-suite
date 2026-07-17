@@ -24,6 +24,7 @@ class ResultArtifactFacade:
         "results_inventory.json",
         "result_validation_batch.json",
         "pre_import_sanity_batch.json",
+        "storage_benchmark.json",
     )
 
     EXACT_ARTIFACT_NAMES = EXACT_ARTIFACT_NAMES
