@@ -12299,6 +12299,81 @@ def test_storage_benchmark_cli_discoverability() -> None:
                 "CLI Run Tests menu exposes standalone Storage Benchmark")
 
 
+def test_checked_in_storage_benchmark_profiles() -> None:
+    from Modules.lvs_profile_report_text import profile_execution_summary_lines, profile_summary_text
+    from Modules.lvs_profile_reports import ProfileReportManager
+    from Modules.lvs_run_setup import RunSetupManager
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+
+    loader = ProfileLoader(ROOT / "profiles")
+    expected = {
+        "Storage Benchmark Quick.json": {"runs": 1, "menu_group": "quick"},
+        "Storage Benchmark Sequential.json": {"runs": 5, "menu_group": "standard"},
+    }
+    discovered_names = {path.name for path in loader.list_profiles()}
+    report_entries = ProfileReportManager(
+        loader,
+        ProfileValidator(),
+        SimpleNamespace(),
+    ).list_profiles()
+    report_names = {entry.name for entry in report_entries}
+
+    class StorageDryRunRunner:
+        @staticmethod
+        def _enabled_workloads(_stage):
+            return ["storage_benchmark"]
+
+    settings = SimpleNamespace(suite_department="Production")
+    setup_manager = RunSetupManager(lambda: settings, loader, lambda: "Production")
+
+    for filename, expected_values in expected.items():
+        path = ROOT / "profiles" / filename
+        assert_true(path.is_file(), f"checked-in profile exists: {filename}")
+        assert_true(filename in discovered_names and filename in report_names,
+                    f"profile discovery exposes {filename} to TUI/CLI lists")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert_equal(set(raw["stages"][0]["modules"]), {"storage_benchmark"},
+                     f"{filename} is storage-only")
+
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        stage = profile.stages[0]
+        storage = stage.modules.storage_benchmark
+        assert_equal(labels, ["Storage Benchmark"], f"{filename} stage label sidecar")
+        assert_equal(stage.duration_seconds, None, f"{filename} needs no fake duration")
+        assert_true(storage.enabled, f"{filename} enables storage_benchmark")
+        assert_equal(storage.profile_id, "storage_kdiskmark_cdm_style_v1", f"{filename} profile id")
+        assert_equal(storage.target_mode, "all_internal", f"{filename} all-internal target mode")
+        assert_equal(storage.drive_execution, "sequential", f"{filename} sequential execution")
+        assert_equal(storage.test_size_gib, 1, f"{filename} test size")
+        assert_equal(storage.runs, expected_values["runs"], f"{filename} run count")
+        assert_true(not storage.allow_system_drive, f"{filename} skips root/system drive by default")
+        assert_equal(profile.menu_group, expected_values["menu_group"], f"{filename} menu group")
+
+        validation = ProfileValidator().validate(profile, labels)
+        assert_equal(validation["errors"], [], f"{filename} validates")
+        summary = profile_summary_text(path, profile, labels, loader.menu_group_label)
+        assert_true("completion-based" in summary and "StorageBenchmark/all_internal/sequential/1GiB/" in summary,
+                    f"{filename} profile detail shows completion-based storage benchmark")
+
+        diagnostic = build_stage_diagnostics_payload(StorageDryRunRunner(), stage, labels[0])
+        dry_report = {
+            "profile_name": profile.profile_name,
+            "runnable": diagnostic["runnable"],
+            "enabled_stage_count": 1,
+            "runnable_stage_count": 1 if diagnostic["runnable"] else 0,
+            "plan": [diagnostic],
+        }
+        dry_text = "\n".join(profile_execution_summary_lines(dry_report))
+        assert_true("completion-based" in dry_text and "target_mode=all_internal" in dry_text,
+                    f"{filename} dry run reports completion-based all-internal mode")
+
+        setup = setup_manager.create_run_setup(path)
+        assert_equal(setup.profile_path, path, f"{filename} is selectable in Run Setup")
+        assert_true(setup.profile.stages[0].modules.storage_benchmark.enabled,
+                    f"{filename} Run Setup retains storage module")
+
+
 def test_storage_benchmark_profile_module_integration() -> None:
     from Modules.lvs_profile_cli_editor import ProfileCliEditor, TEST_TYPE_CATALOG
     from Modules.lvs_profile_editor import ProfileEditor
@@ -20847,6 +20922,7 @@ def main() -> int:
         test_dependency_report_summary_with_injected_telemetry,
         test_storage_benchmark_profile_fio_and_aggregation,
         test_storage_benchmark_cli_discoverability,
+        test_checked_in_storage_benchmark_profiles,
         test_storage_benchmark_profile_module_integration,
         test_storage_benchmark_target_safety_and_result_discovery,
         test_storage_benchmark_all_internal_discovery,

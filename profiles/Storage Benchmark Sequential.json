@@ -1,0 +1,38 @@
+{
+  "profile_name": "Storage Benchmark Sequential",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "Storage Benchmark Sequential_info.txt",
+  "menu_group": "standard",
+  "menu_description": "Five-run completion-based benchmark of eligible internal drives in sequence",
+  "defaults": {
+    "telemetry_interval_seconds": 2,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "storage_benchmark_1",
+      "name": "Storage Benchmark",
+      "duration_seconds": null,
+      "enabled": true,
+      "modules": {
+        "storage_benchmark": {
+          "enabled": true,
+          "profile_id": "storage_kdiskmark_cdm_style_v1",
+          "target_mode": "all_internal",
+          "target_path": "",
+          "drive_execution": "sequential",
+          "test_size_gib": 1,
+          "runs": 5,
+          "allow_system_drive": false
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "profile_name": "Storage Benchmark Quick",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "Storage Benchmark Quick_info.txt",
+  "menu_group": "quick",
+  "menu_description": "One-run completion-based storage benchmark for initial validation",
+  "defaults": {
+    "telemetry_interval_seconds": 2,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "storage_benchmark_1",
+      "name": "Storage Benchmark",
+      "duration_seconds": null,
+      "enabled": true,
+      "modules": {
+        "storage_benchmark": {
+          "enabled": true,
+          "profile_id": "storage_kdiskmark_cdm_style_v1",
+          "target_mode": "all_internal",
+          "target_path": "",
+          "drive_execution": "sequential",
+          "test_size_gib": 1,
+          "runs": 1,
+          "allow_system_drive": false
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "strict_threshold_recommendation_warnings": null
+    }
+  ]
+}
