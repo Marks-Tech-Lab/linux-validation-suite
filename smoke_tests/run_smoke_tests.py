@@ -2431,7 +2431,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
     assert_true(("results", "Results") in ACTION_BUTTONS, "TUI right-pane buttons keep Results action")
     assert_true(("settings", "Settings") in ACTION_BUTTONS, "TUI right-pane buttons keep Settings action")
     assert_true(("migration-support", "Migration") in ACTION_BUTTONS, "TUI right-pane buttons expose migration support")
-    assert_true(("storage-benchmark-info", "Storage Bench (CLI)") in ACTION_BUTTONS,
+    assert_true(("storage-benchmark-info", "Storage Benchmark") in ACTION_BUTTONS,
                 "TUI right-pane exposes standalone storage benchmark")
     assert_equal(len(ACTION_BUTTON_ROWS), 2, "TUI right-pane buttons use restored two-row layout")
     assert_equal(
@@ -2455,7 +2455,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
             ("settings", "Settings"),
             ("migration-support", "Migration"),
             ("refresh", "Refresh"),
-            ("storage-benchmark-info", "Storage (CLI)"),
+            ("storage-benchmark-info", "Storage Bench"),
         ),
         "TUI right-pane second button row matches restored layout",
     )
@@ -12190,6 +12190,198 @@ def test_storage_benchmark_cli_discoverability() -> None:
                 "CLI Run Tests menu exposes standalone Storage Benchmark")
 
 
+def test_storage_benchmark_profile_module_integration() -> None:
+    from Modules.lvs_profile_editor import ProfileEditor
+    from Modules.lvs_profile_models import (
+        ModuleCpu,
+        ModuleStorageBenchmark,
+        StageConfig,
+        StageModules,
+        StageNormalization,
+        ValidationProfile,
+        stage_execution_mode,
+    )
+    from Modules.lvs_profile_report_text import profile_summary_text, profile_execution_summary_lines
+    from Modules.lvs_profile_validation import ProfileValidator
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+    from Modules.lvs_storage_benchmark_stage import run_storage_benchmark_stage
+
+    with TemporaryDirectory(dir="/tmp") as temp_dir:
+        root = Path(temp_dir)
+        profile_path = root / "Storage Profile.json"
+        profile_path.write_text(json.dumps({
+            "profile_name": "Storage Profile",
+            "stages": [{
+                "id": "storage_1",
+                "name": "Storage Benchmark",
+                "enabled": True,
+                "modules": {
+                    "storage_benchmark": {
+                        "enabled": True,
+                        "profile_id": "storage_kdiskmark_cdm_style_v1",
+                        "target_mode": "all_internal",
+                        "drive_execution": "sequential",
+                        "test_size_gib": 1,
+                        "runs": 5,
+                        "allow_system_drive": False,
+                    }
+                },
+            }],
+        }), encoding="utf-8")
+        loader = ProfileLoader(root)
+        profile = loader.load_profile(profile_path)
+        stage = profile.stages[0]
+        assert_equal(stage.duration_seconds, None, "completion profile JSON does not require duration_seconds")
+        assert_equal(stage_execution_mode(stage), "completion", "storage stage execution mode")
+        validation = ProfileValidator().validate(profile, ["Storage Benchmark"])
+        assert_equal(validation["errors"], [], "storage-only completion stage validates")
+        assert_true(any("sequentially" in item for item in validation["warnings"]),
+                    "all-internal sequential policy is visible")
+        summary = profile_summary_text(profile_path, profile, ["Storage Benchmark"], lambda value: value)
+        assert_true("completion-based" in summary and "StorageBenchmark/all_internal/sequential/1GiB/5runs" in summary,
+                    "profile summary exposes selectable completion benchmark")
+
+        diagnostics = build_stage_diagnostics_payload(
+            SimpleNamespace(_enabled_workloads=lambda current: ["storage_benchmark"]),
+            stage,
+            "Storage Benchmark",
+        )
+        dry_lines = profile_execution_summary_lines({
+            "profile_name": profile.profile_name,
+            "runnable": True,
+            "enabled_stage_count": 1,
+            "runnable_stage_count": 1,
+            "plan": [diagnostics],
+        })
+        dry_text = "\n".join(dry_lines)
+        assert_true("completion-based" in dry_text, "dry run labels storage stage completion-based")
+        assert_true("target_mode=all_internal" in dry_text and "estimated_max_writes=21 GiB/drive" in dry_text,
+                    "dry run shows storage benchmark parameters and estimated writes")
+
+        saved_path = root / "Saved Storage Profile.json"
+        loader.save_profile(saved_path, profile, ["Storage Benchmark"])
+        saved = json.loads(saved_path.read_text(encoding="utf-8"))
+        assert_true("storage_benchmark" in saved["stages"][0]["modules"], "saved profile retains storage module")
+        assert_equal(saved["stages"][0]["duration_seconds"], None, "saved completion stage has no fake duration")
+
+        mixed = StageConfig(
+            id="mixed",
+            name="Mixed",
+            duration_seconds=60,
+            modules=StageModules(
+                cpu=ModuleCpu(enabled=True),
+                storage_benchmark=ModuleStorageBenchmark(enabled=True),
+            ),
+            normalization=StageNormalization(0, 0),
+        )
+        mixed_validation = ProfileValidator().validate(
+            ValidationProfile(profile_name="Mixed", stages=[mixed]), ["Mixed"]
+        )
+        assert_true(any("mixes completion-based" in item for item in mixed_validation["errors"]),
+                    "mixed timed/completion stage is rejected")
+        editor_stage, editor_label = ProfileEditor().template_stage(
+            ValidationProfile(profile_name="Edit"), "storage_benchmark"
+        )
+        assert_equal(editor_label, "Storage Benchmark", "profile editor offers Storage Benchmark template")
+        assert_true(editor_stage.modules.storage_benchmark.enabled and editor_stage.duration_seconds is None,
+                    "editor template creates completion-based storage stage")
+        selected = editor_stage.modules.storage_benchmark
+        selected.target_mode = "selected_target"
+        selected.target_path = "/safe/mounted/directory"
+        selected_validation = ProfileValidator().validate(
+            ValidationProfile(profile_name="Selected", stages=[editor_stage]), ["Storage Benchmark"]
+        )
+        assert_equal(selected_validation["errors"], [], "selected_target profile mode validates with a directory")
+
+        class FakeProfileStorageService:
+            def __init__(self, verdict: str = "WARN") -> None:
+                self.calls = []
+                self.verdict = verdict
+
+            def discover_all_eligible(self, **kwargs):
+                self.calls.append(("discover", kwargs))
+                return SimpleNamespace(targets=(SimpleNamespace(primary_block_name="sda"),), skipped_targets=())
+
+            def run_all_internal(self, _plan, **kwargs):
+                self.calls.append(("run", kwargs))
+                output = Path(kwargs["aggregate_dir"])
+                output.mkdir(parents=True)
+                device = output / "sda"
+                device.mkdir()
+                (device / "storage_benchmark.json").write_text("{}", encoding="utf-8")
+                (device / "storage_benchmark_summary.txt").write_text("summary\n", encoding="utf-8")
+                payload = {
+                    "status": "failed" if self.verdict == "FAIL" else "completed",
+                    "verdict": self.verdict,
+                    "total_targets": 2,
+                    "completed_targets": 1,
+                    "warnings": ["root/system drive skipped"] if self.verdict == "WARN" else [],
+                    "errors": ["fio read/write error"] if self.verdict == "FAIL" else [],
+                }
+                (output / "storage_benchmark_all_internal.json").write_text(json.dumps(payload), encoding="utf-8")
+                (output / "storage_benchmark_all_internal_summary.txt").write_text("batch summary\n", encoding="utf-8")
+                return output
+
+        run_dir = root / "normal_run"
+        run_dir.mkdir()
+        fake_service = FakeProfileStorageService()
+        windows: list[object] = []
+        plans: list[dict[str, object]] = []
+        clock = iter((10.0, 15.0))
+        stage_result = run_storage_benchmark_stage(
+            service=fake_service,
+            stage=stage,
+            display_name="Storage Benchmark",
+            run_dir=run_dir,
+            stage_plan=dict(diagnostics),
+            stage_windows=windows,
+            executed_plan=plans,
+            monotonic=lambda: next(clock),
+        )
+        assert_true(not stage_result.run_aborted, "warning storage stage allows profile continuation")
+        assert_equal(windows[0].verdict, "warning", "storage WARN contributes normal stage verdict")
+        assert_equal(windows[0].storage_benchmark_summary["completed_targets"], 1,
+                     "normal stage window includes compact benchmark summary")
+        assert_equal(fake_service.calls[0][1]["root_confirmation"], None,
+                     "allow_system_drive false does not authorize root")
+        run_call = fake_service.calls[1][1]
+        assert_true(run_call["embed_per_drive_results"], "profile mode embeds per-drive artifacts")
+        assert_equal(run_call["confirmation"], "BENCHMARK ALL INTERNAL", "profile config authorizes explicit batch mode")
+        artifact_root = run_dir / "storage_benchmark"
+        assert_true((artifact_root / "sda" / "storage_benchmark.json").is_file(),
+                    "per-drive JSON is inside normal run folder")
+        assert_true((artifact_root / "sda" / "storage_benchmark_summary.txt").is_file(),
+                    "per-drive text is inside normal run folder")
+        assert_true((artifact_root / "storage_benchmark_all_internal.json").is_file(),
+                    "aggregate JSON is inside normal run folder")
+        assert_true((artifact_root / "storage_benchmark_all_internal_summary.txt").is_file(),
+                    "aggregate text is inside normal run folder")
+
+        failed_run = root / "failed_normal_run"
+        failed_run.mkdir()
+        failed_windows: list[object] = []
+        failed_clock = iter((20.0, 25.0))
+        failed_result = run_storage_benchmark_stage(
+            service=FakeProfileStorageService("FAIL"),
+            stage=stage,
+            display_name="Storage Benchmark",
+            run_dir=failed_run,
+            stage_plan=dict(diagnostics),
+            stage_windows=failed_windows,
+            executed_plan=[],
+            monotonic=lambda: next(failed_clock),
+        )
+        assert_true(not failed_result.run_aborted, "completed hardware failure is not mislabeled cancellation")
+        assert_equal(failed_windows[0].verdict, "fail", "storage failure contributes normal FAIL stage verdict")
+        assert_true(any(event["severity"] == "error" for event in failed_windows[0].error_events),
+                    "storage errors become normal run error events")
+
+        stage.modules.storage_benchmark.allow_system_drive = True
+        allowed_validation = ProfileValidator().validate(profile, ["Storage Benchmark"])
+        assert_true(any("explicitly allows" in item for item in allowed_validation["warnings"]),
+                    "allow_system_drive true is surfaced before run")
+
+
 def test_storage_benchmark_target_safety_and_result_discovery() -> None:
     from Modules.lvs_result_artifact_inventory import ResultArtifactInventoryBuilder
     from Modules.lvs_result_report_adapters import list_result_entries, result_summary_text
@@ -12362,7 +12554,7 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
                 self.order.append(device)
-                result_dir = self.results_dir / f"result_{device}"
+                result_dir = Path(kwargs.get("result_dir") or (self.results_dir / f"result_{device}"))
                 result_dir.mkdir()
                 verdict = "WARN" if device == "drive_b" else "PASS"
                 payload = {
@@ -12410,6 +12602,27 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
         assert_true("Storage Benchmark - All Eligible Internal Drives" in result_summary_text(
             batch_dir, SimpleNamespace(build=lambda _payload: "bad")
         ), "batch summary result discovery")
+
+        profile_output = root / "normal_run" / "storage_benchmark"
+        embedded_dir = run_all_internal(
+            batch_service,
+            StorageBenchmarkBatchPlan((target_a, target_b), plan.target_models, ()),
+            test_size_gib=1,
+            runs=1,
+            confirmation="BENCHMARK ALL INTERNAL",
+            aggregate_dir=profile_output,
+            embed_per_drive_results=True,
+        )
+        assert_equal(embedded_dir, profile_output, "profile batch uses normal run storage artifact root")
+        for device in ("sda", "sdb"):
+            assert_true((profile_output / device / "storage_benchmark.json").is_file(),
+                        "profile batch per-drive JSON is embedded")
+            assert_true((profile_output / device / "storage_benchmark_summary.txt").is_file(),
+                        "profile batch per-drive text is embedded")
+        assert_true((profile_output / "storage_benchmark_all_internal.json").is_file(),
+                    "profile batch aggregate JSON is embedded")
+        assert_true((profile_output / "storage_benchmark_all_internal_summary.txt").is_file(),
+                    "profile batch aggregate text is embedded")
 
         root_plan = StorageBenchmarkBatchPlan((StorageBenchmarkTarget(
             drive_a, Path("/"), "/dev/sda", "8:0", ("/dev/sda",), True, 1, drive_a.stat().st_dev,
@@ -19610,14 +19823,23 @@ def test_stage_adapter_helpers() -> None:
 
 
 def test_run_stage_loop_helpers() -> None:
+    from Modules.lvs_profile_models import ModuleStorageBenchmark, StageModules
+
     stages = [
         SimpleNamespace(id="segment_1", name="First Stage", enabled=True),
+        SimpleNamespace(
+            id="storage_1",
+            name="Storage Benchmark",
+            enabled=True,
+            modules=StageModules(storage_benchmark=ModuleStorageBenchmark(enabled=True)),
+        ),
         SimpleNamespace(id="segment_2", name="Disabled Stage", enabled=False),
         SimpleNamespace(id="segment_3", name="Third Stage", enabled=True),
     ]
     effective_profile = SimpleNamespace(stages=stages)
     preflight_plan = [
         {"stage": "first"},
+        {"stage": "storage"},
         {"stage": "disabled"},
         {"stage": "third"},
     ]
@@ -19625,6 +19847,7 @@ def test_run_stage_loop_helpers() -> None:
     executed_plan = []
     calls = []
     original_adapter = run_stage_loop_module.run_stage_adapter
+    completion_calls = []
 
     def fake_run_stage_adapter(**kwargs):
         calls.append(kwargs)
@@ -19689,6 +19912,12 @@ def test_run_stage_loop_helpers() -> None:
             print_progress=lambda line: None,
             operator_stop_source="smoke",
             on_operator_stop=lambda display_name, event: None,
+            completion_stage_runner=lambda **kwargs: (
+                completion_calls.append(kwargs),
+                stage_windows.append(SimpleNamespace(display_name=kwargs["display_name"])),
+                executed_plan.append(kwargs["stage_plan"]),
+                SimpleNamespace(run_aborted=False, should_break_run=False),
+            )[-1],
         )
     finally:
         run_stage_loop_module.run_stage_adapter = original_adapter
@@ -19696,8 +19925,11 @@ def test_run_stage_loop_helpers() -> None:
     assert_true(result.run_aborted, "run stage loop propagates run abort")
     assert_equal([call["display_name"] for call in calls], ["Label One", "Third Stage"], "run stage loop labels enabled stages")
     assert_equal([call["stage"].id for call in calls], ["segment_1", "segment_3"], "run stage loop skips disabled stage")
-    assert_equal(len(stage_windows), 2, "run stage loop passes stage windows")
-    assert_equal(executed_plan[1]["stage"], "third", "run stage loop passes copied stage plan")
+    assert_equal([item["stage"].id for item in completion_calls], ["storage_1"],
+                 "completion stage uses dedicated runner")
+    assert_equal(len(stage_windows), 3, "completion stage completes before later timed stage")
+    assert_equal(executed_plan[1]["stage"], "storage", "completion stage appends copied plan")
+    assert_equal(executed_plan[2]["stage"], "third", "timed stage after completion stage still executes")
 
 
 def test_stage_launch_plan_helpers() -> None:
@@ -20480,6 +20712,7 @@ def main() -> int:
         test_dependency_report_summary_with_injected_telemetry,
         test_storage_benchmark_profile_fio_and_aggregation,
         test_storage_benchmark_cli_discoverability,
+        test_storage_benchmark_profile_module_integration,
         test_storage_benchmark_target_safety_and_result_discovery,
         test_storage_benchmark_all_internal_discovery,
         test_storage_benchmark_single_and_batch_artifacts,

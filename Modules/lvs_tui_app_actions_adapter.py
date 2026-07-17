@@ -109,25 +109,26 @@ class TuiAppActionsAdapterMixin:
 
     async def action_show_storage_benchmark_info(self) -> None:
         self.view_mode = "storage_benchmark_info"
-        self._set_status("Storage Benchmark | CLI-only workflow")
+        self._set_status("Storage Benchmark | Profile module and standalone utility")
         self._apply_navigation_reset(
             tui_navigation_reset(clear_selected_profile=True, clear_selected_result=True)
         )
         self.query_one("#sidebar-title").update("Storage Benchmark")
         await self._replace_sidebar_labels(
             self.query_one("#items"),
-            ["Standalone Storage Benchmark (CLI-only)"],
+            ["Storage Benchmark profile module"],
             selected_index=0,
         )
         self._set_detail(
             "Storage Benchmark\n"
             "=================\n\n"
-            "This is a standalone KDiskMark/CDM-style fio workflow. It is intentionally not a validation "
-            "profile or StageModule.\n\n"
-            "TUI execution is not enabled yet. Use the CLI path:\n"
+            "This KDiskMark/CDM-style fio workflow is available as a completion-based validation profile "
+            "module. In Profiles, edit or create a profile and add the Storage Benchmark stage template. "
+            "It runs to completion, writes artifacts inside the normal run folder, and then advances to "
+            "the next stage.\n\n"
+            "A standalone utility also remains available at:\n"
             "Main menu -> Run Tests -> Run Storage Benchmark\n\n"
-            "The CLI offers one selected target or all eligible internal drives. Completed benchmark "
-            "folders remain visible under Results.\n\n"
+            "Both paths share the same safety resolver, fio backend, health checks, and artifact writers.\n\n"
             "Press Esc or P to return to Profiles."
         )
         self._focus_items()

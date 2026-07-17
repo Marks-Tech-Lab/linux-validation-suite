@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
@@ -26,6 +27,88 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     workloads = runner._enabled_workloads(stage)
     issues: List[str] = []
     warnings: List[str] = []
+    storage = stage.modules.storage_benchmark
+    if storage.enabled:
+        try:
+            test_size_gib = int(storage.test_size_gib)
+            runs = int(storage.runs)
+            estimated_writes_gib = test_size_gib * (1 + 4 * runs)
+        except (TypeError, ValueError):
+            test_size_gib, runs, estimated_writes_gib = 0, 0, 0
+            issues.append("Storage benchmark size/runs must be integers within the supported bounds.")
+        target_preview: Dict[str, Any] = {}
+        if storage.target_mode == "all_internal":
+            warnings.append("All eligible internal drives will be benchmarked sequentially; no concurrent or staggered fio jobs are used.")
+        if storage.allow_system_drive:
+            warnings.append("This profile explicitly allows the root/system drive; the stage verdict will be at least WARN if it is used.")
+        capability = {}
+        try:
+            from .lvs_fio_backend import storage_benchmark_capability
+            capability = storage_benchmark_capability()
+        except Exception as exc:
+            warnings.append(f"Storage benchmark capability could not be checked: {exc}")
+        if capability and not capability.get("benchmark_mode_available"):
+            warnings.append("fio/libaio is unavailable; the completion stage will report WARN without affecting unrelated stages.")
+        try:
+            from .lvs_storage_benchmark_target import StorageTargetResolver
+            resolver = StorageTargetResolver()
+            root_confirmation = "BENCHMARK ROOT" if storage.allow_system_drive else None
+            if storage.target_mode == "all_internal":
+                preview = resolver.discover_all_eligible(
+                    test_size_gib=test_size_gib,
+                    root_confirmation=root_confirmation,
+                )
+                target_preview = {
+                    "eligible_target_count": len(preview.targets),
+                    "skipped_targets": [
+                        {"device": item.device, "reason": item.reason}
+                        for item in preview.skipped_targets
+                    ],
+                }
+                if preview.skipped_targets:
+                    warnings.append(
+                        f"Storage target preview will skip {len(preview.skipped_targets)} drive(s); see diagnostics for reasons."
+                    )
+            elif storage.target_path:
+                selected = resolver.resolve(
+                    Path(storage.target_path),
+                    test_size_gib=test_size_gib,
+                    root_confirmation=root_confirmation,
+                )
+                target_preview = {
+                    "eligible_target_count": 1,
+                    "target_device": selected.mount_source,
+                    "target_is_system_drive": selected.is_system_drive,
+                }
+        except Exception as exc:
+            target_preview = {"eligible_target_count": 0, "preflight_warning": str(exc)}
+            warnings.append(f"Storage target preview: {exc}")
+        return {
+            "stage_id": stage.id,
+            "label": label,
+            "type": stage.name,
+            "enabled": stage.enabled,
+            "execution_mode": "completion",
+            "duration_seconds": None,
+            "trim_start_seconds": 0,
+            "trim_end_seconds": 0,
+            "workloads": workloads,
+            "backend_usage": {"storage_benchmark": "fio"},
+            "storage_benchmark": {
+                "profile_id": storage.profile_id,
+                "target_mode": storage.target_mode,
+                "target_path": storage.target_path or None,
+                "drive_execution": storage.drive_execution,
+                "test_size_gib": test_size_gib,
+                "runs": runs,
+                "allow_system_drive": storage.allow_system_drive,
+                "estimated_max_writes_gib_per_drive": estimated_writes_gib,
+                "target_preview": target_preview,
+            },
+            "issues": issues,
+            "warnings": warnings,
+            "runnable": bool(stage.enabled and not issues),
+        }
     gpu_backend_diagnostics = build_stage_gpu_backend_diagnostics(
         stage=stage,
         stage_gpu_target_mode=runner._stage_gpu_target_mode,

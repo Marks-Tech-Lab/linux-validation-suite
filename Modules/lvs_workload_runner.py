@@ -205,6 +205,8 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
             workloads.append("gpu_3d")
         if stage.modules.vram.enabled:
             workloads.append("vram")
+        if stage.modules.storage_benchmark.enabled:
+            workloads.append("storage_benchmark")
         return workloads
 
     def _missing_tools(self, commands: List[List[str]]) -> List[str]:

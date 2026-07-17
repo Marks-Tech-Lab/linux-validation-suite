@@ -12,7 +12,7 @@ from typing import Any, List, Tuple
 
 from .lvs_profile_creation import ProfileCreationRequest, ProfileStageDraft
 from .lvs_profile_edit_view import profile_detail_lines, profile_dry_run_preview_text
-from .lvs_profile_models import StageConfig, StageModules, ValidationProfile
+from .lvs_profile_models import ModuleStorageBenchmark, StageConfig, StageModules, ValidationProfile
 
 
 TEST_TYPE_CATALOG = {
@@ -23,6 +23,7 @@ TEST_TYPE_CATALOG = {
     "3D Adaptive": {"description": "GPU 3D stress."},
     "VRAM": {"description": "GPU VRAM stress."},
     "Combined": {"description": "Stack multiple test types in one segment."},
+    "Storage Benchmark": {"description": "Completion-based KDiskMark/CDM-style fio benchmark stage."},
 }
 
 
@@ -81,11 +82,14 @@ class ProfileCliEditor:
             print(f"\n--- Segment {index + 1} ---")
             label = host._input("Segment label for parser/results: ").strip() or f"Segment {index + 1}"
             test_type = self.choose_test_type()
-            try:
-                duration_seconds = int(host._input("Duration seconds: ").strip())
-            except Exception:
-                print("Invalid duration. Using 300.")
-                duration_seconds = 300
+            if test_type == "Storage Benchmark":
+                duration_seconds = None
+            else:
+                try:
+                    duration_seconds = int(host._input("Duration seconds: ").strip())
+                except Exception:
+                    print("Invalid duration. Using 300.")
+                    duration_seconds = 300
             stage_drafts.append(ProfileStageDraft(
                 label=label,
                 test_type=test_type,
@@ -147,6 +151,27 @@ class ProfileCliEditor:
             )
         if test_type == "Linpack":
             return host.profile_editor.build_stage_modules(test_type)
+        if test_type == "Storage Benchmark":
+            mode_raw = host._input("Target mode [1 selected target / 2 all internal, default 2]: ").strip()
+            target_mode = "selected_target" if mode_raw == "1" else "all_internal"
+            target_path = host._input("Writable target directory: ").strip() if target_mode == "selected_target" else ""
+            try:
+                test_size_gib = max(1, min(8, int(host._input("Test size GiB [1]: ").strip() or "1")))
+            except Exception:
+                test_size_gib = 1
+            try:
+                runs = max(1, min(9, int(host._input("Runs [5]: ").strip() or "5")))
+            except Exception:
+                runs = 5
+            allow_system = host._input("Allow root/system drive? [y/N]: ").strip().lower() == "y"
+            return StageModules(storage_benchmark=ModuleStorageBenchmark(
+                enabled=True,
+                target_mode=target_mode,
+                target_path=target_path,
+                test_size_gib=test_size_gib,
+                runs=runs,
+                allow_system_drive=allow_system,
+            ))
         print("Combined builder")
         cpu_enabled = host._input("Include CPU? [y/N]: ").strip().lower() == "y"
         memory_enabled = host._input("Include Memory/RAM? [y/N]: ").strip().lower() == "y"
@@ -245,8 +270,9 @@ class ProfileCliEditor:
                 cpu_threads = stage.modules.cpu.threads if stage.modules.cpu.enabled else "-"
                 cpu_instruction = stage.modules.cpu.instruction_set if stage.modules.cpu.enabled else "-"
                 strict_text = host._strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)
+                execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
                 print(
-                    f"{idx}. {label} | {stage.name} | {stage.duration_seconds}s | "
+                    f"{idx}. {label} | {stage.name} | {execution} | "
                     f"{'on' if stage.enabled else 'off'} | cpu={cpu_instruction}/{cpu_threads} | gpu={gpu_mode}/{gpu_backend}/{gpu_profile} | strict={strict_text}"
                 )
             print("T. Cycle profile strict threshold warnings override")
@@ -331,11 +357,14 @@ class ProfileCliEditor:
         print(f"\n--- New Stage {display_index} ---")
         label = host._input("Segment label for parser/results: ").strip() or f"Segment {display_index}"
         test_type = host._choose_test_type()
-        try:
-            duration_seconds = int(host._input("Duration seconds [300]: ").strip() or "300")
-        except Exception:
-            print("Invalid duration. Using 300.")
-            duration_seconds = 300
+        if test_type == "Storage Benchmark":
+            duration_seconds = None
+        else:
+            try:
+                duration_seconds = int(host._input("Duration seconds [300]: ").strip() or "300")
+            except Exception:
+                print("Invalid duration. Using 300.")
+                duration_seconds = 300
         result = host.profile_creation.insert_stage(
             profile,
             labels,
@@ -359,7 +388,8 @@ class ProfileCliEditor:
         print("\nRemove Stage")
         for index, stage in enumerate(profile.stages, start=1):
             label = labels[index - 1] if index - 1 < len(labels) else stage.name
-            print(f"{index}. {label} [{stage.name}] ({stage.duration_seconds}s)")
+            execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
+            print(f"{index}. {label} [{stage.name}] ({execution})")
         raw = host._input("Choose stage number to remove [Enter cancels]: ").strip()
         if not raw:
             print("Remove cancelled.")

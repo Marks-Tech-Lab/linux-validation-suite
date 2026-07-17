@@ -98,6 +98,8 @@ class ProfileEditController:
 
     @staticmethod
     def stage_action_error(stage: Any, action: str) -> str:
+        if action == "duration" and stage.modules.storage_benchmark.enabled:
+            return "Storage Benchmark is completion-based and has no stage duration."
         if action in {"cpu_instruction", "cpu_threads"} and not stage.modules.cpu.enabled:
             return "CPU module is not enabled on this stage."
         if action == "memory_allocation" and not stage.modules.memory.enabled:

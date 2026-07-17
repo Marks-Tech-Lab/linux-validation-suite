@@ -107,6 +107,8 @@ def run_all_internal(
     root_confirmation: str | None = None,
     cancel_event: threading.Event | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    aggregate_dir: Path | None = None,
+    embed_per_drive_results: bool = False,
 ) -> Path:
     if confirmation != "BENCHMARK ALL INTERNAL":
         raise ValueError("all-internal benchmark requires typed confirmation: BENCHMARK ALL INTERNAL")
@@ -116,11 +118,14 @@ def run_all_internal(
     cancel = cancel_event or threading.Event()
     started = datetime.now(timezone.utc)
     stamp = started.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
-    aggregate_dir = service.results_dir / f"{stamp}_Storage_Benchmark_All_Internal"
-    suffix = 2
-    while aggregate_dir.exists():
-        aggregate_dir = service.results_dir / f"{stamp}_Storage_Benchmark_All_Internal_{suffix}"
-        suffix += 1
+    if aggregate_dir is None:
+        aggregate_dir = service.results_dir / f"{stamp}_Storage_Benchmark_All_Internal"
+        suffix = 2
+        while aggregate_dir.exists():
+            aggregate_dir = service.results_dir / f"{stamp}_Storage_Benchmark_All_Internal_{suffix}"
+            suffix += 1
+    else:
+        aggregate_dir = Path(aggregate_dir)
     aggregate_dir.mkdir(parents=True, exist_ok=False)
 
     target_results: list[dict[str, Any]] = []
@@ -133,17 +138,22 @@ def run_all_internal(
         if progress:
             progress({"phase": "batch_target", "device": device, "target_index": index + 1, "target_count": len(plan.targets)})
         try:
-            result_dir = service.run(
-                target.target_path,
-                test_size_gib=test_size_gib,
-                runs=runs,
-                root_confirmation=root_confirmation,
-                confirmed=True,
-                cancel_event=cancel,
-                progress=(
+            run_options = {
+                "test_size_gib": test_size_gib,
+                "runs": runs,
+                "root_confirmation": root_confirmation,
+                "confirmed": True,
+                "cancel_event": cancel,
+                "progress": (
                     (lambda event, selected=device: progress({**event, "device": selected}))
                     if progress else None
                 ),
+            }
+            if embed_per_drive_results:
+                run_options["result_dir"] = aggregate_dir / target.primary_block_name
+            result_dir = service.run(
+                target.target_path,
+                **run_options,
             )
             json_path = result_dir / "storage_benchmark.json"
             summary_path = result_dir / "storage_benchmark_summary.txt"

@@ -15,6 +15,7 @@ from .lvs_profile_models import (
     ModuleCpu,
     ModuleGpu3D,
     ModuleMemory,
+    ModuleStorageBenchmark,
     ModuleVram,
     ProfileDefaults,
     StageConfig,
@@ -111,12 +112,13 @@ class ProfileLoader:
                 memory=ModuleMemory(**modules_raw.get("memory", {})),
                 gpu_3d=ModuleGpu3D(**modules_raw.get("gpu_3d", {})),
                 vram=ModuleVram(**modules_raw.get("vram", {})),
+                storage_benchmark=ModuleStorageBenchmark(**modules_raw.get("storage_benchmark", {})),
             )
             stages.append(
                 StageConfig(
                     id=stage_raw["id"],
                     name=stage_raw["name"],
-                    duration_seconds=stage_raw["duration_seconds"],
+                    duration_seconds=stage_raw.get("duration_seconds"),
                     enabled=stage_raw.get("enabled", True),
                     modules=modules,
                     normalization=StageNormalization(**stage_raw.get("normalization", {})),

@@ -15,6 +15,8 @@ from .lvs_run_lifecycle import future_local_iso
 from .lvs_run_stage_loop import run_effective_stages
 from .lvs_settings import DEFAULT_STAGE_PROGRESS_INTERVAL_SECONDS
 from .lvs_system_info import SystemInfoCollector
+from .lvs_storage_benchmark import StorageBenchmarkService
+from .lvs_storage_benchmark_stage import run_storage_benchmark_stage
 from .lvs_telemetry_collector import TelemetryCollector
 
 
@@ -84,6 +86,11 @@ def execute_validation_run(
     system_info = bootstrap.system_info
     manifest_payload = bootstrap.manifest_payload
     advanced_debug = bootstrap.advanced_debug
+    storage_benchmark_service = StorageBenchmarkService(
+        run_dir / "storage_benchmark",
+        runtime_environment=orchestrator.settings.runtime_environment,
+        privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
+    )
 
     stage_loop = run_effective_stages(
         profile_name=profile.profile_name,
@@ -153,6 +160,18 @@ def execute_validation_run(
         operator_stop_source=operator_stop_source,
         on_operator_stop=run_events.operator_stop,
         cancel_check=cancel_check,
+        completion_stage_runner=lambda stage, display_name, stage_plan: run_storage_benchmark_stage(
+            service=storage_benchmark_service,
+            stage=stage,
+            display_name=display_name,
+            run_dir=run_dir,
+            stage_plan=stage_plan,
+            stage_windows=stage_windows,
+            executed_plan=executed_plan,
+            monotonic=time.monotonic,
+            cancel_check=cancel_check,
+            progress=print,
+        ),
     )
     run_aborted = stage_loop.run_aborted
 

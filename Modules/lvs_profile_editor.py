@@ -17,6 +17,7 @@ from .lvs_profile_models import (
     ModuleCpu,
     ModuleGpu3D,
     ModuleMemory,
+    ModuleStorageBenchmark,
     ModuleVram,
     StageConfig,
     StageModules,
@@ -49,6 +50,7 @@ class ProfileEditor:
         {"key": "power_auto", "label": "Power Test (CPU + 3D)", "stage_type": "Combined", "default_label": "Power (CPU + 3D)"},
         {"key": "sse_vram", "label": "SSE + VRAM", "stage_type": "Combined", "default_label": "SSE + VRAM"},
         {"key": "avx_ram", "label": "AVX + RAM", "stage_type": "Combined", "default_label": "AVX (CPU + RAM)"},
+        {"key": "storage_benchmark", "label": "Storage Benchmark", "stage_type": "Storage Benchmark", "default_label": "Storage Benchmark"},
     ]
 
     def gpu_backend_options(self) -> List[str]:
@@ -143,6 +145,8 @@ class ProfileEditor:
             )
         if test_type == "Linpack":
             return StageModules(cpu=ModuleCpu(enabled=True, mode="extreme", instruction_set="auto"))
+        if test_type == "Storage Benchmark":
+            return StageModules(storage_benchmark=ModuleStorageBenchmark(enabled=True))
         if test_type == "Power Test (CPU + 3D)":
             return self.build_stage_modules(
                 "Combined",
@@ -255,6 +259,8 @@ class ProfileEditor:
             return self.build_stage_modules("SSE + VRAM")
         if key == "avx_ram":
             return self.build_stage_modules("AVX + RAM")
+        if key == "storage_benchmark":
+            return self.build_stage_modules("Storage Benchmark")
         return self.build_stage_modules("CPU")
 
     def create_stage(
@@ -267,12 +273,14 @@ class ProfileEditor:
         stage_id: str = "",
         enabled: bool = True,
     ) -> StageConfig:
+        selected_modules = modules or self.build_stage_modules(test_type or "Combined")
+        completion_based = bool(selected_modules.storage_benchmark.enabled)
         return StageConfig(
             id=stage_id or self.next_stage_id(profile),
             name=test_type or "Combined",
-            duration_seconds=max(1, int(duration_seconds or 300)),
+            duration_seconds=None if completion_based else max(1, int(duration_seconds or 300)),
             enabled=bool(enabled),
-            modules=modules or self.build_stage_modules(test_type or "Combined"),
+            modules=selected_modules,
             normalization=StageNormalization(
                 profile.defaults.trim_start_seconds,
                 profile.defaults.trim_end_seconds,

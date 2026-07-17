@@ -198,10 +198,10 @@ full cleanup is implemented.
 
 ## Storage Benchmark v1 Contract
 
-Standalone file-backed storage benchmarks write `storage_benchmark.json` with
+Standalone and profile-stage file-backed storage benchmarks write `storage_benchmark.json` with
 `contract_id: lvs.storage_benchmark`, `contract_version: 1`, and
-`kind: storage_benchmark`. This is separate from validation-stage and
-`system_info.json` contracts. Fixed keys are snake_case; throughput headlines
+`kind: storage_benchmark`. This remains separate from `system_info.json`.
+Fixed keys are snake_case; throughput headlines
 use decimal `average_mb_per_s`, `best_mb_per_s`, and `worst_mb_per_s`. Raw fio
 JSON is retained only as separate files beneath `raw_fio/` and must not be
 embedded in normalized results or system information. The associated manifest,
@@ -214,6 +214,14 @@ lvs.storage_benchmark_batch`, `contract_version: 1`, and `kind:
 storage_benchmark_batch`, plus `storage_benchmark_all_internal_summary.txt`.
 Each selected drive retains its independent v1 result folder and raw fio
 boundary; raw fio payloads are not copied into the batch contract.
+
+When selected through `stages[].modules.storage_benchmark`, the benchmark is a
+completion-based stage. Its artifacts are rooted at `storage_benchmark/` inside
+the normal validation run directory. All-internal mode writes its aggregate JSON
+and text at that root and keeps each drive's normalized, health, manifest, and
+`raw_fio/` artifacts in a device-named child directory. Compact status and
+verdict information is retained in the normal run manifest stage window and
+executed plan; raw fio payloads are never embedded there.
 
 ## Required Change Process
 

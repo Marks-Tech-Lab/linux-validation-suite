@@ -28,9 +28,15 @@ def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], me
             workloads.append(
                 f"VRAM/{stage.modules.vram.backend_preference}/{stage.modules.vram.allocation_percent}%/{stage.modules.vram.gpus}"
             )
+        if stage.modules.storage_benchmark.enabled:
+            storage = stage.modules.storage_benchmark
+            workloads.append(
+                f"StorageBenchmark/{storage.target_mode}/{storage.drive_execution}/{storage.test_size_gib}GiB/{storage.runs}runs"
+            )
         state = "enabled" if stage.enabled else "disabled"
+        execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
         lines.append(
-            f"{index}. {label} [{stage.name}] {stage.duration_seconds}s, {state}"
+            f"{index}. {label} [{stage.name}] {execution}, {state}"
             + (f" | {', '.join(workloads)}" if workloads else "")
         )
     return "\n".join(lines)
@@ -86,8 +92,9 @@ def profile_execution_stage_status(stage: Dict[str, Any]) -> str:
 def profile_execution_stage_header_line(stage: Dict[str, Any]) -> str:
     label = stage.get("label") or stage.get("stage_id") or "stage"
     workloads = ", ".join(stage.get("workloads") or []) or "-"
+    duration = "completion-based" if stage.get("execution_mode") == "completion" else f"{stage.get('duration_seconds', 0)}s"
     return (
-        f"- {label}: {stage.get('type') or '-'} | {stage.get('duration_seconds', 0)}s | "
+        f"- {label}: {stage.get('type') or '-'} | {duration} | "
         f"{profile_execution_stage_status(stage)} | workloads={workloads}"
     )
 
@@ -200,6 +207,23 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
             lines.append(profile_execution_gpu_3d_line(stage))
         if "vram" in (stage.get("workloads") or []):
             lines.append(profile_execution_vram_line(stage))
+        if "storage_benchmark" in (stage.get("workloads") or []):
+            storage = stage.get("storage_benchmark") or {}
+            lines.append(
+                "  storage benchmark: "
+                f"profile={storage.get('profile_id') or '-'}, target_mode={storage.get('target_mode') or '-'}, "
+                f"drive_execution={storage.get('drive_execution') or '-'}, size={storage.get('test_size_gib')} GiB, "
+                f"runs={storage.get('runs')}, estimated_max_writes={storage.get('estimated_max_writes_gib_per_drive')} GiB/drive, "
+                f"allow_system_drive={bool(storage.get('allow_system_drive'))}"
+            )
+            preview = storage.get("target_preview") or {}
+            if preview:
+                lines.append(
+                    "  storage target preview: "
+                    f"eligible={preview.get('eligible_target_count', 0)}, "
+                    f"skipped={len(preview.get('skipped_targets') or [])}"
+                    + (f", warning={preview.get('preflight_warning')}" if preview.get("preflight_warning") else "")
+                )
         if {"gpu_3d", "vram"} & set(stage.get("workloads") or []):
             lines.extend(profile_execution_gpu_detail_lines(stage))
         commands = stage.get("commands") or []

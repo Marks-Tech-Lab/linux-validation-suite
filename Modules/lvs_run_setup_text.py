@@ -177,7 +177,8 @@ def run_setup_summary_text(
     for index, stage in enumerate(profile.stages, start=1):
         label = labels[index - 1] if index - 1 < len(labels) else stage.name
         state = "enabled" if stage.enabled else "disabled"
-        lines.append(f"- {index}. {label} [{stage.name}] {stage.duration_seconds}s, {state}")
+        execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
+        lines.append(f"- {index}. {label} [{stage.name}] {execution}, {state}")
     return "\n".join(lines)
 
 
@@ -231,8 +232,10 @@ def run_setup_overview_text(
     for index, stage in enumerate(profile.stages, start=1):
         label = labels[index - 1] if index - 1 < len(labels) else stage.name
         state = "enabled" if stage.enabled else "disabled"
-        trim = f"trim {stage.normalization.trim_start_seconds}/{stage.normalization.trim_end_seconds}s"
-        lines.append(f"{index}. {label}: {stage.duration_seconds}s, {state}, {trim}")
+        completion = stage.modules.storage_benchmark.enabled
+        trim = "trim n/a" if completion else f"trim {stage.normalization.trim_start_seconds}/{stage.normalization.trim_end_seconds}s"
+        execution = "completion-based" if completion else f"{stage.duration_seconds}s"
+        lines.append(f"{index}. {label}: {execution}, {state}, {trim}")
     lines.extend(
         [
             "",

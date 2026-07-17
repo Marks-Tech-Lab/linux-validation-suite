@@ -33,6 +33,8 @@ def stage_enabled_module_names(stage: Any) -> List[str]:
         names.append("gpu_3d")
     if stage.modules.vram.enabled:
         names.append("vram")
+    if stage.modules.storage_benchmark.enabled:
+        names.append("storage_benchmark")
     return names
 
 
@@ -86,10 +88,15 @@ def profile_stage_detail_lines(
         f"Stage ID: {stage.id}",
         f"Type: {stage.name}",
         f"Enabled: {stage.enabled}",
-        f"Duration: {stage.duration_seconds}s",
-        f"Trim: start={stage.normalization.trim_start_seconds}s, end={stage.normalization.trim_end_seconds}s",
-        f"Strict threshold warnings: {strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)}",
     ]
+    if stage.modules.storage_benchmark.enabled:
+        lines.extend(["Execution: completion-based", "Duration: not applicable", "Trim: not applicable"])
+    else:
+        lines.extend([
+            f"Duration: {stage.duration_seconds}s",
+            f"Trim: start={stage.normalization.trim_start_seconds}s, end={stage.normalization.trim_end_seconds}s",
+        ])
+    lines.append(f"Strict threshold warnings: {strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)}")
     module_names = stage_enabled_module_names(stage)
     lines.append(f"Enabled workloads: {', '.join(module_names) if module_names else 'none'}")
     if stage.modules.cpu.enabled:
@@ -110,6 +117,16 @@ def profile_stage_detail_lines(
         )
     else:
         lines.append("Memory/RAM: disabled")
+    if stage.modules.storage_benchmark.enabled:
+        storage = stage.modules.storage_benchmark
+        lines.append(
+            "Storage Benchmark: "
+            f"profile={storage.profile_id}, target_mode={storage.target_mode}, "
+            f"drive_execution={storage.drive_execution}, size={storage.test_size_gib} GiB, runs={storage.runs}, "
+            f"allow_system_drive={storage.allow_system_drive}"
+        )
+        if storage.target_path:
+            lines.append(f"Storage target path: {storage.target_path}")
     if stage.modules.gpu_3d.enabled:
         gpu = stage.modules.gpu_3d
         preference = normalize_gpu_preference(gpu.backend_preference)
@@ -349,6 +366,8 @@ class ProfileEditPresenter:
         }
         if normalized not in field_map:
             raise ValueError("")
+        if normalized == "duration" and stage.modules.storage_benchmark.enabled:
+            raise ValueError("Storage Benchmark is completion-based and has no stage duration.")
         if normalized == "vram_allocation" and not stage.modules.vram.enabled:
             raise ValueError("Selected stage does not have a VRAM workload.")
         if normalized == "memory_allocation" and not stage.modules.memory.enabled:
@@ -380,7 +399,8 @@ class ProfileEditPresenter:
             rows.append(
                 ProfileEditItem(
                     "stage",
-                    f"{index + 1}. {label} [{stage.name}] {stage.duration_seconds}s, {state}",
+                    f"{index + 1}. {label} [{stage.name}] "
+                    f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, {state}",
                     index=index,
                 )
             )
@@ -416,8 +436,14 @@ class ProfileEditPresenter:
                 workloads.append(
                     f"VRAM/{stage.modules.vram.backend_preference}/{stage.modules.vram.allocation_percent}%/{stage.modules.vram.gpus}"
                 )
+            if stage.modules.storage_benchmark.enabled:
+                storage = stage.modules.storage_benchmark
+                workloads.append(
+                    f"Storage/{storage.target_mode}/{storage.test_size_gib}GiB/{storage.runs}runs"
+                )
             lines.append(
-                f"{index}. {label} [{stage.name}] {stage.duration_seconds}s, "
+                f"{index}. {label} [{stage.name}] "
+                f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, "
                 f"{'enabled' if stage.enabled else 'disabled'}"
                 + (f" | {', '.join(workloads)}" if workloads else "")
             )

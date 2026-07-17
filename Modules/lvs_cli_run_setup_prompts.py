@@ -18,6 +18,9 @@ class RunSetupPromptMixin:
             choice = self._input("Select: ").strip()
             if choice == "1":
                 for idx, stage in enumerate(profile.stages, start=1):
+                    if stage.modules.storage_benchmark.enabled:
+                        print(f"Stage {idx} [{stage.name}] is completion-based; duration does not apply.")
+                        continue
                     raw = self._input(f"Stage {idx} [{stage.name}] duration seconds ({stage.duration_seconds}): ").strip()
                     if raw:
                         try:

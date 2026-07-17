@@ -335,6 +335,10 @@ class TuiRunSetupAdapterMixin:
         if index is None or self.run_setup is None:
             await self._restore_setup_sidebar()
             return
+        if self.run_setup.profile.stages[index].modules.storage_benchmark.enabled:
+            await self._restore_setup_sidebar()
+            self._set_detail("Storage Benchmark is completion-based and has no stage duration.")
+            return
         self.pending_stage_index = index
         current = int(self.run_setup.profile.stages[index].duration_seconds)
         await self._restore_setup_sidebar()

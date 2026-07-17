@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_stage_adapter import run_stage_adapter
+from Modules.lvs_profile_models import stage_execution_mode
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ def run_effective_stages(
     operator_stop_source: str,
     on_operator_stop: Callable[[str, Dict[str, Any]], None],
     cancel_check: Optional[Callable[[], bool]] = None,
+    completion_stage_runner: Optional[Callable[..., Any]] = None,
 ) -> StageLoopResult:
     current_run_aborted = bool(run_aborted)
     for idx, stage in enumerate(effective_profile.stages):
@@ -77,6 +79,21 @@ def run_effective_stages(
             continue
         display_name = labels[idx] if idx < len(labels) else stage.name
         stage_plan = dict(preflight_plan[idx]) if idx < len(preflight_plan) else {}
+        execution_mode = stage_execution_mode(stage)
+        if execution_mode == "completion":
+            if completion_stage_runner is None:
+                raise RuntimeError(f"completion-based stage runner is unavailable for {display_name}")
+            completion = completion_stage_runner(
+                stage=stage,
+                display_name=display_name,
+                stage_plan=stage_plan,
+            )
+            current_run_aborted = bool(completion.run_aborted)
+            if completion.should_break_run:
+                break
+            continue
+        if execution_mode == "mixed":
+            raise RuntimeError(f"mixed duration/completion stage reached execution: {display_name}")
         stage_adapter = run_stage_adapter(
             profile_name=profile_name,
             stage_window_cls=stage_window_cls,

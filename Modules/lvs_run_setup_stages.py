@@ -21,7 +21,8 @@ def stage_option_values(setup: RunSetupState, mode: str) -> List[str]:
     for index, stage in enumerate(setup.profile.stages, start=1):
         label = setup.labels[index - 1] if index - 1 < len(setup.labels) else stage.name
         if mode == "duration":
-            values.append(f"{index}. {label} [{stage.name}] {stage.duration_seconds}s")
+            execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
+            values.append(f"{index}. {label} [{stage.name}] {execution}")
         elif mode == "toggle":
             state = "enabled" if stage.enabled else "disabled"
             values.append(f"{index}. {label} [{stage.name}] {state}")
@@ -32,6 +33,8 @@ def stage_option_values(setup: RunSetupState, mode: str) -> List[str]:
 
 def set_stage_duration(setup: RunSetupState, stage_index: int, raw_seconds: str) -> None:
     if stage_index < 0 or stage_index >= len(setup.profile.stages):
+        return
+    if setup.profile.stages[stage_index].modules.storage_benchmark.enabled:
         return
     text = str(raw_seconds or "").strip()
     if not text:

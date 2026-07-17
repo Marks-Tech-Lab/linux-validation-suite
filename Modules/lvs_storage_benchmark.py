@@ -283,6 +283,7 @@ class StorageBenchmarkService:
         confirmed: bool = False,
         cancel_event: threading.Event | None = None,
         progress: Callable[[dict[str, Any]], None] | None = None,
+        result_dir: Path | None = None,
     ) -> Path:
         if not confirmed:
             raise ValueError("storage benchmark requires explicit confirmation")
@@ -292,11 +293,14 @@ class StorageBenchmarkService:
         started = datetime.now(timezone.utc)
         stamp = started.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
         device_label = target.primary_block_name.replace("/", "_")
-        result_dir = self.results_dir / f"{stamp}_Storage_Benchmark_{device_label}"
-        suffix = 2
-        while result_dir.exists():
-            result_dir = self.results_dir / f"{stamp}_Storage_Benchmark_{device_label}_{suffix}"
-            suffix += 1
+        if result_dir is None:
+            result_dir = self.results_dir / f"{stamp}_Storage_Benchmark_{device_label}"
+            suffix = 2
+            while result_dir.exists():
+                result_dir = self.results_dir / f"{stamp}_Storage_Benchmark_{device_label}_{suffix}"
+                suffix += 1
+        else:
+            result_dir = Path(result_dir)
         result_dir.mkdir(parents=True, exist_ok=False)
         raw_dir = result_dir / "raw_fio"
         raw_dir.mkdir(mode=0o700)

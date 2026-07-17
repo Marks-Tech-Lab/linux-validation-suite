@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from .lvs_profile_editor import ProfileEditor
 from .lvs_profile_models import (
@@ -25,7 +25,7 @@ from .lvs_settings import (
 class ProfileStageDraft:
     label: str
     test_type: str
-    duration_seconds: int
+    duration_seconds: Optional[int]
     modules: StageModules
 
 
@@ -72,7 +72,7 @@ class ProfileCreationController:
                 StageConfig(
                     id=f"segment_{index}",
                     name=draft.test_type,
-                    duration_seconds=draft.duration_seconds,
+                    duration_seconds=None if draft.modules.storage_benchmark.enabled else draft.duration_seconds,
                     enabled=True,
                     modules=draft.modules,
                     normalization=StageNormalization(defaults.trim_start_seconds, defaults.trim_end_seconds),
@@ -99,7 +99,7 @@ class ProfileCreationController:
         stage = self.profile_editor.create_stage(
             profile,
             test_type=draft.test_type,
-            duration_seconds=max(1, draft.duration_seconds),
+            duration_seconds=300 if draft.duration_seconds is None else max(1, draft.duration_seconds),
             modules=draft.modules,
         )
         _, updated_labels = self.profile_editor.add_stage(
