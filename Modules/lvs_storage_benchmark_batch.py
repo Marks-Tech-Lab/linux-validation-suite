@@ -87,8 +87,8 @@ def _batch_summary(payload: dict[str, Any]) -> str:
             lines.append(f"  {row.get('display_name')}: {value}")
         deltas = []
         for key, label in (
-            ("host_writes_delta_tb", "host writes"),
-            ("host_reads_delta_tb", "host reads"),
+            ("host_writes_delta_tb", "lifetime host writes (TB)"),
+            ("host_reads_delta_tb", "lifetime host reads (TB)"),
             ("media_errors_delta", "media errors"),
             ("unsafe_shutdowns_delta", "unsafe shutdowns"),
         ):

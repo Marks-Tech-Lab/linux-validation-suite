@@ -192,9 +192,8 @@ The implementation milestone must deliver an importer migration package with:
 - raw/vendor boundary documentation; and
 - Apps Script and SQL importer migration notes.
 
-Future NIC, storage, CPU cooler, and all other feature work must follow the
-forward-only key and unit policy for every new LVS-owned field, even before the
-full cleanup is implemented.
+All new feature work must follow the forward-only key and unit policy for every
+new LVS-owned field, even before the full cleanup is implemented.
 
 ## Storage Benchmark v1 Contract
 

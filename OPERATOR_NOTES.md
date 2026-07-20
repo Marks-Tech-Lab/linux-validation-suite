@@ -35,7 +35,13 @@ actual virtual-environment Python in its output.
 
 ## Which Profile To Use
 
-- `Quick Test.json`: short smoke run for quick machine checks.
+- `Quick Test.json`: short machine validation that finishes with a one-run
+  Storage Benchmark stage. The committed profile explicitly allows the system
+  drive, which forces the storage result to at least `WARN`.
+- `Storage Benchmark Quick.json`: one-run completion-based sequential benchmark
+  of eligible internal drives; system drives are excluded by default.
+- `Storage Benchmark Sequential.json`: five-run completion-based sequential
+  benchmark of eligible internal drives; system drives are excluded by default.
 - `QA System Test Short v2.json`: short multi-stage system validation example.
 - `GPU Troubleshooting.json`: GPU backend and VRAM troubleshooting example.
 

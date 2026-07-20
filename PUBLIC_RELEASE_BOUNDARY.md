@@ -3,9 +3,9 @@
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
-included. The `v0.1.x` alpha line is published as pre-releases; the current
-`v0.1.2-alpha` release includes the guarded local Migration / Support workflow
-and was validated with all 189 smoke tests passing.
+included. Alpha releases are published as pre-releases; the current
+`v0.2.0-alpha` release focuses on Storage Health and Storage Benchmark and is
+validated with the full smoke suite.
 
 Use this checklist when updating the public repository. Publish only generic
 Linux Validation Suite (LVS) code, examples, documentation, and empty runtime
@@ -51,7 +51,7 @@ scaffolds.
 - Keep Google Drive upload disabled or documented as user-configured.
 - Avoid organization-specific profile group labels.
 - Keep the MIT License and public release metadata current.
-- Keep runtime version display aligned with the `v0.1.x-alpha` release policy.
+- Keep runtime version display aligned with the current alpha release tag.
 - Document `./scripts/setup_venv.sh` and the repo-local `.venv/bin/python` entrypoints.
 - Keep `.venv/` ignored; never publish or copy a maintainer virtual environment.
 - Document enhanced telemetry as a session-scoped sudo-backed option, not a saved setting.

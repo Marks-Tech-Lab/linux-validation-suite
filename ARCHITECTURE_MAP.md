@@ -171,9 +171,8 @@ near-term hardware feature work. The milestone must:
 This milestone is deferred, not abandoned, and does not authorize output changes
 in current feature work. Before the milestone, every new LVS-owned field must
 already follow the forward-only casing and unit policy in
-`OUTPUT_CONTRACT_INDEX.md`. That rule applies to future NIC, storage, CPU cooler,
-and other feature work so the deferred cleanup does not accumulate new schema
-debt.
+`OUTPUT_CONTRACT_INDEX.md`. That rule applies to all new feature work so the
+deferred cleanup does not accumulate new schema debt.
 
 ## Deferred NIC / Network Testing Roadmap
 
@@ -208,13 +207,9 @@ in field names, and unnormalized vendor evidence remains only inside explicit
 `throughput_mbps`, `throughput_gbps`, `rx_mbps`, `tx_mbps`, `mtu_bytes`,
 `pcie_link_speed_gt_s`, and `nic_temp_c`.
 
-## Next Recommended Step
+## Future Work
 
-Storage Testing is the next area to plan. Begin with operator workflow, device
-selection and safety boundaries, workload scope, telemetry and health evidence,
-result/report contracts, platform assumptions, and fixture/acceptance coverage.
-This roadmap designation does not authorize storage-testing implementation yet.
-
-Continue to avoid unrelated module splitting. Existing CLI, TUI, QA, result,
-telemetry, and hardware-matrix boundaries should remain stable unless Storage
-Testing planning identifies a concrete contract or reuse requirement.
+Future hardware validation modules are TBD. Future work may include additional
+workload modules and hardware-specific validation flows. Existing CLI, TUI, QA,
+result, telemetry, and hardware-matrix boundaries should remain stable unless a
+concrete implementation requirement justifies a coordinated contract change.
