@@ -65,8 +65,9 @@ scaffolds.
 - Confirm the README clearly describes hardware stress risk and telemetry caveats.
 - Confirm QA wrapper examples use generic result folder names and do not expose local filesystem paths.
 - Confirm x86_64 Linux remains identified as the primary validated target and
-  ARM64/Linux remains marked TBD/not fully validated until dedicated validation
-  is complete.
+  ARM64/Linux is described as a long-term goal after the core project is more
+  complete and mature. It is not fully validated now and is not promised for a
+  specific release.
 - Confirm passing smoke tests capture expected interactive screens while still
   exposing assertion diagnostics on failures.
 - Confirm public-safe support exports remain redacted. Private migration bundles

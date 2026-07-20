@@ -40,18 +40,25 @@ undecided work. Deferred or possible work is not committed release scope.
 
 - Additional storage testing beyond the current Storage Health and Storage
   Benchmark baseline is deferred pending actual planning.
-- NIC/network testing is deferred.
+- ARM64/Linux support is a long-term goal after the core project is more
+  complete and mature. It is not fully validated now and is not promised for a
+  specific release.
+- NIC/network testing remains deferred candidate scope, not an adopted
+  roadmap. Reconsidering it requires deliberate planning for loopback
+  connectors, an operator-provided `iperf3` server or external peer, a
+  known-good network path, and the time to validate execution and safety
+  boundaries.
+- `Files/nvidia_persistence.md` is retained operator/lab guidance for current
+  NVIDIA persistence and power-limit procedures. A future CLI or GUI control
+  surface may be considered, but none is implemented or committed to a
+  release. If pursued, it should consider AMD and Intel GPU power/control
+  options rather than being NVIDIA-only.
 - Other hardware-specific validation modules are TBD and are not committed
   release scope.
 
 ## Needs User Or Product Decision
 
-- Whether ARM64/Linux support is a committed goal or remains TBD.
-- Whether the existing phased NIC/network design remains authoritative scope or
-  should be treated only as candidate design notes.
 - Whether GUI work should progress beyond its current TBD status.
-- Whether `Files/nvidia_persistence.md` is public guidance, private lab
-  evidence, or a candidate for generalization.
 
 ## Do Not Touch / Intentionally Legacy
 
@@ -59,3 +66,5 @@ undecided work. Deferred or possible work is not committed release scope.
 - Existing compatibility-sensitive field names and established contract IDs.
 - Dynamic profile sidecar stage labels.
 - Raw vendor/backend property spelling inside documented raw boundaries.
+- Retain `Files/nvidia_persistence.md` as operator/lab guidance; it is not a
+  committed CLI or GUI feature design.

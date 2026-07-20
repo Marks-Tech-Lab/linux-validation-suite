@@ -1,5 +1,11 @@
 # NVIDIA RTX PRO 6000 Blackwell Server Edition Power Limit Notes (Bazzite Linux)
 
+Status: retained operator/lab guidance for the NVIDIA procedures documented
+below. LVS does not currently implement or commit to a release any CLI or GUI
+control for GPU persistence or power limits. A future control surface may be
+considered, but it should also evaluate appropriate AMD and Intel GPU
+power/control options rather than being NVIDIA-only.
+
 ## System
 
 - OS: Bazzite Linux (portable/test media)

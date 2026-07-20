@@ -183,17 +183,17 @@ already follow the forward-only casing and unit policy in
 `OUTPUT_CONTRACT_INDEX.md`. That rule applies to all new feature work so the
 deferred cleanup does not accumulate new schema debt.
 
-## Deferred NIC / Network Testing Roadmap
+## Deferred NIC / Network Testing Candidate Notes
 
-NIC and network testing is deferred. Read-only NIC inventory and readiness are
-possible, but they are low priority until there is bandwidth to design and
-operate the external test infrastructure. Meaningful physical-NIC throughput,
-thermal, and power validation requires a user-provided peer/server, a known-good
-cable and switch path, a loopback adapter, or a dedicated traffic generator.
-Host-local loopback traffic does not validate the physical NIC, cable/switch
-path, link throughput, or NIC thermal load.
+NIC and network testing remains TBD candidate scope, not an adopted committed
+roadmap. Read-only NIC inventory and readiness are possible, but meaningful
+physical-NIC throughput, thermal, and power validation requires deliberate
+planning and external test infrastructure: loopback connectors, a
+user-provided `iperf3` server or external peer, and a known-good cable and
+switch path. Host-local loopback traffic does not validate the physical NIC,
+cable/switch path, link throughput, or NIC thermal load.
 
-Future NIC work is divided into these phases:
+If NIC/network testing is revisited, candidate phases could include:
 
 1. NIC inventory and readiness.
 2. `iperf3` client throughput testing against a user-provided server or peer.
@@ -201,7 +201,7 @@ Future NIC work is divided into these phases:
 4. Optional advanced modes, including reverse/bidirectional traffic, UDP,
    interface error counters, and multi-peer testing.
 
-Future execution requirements and boundaries:
+Candidate execution and safety boundaries include:
 
 - The operator supplies and manages the `iperf3` server or peer.
 - The operator supplies a known-good cable and switch path.

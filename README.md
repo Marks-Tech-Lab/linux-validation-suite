@@ -10,9 +10,11 @@ review.
 
 This project is currently developed and validated primarily on x86_64 Linux systems.
 
-ARM64/Linux support is a goal, but it is not fully validated yet. Some telemetry,
-sensor, GPU, stress-test, or dependency behavior may be incomplete or inconsistent
-on ARM systems until dedicated ARM validation is completed.
+ARM64/Linux support is a long-term goal after the core project is more complete
+and mature. It is not fully validated now and is not promised for a specific
+release. Some telemetry, sensor, GPU, stress-test, or dependency behavior may
+remain incomplete or inconsistent on ARM systems until dedicated validation is
+completed.
 
 ## Public Alpha
 
