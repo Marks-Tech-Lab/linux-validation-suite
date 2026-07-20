@@ -22,6 +22,9 @@ undecided work. Deferred or possible work is not committed release scope.
   deprecation tracking without changing payloads.
 - Completed Phase 2A contract identities for `run_manifest.json`,
   `dependency_check.json`, and `telemetry_source_map.json`.
+- Completed Phase 2B additive telemetry unit aliases. Existing binary-GiB
+  `_gb` telemetry fields remain unchanged, while unit-correct `_gib` aliases
+  are available to new consumers.
 - Completed post-release operator and documentation cleanup for storage
   dependencies and safeguards, GUI status, CPU cooler/PPT/TDP metadata, and
   Phase 1 historical status.
@@ -32,7 +35,6 @@ undecided work. Deferred or possible work is not committed release scope.
   is deferred.
 - Compatibility-alias removal and fixed-key or unit migration are deferred to
   that coordinated breaking milestone.
-- Phase 2B telemetry alias work is deferred.
 
 ## Deferred Hardware Modules
 
@@ -57,4 +59,3 @@ undecided work. Deferred or possible work is not committed release scope.
 - Existing compatibility-sensitive field names and established contract IDs.
 - Dynamic profile sidecar stage labels.
 - Raw vendor/backend property spelling inside documented raw boundaries.
-

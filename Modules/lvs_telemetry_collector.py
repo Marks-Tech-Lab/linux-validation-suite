@@ -81,7 +81,7 @@ from .lvs_telemetry_sampling import (
     parse_optional_float,
     walk_json_numbers,
 )
-from .lvs_telemetry_samples import Sample, write_telemetry_csv
+from .lvs_telemetry_samples import Sample, telemetry_values_with_unit_aliases, write_telemetry_csv
 from .lvs_telemetry_sensor_io import (
     hwmon_temp_thresholds,
     read_hwmon_temp_limit,
@@ -209,7 +209,9 @@ class TelemetryCollector:
         values.update(self._read_storage_temps())
         values.update(self._read_device_temps())
         values.update(self._read_gpu_values(sample_time))
-        self.samples.append(Sample(timestamp=sample_time, values=values))
+        self.samples.append(
+            Sample(timestamp=sample_time, values=telemetry_values_with_unit_aliases(values))
+        )
 
     def _read_cpu_temp(self, package_temps: Optional[Dict[str, Optional[float]]] = None) -> Optional[float]:
         return read_cpu_temp(self._cpu_temp_sources, self._safe_read_text, package_temps)

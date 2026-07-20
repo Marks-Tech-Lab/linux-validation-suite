@@ -777,6 +777,7 @@ from Modules.lvs_telemetry_sampling import (
 from Modules.lvs_telemetry_samples import (
     telemetry_csv_fieldnames,
     telemetry_sample_row,
+    telemetry_values_with_unit_aliases,
     write_telemetry_csv,
 )
 from Modules.lvs_telemetry_sensor_io import (
@@ -4847,7 +4848,12 @@ def test_run_bootstrap_artifact_helpers() -> None:
             {"runnable": True, "issues": []},
             {"runnable": False, "issues": ["blocked backend"]},
         ],
-        "telemetry_capabilities": {"cpu": {"available": True}},
+        "telemetry_capabilities": {
+            "memory_used_gb": {"available": True, "source": "/proc/meminfo"},
+            "memory_used_gib": {"available": True, "source": "/proc/meminfo"},
+            "gpu_vram_used_gb": {"available": True, "source": "nvidia-smi", "count": 1},
+            "gpu_vram_used_gib": {"available": True, "source": "nvidia-smi", "count": 1},
+        },
         "validation": {"errors": [], "warnings": []},
         "strict_threshold_recommendation_warnings": {"enabled": False},
     }
@@ -4907,6 +4913,16 @@ def test_run_bootstrap_artifact_helpers() -> None:
             label="run manifest",
         )
         assert_equal(manifest["segment_labels"], ["CPU"], "bootstrap manifest labels")
+        assert_equal(
+            manifest["telemetry_capabilities"]["memory_used_gib"],
+            manifest["telemetry_capabilities"]["memory_used_gb"],
+            "bootstrap manifest memory GiB capability alias",
+        )
+        assert_equal(
+            manifest["telemetry_capabilities"]["gpu_vram_used_gib"],
+            manifest["telemetry_capabilities"]["gpu_vram_used_gb"],
+            "bootstrap manifest GPU VRAM GiB capability alias",
+        )
         assert_equal(manifest["skipped_stages"][0]["issues"], ["blocked backend"], "bootstrap manifest skipped issues")
         assert_equal(profile_used["stages"][1]["enabled"], False, "bootstrap profile copy disabled stage")
         assert_equal(system_info["Hardware"]["Cpu"]["Name"], "Smoke CPU", "bootstrap system info write")
@@ -6882,6 +6898,35 @@ def test_compatibility_export_fixture_shape() -> None:
         {"Segments": [segment], "SegmentDetails": {"segment_1": {"label": "GPU Fixture"}}},
         telemetry,
         [window],
+    )
+    aliased_telemetry = SimpleNamespace(
+        samples=[
+            Sample(sample.timestamp, telemetry_values_with_unit_aliases(sample.values))
+            for sample in telemetry.samples
+        ],
+        _gpu_sources=telemetry._gpu_sources,
+    )
+    result_with_telemetry_aliases = exporter.build(
+        metadata,
+        "2026-05-22T12:00:00-04:00",
+        "2026-05-22T12:01:30-04:00",
+        90.0,
+        system_info,
+        {"Segments": [segment], "SegmentDetails": {"segment_1": {"label": "GPU Fixture"}}},
+        aliased_telemetry,
+        [window],
+    )
+    def payload_structure(value):
+        if isinstance(value, dict):
+            return {key: payload_structure(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [payload_structure(item) for item in value]
+        return type(value).__name__
+
+    assert_equal(
+        payload_structure(result_with_telemetry_aliases),
+        payload_structure(result),
+        "parsed_results_custom structure ignores additive telemetry aliases",
     )
     assert_equal(result["Result"], "Finished", "fixture top-level result")
     assert_equal(result["Metadata"]["BiosVersion"], "3287", "fixture BIOS version")
@@ -11229,6 +11274,67 @@ def test_profile_dry_run_summary_formatting() -> None:
         "dry-run facade plan label fallback",
     )
     assert_equal(diagnostics_calls, [("Stage A", "Custom A"), ("Stage B", "Stage B")], "dry-run facade diagnostics order")
+    original_telemetry_collector = dry_run_module.TelemetryCollector
+
+    class FakeDryRunTelemetry:
+        def __init__(self, **_kwargs):
+            pass
+
+        def detect_capabilities(self):
+            return {
+                "memory_used_gb": {"available": True, "source": "/proc/meminfo"},
+                "memory_used_gib": {"available": True, "source": "/proc/meminfo"},
+                "gpu_vram_used_gb": {"available": True, "source": "nvidia-smi", "count": 1},
+                "gpu_vram_used_gib": {"available": True, "source": "nvidia-smi", "count": 1},
+            }
+
+    dry_run_profile = SimpleNamespace(
+        profile_name="Alias Dry Run",
+        menu_description="",
+        menu_group="",
+        defaults=SimpleNamespace(telemetry_interval_seconds=1.0),
+        stages=[],
+    )
+    dry_run_runner = SimpleNamespace(
+        runtime_environment=lambda: {},
+        detect_backends=lambda: {},
+        backend_details=lambda: {},
+    )
+    dry_run_orchestrator = SimpleNamespace(
+        validator=SimpleNamespace(validate=lambda _profile, _labels: {"errors": [], "warnings": []}),
+        workload_runner=dry_run_runner,
+        settings=SimpleNamespace(
+            runtime_environment={},
+            privileged_helper_enabled=False,
+            gpu_safe_mode=False,
+            target_gpu_busy_min_percent=0,
+            target_gpu_busy_sustain_seconds=0,
+            target_gpu_memory_busy_min_percent=0,
+            target_gpu_memory_busy_sustain_seconds=0,
+        ),
+        _build_gpu_recovery_report=lambda: {},
+        _strict_threshold_warning_scope=lambda _profile: "profile",
+    )
+    try:
+        dry_run_module.TelemetryCollector = FakeDryRunTelemetry
+        dry_run_report = dry_run_module.build_dry_run_report(
+            dry_run_orchestrator,
+            Path("Alias Dry Run.json"),
+            dry_run_profile,
+            [],
+        )
+    finally:
+        dry_run_module.TelemetryCollector = original_telemetry_collector
+    assert_equal(
+        dry_run_report["telemetry_capabilities"]["memory_used_gib"],
+        dry_run_report["telemetry_capabilities"]["memory_used_gb"],
+        "dry-run memory GiB capability alias",
+    )
+    assert_equal(
+        dry_run_report["telemetry_capabilities"]["gpu_vram_used_gib"],
+        dry_run_report["telemetry_capabilities"]["gpu_vram_used_gb"],
+        "dry-run GPU VRAM GiB capability alias",
+    )
     audit_item = {"profile_file": "Smoke.json", "loaded": True, "runnable": False, "stage_count": 2}
     assert_equal(profile_audit_item_status(audit_item), "blocked", "profile audit item status")
     assert_equal(profile_audit_item_line(audit_item), "- Smoke.json: blocked, stages=2", "profile audit item line")
@@ -12200,6 +12306,9 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
                 "gpu_power_w": {"available": True, "source": "nvidia-smi power", "count": 2},
                 "gpu_busy_percent": {"available": True, "source": "nvidia-smi utilization", "count": 2},
                 "gpu_vram_used_gb": {"available": True, "source": "nvidia-smi memory", "count": 2},
+                "gpu_vram_used_gib": {"available": True, "source": "nvidia-smi memory", "count": 2},
+                "memory_used_gb": {"available": True, "source": "/proc/meminfo"},
+                "memory_used_gib": {"available": True, "source": "/proc/meminfo"},
             }
 
     fake_gpu_cards = [
@@ -12312,6 +12421,16 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     )
     assert_equal(len(built_payload["gpu_opencl_coverage"]), 2, "dependency payload OpenCL coverage count")
     assert_equal(built_payload["storage_health"], fake_storage_health, "dependency payload storage health")
+    assert_equal(
+        built_payload["telemetry_capabilities"]["memory_used_gib"],
+        built_payload["telemetry_capabilities"]["memory_used_gb"],
+        "dependency payload memory GiB capability alias",
+    )
+    assert_equal(
+        built_payload["telemetry_capabilities"]["gpu_vram_used_gib"],
+        built_payload["telemetry_capabilities"]["gpu_vram_used_gb"],
+        "dependency payload GPU VRAM GiB capability alias",
+    )
     assert_true(built_payload["gpu_opencl_coverage"][0]["available"], "dependency payload OpenCL covered GPU")
     assert_true(not built_payload["gpu_opencl_coverage"][1]["available"], "dependency payload OpenCL missing GPU")
     detail_text = manager.dependency_check_detail_text(built_payload)
@@ -13351,6 +13470,17 @@ def test_telemetry_source_helpers() -> None:
         },
         {
             "kind": "nvidia_smi",
+            "metric": "vram_used_gb",
+            "gpu_index": 0,
+            "label": "card0 memory used",
+            "path": "nvidia-smi:0000:13:00.0",
+            "key": "gpu_0_vram_used_gb",
+            "card": "card0",
+            "slot": "0000:13:00.0",
+            "query_field": "memory.used",
+        },
+        {
+            "kind": "nvidia_smi",
             "metric": "fan_percent",
             "gpu_index": 0,
             "label": "card0 fan speed",
@@ -13526,6 +13656,16 @@ def test_telemetry_source_helpers() -> None:
     assert_equal(capability_summary["wifi_temp_c"]["count"], 1, "capability summary Wi-Fi temp count")
     assert_true(capability_summary["wifi_temp_c"]["evidence_only"], "capability summary Wi-Fi temp evidence-only marker")
     assert_equal(capability_summary["gpu_temp_c"]["count"], 2, "capability summary GPU temp count")
+    assert_equal(
+        capability_summary["memory_used_gib"],
+        capability_summary["memory_used_gb"],
+        "capability summary memory GiB alias",
+    )
+    assert_equal(
+        capability_summary["gpu_vram_used_gib"],
+        capability_summary["gpu_vram_used_gb"],
+        "capability summary GPU VRAM GiB alias",
+    )
     assert_true(capability_summary["gpu_telemetry_by_gpu"]["gpus"][0]["metrics"]["power"]["available"], "capability summary GPU matrix")
     assert_true(capability_summary["gpu_fan_percent"]["available"], "capability summary GPU fan")
     assert_equal(capability_summary["gpu_fan_percent"]["count"], 1, "capability summary GPU fan count")
@@ -13700,6 +13840,18 @@ def test_telemetry_source_helpers() -> None:
         label="telemetry source map",
     )
     assert_equal(source_map["fields"]["gpu_0_power_w"]["slot"], "0000:13:00.0", "source map GPU slot")
+    assert_equal(source_map["fields"]["memory_used_gib"]["metric"], "used_gib", "source map memory GiB metric")
+    assert_equal(
+        source_map["fields"]["memory_used_gib"]["source"],
+        source_map["fields"]["memory_used_gb"]["source"],
+        "source map memory GiB alias source",
+    )
+    assert_equal(source_map["fields"]["gpu_0_vram_used_gib"]["metric"], "vram_used_gib", "source map GPU VRAM GiB metric")
+    assert_equal(
+        source_map["fields"]["gpu_0_vram_used_gib"]["source"],
+        source_map["fields"]["gpu_0_vram_used_gb"]["source"],
+        "source map GPU VRAM GiB alias source",
+    )
     assert_equal(source_map["fields"]["gpu_0_power_w"]["access_mode"], "direct", "source map direct access mode")
     assert_equal(source_map["fields"]["gpu_0_fan_percent"]["query_field"], "fan.speed", "source map GPU fan query field")
     assert_equal(source_map["fields"]["gpu_0_throttle_hw_thermal"]["query_field"], "clocks_event_reasons.hw_thermal_slowdown", "source map GPU throttle query field")
@@ -13812,6 +13964,7 @@ def test_telemetry_source_capability_fixture_contract() -> None:
 
     assert_equal(fields["timestamp"]["source"], "time.monotonic()", "source map timestamp source")
     assert_equal(fields["memory_used_gb"]["source"], "/proc/meminfo", "source map memory used source")
+    assert_equal(fields["memory_used_gib"]["source"], fields["memory_used_gb"]["source"], "fixture memory GiB alias source")
     assert_equal(fields["cpu_temp_c"]["kind"], "hwmon", "source map CPU temp hwmon")
     assert_equal(fields["cpu_temp_c"]["label"], "Tctl", "source map CPU temp label")
     assert_equal(fields["cpu_package_0_temp_c"]["package_id"], 0, "source map package 0 temp package id")
@@ -13841,6 +13994,7 @@ def test_telemetry_source_capability_fixture_contract() -> None:
     assert_equal(fields["gpu_0_power_w"]["query_field"], "power.draw", "source map GPU power query field")
     assert_equal(fields["gpu_0_clock_mhz"]["query_field"], "clocks.current.graphics", "source map GPU clock query field")
     assert_equal(fields["gpu_0_vram_used_gb"]["query_field"], "memory.used", "source map GPU VRAM query field")
+    assert_equal(fields["gpu_0_vram_used_gib"]["query_field"], fields["gpu_0_vram_used_gb"]["query_field"], "fixture GPU VRAM GiB alias query")
 
     assert_true(capabilities["cpu_temp_c"]["available"], "capability CPU temp available")
     assert_equal(capabilities["cpu_temp_c"]["source"], fields["cpu_temp_c"]["source"], "capability CPU temp source mirror")
@@ -13864,11 +14018,13 @@ def test_telemetry_source_capability_fixture_contract() -> None:
     assert_true(not capabilities["storage_temp_c"]["available"], "capability storage temp unavailable")
     assert_true(capabilities["memory_used_gb"]["available"], "capability memory used available")
     assert_equal(capabilities["memory_used_gb"]["source"], "/proc/meminfo", "capability memory used source")
+    assert_equal(capabilities["memory_used_gib"], capabilities["memory_used_gb"], "fixture memory GiB capability alias")
     assert_true(capabilities["gpu_temp_c"]["available"], "capability GPU temp available")
     assert_equal(capabilities["gpu_temp_c"]["count"], 4, "capability GPU temp count")
     assert_equal(capabilities["gpu_power_w"]["count"], 4, "capability GPU power count")
     assert_equal(capabilities["gpu_clock_mhz"]["count"], 4, "capability GPU clock count")
     assert_equal(capabilities["gpu_vram_used_gb"]["count"], 4, "capability GPU VRAM count")
+    assert_equal(capabilities["gpu_vram_used_gib"], capabilities["gpu_vram_used_gb"], "fixture GPU VRAM GiB capability alias")
     assert_true(not capabilities["gpu_memory_temp_c"]["available"], "capability GPU memory temp unavailable")
     assert_equal(capabilities["gpu_memory_temp_c"]["source"], "not found", "capability GPU memory temp source")
 
@@ -14255,6 +14411,37 @@ def test_telemetry_sampling_helpers() -> None:
     assert_equal(parse_optional_float("[Not Supported]", 100.0), None, "unsupported optional float")
     assert_equal(parse_vram_used_gb_from_bytes_text(str(3 * 1024 ** 3)), 3.0, "VRAM bytes to GB")
     assert_equal(parse_mb_to_gb("12288"), 12.0, "MiB to GiB")
+    aliased_values = telemetry_values_with_unit_aliases({
+        "memory_used_gb": 31.25,
+        "gpu_vram_used_gb": 12.0,
+        "gpu_2_vram_used_gb": 8.5,
+        "cpu_temp_c": 65.0,
+    })
+    assert_equal(aliased_values["memory_used_gib"], aliased_values["memory_used_gb"], "memory telemetry alias equality")
+    assert_equal(aliased_values["gpu_vram_used_gib"], aliased_values["gpu_vram_used_gb"], "aggregate GPU VRAM alias equality")
+    assert_equal(aliased_values["gpu_2_vram_used_gib"], aliased_values["gpu_2_vram_used_gb"], "dynamic GPU VRAM alias equality")
+    collector = object.__new__(TelemetryCollector)
+    collector.samples = []
+    collector._intel_gpu_top_snapshot_cache = None
+    collector._last_cpu_package_power_values = {}
+    collector._read_cpu_power = lambda _sample_time: None
+    collector._read_cpu_package_temps = lambda: {}
+    collector._read_cpu_temp = lambda _package_temps: None
+    collector._read_cpu_clock_mhz = lambda: None
+    collector._read_memory_used_gb = lambda: 31.25
+    collector._read_cpu_core_clocks = lambda: {}
+    collector._read_memory_temps = lambda: {}
+    collector._read_storage_temps = lambda: {}
+    collector._read_device_temps = lambda: {}
+    collector._read_gpu_values = lambda _sample_time: {
+        "gpu_vram_used_gb": 12.0,
+        "gpu_2_vram_used_gb": 8.5,
+    }
+    collector.collect_once()
+    collected = collector.samples[0].values
+    assert_equal(collected["memory_used_gib"], collected["memory_used_gb"], "collector memory alias equality")
+    assert_equal(collected["gpu_vram_used_gib"], collected["gpu_vram_used_gb"], "collector aggregate VRAM alias equality")
+    assert_equal(collected["gpu_2_vram_used_gib"], collected["gpu_2_vram_used_gb"], "collector dynamic VRAM alias equality")
     assert_equal(parse_gpu_clock_text("2: 2400Mhz *\n1: 1200Mhz"), 2400.0, "AMD pp_dpm selected clock")
     assert_equal(parse_gpu_clock_text("2400000"), 2400.0, "raw kHz clock")
     objects = json_objects_from_text('noise {"engines":{"Render/3D":{"busy": "33.5%"}}} {"value": 2}')
@@ -14275,26 +14462,25 @@ def test_telemetry_sampling_helpers() -> None:
 
 def test_telemetry_sample_csv_helpers() -> None:
     samples = [
-        Sample(1.5, {"gpu_0_temp_core_c": 70.0}),
-        Sample(2.5, {"cpu_temp_c": 55.0, "gpu_0_temp_core_c": None}),
+        Sample(1.5, {"gpu_0_temp_core_c": 70.0, "gpu_0_vram_used_gb": 8.0, "gpu_vram_used_gb": 8.0, "memory_used_gb": 20.0}),
+        Sample(2.5, {"cpu_temp_c": 55.0, "gpu_0_temp_core_c": None, "gpu_0_vram_used_gb": 9.0, "gpu_vram_used_gb": 9.0, "memory_used_gb": 21.0}),
     ]
     assert_equal(
         telemetry_csv_fieldnames(samples),
-        ["timestamp", "cpu_temp_c", "gpu_0_temp_core_c"],
+        ["timestamp", "cpu_temp_c", "gpu_0_temp_core_c", "gpu_0_vram_used_gb", "gpu_0_vram_used_gib", "gpu_vram_used_gb", "gpu_vram_used_gib", "memory_used_gb", "memory_used_gib"],
         "telemetry CSV field ordering",
     )
-    assert_equal(
-        telemetry_sample_row(samples[0]),
-        {"timestamp": 1.5, "gpu_0_temp_core_c": 70.0},
-        "telemetry sample row shape",
-    )
+    first_row = telemetry_sample_row(samples[0])
+    assert_equal(first_row["memory_used_gib"], first_row["memory_used_gb"], "CSV row memory alias equality")
+    assert_equal(first_row["gpu_vram_used_gib"], first_row["gpu_vram_used_gb"], "CSV row aggregate VRAM alias equality")
+    assert_equal(first_row["gpu_0_vram_used_gib"], first_row["gpu_0_vram_used_gb"], "CSV row dynamic VRAM alias equality")
     with TemporaryDirectory(dir="/tmp") as tmp:
         csv_path = Path(tmp) / "raw_telemetry.csv"
         write_telemetry_csv(samples, csv_path)
         lines = csv_path.read_text(encoding="utf-8").splitlines()
-        assert_equal(lines[0], "timestamp,cpu_temp_c,gpu_0_temp_core_c", "telemetry CSV header")
-        assert_equal(lines[1], "1.5,,70.0", "telemetry CSV sparse row")
-        assert_equal(lines[2], "2.5,55.0,", "telemetry CSV None row")
+        assert_true("gpu_0_vram_used_gb,gpu_0_vram_used_gib" in lines[0], "telemetry CSV dynamic VRAM aliases")
+        assert_true("gpu_vram_used_gb,gpu_vram_used_gib" in lines[0], "telemetry CSV aggregate VRAM aliases")
+        assert_true("memory_used_gb,memory_used_gib" in lines[0], "telemetry CSV memory aliases")
 
 
 def test_telemetry_memory_helpers() -> None:

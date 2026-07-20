@@ -11,6 +11,7 @@ from .lvs_output_contract_identity import (
     stamp_contract_identity,
 )
 from .lvs_pcie_link import trusted_pcie_link_for_slot
+from .lvs_telemetry_samples import telemetry_unit_alias_name
 
 
 TelemetrySource = Dict[str, Any]
@@ -238,6 +239,15 @@ def build_telemetry_source_map(
             "kind": "procfs",
             "path": "/proc/meminfo",
         },
+        "memory_used_gib": {
+            "field": "memory_used_gib",
+            "category": "memory",
+            "metric": "used_gib",
+            "source": "/proc/meminfo",
+            "available": True,
+            "kind": "procfs",
+            "path": "/proc/meminfo",
+        },
     }
     for source in cpu_package_temp_source_list:
         field = str(source.get("key") or "")
@@ -281,6 +291,14 @@ def build_telemetry_source_map(
                 category="gpu",
                 metric=str(source.get("metric") or field),
             )
+            alias_name = telemetry_unit_alias_name(field)
+            if alias_name:
+                fields[alias_name] = telemetry_source_record(
+                    alias_name,
+                    source,
+                    category="gpu",
+                    metric="vram_used_gib",
+                )
 
     gpu_index_map: List[Dict[str, Any]] = []
     for card in gpu_cards:
@@ -671,6 +689,8 @@ def build_telemetry_capability_summary(
         "source": "per-gpu telemetry source matrix",
         "gpus": gpu_telemetry_matrix(),
     }
+    capabilities["memory_used_gib"] = dict(capabilities["memory_used_gb"])
+    capabilities["gpu_vram_used_gib"] = dict(capabilities["gpu_vram_used_gb"])
     privilege_sources: List[TelemetrySource] = []
     for source in (
         [cpu_temp_source, cpu_power_source, cpu_clock_source]

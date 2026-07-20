@@ -260,10 +260,29 @@ Phase 2A added `contract_id`, `contract_version`, and `kind` to
 It did not rename existing fields, remove aliases, or change
 `parsed_results_custom.json`.
 
+## Phase 2B Telemetry Unit Aliases (Completed)
+
+Phase 2B added unit-correct telemetry aliases without renaming or removing any
+existing field. `memory_used_gib` mirrors `memory_used_gb`,
+`gpu_vram_used_gib` mirrors `gpu_vram_used_gb`, and each dynamic
+`gpu_<index>_vram_used_gib` field mirrors its corresponding
+`gpu_<index>_vram_used_gb` field. The aliases are emitted in
+`raw_telemetry.csv` and described in `telemetry_source_map.json`; the matching
+capability names are included in dependency, preflight, dry-run, and run
+manifest payloads.
+
+The existing `_gb` telemetry fields are legacy compatibility names whose values
+are binary GiB. They remain unchanged and remain authoritative for existing
+internal processing. The additive `_gib` fields are the unit-correct names for
+new consumers. Phase 2B does not remove or mark the `_gb` fields as deprecated
+for operator-facing use, and it does not change `parsed_results_custom.json`,
+`system_info.json`, storage benchmark contracts, or profile sidecar labels.
+
 ## Future Canonical Parsed-Result Milestone
 
-Phase 1 clarification and Phase 2A identity work are complete. The remaining
-coordinated canonical parsed-result migration is deferred. When it is scheduled:
+Phase 1 clarification, Phase 2A identity, and Phase 2B telemetry alias work are
+complete. The remaining coordinated canonical parsed-result migration is
+deferred. When it is scheduled:
 
 - The canonical parsed-result filename becomes `parsed_results.json`.
 - `parsed_results_custom.json` is treated as the old OCCT/custom

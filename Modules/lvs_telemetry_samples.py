@@ -8,6 +8,7 @@ constructing a ``TelemetryCollector``.
 """
 
 import csv
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -19,12 +20,38 @@ class Sample:
     values: Dict[str, Optional[float]]
 
 
+_DYNAMIC_GPU_VRAM_GB_FIELD = re.compile(r"^gpu_\d+_vram_used_gb$")
+
+
+def telemetry_unit_alias_name(field_name: str) -> Optional[str]:
+    """Return the additive GiB alias for a legacy binary-GiB field."""
+    if field_name == "memory_used_gb":
+        return "memory_used_gib"
+    if field_name == "gpu_vram_used_gb":
+        return "gpu_vram_used_gib"
+    if _DYNAMIC_GPU_VRAM_GB_FIELD.fullmatch(field_name):
+        return f"{field_name[:-3]}_gib"
+    return None
+
+
+def telemetry_values_with_unit_aliases(
+    values: Dict[str, Optional[float]],
+) -> Dict[str, Optional[float]]:
+    """Copy telemetry values and add unit-correct aliases from legacy fields."""
+    aliased = dict(values)
+    for field_name, value in values.items():
+        alias_name = telemetry_unit_alias_name(field_name)
+        if alias_name:
+            aliased[alias_name] = value
+    return aliased
+
+
 def telemetry_csv_fieldnames(samples: Iterable[Sample]) -> List[str]:
     dynamic_fields = sorted(
         {
             key
             for sample in samples
-            for key in sample.values.keys()
+            for key in telemetry_values_with_unit_aliases(sample.values).keys()
         }
     )
     return ["timestamp", *dynamic_fields]
@@ -32,7 +59,7 @@ def telemetry_csv_fieldnames(samples: Iterable[Sample]) -> List[str]:
 
 def telemetry_sample_row(sample: Sample) -> Dict[str, Optional[float]]:
     row: Dict[str, Optional[float]] = {"timestamp": sample.timestamp}
-    row.update(sample.values)
+    row.update(telemetry_values_with_unit_aliases(sample.values))
     return row
 
 

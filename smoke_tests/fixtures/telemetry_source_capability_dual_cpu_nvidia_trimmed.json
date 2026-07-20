@@ -116,7 +116,16 @@
       "count": 4,
       "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:06:00.0)"
     },
+    "gpu_vram_used_gib": {
+      "available": true,
+      "count": 4,
+      "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:06:00.0)"
+    },
     "memory_used_gb": {
+      "available": true,
+      "source": "/proc/meminfo"
+    },
+    "memory_used_gib": {
       "available": true,
       "source": "/proc/meminfo"
     },
@@ -356,12 +365,34 @@
         "slot": "0000:75:00.0",
         "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:75:00.0)"
       },
+      "gpu_0_vram_used_gib": {
+        "available": true,
+        "category": "gpu",
+        "field": "gpu_0_vram_used_gib",
+        "gpu_index": 0,
+        "kind": "nvidia_smi",
+        "label": "NVIDIA RTX PRO 6000 Blackwell Server Edition memory used",
+        "metric": "vram_used_gib",
+        "path": "nvidia-smi:0000:75:00.0",
+        "query_field": "memory.used",
+        "slot": "0000:75:00.0",
+        "source": "nvidia_smi:NVIDIA RTX PRO 6000 Blackwell Server Edition memory used (nvidia-smi:0000:75:00.0)"
+      },
       "memory_used_gb": {
         "available": true,
         "category": "memory",
         "field": "memory_used_gb",
         "kind": "procfs",
         "metric": "used_gb",
+        "path": "/proc/meminfo",
+        "source": "/proc/meminfo"
+      },
+      "memory_used_gib": {
+        "available": true,
+        "category": "memory",
+        "field": "memory_used_gib",
+        "kind": "procfs",
+        "metric": "used_gib",
         "path": "/proc/meminfo",
         "source": "/proc/meminfo"
       },
