@@ -1,10 +1,14 @@
 # Telemetry Probe Notes
 
-These notes summarize the concrete sensor evidence reviewed from:
+These public engineering provenance notes summarize concrete sensor evidence
+reviewed across these generic probe categories:
 
-- `sensor_probe_logs/2026-07-07_11-08-35_rnd-linux-test`
-- `sensor_probe_logs/2026-07-10_09-33-34_rnd-linux-test`
-- `sensor_probe_logs/2026-06-09_15-15-07_mark-HP-OmniBook-X-Laptop-14-fe1xxx`
+- repeated x86_64 multi-GPU lab probe sessions
+- an ARM64 Snapdragon X Plus laptop probe
+
+The observations document hardware- and driver-family evidence used during
+telemetry development. They are not a complete support matrix or a promise of
+support coverage for any specific platform or release.
 
 The resulting telemetry changes are intentionally additive. They do not change
 thresholds, pass/fail behavior, parsed importer-facing fields, CLI/TUI behavior,
@@ -43,9 +47,9 @@ The Snapdragon X Plus laptop probe exposed many Qualcomm virtual thermal zones,
 including CPU cluster, GPU subsystem, video/camera, AOSS/PMIC, and related
 thermal-zone labels. These are useful as generic source evidence but are not
 promoted into validation metrics without clearer stable component semantics.
-The same probe exposed `ath11k_hwmon-pci-40100` Wi-Fi temperature, which is now
-captured through the existing optional Wi-Fi temperature evidence path. NVMe
-composite temperature was already covered by existing storage telemetry.
+The same probe exposed `ath11k` hwmon Wi-Fi temperature, which is now captured
+through the existing optional Wi-Fi temperature evidence path. NVMe composite
+temperature was already covered by existing storage telemetry.
 
 ## Not Added
 
