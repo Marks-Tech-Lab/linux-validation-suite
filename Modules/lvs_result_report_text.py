@@ -40,7 +40,7 @@ def result_gpu_highlight_line(gpu: Dict[str, Any]) -> str:
     backends = ", ".join(str(item) for item in gpu.get("Backends", []) or [])
     usage = format_result_metric_triplet(gpu.get("UsageMin"), gpu.get("UsageAvg"), gpu.get("UsageMax"), "%")
     power = format_result_metric_pair(gpu.get("PowerAvgW"), gpu.get("PowerMaxW"), "W")
-    vram = format_result_metric_pair(gpu.get("VramUsedAvgGB"), gpu.get("VramUsedMaxGB"), "GB")
+    vram = format_result_metric_pair(gpu.get("VramUsedAvgGB"), gpu.get("VramUsedMaxGB"), "GiB")
     verification = gpu.get("VerificationPasses")
     allocation = gpu.get("AllocationPercent")
     parts = [f"load={gpu.get('LoadQuality') or '-'}"]
@@ -293,7 +293,7 @@ def artifact_gpu_highlight_text(highlight: Dict[str, Any]) -> str:
     memory_busy = artifact_range_text(highlight.get("MemoryBusyAvg"), highlight.get("MemoryBusyMax"), "%")
     if memory_busy != "-":
         parts.append(f"mem busy {memory_busy}")
-    vram = artifact_value_text(highlight.get("VramUsedMaxGB"), "GB")
+    vram = artifact_value_text(highlight.get("VramUsedMaxGB"), "GiB")
     if vram != "-":
         parts.append(f"vram max {vram}")
     allocation = artifact_value_text(highlight.get("AllocationPercent"), "%")

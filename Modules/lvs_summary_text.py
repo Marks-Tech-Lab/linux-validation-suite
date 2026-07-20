@@ -226,7 +226,7 @@ class SummaryTextBuilder:
         memory_busy = self._format_range(highlight.get("MemoryBusyAvg"), highlight.get("MemoryBusyMax"), "%")
         if memory_busy != "-":
             parts.append(f"mem busy {memory_busy}")
-        vram = self._format_value(highlight.get("VramUsedMaxGB"), "GB")
+        vram = self._format_value(highlight.get("VramUsedMaxGB"), "GiB")
         if vram != "-":
             parts.append(f"vram max {vram}")
         allocation = self._format_value(highlight.get("AllocationPercent"), "%")

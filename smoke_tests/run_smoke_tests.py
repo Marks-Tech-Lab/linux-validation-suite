@@ -4341,7 +4341,7 @@ def test_result_report_text_contract_from_payload() -> None:
     )
     assert_true("usage=80 / 94 / 99%" in details, "contract details usage triplet")
     assert_true("power=avg 501, max 575W" in details, "contract details power pair")
-    assert_true("vram=avg 12, max 16GB" in details, "contract details VRAM pair")
+    assert_true("vram=avg 12, max 16GiB" in details, "contract details VRAM pair")
     assert_true("alloc=80.0%; verify=12" in details, "contract details worker evidence")
 
 
@@ -4438,7 +4438,7 @@ def test_report_export_realistic_trimmed_fixture_contract() -> None:
     assert_true("Warnings: {'gpu_vram_verification_coverage': 1}" in details, "realistic fixture details warnings")
     assert_true("Errors: {'worker_exit': 2}" in details, "realistic fixture details errors")
     assert_true("NVIDIA GeForce RTX 3080 #1: load=variable_high" in details, "realistic fixture details GPU line")
-    assert_true("vram=avg 1.1, max 7.04GB" in details, "realistic fixture details VRAM metric")
+    assert_true("vram=avg 1.1, max 7.04GiB" in details, "realistic fixture details VRAM metric")
 
 
 def test_stage_diagnostics_stability_fixture_contract() -> None:
@@ -8548,7 +8548,7 @@ def test_result_overview_text_fixture() -> None:
                 "VerificationPasses": 42,
             }
         ),
-        "  - GPU 1: load=high; target=0000:01:00.0; workloads=gpu_3d; backends=python_vulkan_compute; usage=75 / 92.5 / 100%; power=avg 501.25, max 599.9W; vram=avg 10, max 12.5GB; alloc=80.0%; verify=42",
+        "  - GPU 1: load=high; target=0000:01:00.0; workloads=gpu_3d; backends=python_vulkan_compute; usage=75 / 92.5 / 100%; power=avg 501.25, max 599.9W; vram=avg 10, max 12.5GiB; alloc=80.0%; verify=42",
         "result GPU highlight line",
     )
     assert_equal(

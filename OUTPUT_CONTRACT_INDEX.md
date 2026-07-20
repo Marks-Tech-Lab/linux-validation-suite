@@ -144,6 +144,114 @@ such as CPU, GPU, BIOS, PCIe, NVMe, VRAM, GiB, Gb/s, MHz, W, V, A, °C, and RPM.
 This policy governs machine-facing fixed keys and does not turn display labels
 into schema keys.
 
+## Phase 1 Contract Clarifications
+
+This section records the current contracts without changing their payloads.
+Phase 1 does not rename fields, remove aliases, add replacement fields, or
+change the structure of `parsed_results_custom.json`.
+
+### Legacy Binary-Unit Labels
+
+The following established fields have names that say GB or MB but contain
+binary GiB or MiB values. Their names remain compatibility-sensitive; consumers
+must interpret the values using the actual-unit column until the future
+`parsed_results.json` migration.
+
+| Existing field or family | Actual unit | Compatibility note |
+| --- | --- | --- |
+| `memory_used_gb`, `gpu_vram_used_gb` | GiB | Telemetry values are derived from bytes or MiB using binary divisors. |
+| `VramUsedGB`, `VramUsedAvgGB`, `VramUsedMaxGB` | GiB | Legacy compatibility and report-summary fields; text renderers label these values GiB. |
+| `TotalPhysicalMemoryGB` | GiB | Compatibility system-memory capacity. |
+| `CapacityGB`, `SizeGB`, `capacity_gb`, `size_gb` | GiB | Compatibility storage inventory capacities. These are distinct from Storage Benchmark's decimal throughput and lifetime-counter units. |
+| `ActiveBufferMB`, `PerBufferCapMB`, and related buffer-size compatibility fields | MiB | Worker/export values use binary MiB. |
+| `estimated_device_memory_gb` and `EstimatedDeviceMemoryGB` families | GiB | Compatibility GPU worker estimates. |
+| `estimated_device_memory_gbps` and `EstimatedDeviceMemoryGBps` families | GiB/s | Historical names use `gbps`, but the calculation is binary bytes per second. |
+
+No existing key in this table is redefined as a decimal unit. New fields must
+follow the forward-only suffix policy instead of copying these names.
+
+### Compatibility Aliases Preserved
+
+`parsed_results_custom.json` is the frozen legacy compatibility output. Its
+lowercase, PascalCase, snake_case, and human-readable aliases must remain until
+the coordinated `parsed_results.json` migration. This includes root result,
+time, metadata, report, and stability mirrors; `ReportSummary` and
+`report_summary`; `Segments`, `SegmentDetails`, `Metadata`, `SystemInfo`,
+`Motherboard`, `Memory`, `Storage`, `Gpu`, `Cpu`, and `CpuCores`; and the
+`Temperatures.Ram` and `Temperatures.Memory` aliases. Dynamic test, device, and
+stage labels are importer-facing data and are not renamed in Phase 1.
+
+### Storage-Health Provider And Counter Semantics
+
+`storage_health` is the normalized enclosing object. Names beginning with
+`smart_` are historical umbrella names and may describe NVMe health obtained
+from `nvme-cli`, not only a `smartctl` response. `nvme-cli` enables NVMe health
+collection. `smartctl`, provided by smartmontools, is the preferred optional
+provider for ATA/SATA/SAS and fallback SMART coverage. Missing `smartctl` is not
+a failed health query when applicable NVMe drives are covered by `nvme-cli`.
+
+`percentage_used` is a compatibility duplicate of `wear_percent_used`; both
+currently carry the same normalized percentage-used value when available.
+Neither field is removed in Phase 1. `host_writes_tb` and `host_reads_tb` are
+decimal-TB lifetime host-write and host-read counters. The Storage Benchmark
+fields `host_writes_delta_tb` and `host_reads_delta_tb` are decimal-TB deltas
+between the benchmark's before and after health snapshots, not lifetime totals.
+
+Raw `smartctl`, `nvme-cli`, and fio provider payloads are not embedded in normal
+`system_info.json` or parsed-result artifacts. Raw fio JSON remains in the
+separate `raw_fio/` boundary documented below.
+
+### Contract-ID Namespace
+
+The current ID namespace is inconsistent: established storage contracts use
+`lvs.storage_benchmark*`, while QA, support, migration, and hardware-matrix
+contracts use `linux_validation_suite.*`. Existing IDs are stable compatibility
+identifiers and must not be renamed. For future public LVS-owned contracts, the
+selected namespace is `linux_validation_suite.*`. This selection does not add a
+new contract or migrate an existing ID in Phase 1.
+
+### Enum Domains
+
+The following are separate domains. Identical-looking terms are not declared
+interchangeable, and casing is significant where shown.
+
+| Domain | Current values and representation |
+| --- | --- |
+| Run/stage verdicts | Lowercase `pass`, `warning`, `fail`, `aborted`, and `manually_aborted` where manual-abort state is retained. |
+| Storage Benchmark verdicts | Uppercase `PASS`, `WARN`, `FAIL`, and `CANCELLED`; all-internal target entries may also use `SKIPPED`. |
+| Storage execution statuses | Lowercase `active`, `completed`, `failed`, `cancelled`, `unsupported`, `unavailable`, and `skipped`, according to manifest/result level. |
+| SMART/storage-health states | `smart_health`: `passed`, `failed`, `unknown`; `query_status`: `available`, `partial`, `unavailable`, `permission_denied`, `unsupported`, `skipped_external`, `skipped_uncertain`. |
+| Dependency statuses | Dependency entries primarily expose boolean `available`; storage-health capability status uses `available`, `partial`, `unavailable`, `not_applicable`. Human report labels such as `OK`, `missing`, and `missing preferred` are presentation text, not payload enums. |
+| QA readiness states | Review: `ready`, `blocked`; import: `pass`, `warning`, `fail`; comparison: `ready_no_baseline_selected`, `blocked`, `error`, `compared`; escalation is the boolean `needed`. |
+| Capability severity terms | Storage Benchmark fio capability uses lowercase `ok` and `warn`. General issue/event severity uses its separately owned values, including `warning`; Phase 1 does not merge these domains. |
+
+### Compatibility And Raw Boundaries
+
+- `parsed_results_custom.json` is legacy compatibility output, not the future
+  normalized result contract.
+- `system_info.json` currently combines compatibility hardware sections with
+  normalized inventory additions. Its `memory_modules` data is compatibility
+  inventory and is not a fully normalized memory-module schema.
+- `backend_details` may contain backend- or source-specific evidence. Properties
+  inside that boundary can retain their source spelling and semantics.
+- Normal outputs contain normalized storage-health fields, but not raw SMART
+  provider payloads. Normal parsed results and `system_info.json` do not embed
+  raw fio JSON; Storage Benchmark retains it separately beneath `raw_fio/`.
+
+### Deprecation Registry
+
+This registry is a Phase 1 tracking aid, not a removal schedule. Any future
+removal requires migration/version notes and the coordinated breaking milestone.
+
+| Field or family | Artifact | Current status | Future replacement/removal |
+| --- | --- | --- | --- |
+| Legacy GB/MB fields listed above | Mixed telemetry, inventory, worker, and compatibility outputs | Preserve; actual binary units documented | Canonical names are deferred to the future `parsed_results.json` migration. |
+| PascalCase/lowercase/snake_case compatibility aliases | `parsed_results_custom.json` | Preserve for existing importers | Remove only through the future atomic importer migration. |
+| `ReportSummary` / `report_summary` and metadata/report mirrors | `parsed_results_custom.json` | Preserve compatibility duplicates | No Phase 1 replacement. |
+| `Temperatures.Ram` / `Temperatures.Memory` | `parsed_results_custom.json` | Preserve compatibility duplicates | No Phase 1 replacement. |
+| `percentage_used` | `storage_health` | Preserve as compatibility duplicate of `wear_percent_used` | Removal, if approved, requires a versioned migration note. |
+| Existing `lvs.*` contract IDs | Storage Benchmark artifacts | Stable namespace exception; not deprecated | Do not rename; use `linux_validation_suite.*` for future public contracts. |
+
 ## Future Canonical Parsed-Result Milestone
 
 The breaking cleanup is deferred, not abandoned. When it is scheduled:
