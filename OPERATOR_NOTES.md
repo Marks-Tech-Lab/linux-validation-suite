@@ -48,6 +48,26 @@ actual virtual-environment Python in its output.
 Private deployments can keep additional local profiles in ignored profile
 folders or local-only settings.
 
+## Storage Operator Notes
+
+Storage Benchmark requires `fio` with the `libaio` engine. `nvme-cli` supplies
+the `nvme` SMART provider, while `smartctl` is the executable supplied by the
+`smartmontools` package.
+
+`Storage Benchmark Quick.json` runs the benchmark once per eligible internal
+drive; `Storage Benchmark Sequential.json` runs it five times. Both process
+eligible drives sequentially and exclude root/system drives by default. `Quick
+Test.json` ends with a one-run Storage Benchmark stage and explicitly opts into
+root/system drives. In the standalone workflow, benchmarking a root/system
+drive requires typed confirmation.
+
+Single-device CoW/Btrfs benchmark workspaces are supported with warnings. Their
+results may differ from raw-device or simpler non-CoW filesystem behavior.
+
+CPU cooler, entered power-limit, PPT, and TDP values are descriptive run
+metadata. They do not configure firmware or enforce cooling or power policy,
+and they do not represent a committed future CPU cooler test module.
+
 ## What Result States Mean
 
 - `Ready`: usable as a passing validation result for the configured profile.
@@ -151,7 +171,7 @@ Use these as normal operator workflows:
 
 Treat these as experimental or hardware-sensitive unless directed:
 
-- Future GUI work.
+- GUI support is not currently implemented; future scope is TBD.
 - New GPU backend variants or profiles marked lab/diagnostic/experimental.
 - Telemetry fields from newly discovered sensors before they have retained-result evidence.
 - Any parser/export/schema changes not covered by fixture tests.

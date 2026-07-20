@@ -261,7 +261,7 @@ bundle is not.
 
 Still experimental or hardware-sensitive:
 
-- Future GUI support.
+- GUI support is not currently implemented; future scope is TBD.
 - Some GPU backend variants and lab profiles.
 - Sensor coverage that depends on vendor/kernel exposure.
 - Automated packaging and dependency installation.

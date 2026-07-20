@@ -144,9 +144,10 @@ such as CPU, GPU, BIOS, PCIe, NVMe, VRAM, GiB, Gb/s, MHz, W, V, A, °C, and RPM.
 This policy governs machine-facing fixed keys and does not turn display labels
 into schema keys.
 
-## Phase 1 Contract Clarifications
+## Phase 1 Contract Clarifications (Completed Historical Record)
 
-This section records the current contracts without changing their payloads.
+This completed Phase 1 section records the current contracts without changing
+their payloads.
 Phase 1 does not rename fields, remove aliases, add replacement fields, or
 change the structure of `parsed_results_custom.json`.
 
