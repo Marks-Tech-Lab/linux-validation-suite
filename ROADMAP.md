@@ -31,10 +31,39 @@ undecided work. Deferred or possible work is not committed release scope.
 
 ## Deferred Compatibility And Output Work
 
-- The coordinated canonical parsed-result migration to `parsed_results.json`
-  is deferred.
-- Compatibility-alias removal and fixed-key or unit migration are deferred to
-  that coordinated breaking milestone.
+The remaining output-standardization work is divided into two coordinated,
+deferred milestones. Neither milestone changes the existing
+`parsed_results_custom.json` compatibility contract.
+
+### Phase 3 — Canonical-First Result Reader Compatibility
+
+- Add identity-aware result resolution and a normalized internal result view
+  for validation, comparison, QA, report, inventory, and importer-facing
+  adapters.
+- Readers prefer recognized canonical names when available and fall back to
+  legacy names without operator-facing deprecation warnings.
+- Preserve all legacy fields and aliases. Phase 3 changes readers and adapters
+  only; it does not emit `parsed_results.json`.
+- Prove legacy-only, canonical-only, and dual-artifact equivalence with frozen
+  fixtures before changing artifact selection behavior.
+
+### Phase 4 — Canonical Parsed Result v1 Dual-Output Migration
+
+- Emit an identified canonical `parsed_results.json` using fixed snake-case
+  LVS-owned keys and explicit units while continuing to emit the unchanged
+  `parsed_results_custom.json` legacy compatibility artifact.
+- Preserve useful OCCT-style structure and documented dynamic-label,
+  raw-provider, vendor, and backend boundaries rather than mechanically
+  converting every key.
+- Update QA, validation, comparison, reports, and importers through the Phase 3
+  compatibility layer as one coordinated migration.
+- Apps Script, SQL, and other external importer changes require representative
+  fixtures, identity-aware artifact selection, compatibility planning, and a
+  tested rollback path.
+
+Storage Benchmark v1 aggregate reshaping is outside Phase 3 and Phase 4. Any
+such change requires a separately approved, versioned benchmark-contract
+milestone and does not authorize new storage testing, comparison, or reporting.
 
 ## Deferred Hardware Modules
 

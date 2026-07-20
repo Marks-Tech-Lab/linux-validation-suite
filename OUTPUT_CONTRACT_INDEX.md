@@ -282,17 +282,50 @@ for operator-facing use, and it does not change `parsed_results_custom.json`,
 
 Phase 1 clarification, Phase 2A identity, and Phase 2B telemetry alias work are
 complete. The remaining coordinated canonical parsed-result migration is
-deferred. When it is scheduled:
+deferred and is divided into two milestones.
 
-- The canonical parsed-result filename becomes `parsed_results.json`.
-- `parsed_results_custom.json` is treated as the old OCCT/custom
-  compatibility-era artifact, not as the name of the new canonical contract.
+### Phase 3 — Canonical-First Result Reader Compatibility
+
+Phase 3 changes readers and adapters only. It introduces an identity-aware
+artifact resolver and a normalized internal result view so readers can prefer
+recognized canonical names when available and fall back to legacy names. It
+does not emit `parsed_results.json`, remove aliases, or change
+`parsed_results_custom.json`.
+
+Artifact selection must not rely on the filename alone. Retained OCCT data may
+already contain a different legacy artifact named `parsed_results.json`.
+Readers may treat a file as the canonical LVS parsed result only when it carries
+a recognized and supported identity:
+
+```yaml
+contract_id: linux_validation_suite.parsed_results
+contract_version: 1
+kind: parsed_results
+```
+
+An unrecognized `parsed_results.json` must not override
+`parsed_results_custom.json` or existing specialized legacy handling.
+
+### Phase 4 — Canonical Parsed Result v1 Dual-Output Migration
+
+When Phase 4 is scheduled:
+
+- The identified canonical parsed-result filename becomes
+  `parsed_results.json`, using the contract identity above.
+- `parsed_results_custom.json` remains the legacy OCCT/custom compatibility
+  output and continues to be emitted during the migration.
 - Fixed LVS-owned keys are normalized without redundant old/new alias fields.
 - Semantic unit suffixes are corrected and internal readers, tests, fixtures,
   report adapters, validation, comparison, QA, and importer-facing adapters are
   migrated together.
 - Raw/vendor/backend properties remain verbatim only inside documented
-  boundaries; there is no blind recursive conversion.
+  boundaries. Dynamic test and stage labels also remain documented dynamic
+  boundaries; there is no mechanical or recursive snake-case conversion.
+- Apps Script, SQL, and other external importer changes require representative
+  fixtures, identity-aware selection, compatibility planning, and a tested
+  rollback path.
+- Storage Benchmark v1 aggregate reshaping is outside this migration and
+  requires its own separately approved, versioned contract milestone.
 
 The cleanup must preserve the OCCT-style parsed-results layout rather than
 redesigning it. The protected structural sequence is:
@@ -327,6 +360,17 @@ The implementation milestone must deliver an importer migration package with:
 - dynamic-label boundary documentation;
 - raw/vendor boundary documentation; and
 - Apps Script and SQL importer migration notes.
+
+### Future Developer Deprecation Map
+
+Before Phase 3 implementation, a developer-facing deprecation map should be
+defined with these columns:
+
+| Legacy artifact/path | Canonical path | Actual unit | Reader fallback owner | Intended migration phase | Permanent legacy |
+| --- | --- | --- | --- | --- | --- |
+
+The map is migration documentation, not an operator-facing warning system or a
+removal schedule.
 
 All new feature work must follow the forward-only key and unit policy for every
 new LVS-owned field, even before the full cleanup is implemented.
