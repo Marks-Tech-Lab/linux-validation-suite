@@ -5,6 +5,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from .lvs_output_contract_identity import (
+    TELEMETRY_SOURCE_MAP_CONTRACT_ID,
+    TELEMETRY_SOURCE_MAP_KIND,
+    stamp_contract_identity,
+)
 from .lvs_pcie_link import trusted_pcie_link_for_slot
 
 
@@ -303,7 +308,7 @@ def build_telemetry_source_map(
     ):
         source_list.extend(_source_and_components(source))
 
-    return {
+    return stamp_contract_identity({
         "version": 1,
         "purpose": "Maps raw_telemetry.csv field names to hardware telemetry sources.",
         "telemetry_privilege": build_telemetry_privilege_summary(
@@ -328,7 +333,7 @@ def build_telemetry_source_map(
             ],
             key=lambda item: int(item.get("drive_index", 0) or 0),
         ),
-    }
+    }, contract_id=TELEMETRY_SOURCE_MAP_CONTRACT_ID, kind=TELEMETRY_SOURCE_MAP_KIND)
 
 
 def unreadable_source_description(sources: Iterable[TelemetrySource]) -> str:

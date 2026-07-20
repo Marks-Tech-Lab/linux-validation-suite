@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .lvs_core import APP_NAME, APP_VERSION, now_local_iso
+from .lvs_output_contract_identity import (
+    DEPENDENCY_CHECK_CONTRACT_ID,
+    DEPENDENCY_CHECK_KIND,
+    stamp_contract_identity,
+)
 
 
 class DependencyCheckPayloadBuilder:
@@ -91,10 +96,9 @@ class DependencyCheckPayloadBuilder:
                 if has_identity(module) and str(module.get("source") or "").strip()
             }
         )
-        return {
+        return stamp_contract_identity({
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
-            "kind": "dependency_check",
             "started": now_local_iso(),
             "execution_context": execution_context,
             "runtime_environment": workload_runner.runtime_environment(),
@@ -112,7 +116,7 @@ class DependencyCheckPayloadBuilder:
             "storage_benchmark": self.storage_benchmark_factory(helper_effective),
             "gpu_opencl_coverage": gpu_opencl_coverage(workload_runner),
             "google_drive_upload": self.drive_readiness(),
-        }
+        }, contract_id=DEPENDENCY_CHECK_CONTRACT_ID, kind=DEPENDENCY_CHECK_KIND)
 
 
 def memory_module_has_identity_default(module: Dict[str, Any]) -> bool:

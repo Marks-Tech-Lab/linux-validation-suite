@@ -59,6 +59,25 @@ LEGACY_REPORT_SUMMARY_FIELDS = {
     "ImportNotes",
 }
 
+RUN_MANIFEST_IDENTITY_FIELDS = {
+    "contract_id",
+    "contract_version",
+    "kind",
+}
+
+DEPENDENCY_CHECK_IDENTITY_FIELDS = {
+    "contract_id",
+    "contract_version",
+    "kind",
+}
+
+TELEMETRY_SOURCE_MAP_IDENTITY_FIELDS = {
+    "contract_id",
+    "contract_version",
+    "kind",
+    "version",
+}
+
 QA_REVIEW_REQUIRED_FIELDS = {
     "app_name",
     "app_version",
@@ -195,4 +214,3 @@ def assert_legacy_custom_result_contract(
     assert metadata.get("ReportSummary") == report_summary, "Metadata.ReportSummary mirror changed"
     if require_report_summary_alias:
         assert payload.get("report_summary") == report_summary, "report_summary compatibility alias changed"
-

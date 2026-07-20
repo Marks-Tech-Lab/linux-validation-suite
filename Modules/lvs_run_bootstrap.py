@@ -9,6 +9,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_advanced_debug import AdvancedDebugLogger
 from Modules.lvs_core import JsonStore
+from Modules.lvs_output_contract_identity import (
+    RUN_MANIFEST_CONTRACT_ID,
+    RUN_MANIFEST_KIND,
+    stamp_contract_identity,
+)
 from Modules.lvs_profile_models import StageConfig, ValidationProfile
 
 
@@ -119,7 +124,7 @@ def bootstrap_run_artifacts(
     JsonStore.write(run_dir / "system_info.json", system_info)
     JsonStore.write(run_dir / "run_metadata.json", asdict(metadata))
     JsonStore.write(run_dir / "profile_used.json", asdict(effective_profile))
-    manifest_payload = {
+    manifest_payload = stamp_contract_identity({
         "app_name": app_name,
         "app_version": app_version,
         "profile_name": profile.profile_name,
@@ -153,7 +158,7 @@ def bootstrap_run_artifacts(
             "enabled": bool(getattr(metadata, "advanced_debug_logging", False)),
             "path": "advanced_debug/advanced_debug_log.txt" if bool(getattr(metadata, "advanced_debug_logging", False)) else "",
         },
-    }
+    }, contract_id=RUN_MANIFEST_CONTRACT_ID, kind=RUN_MANIFEST_KIND)
     JsonStore.write(run_dir / "run_manifest.json", manifest_payload)
     advanced_debug.capture_run_start(started_iso=started_iso, profile_name=profile.profile_name)
 

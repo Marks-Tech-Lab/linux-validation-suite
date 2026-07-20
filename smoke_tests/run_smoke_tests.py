@@ -32,8 +32,11 @@ from smoke_tests.module_organization_checks import (
     test_textual_is_confined_to_optional_tui_boundary,
 )
 from smoke_tests.output_contract_checks import (
+    DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
     QA_REVIEW_REQUIRED_FIELDS,
+    RUN_MANIFEST_IDENTITY_FIELDS,
+    TELEMETRY_SOURCE_MAP_IDENTITY_FIELDS,
     assert_contract_identity,
     assert_legacy_custom_result_contract,
     assert_required_fields,
@@ -889,6 +892,9 @@ def test_output_contract_index_and_casing_policy() -> None:
         "`contract_id`, `contract_version`, and",
         "`parsed_results_custom.json` is frozen",
         "Do not use blind recursive case conversion",
+        "`linux_validation_suite.run_manifest` v1",
+        "`linux_validation_suite.dependency_check` v1",
+        "`linux_validation_suite.telemetry_source_map` v1",
     ):
         assert_true(policy in document, f"output casing policy documented: {policy}")
 
@@ -4892,6 +4898,14 @@ def test_run_bootstrap_artifact_helpers() -> None:
         assert_equal(result.effective_labels, ["CPU"], "bootstrap result effective labels")
         assert_equal(result.effective_profile.stages[1].enabled, False, "bootstrap disables unrunnable stage")
         assert_equal(result.skipped_stages[0]["label"], "GPU", "bootstrap skipped label")
+        assert_required_fields(manifest, RUN_MANIFEST_IDENTITY_FIELDS, label="run manifest")
+        assert_contract_identity(
+            manifest,
+            contract_id="linux_validation_suite.run_manifest",
+            contract_version=1,
+            kind="run_manifest",
+            label="run manifest",
+        )
         assert_equal(manifest["segment_labels"], ["CPU"], "bootstrap manifest labels")
         assert_equal(manifest["skipped_stages"][0]["issues"], ["blocked backend"], "bootstrap manifest skipped issues")
         assert_equal(profile_used["stages"][1]["enabled"], False, "bootstrap profile copy disabled stage")
@@ -5050,11 +5064,25 @@ def test_final_run_artifact_writer_helpers() -> None:
         parsed = JsonStore.read(run_dir / "parsed_results_custom.json", {})
         source_map = JsonStore.read(run_dir / "telemetry_source_map.json", {})
         assert_equal(result.overall_verdict, "warning", "artifact writer final verdict")
+        assert_contract_identity(
+            manifest,
+            contract_id="linux_validation_suite.run_manifest",
+            contract_version=1,
+            kind="run_manifest",
+            label="final run manifest",
+        )
         assert_equal(manifest["verdict"], "warning", "artifact writer manifest verdict")
         assert_equal(plan[0]["verdict"], "warning", "artifact writer mirrors final plan verdict")
         assert_equal(parsed["ParserOutput"]["GpuCount"], 1, "artifact writer parsed export")
         assert_equal((run_dir / "run_summary.txt").read_text(encoding="utf-8"), "Result: Warning\n", "artifact writer summary")
         assert_true((run_dir / "raw_telemetry.csv").exists(), "artifact writer raw telemetry")
+        assert_contract_identity(
+            source_map,
+            contract_id="linux_validation_suite.telemetry_source_map",
+            contract_version=1,
+            kind="telemetry_source_map",
+            label="written telemetry source map",
+        )
         assert_equal(source_map["cpu"]["source"], "smoke", "artifact writer telemetry source map")
         assert_equal(captured[0]["verdict"], "warning", "artifact writer captures run end before return")
 
@@ -5149,6 +5177,13 @@ def test_final_run_artifact_writer_helpers() -> None:
         manifest = JsonStore.read(run_dir / "run_manifest.json", {})
         parsed = JsonStore.read(run_dir / "parsed_results_custom.json", {})
         assert_equal(manual_result.overall_verdict, "manually_aborted", "TUI cancel artifact final verdict")
+        assert_contract_identity(
+            manifest,
+            contract_id="linux_validation_suite.run_manifest",
+            contract_version=1,
+            kind="run_manifest",
+            label="cancelled run manifest",
+        )
         assert_equal(manifest["verdict"], "manually_aborted", "TUI cancel manifest verdict")
         assert_equal(manifest["executed_plan"][0]["verdict"], "aborted", "TUI cancel plan stage verdict")
         assert_equal(
@@ -12259,6 +12294,14 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("nvme-cli: missing preferred" in smartctl_present_lines[1],
                 "dependency provider summary exposes optional missing nvme-cli")
     built_payload = manager.dependency_check_payload(sudo_noninteractive_ready=lambda: True)
+    assert_required_fields(built_payload, DEPENDENCY_CHECK_IDENTITY_FIELDS, label="dependency check")
+    assert_contract_identity(
+        built_payload,
+        contract_id="linux_validation_suite.dependency_check",
+        contract_version=1,
+        kind="dependency_check",
+        label="dependency check",
+    )
     assert_equal(built_payload["app_name"], "Linux Validation Suite", "dependency payload app name")
     assert_true(built_payload["execution_context"]["privileged_helper_effective"], "dependency payload helper effective")
     assert_equal(built_payload["runtime_environment"], {"PATH": "/usr/bin"}, "dependency payload runtime environment")
@@ -12352,6 +12395,14 @@ def test_dependency_report_summary_with_injected_telemetry() -> None:
     assert_true("Privileged Helper Suggestions" in summary, "dependency check helper hints")
     with TemporaryDirectory() as tmp:
         report_dir = manager.save_dependency_check_report(Path(tmp), "Full dependency text", payload)
+        saved_dependency = JsonStore.read(report_dir / "dependency_check.json", {})
+        assert_contract_identity(
+            saved_dependency,
+            contract_id="linux_validation_suite.dependency_check",
+            contract_version=1,
+            kind="dependency_check",
+            label="saved dependency check",
+        )
         assert_true(report_dir.name.endswith("_Dependency_Check"), "dependency check folder suffix")
         assert_true((report_dir / "dependency_check.json").exists(), "dependency check json")
         assert_true((report_dir / "dependency_check.txt").exists(), "dependency check text")
@@ -13640,6 +13691,14 @@ def test_telemetry_source_helpers() -> None:
         process_is_root=False,
         sudo_available=True,
     )
+    assert_required_fields(source_map, TELEMETRY_SOURCE_MAP_IDENTITY_FIELDS, label="telemetry source map")
+    assert_contract_identity(
+        source_map,
+        contract_id="linux_validation_suite.telemetry_source_map",
+        contract_version=1,
+        kind="telemetry_source_map",
+        label="telemetry source map",
+    )
     assert_equal(source_map["fields"]["gpu_0_power_w"]["slot"], "0000:13:00.0", "source map GPU slot")
     assert_equal(source_map["fields"]["gpu_0_power_w"]["access_mode"], "direct", "source map direct access mode")
     assert_equal(source_map["fields"]["gpu_0_fan_percent"]["query_field"], "fan.speed", "source map GPU fan query field")
@@ -13735,6 +13794,14 @@ def test_telemetry_source_capability_fixture_contract() -> None:
         fixture["_FixtureCapabilitySource"],
         "trimmed retained QA run-manifest fixture",
         "telemetry capability fixture source",
+    )
+    assert_required_fields(source_map, TELEMETRY_SOURCE_MAP_IDENTITY_FIELDS, label="telemetry source map fixture")
+    assert_contract_identity(
+        source_map,
+        contract_id="linux_validation_suite.telemetry_source_map",
+        contract_version=1,
+        kind="telemetry_source_map",
+        label="telemetry source map fixture",
     )
     assert_equal(source_map["version"], 1, "telemetry source map version")
     assert_equal(

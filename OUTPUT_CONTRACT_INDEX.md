@@ -27,10 +27,10 @@ breaking change even when the producing module is internal.
 | `parsed_results_custom.json` | OCCT/legacy compatibility contract | Frozen compatibility export. Its lowercase, PascalCase, snake_case, and human-readable test keys are intentional. |
 | `parsed_results_extended.json` | Mixed compatibility artifact | Snake_case LVS wrapper containing `system_info` and `compatibility_export`, both of which retain their existing schemas. It is extended, not normalized. |
 | `system_info.json` | Mixed compatibility artifact | Hardware inventory uses established PascalCase sections with some snake_case detail records and is mirrored into `parsed_results_custom.json` as `SystemInfo`. |
-| `run_manifest.json` | Mixed compatibility artifact | LVS lifecycle fields are snake_case. Raw backend details, including Vulkan properties such as `deviceName`, remain verbatim within backend/detail sections. |
+| `run_manifest.json` | Mixed compatibility artifact | Versioned `linux_validation_suite.run_manifest` v1 envelope with `kind: run_manifest`. LVS lifecycle fields are snake_case. Raw backend details, including Vulkan properties such as `deviceName`, remain verbatim within backend/detail sections. |
 | `run_metadata.json` | LVS-owned snake_case contract | Serialized run identity and operator metadata. Existing names are compatibility-sensitive. |
 | `profile_used.json` | LVS-owned snake_case contract | Effective profile and stage configuration used by the run. |
-| `telemetry_source_map.json` | Mixed compatibility artifact | LVS source-map fields are snake_case; source-specific PCI or backend evidence may retain established casing. |
+| `telemetry_source_map.json` | Mixed compatibility artifact | Versioned `linux_validation_suite.telemetry_source_map` v1 envelope with `kind: telemetry_source_map`. The established top-level `version: 1` remains the source-map content version. LVS source-map fields are snake_case; source-specific PCI or backend evidence may retain established casing. |
 | `raw_telemetry.csv` | Text/CSV companion | Dense timestamped telemetry. Metric column names are a compatibility surface even though they currently use snake_case. |
 | `run_summary.txt` | Text/CSV companion | Human-readable rendering of the compatibility result. |
 
@@ -56,7 +56,7 @@ read-only, normalized health values and source/status notes; raw `smartctl` or
 
 | Artifact | Classification | Ownership and compatibility notes |
 | --- | --- | --- |
-| `dependency_check.json` | Mixed compatibility artifact | Snake_case report envelope with source/backend capability dictionaries that can retain external casing. |
+| `dependency_check.json` | Mixed compatibility artifact | Versioned `linux_validation_suite.dependency_check` v1 envelope with `kind: dependency_check`. Source/backend capability dictionaries can retain external casing. |
 | `profile_audit.json` | LVS-owned snake_case contract | Profile audit findings and metadata. |
 | `dry_run_diagnostics.json`, `diagnostics.json`, `preflight_report.json` | Mixed compatibility artifact | Snake_case envelopes; embedded runtime/backend detail dictionaries may preserve external properties. |
 | `result_validation.json`, `result_validation_batch.json` | Mixed compatibility artifact | Snake_case validation envelopes; checks can include values derived from the legacy result schema. |

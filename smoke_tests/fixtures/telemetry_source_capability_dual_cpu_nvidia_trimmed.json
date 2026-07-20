@@ -202,6 +202,8 @@
     }
   },
   "telemetry_source_map": {
+    "contract_id": "linux_validation_suite.telemetry_source_map",
+    "contract_version": 1,
     "fields": {
       "cpu_clock_mhz": {
         "available": true,
@@ -401,6 +403,7 @@
         "vendor": "NVIDIA"
       }
     ],
+    "kind": "telemetry_source_map",
     "purpose": "Maps raw_telemetry.csv field names to hardware telemetry sources.",
     "version": 1
   }

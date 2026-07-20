@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from Modules.lvs_core import JsonStore
+from Modules.lvs_output_contract_identity import (
+    RUN_MANIFEST_CONTRACT_ID,
+    RUN_MANIFEST_KIND,
+    TELEMETRY_SOURCE_MAP_CONTRACT_ID,
+    TELEMETRY_SOURCE_MAP_KIND,
+    stamp_contract_identity,
+)
 from Modules.lvs_run_finalization import finalize_run_stage_windows
 
 
@@ -71,11 +78,22 @@ def write_final_run_artifacts(
     manifest_payload["events"] = run_all_events
     manifest_payload["warning_events"] = run_warning_events
     manifest_payload["error_events"] = run_error_events
+    stamp_contract_identity(
+        manifest_payload,
+        contract_id=RUN_MANIFEST_CONTRACT_ID,
+        kind=RUN_MANIFEST_KIND,
+    )
     JsonStore.write(run_dir / "run_manifest.json", manifest_payload)
 
     if keep_raw_telemetry:
         telemetry.write_csv(run_dir / "raw_telemetry.csv")
-        JsonStore.write(run_dir / "telemetry_source_map.json", telemetry.source_map())
+        source_map = telemetry.source_map()
+        stamp_contract_identity(
+            source_map,
+            contract_id=TELEMETRY_SOURCE_MAP_CONTRACT_ID,
+            kind=TELEMETRY_SOURCE_MAP_KIND,
+        )
+        JsonStore.write(run_dir / "telemetry_source_map.json", source_map)
 
     parser_output = segment_parser.summarize(
         stage_windows,

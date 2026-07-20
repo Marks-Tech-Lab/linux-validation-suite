@@ -9,6 +9,11 @@ from typing import Any, Callable, Dict, Optional
 
 from .lvs_core import JsonStore, now_local_iso
 from .lvs_dependency_report_text import dependency_check_summary_text
+from .lvs_output_contract_identity import (
+    DEPENDENCY_CHECK_CONTRACT_ID,
+    DEPENDENCY_CHECK_KIND,
+    stamp_contract_identity,
+)
 
 
 def new_report_dir(results_dir: Path | str, suffix: str) -> Path:
@@ -26,6 +31,11 @@ def save_dependency_check_report(
 ) -> Path:
     report_dir = new_report_dir(results_dir, "Dependency_Check")
     saved_payload = dict(payload)
+    stamp_contract_identity(
+        saved_payload,
+        contract_id=DEPENDENCY_CHECK_CONTRACT_ID,
+        kind=DEPENDENCY_CHECK_KIND,
+    )
     saved_payload["ended"] = now_local_iso()
     saved_payload["result"] = "Saved"
     JsonStore.write(report_dir / "dependency_check.json", saved_payload)
