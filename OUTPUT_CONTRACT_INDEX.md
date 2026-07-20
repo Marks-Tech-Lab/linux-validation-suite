@@ -253,9 +253,17 @@ removal requires migration/version notes and the coordinated breaking milestone.
 | `percentage_used` | `storage_health` | Preserve as compatibility duplicate of `wear_percent_used` | Removal, if approved, requires a versioned migration note. |
 | Existing `lvs.*` contract IDs | Storage Benchmark artifacts | Stable namespace exception; not deprecated | Do not rename; use `linux_validation_suite.*` for future public contracts. |
 
+## Phase 2A Contract Identities (Completed)
+
+Phase 2A added `contract_id`, `contract_version`, and `kind` to
+`run_manifest.json`, `dependency_check.json`, and `telemetry_source_map.json`.
+It did not rename existing fields, remove aliases, or change
+`parsed_results_custom.json`.
+
 ## Future Canonical Parsed-Result Milestone
 
-The breaking cleanup is deferred, not abandoned. When it is scheduled:
+Phase 1 clarification and Phase 2A identity work are complete. The remaining
+coordinated canonical parsed-result migration is deferred. When it is scheduled:
 
 - The canonical parsed-result filename becomes `parsed_results.json`.
 - `parsed_results_custom.json` is treated as the old OCCT/custom

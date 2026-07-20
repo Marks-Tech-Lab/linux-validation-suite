@@ -22,6 +22,11 @@ with `main` as the published branch. Alpha releases are published as
 pre-releases. The current release is `v0.2.0-alpha`, focused on Storage Health
 and Storage Benchmark.
 
+The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
+baseline. On `main` after that tag, Phase 1 contract clarifications and Phase 2A
+artifact identities are complete. See [ROADMAP.md](ROADMAP.md) for completed,
+deferred, and undecided project status.
+
 Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
 intended for early validation and feedback; hardware-sensitive and experimental
 areas are identified below.
@@ -270,11 +275,11 @@ Future hardware validation modules are TBD. Future work may include additional
 workload modules and hardware-specific validation flows, but they are not
 committed release scope.
 
-A breaking output-schema stabilization milestone is deferred, not abandoned.
-Its future canonical parsed-result target is `parsed_results.json`, while the
-existing `parsed_results_custom.json` behavior remains unchanged until that
-coordinated migration. New feature fields must already follow the forward-only
-snake_case and semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
+Phase 1 contract clarification and Phase 2A artifact identity work are complete.
+The coordinated canonical `parsed_results.json` migration remains deferred;
+`parsed_results_custom.json` and its compatibility aliases remain unchanged.
+New feature fields must continue to follow the forward-only snake_case and
+semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
 
 ## Release Notes — v0.2.0-alpha
 

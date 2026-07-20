@@ -46,13 +46,18 @@ Run flow starts with profile selection and setup, then moves through preflight, 
 - Preflight and readiness: `lvs_run_preflight.py`, profile readiness services, dependency report services
 - Launch and process execution: `lvs_run_launch.py`, `lvs_run_executor.py`, `lvs_run_flow.py`
 - Stage orchestration: `lvs_validation_orchestrator.py`, `lvs_run_orchestration.py`, `lvs_run_stage_loop.py`, `lvs_stage_*`
+- Storage Benchmark service and stage integration: `lvs_service_storage_benchmark.py`, `lvs_storage_benchmark_stage.py`, `lvs_storage_benchmark_*`
 - Completion and verdicts: `lvs_run_completion.py`, `lvs_run_finalization.py`, `lvs_run_verdict.py`, `lvs_run_artifacts.py`, `lvs_post_run.py`
 
 The current run setup split is a stable boundary. Future work here should focus on fixture coverage and contract tests, not further small-file extraction.
 
 ## Report, Export, and Result Flow
 
-This is one of the remaining high-value areas because it defines what downstream tools, legacy importer compatibility, and QA automation consume.
+Report, export, and result handling remains contract-sensitive because it
+defines what downstream tools, legacy importer compatibility, and QA automation
+consume. The artifact classification, forward-only casing/unit policy, Phase 1
+clarifications, and Phase 2A identities are complete; the coordinated canonical
+parsed-result migration remains deferred.
 
 - Segment parsing: `lvs_segment_parser.py`, `lvs_segment_parser_services.py`, `lvs_segment_*`
 - Compatibility export: `lvs_compat_exporter.py`, `lvs_compat_export_*`, `lvs_export_contract.py`
@@ -61,8 +66,10 @@ This is one of the remaining high-value areas because it defines what downstream
 - Result validation payloads and checks: `lvs_result_validation.py`, `lvs_result_validation_checks.py`, `lvs_result_validation_payload.py`
 - Result artifacts: `lvs_result_artifacts.py`, `lvs_result_artifact_*`
 - Dependency reports: `lvs_dependency_reports.py`, `lvs_dependency_payload.py`, `lvs_dependency_report_text.py`, `lvs_dependency_report_artifacts.py`
+- Contract identity stamping: `lvs_output_contract_identity.py`
 
-Primary risk here is not file size by itself. The risk is unclear output contracts: which fields are stable, which are compatibility-only, and which downstream consumers should use.
+Primary risk here is not file size by itself. It is preserving the documented
+contract boundaries and compatibility promises during future changes.
 
 Output casing is part of those contracts. New LVS-owned JSON uses `snake_case`,
 but `parsed_results_custom.json` and artifacts embedding it intentionally retain
@@ -85,6 +92,7 @@ Telemetry collection and system inventory feed raw evidence, parsed output, repo
 - GPU telemetry: `lvs_telemetry_gpu.py`, `lvs_telemetry_nvidia.py`, `lvs_telemetry_intel.py`
 - Memory and sensor telemetry: `lvs_telemetry_memory.py`, `lvs_telemetry_sensor_io.py`, `lvs_telemetry_sources.py`, `lvs_telemetry_samples.py`
 - Storage telemetry: `lvs_telemetry_storage_sources.py`
+- Storage health: `lvs_storage_health.py`
 - System inventory: `lvs_system_info.py`, `lvs_inventory_helpers.py`, `lvs_cpu_topology.py`, `lvs_cpu_power_limits.py`, `lvs_gpu_identity.py`, `lvs_storage_inventory.py`, `lvs_system_identity.py`
 
 Dense raw CSV is debug evidence and a fallback. Normal downstream consumers should use parsed report/export contracts where package-level CPU, GPU, storage, memory, and sensor summaries are promoted.
@@ -152,8 +160,9 @@ For report/export/telemetry contract changes, add focused fixture assertions. Sm
 
 ## Deferred Output Schema Stabilization Milestone
 
-Schedule a breaking output-schema cleanup as a future milestone, separate from
-near-term hardware feature work. The milestone must:
+The remaining breaking canonical parsed-result migration is deferred. It is
+separate from the completed Phase 1 clarification and Phase 2A identity work.
+When scheduled, the milestone must:
 
 - preserve the OCCT-style parsed-results layout and nesting, including the
   devices/tests/results and dynamic test/stage-label boundaries;
@@ -207,9 +216,8 @@ in field names, and unnormalized vendor evidence remains only inside explicit
 `throughput_mbps`, `throughput_gbps`, `rx_mbps`, `tx_mbps`, `mtu_bytes`,
 `pcie_link_speed_gt_s`, and `nic_temp_c`.
 
-## Future Work
+## Project Status And Roadmap
 
-Future hardware validation modules are TBD. Future work may include additional
-workload modules and hardware-specific validation flows. Existing CLI, TUI, QA,
-result, telemetry, and hardware-matrix boundaries should remain stable unless a
-concrete implementation requirement justifies a coordinated contract change.
+See [ROADMAP.md](ROADMAP.md) for completed work, deferred compatibility and
+hardware work, items needing user or product decisions, and intentionally
+legacy boundaries.

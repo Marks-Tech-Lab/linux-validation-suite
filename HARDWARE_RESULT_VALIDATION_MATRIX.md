@@ -96,8 +96,8 @@ for maintainer QA when stale local mappings should fail the run.
 
 ## Telemetry Privilege Evidence
 
-Telemetry privilege coverage should be identified from additive evidence in
-future artifacts:
+Telemetry privilege coverage is identified from additive evidence in current
+artifacts:
 
 - `run_manifest.json` -> `telemetry_capabilities.telemetry_privilege`
 - `telemetry_source_map.json` -> `telemetry_privilege`

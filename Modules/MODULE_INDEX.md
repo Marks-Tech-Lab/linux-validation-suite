@@ -104,6 +104,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_service_models.py` | Internal contract | Defines data models exchanged between services and frontends. |
 | `lvs_service_profiles.py`, `lvs_service_profile_readiness.py` | Internal | Implement profile operations and readiness payloads. |
 | `lvs_service_results.py`, `lvs_service_run.py`, `lvs_service_settings.py` | Internal | Implement result, run, and settings service methods. |
+| `lvs_service_storage_benchmark.py` | Internal service adapter | Exposes Storage Benchmark operations through the shared service layer. |
 | `lvs_runtime_services.py` | Internal composition root | Constructs and normalizes the backend service graph. |
 
 ### Profiles and settings
@@ -163,7 +164,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_system_info.py` | Internal composition | Collects the complete system hardware inventory. |
 | `lvs_system_identity.py`, `lvs_inventory_helpers.py` | Internal | Normalize system identity and raw inventory values. |
 | `lvs_cpu_topology.py`, `lvs_cpu_power_limits.py` | Internal | Summarize CPU topology and power-limit evidence. |
-| `lvs_storage_inventory.py`, `lvs_pcie_link.py` | Internal | Build storage inventory and trusted PCIe link evidence. |
+| `lvs_storage_inventory.py`, `lvs_storage_health.py`, `lvs_pcie_link.py` | Internal inventory contract | Build storage inventory, normalize read-only SMART/NVMe health evidence, and preserve trusted PCIe link evidence. |
 | `lvs_workload_runner.py` | Internal facade | Composes workload resolution and execution adapters. |
 | `lvs_workload_cpu_memory.py` | Internal adapter | Connects CPU and memory execution helpers to the workload runner. |
 | `lvs_workload_gpu_runtime.py`, `lvs_workload_gpu_workers.py` | Internal adapter | Connect GPU runtime resolution and worker policy to the runner. |
@@ -214,6 +215,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_compat_export_gpu.py`, `lvs_compat_export_hardware.py` | Compatibility contract | Build GPU and hardware compatibility sections. |
 | `lvs_compat_export_helpers.py`, `lvs_compat_export_finalizer.py` | Compatibility contract | Supply shared classification helpers and final composition. |
 | `lvs_export_contract.py` | Compatibility contract | Defines compatibility export contract identifiers and versions. |
+| `lvs_output_contract_identity.py` | Internal contract | Defines and stamps formal identity fields for run manifests, dependency checks, and telemetry source maps. |
 | `lvs_post_run.py` | Internal | Coordinates post-run metadata, wall wattage, and optional upload. |
 
 ### Diagnostics and support
