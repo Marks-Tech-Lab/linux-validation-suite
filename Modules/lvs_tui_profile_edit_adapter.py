@@ -96,7 +96,7 @@ class TuiProfileEditAdapterMixin:
             changed = self.service.apply_profile_storage_action(self.profile_edit, item.index, action)
             await self._show_profile_edit(f"Storage Benchmark stage {item.index + 1} updated: {changed}")
             return
-        if kind in {"storage_target_path", "storage_test_size", "storage_runs"} and item.index is not None:
+        if kind in {"storage_target_path", "storage_test_size", "storage_runs", "storage_max_used_percent"} and item.index is not None:
             self._begin_profile_stage_input(kind, stage_index=item.index)
             return
         if kind == "stage":

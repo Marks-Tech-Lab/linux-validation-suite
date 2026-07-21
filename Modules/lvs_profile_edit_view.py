@@ -127,6 +127,12 @@ def profile_stage_detail_lines(
         )
         if storage.target_path:
             lines.append(f"Storage target path: {storage.target_path}")
+        if storage.target_mode == "all_internal_non_root_low_occupancy":
+            lines.extend([
+                f"Storage maximum selected-filesystem usage: {storage.max_used_percent:.2f}%",
+                "Storage occupancy is measured from the selected writable filesystem/workspace, not raw disk contents.",
+                "Root/system drives are always excluded; unmounted filesystems on the same drive are not measured.",
+            ])
     if stage.modules.gpu_3d.enabled:
         gpu = stage.modules.gpu_3d
         preference = normalize_gpu_preference(gpu.backend_preference)
@@ -378,6 +384,11 @@ class ProfileEditPresenter:
                 f"Stage {stage_index + 1} Storage Benchmark runs (1-9)",
                 str(stage.modules.storage_benchmark.runs),
             ),
+            "storage_max_used_percent": (
+                "__profile_stage_storage_max_used_percent",
+                f"Stage {stage_index + 1} Storage Benchmark maximum selected-filesystem usage percent (0-100)",
+                str(stage.modules.storage_benchmark.max_used_percent),
+            ),
         }
         if normalized not in field_map:
             raise ValueError("")
@@ -389,6 +400,11 @@ class ProfileEditPresenter:
             raise ValueError("Selected stage does not have a memory workload.")
         if normalized.startswith("storage_") and not stage.modules.storage_benchmark.enabled:
             raise ValueError("Selected stage does not have a Storage Benchmark module.")
+        if (
+            normalized == "storage_max_used_percent"
+            and stage.modules.storage_benchmark.target_mode != "all_internal_non_root_low_occupancy"
+        ):
+            raise ValueError("Maximum used percent applies only to all_internal_non_root_low_occupancy.")
         pending, label, initial = field_map[normalized]
         return SetupInputSpec(field=pending, label=label, initial_value=initial)
 
@@ -451,12 +467,19 @@ class ProfileEditPresenter:
                         f"  Storage runs: {storage.runs}",
                         index=index,
                     ),
-                    ProfileEditItem(
+                ])
+                if storage.target_mode == "all_internal_non_root_low_occupancy":
+                    rows.append(ProfileEditItem(
+                        "storage_max_used_percent",
+                        f"  Maximum selected-filesystem usage: {storage.max_used_percent:.2f}%",
+                        index=index,
+                    ))
+                else:
+                    rows.append(ProfileEditItem(
                         "storage_allow_system",
                         f"  Allow system drive: {storage.allow_system_drive}",
                         index=index,
-                    ),
-                ])
+                    ))
         return rows
 
     def summary_text(self, edit: ProfileEditState) -> str:

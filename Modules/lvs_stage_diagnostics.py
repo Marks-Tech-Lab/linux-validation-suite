@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -36,9 +37,28 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         except (TypeError, ValueError):
             test_size_gib, runs, estimated_writes_gib = 0, 0, 0
             issues.append("Storage benchmark size/runs must be integers within the supported bounds.")
+        max_used_percent: float | None = None
+        if storage.target_mode == "all_internal_non_root_low_occupancy":
+            try:
+                if isinstance(storage.max_used_percent, bool) or not isinstance(
+                    storage.max_used_percent, (int, float)
+                ):
+                    raise ValueError
+                parsed_max_used = float(storage.max_used_percent)
+                if not math.isfinite(parsed_max_used) or not 0.0 <= parsed_max_used <= 100.0:
+                    raise ValueError
+                max_used_percent = parsed_max_used
+            except (TypeError, ValueError):
+                issues.append("Storage benchmark max_used_percent must be a finite number from 0.0 through 100.0.")
         target_preview: Dict[str, Any] = {}
         if storage.target_mode == "all_internal":
             warnings.append("All eligible internal drives will be benchmarked sequentially; no concurrent or staggered fio jobs are used.")
+        elif storage.target_mode == "all_internal_non_root_low_occupancy":
+            warnings.extend([
+                "Dynamically selected internal non-root drives will be benchmarked sequentially and rechecked before execution.",
+                "Occupancy is measured from the selected writable filesystem/workspace, not inferred from raw disk contents; unmounted filesystems on the same physical drive are not measured.",
+                "Root/system drives are always excluded in this target mode.",
+            ])
         if storage.allow_system_drive:
             warnings.append("This profile explicitly allows the root/system drive; the stage verdict will be at least WARN if it is used.")
         capability = {}
@@ -69,6 +89,45 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
                     warnings.append(
                         f"Storage target preview will skip {len(preview.skipped_targets)} drive(s); see diagnostics for reasons."
                     )
+            elif storage.target_mode == "all_internal_non_root_low_occupancy":
+                preview = resolver.discover_all_internal_non_root_low_occupancy(
+                    test_size_gib=test_size_gib,
+                    max_used_percent=max_used_percent if max_used_percent is not None else storage.max_used_percent,
+                )
+                target_preview = {
+                    "eligible_target_count": len(preview.targets),
+                    "max_used_percent": max_used_percent,
+                    "occupancy_basis": "selected_writable_filesystem_workspace",
+                    "included_targets": [
+                        {
+                            "device": item.physical_devices[0],
+                            "workspace": str(item.target_path),
+                            "filesystem": item.filesystem_type,
+                            "used_percent": item.used_percent_at_selection,
+                            "max_used_percent": max_used_percent,
+                            "free_bytes": item.free_bytes_at_selection,
+                            "warning": item.resolution_warning or None,
+                            "warning": item.resolution_warning or None,
+                        }
+                        for item in preview.targets
+                    ],
+                    "skipped_targets": [
+                        {
+                            "device": item.device,
+                            "reason": item.reason,
+                            "workspace": str(item.target_path) if item.target_path else None,
+                            "filesystem": item.filesystem_type or None,
+                            "used_percent": item.used_percent_at_selection,
+                            "max_used_percent": max_used_percent,
+                            "free_bytes": item.free_bytes_at_selection,
+                        }
+                        for item in preview.skipped_targets
+                    ],
+                }
+                if preview.skipped_targets:
+                    warnings.append(
+                        f"Storage target preview will skip {len(preview.skipped_targets)} drive(s); see diagnostics for reasons."
+                    )
             elif storage.target_path:
                 selected = resolver.resolve(
                     Path(storage.target_path),
@@ -83,7 +142,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         except Exception as exc:
             target_preview = {"eligible_target_count": 0, "preflight_warning": str(exc)}
             warnings.append(f"Storage target preview: {exc}")
-        return {
+        payload = {
             "stage_id": stage.id,
             "label": label,
             "type": stage.name,
@@ -109,6 +168,9 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             "warnings": warnings,
             "runnable": bool(stage.enabled and not issues),
         }
+        if storage.target_mode == "all_internal_non_root_low_occupancy":
+            payload["storage_benchmark"]["max_used_percent"] = max_used_percent
+        return payload
     gpu_backend_diagnostics = build_stage_gpu_backend_diagnostics(
         stage=stage,
         stage_gpu_target_mode=runner._stage_gpu_target_mode,

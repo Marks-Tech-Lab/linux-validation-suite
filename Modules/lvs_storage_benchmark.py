@@ -86,9 +86,52 @@ class StorageBenchmarkService:
             root_confirmation=root_confirmation,
         )
 
+    def discover_all_internal_non_root_low_occupancy(
+        self,
+        *,
+        test_size_gib: int,
+        max_used_percent: float = 3.0,
+    ) -> StorageBenchmarkBatchPlan:
+        return self.resolver.discover_all_internal_non_root_low_occupancy(
+            test_size_gib=test_size_gib,
+            max_used_percent=max_used_percent,
+        )
+
+    def revalidate_low_occupancy_target(
+        self,
+        target: StorageBenchmarkTarget,
+        *,
+        test_size_gib: int,
+        max_used_percent: float,
+    ) -> StorageBenchmarkTarget:
+        return self.resolver.revalidate_low_occupancy(
+            target,
+            test_size_gib=test_size_gib,
+            max_used_percent=max_used_percent,
+        )
+
     def run_all_internal(self, plan: StorageBenchmarkBatchPlan, **kwargs: Any) -> Path:
         from .lvs_storage_benchmark_batch import run_all_internal
         return run_all_internal(self, plan, **kwargs)
+
+    @staticmethod
+    def _selection_metadata(
+        target: StorageBenchmarkTarget,
+        *,
+        target_mode: str,
+        max_used_percent: float | None,
+    ) -> dict[str, Any]:
+        if target_mode != "all_internal_non_root_low_occupancy":
+            return {}
+        return {
+            "target_mode": target_mode,
+            "max_used_percent": max_used_percent,
+            "target_used_percent_at_selection": target.used_percent_at_selection,
+            "target_total_bytes_at_selection": target.total_bytes_at_selection,
+            "target_used_bytes_at_selection": target.used_bytes_at_selection,
+            "target_free_bytes_at_selection": target.free_bytes_at_selection,
+            "target_selection_phase": target.selection_phase or "execution_recheck",
+        }
 
     @staticmethod
     def estimated_maximum_written_gib(test_size_gib: int, runs: int) -> int:
@@ -284,11 +327,30 @@ class StorageBenchmarkService:
         cancel_event: threading.Event | None = None,
         progress: Callable[[dict[str, Any]], None] | None = None,
         result_dir: Path | None = None,
+        target_mode: str = "",
+        max_used_percent: float | None = None,
+        expected_target: StorageBenchmarkTarget | None = None,
     ) -> Path:
         if not confirmed:
             raise ValueError("storage benchmark requires explicit confirmation")
         profile = STORAGE_BENCHMARK_V1.with_overrides(test_size_gib=test_size_gib, runs=runs)
-        target = self.preflight(target_path, test_size_gib=test_size_gib, root_confirmation=root_confirmation)
+        if target_mode == "all_internal_non_root_low_occupancy":
+            threshold = self.resolver.validate_max_used_percent(
+                3.0 if max_used_percent is None else max_used_percent
+            )
+            candidate = expected_target or self.preflight(
+                target_path,
+                test_size_gib=test_size_gib,
+                root_confirmation=None,
+            )
+            target = self.revalidate_low_occupancy_target(
+                candidate,
+                test_size_gib=test_size_gib,
+                max_used_percent=threshold,
+            )
+            max_used_percent = threshold
+        else:
+            target = self.preflight(target_path, test_size_gib=test_size_gib, root_confirmation=root_confirmation)
         capability = self.capability()
         started = datetime.now(timezone.utc)
         stamp = started.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
@@ -319,6 +381,11 @@ class StorageBenchmarkService:
             "target_resolution_warning": target.resolution_warning or None,
             "artifacts": [],
         }
+        manifest.update(self._selection_metadata(
+            target,
+            target_mode=target_mode,
+            max_used_percent=max_used_percent,
+        ))
         self._write_json(result_dir / "storage_benchmark_manifest.json", manifest)
         warnings: list[str] = []
         errors: list[str] = []
@@ -505,6 +572,11 @@ class StorageBenchmarkService:
             "media_errors_delta": media_delta, "unsafe_shutdowns_delta": unsafe_delta,
             "rows": rows, "warnings": warnings, "errors": errors,
         }
+        result.update(self._selection_metadata(
+            target,
+            target_mode=target_mode,
+            max_used_percent=max_used_percent,
+        ))
         self._write_json(result_dir / "storage_benchmark.json", result)
         (result_dir / "storage_benchmark_summary.txt").write_text(self._summary(result), encoding="utf-8")
         manifest.update(status=status, ended=ended.isoformat(), verdict=verdict,

@@ -46,9 +46,10 @@ class RunCliAdapter:
         print("KDiskMark/CDM-style fio benchmark (file-backed, non-destructive)")
         print("1. Benchmark one selected target")
         print("2. Benchmark all eligible internal drives")
+        print("3. Benchmark internal non-root drives with low selected-filesystem occupancy")
         mode = self._input("Select mode [1]: ").strip() or "1"
         try:
-            if mode not in {"1", "2"}:
+            if mode not in {"1", "2", "3"}:
                 raise ValueError("invalid storage benchmark mode")
             profile_raw = self._input("Profile [1: KDiskMark/CDM-style fio benchmark]: ").strip()
             if profile_raw not in {"", "1"}:
@@ -59,8 +60,11 @@ class RunCliAdapter:
             runs = int(runs_raw or "5")
             if mode == "1":
                 self._storage_benchmark_one(test_size, runs)
-            else:
+            elif mode == "2":
                 self._storage_benchmark_all(test_size, runs)
+            else:
+                threshold_raw = self._input("Maximum selected-filesystem usage percent [3.0]: ").strip()
+                self._storage_benchmark_low_occupancy(test_size, runs, float(threshold_raw or "3.0"))
         except (OSError, ValueError) as exc:
             print(f"Storage benchmark unavailable: {exc}")
 
@@ -139,6 +143,75 @@ class RunCliAdapter:
             progress=lambda event: print(self._storage_benchmark_progress_text(event)),
         )
         print(f"All-internal storage benchmark result: {result_dir}")
+
+    def _storage_benchmark_low_occupancy(self, test_size: int, runs: int, max_used_percent: float) -> None:
+        service = self.storage_benchmark_service
+        plan = service.discover_all_internal_non_root_low_occupancy(
+            test_size_gib=test_size,
+            max_used_percent=max_used_percent,
+        )
+        per_drive_gib = service.estimated_maximum_written_gib(test_size, runs)
+        total_gib = per_drive_gib * len(plan.targets)
+        print("\nLow-occupancy internal non-root drive preview")
+        print(
+            "Occupancy is measured from the selected writable filesystem/workspace, not inferred from raw disk "
+            "contents. Unmounted filesystems on the same physical drive are not measured."
+        )
+        print("Root/system drives are always excluded. Selection is dynamic and rechecked before execution.")
+        print(f"Maximum selected-filesystem usage: {max_used_percent:.2f}%")
+        print(f"Drives to benchmark: {len(plan.targets)}")
+        for target in plan.targets:
+            model = plan.target_models.get(target.physical_devices[0], target.primary_block_name)
+            used = (
+                f"{target.used_percent_at_selection:.2f}%"
+                if target.used_percent_at_selection is not None else "unavailable"
+            )
+            free = (
+                f"{target.free_bytes_at_selection / 1024**3:.2f} GiB"
+                if target.free_bytes_at_selection is not None else "unavailable"
+            )
+            print(
+                f"- Include {target.physical_devices[0]} ({model}): workspace={target.target_path}, "
+                f"filesystem={target.filesystem_type or 'unknown'}, used={used}, "
+                f"threshold={max_used_percent:.2f}%, free={free}"
+            )
+            if target.resolution_warning:
+                print(f"  Warning: {target.resolution_warning}")
+        if plan.skipped_targets:
+            print("Skipped drives:")
+            for skipped in plan.skipped_targets:
+                details = []
+                if skipped.target_path:
+                    details.append(f"workspace={skipped.target_path}")
+                if skipped.filesystem_type:
+                    details.append(f"filesystem={skipped.filesystem_type}")
+                if skipped.used_percent_at_selection is not None:
+                    details.append(f"used={skipped.used_percent_at_selection:.2f}%")
+                    details.append(f"threshold={max_used_percent:.2f}%")
+                if skipped.free_bytes_at_selection is not None:
+                    details.append(f"free={skipped.free_bytes_at_selection / 1024**3:.2f} GiB")
+                suffix = f" ({', '.join(details)})" if details else ""
+                print(f"- Skip {skipped.device} ({skipped.model}): {skipped.reason}{suffix}")
+                if skipped.resolution_warning:
+                    print(f"  Warning: {skipped.resolution_warning}")
+        print(f"Estimated maximum writes per drive: {per_drive_gib} GiB")
+        print(f"Estimated total maximum writes: {total_gib} GiB")
+        if not plan.targets:
+            print("No targets currently satisfy the low-occupancy policy; fio will not run.")
+        confirmation = self._input("Type BENCHMARK ALL INTERNAL to begin, or Enter to cancel: ").strip()
+        if confirmation != "BENCHMARK ALL INTERNAL":
+            print("Benchmark cancelled.")
+            return
+        result_dir = service.run_all_internal(
+            plan,
+            test_size_gib=test_size,
+            runs=runs,
+            confirmation=confirmation,
+            target_mode="all_internal_non_root_low_occupancy",
+            max_used_percent=max_used_percent,
+            progress=lambda event: print(self._storage_benchmark_progress_text(event)),
+        )
+        print(f"Low-occupancy storage benchmark result: {result_dir}")
 
     @staticmethod
     def _storage_benchmark_progress_text(event: dict[str, Any]) -> str:

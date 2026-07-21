@@ -70,6 +70,7 @@ class ModuleStorageBenchmark:
     test_size_gib: int = 1
     runs: int = 5
     allow_system_drive: bool = False
+    max_used_percent: float = 3.0
 
 
 @dataclass

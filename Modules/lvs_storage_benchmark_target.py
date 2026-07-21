@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import shutil
 from dataclasses import dataclass, replace
@@ -44,6 +45,11 @@ class StorageBenchmarkTarget:
     filesystem_policy: str = "supported_direct_io"
     mapping_source: str = "sys_dev_block"
     resolution_warning: str = ""
+    used_percent_at_selection: float | None = None
+    total_bytes_at_selection: int | None = None
+    used_bytes_at_selection: int | None = None
+    free_bytes_at_selection: int | None = None
+    selection_phase: str = ""
 
     @property
     def primary_block_name(self) -> str:
@@ -56,6 +62,17 @@ class StorageBenchmarkSkippedTarget:
     model: str
     reason: str
     eligible_internal: bool
+    target_path: Path | None = None
+    filesystem_type: str = ""
+    filesystem_policy: str = ""
+    is_cow: bool | None = None
+    mapping_source: str = ""
+    resolution_warning: str = ""
+    used_percent_at_selection: float | None = None
+    total_bytes_at_selection: int | None = None
+    used_bytes_at_selection: int | None = None
+    free_bytes_at_selection: int | None = None
+    selection_phase: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +81,14 @@ class StorageBenchmarkBatchPlan:
     target_models: dict[str, str]
     skipped_targets: tuple[StorageBenchmarkSkippedTarget, ...]
     root_confirmation_required: bool = False
+
+
+class LowOccupancyTargetIneligible(ValueError):
+    """A safely resolved target no longer satisfies low-occupancy policy."""
+
+    def __init__(self, message: str, target: StorageBenchmarkTarget | None = None) -> None:
+        super().__init__(message)
+        self.target = target
 
 
 def _unescape_mount(value: str) -> str:
@@ -302,16 +327,112 @@ class StorageTargetResolver:
                 continue
         return leaves
 
+    @staticmethod
+    def validate_max_used_percent(value: Any) -> float:
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("max_used_percent must be a finite number from 0.0 through 100.0") from exc
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 100.0:
+            raise ValueError("max_used_percent must be a finite number from 0.0 through 100.0")
+        return threshold
+
+    @staticmethod
+    def _required_free_bytes(test_size_gib: int) -> int:
+        size_bytes = int(test_size_gib) * GIB
+        return 2 * size_bytes + max(2 * GIB, size_bytes)
+
+    def _occupancy_target(
+        self,
+        target: StorageBenchmarkTarget,
+        *,
+        test_size_gib: int,
+        max_used_percent: float,
+        selection_phase: str,
+        refresh_usage: bool,
+    ) -> StorageBenchmarkTarget:
+        threshold = self.validate_max_used_percent(max_used_percent)
+        if refresh_usage:
+            try:
+                usage = self.disk_usage(target.target_path)
+            except Exception as exc:
+                raise LowOccupancyTargetIneligible(
+                    f"selected filesystem usage could not be measured safely: {exc}", target
+                ) from exc
+            total_bytes = int(usage.total)
+            used_bytes = int(usage.used)
+            free_bytes = int(usage.free)
+        else:
+            total_bytes = int(target.total_bytes_at_selection or 0)
+            used_bytes = int(target.used_bytes_at_selection or 0)
+            free_bytes = int(target.free_bytes_at_selection if target.free_bytes_at_selection is not None else target.free_bytes)
+        if total_bytes <= 0:
+            raise LowOccupancyTargetIneligible(
+                "selected filesystem reports zero or invalid total capacity", target
+            )
+        used_percent = 100.0 * used_bytes / total_bytes
+        measured = replace(
+            target,
+            free_bytes=free_bytes,
+            used_percent_at_selection=used_percent,
+            total_bytes_at_selection=total_bytes,
+            used_bytes_at_selection=used_bytes,
+            free_bytes_at_selection=free_bytes,
+            selection_phase=selection_phase,
+        )
+        if used_percent > threshold:
+            raise LowOccupancyTargetIneligible(
+                f"selected filesystem usage {used_percent:.2f}% exceeds configured maximum {threshold:.2f}%",
+                measured,
+            )
+        required = self._required_free_bytes(test_size_gib)
+        if free_bytes < required:
+            raise LowOccupancyTargetIneligible(
+                f"insufficient free space: {required} bytes required, {free_bytes} bytes available",
+                measured,
+            )
+        return measured
+
+    def revalidate_low_occupancy(
+        self,
+        target: StorageBenchmarkTarget,
+        *,
+        test_size_gib: int,
+        max_used_percent: float,
+    ) -> StorageBenchmarkTarget:
+        self.revalidate(target)
+        records = parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
+        physical_names = {Path(device).name for device in target.physical_devices}
+        if target.is_system_drive or physical_names & self._system_leaves(records):
+            raise LowOccupancyTargetIneligible(
+                "root/system drive is always excluded by all_internal_non_root_low_occupancy",
+                target,
+            )
+        return self._occupancy_target(
+            target,
+            test_size_gib=test_size_gib,
+            max_used_percent=max_used_percent,
+            selection_phase="execution_recheck",
+            refresh_usage=True,
+        )
+
     def discover_all_eligible(
         self,
         *,
         test_size_gib: int,
         root_confirmation: str | None = None,
+        max_used_percent: float | None = None,
+        exclude_system_drives: bool = False,
     ) -> StorageBenchmarkBatchPlan:
         """Discover one deterministic safe mounted directory per internal drive."""
         if not 1 <= int(test_size_gib) <= MAX_TEST_SIZE_GIB:
             raise ValueError("test size must be between 1 and 8 GiB")
         records = parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
+        threshold = (
+            self.validate_max_used_percent(max_used_percent)
+            if max_used_percent is not None else None
+        )
+        system_leaves = self._system_leaves(records) if exclude_system_drives else set()
         mounts_by_leaf: dict[str, list[MountRecord]] = {}
         ambiguous_by_leaf: dict[str, list[str]] = {}
         for record in records:
@@ -338,6 +459,15 @@ class StorageTargetResolver:
                 self._validate_leaf(name)
             except ValueError as exc:
                 skipped.append(StorageBenchmarkSkippedTarget(device, model, str(exc), False))
+                continue
+            if name in system_leaves:
+                skipped.append(StorageBenchmarkSkippedTarget(
+                    device,
+                    model,
+                    "root/system drive is always excluded by all_internal_non_root_low_occupancy",
+                    True,
+                    selection_phase="discovery",
+                ))
                 continue
             candidates = mounts_by_leaf.get(name, [])
             if not candidates:
@@ -368,13 +498,69 @@ class StorageTargetResolver:
                 target = self.resolve(
                     selected_path,
                     test_size_gib=test_size_gib,
-                    root_confirmation=root_confirmation,
+                    root_confirmation=None if exclude_system_drives else root_confirmation,
+                    check_free_space=threshold is None,
                 )
+            except OSError as exc:
+                if threshold is None:
+                    raise
+                skipped.append(StorageBenchmarkSkippedTarget(
+                    device=device,
+                    model=model,
+                    reason=f"selected filesystem usage could not be measured safely: {exc}",
+                    eligible_internal=True,
+                    target_path=selected_path,
+                    filesystem_type=selected.filesystem.lower(),
+                    selection_phase="discovery",
+                ))
+                continue
             except ValueError as exc:
                 if "BENCHMARK ROOT" in str(exc):
                     root_required = True
                 skipped.append(StorageBenchmarkSkippedTarget(device, model, str(exc), True))
                 continue
+            except Exception as exc:
+                if threshold is None:
+                    raise
+                skipped.append(StorageBenchmarkSkippedTarget(
+                    device=device,
+                    model=model,
+                    reason=f"selected filesystem usage could not be measured safely: {exc}",
+                    eligible_internal=True,
+                    target_path=selected_path,
+                    filesystem_type=selected.filesystem.lower(),
+                    selection_phase="discovery",
+                ))
+                continue
+            if threshold is not None:
+                try:
+                    target = self._occupancy_target(
+                        target,
+                        test_size_gib=test_size_gib,
+                        max_used_percent=threshold,
+                        selection_phase="discovery",
+                        refresh_usage=False,
+                    )
+                except LowOccupancyTargetIneligible as exc:
+                    measured = exc.target or target
+                    skipped.append(StorageBenchmarkSkippedTarget(
+                        device=device,
+                        model=model,
+                        reason=str(exc),
+                        eligible_internal=True,
+                        target_path=measured.target_path,
+                        filesystem_type=measured.filesystem_type,
+                        filesystem_policy=measured.filesystem_policy,
+                        is_cow=measured.is_cow,
+                        mapping_source=measured.mapping_source,
+                        resolution_warning=measured.resolution_warning,
+                        used_percent_at_selection=measured.used_percent_at_selection,
+                        total_bytes_at_selection=measured.total_bytes_at_selection,
+                        used_bytes_at_selection=measured.used_bytes_at_selection,
+                        free_bytes_at_selection=measured.free_bytes_at_selection,
+                        selection_phase="discovery",
+                    ))
+                    continue
             selection_warnings: list[str] = []
             if workspace_source != "mount_point":
                 selection_warnings.append(
@@ -404,12 +590,25 @@ class StorageTargetResolver:
             root_confirmation_required=root_required,
         )
 
+    def discover_all_internal_non_root_low_occupancy(
+        self,
+        *,
+        test_size_gib: int,
+        max_used_percent: float = 3.0,
+    ) -> StorageBenchmarkBatchPlan:
+        return self.discover_all_eligible(
+            test_size_gib=test_size_gib,
+            max_used_percent=max_used_percent,
+            exclude_system_drives=True,
+        )
+
     def resolve(
         self,
         selected_path: Path,
         *,
         test_size_gib: int,
         root_confirmation: str | None = None,
+        check_free_space: bool = True,
     ) -> StorageBenchmarkTarget:
         if str(selected_path).startswith("/dev/"):
             raise ValueError("raw block-device paths are never accepted")
@@ -431,8 +630,8 @@ class StorageTargetResolver:
         self._validate_leaf(leaves[0])
         usage = self.disk_usage(path)
         size_bytes = int(test_size_gib) * GIB
-        required = 2 * size_bytes + max(2 * GIB, size_bytes)
-        if usage.free < required:
+        required = self._required_free_bytes(test_size_gib)
+        if check_free_space and usage.free < required:
             raise ValueError(f"insufficient free space: {required} bytes required")
         records = parse_mountinfo(self.mountinfo_path.read_text(encoding="utf-8", errors="replace"))
         is_system = mount.mount_point == Path("/") or bool(set(leaves) & self._system_leaves(records))
@@ -455,6 +654,10 @@ class StorageTargetResolver:
             filesystem_policy=filesystem_policy,
             mapping_source=mapping_source,
             resolution_warning=resolution_warning,
+            used_percent_at_selection=(100.0 * int(usage.used) / int(usage.total)) if int(usage.total) > 0 else None,
+            total_bytes_at_selection=int(usage.total),
+            used_bytes_at_selection=int(usage.used),
+            free_bytes_at_selection=int(usage.free),
         )
 
     def revalidate(self, target: StorageBenchmarkTarget) -> None:

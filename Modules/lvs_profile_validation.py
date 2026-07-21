@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
@@ -50,7 +51,11 @@ class ProfileValidator:
             if storage.enabled:
                 if storage.profile_id != "storage_kdiskmark_cdm_style_v1":
                     errors.append(f"{stage_ref} has unsupported storage_benchmark.profile_id='{storage.profile_id}'")
-                if storage.target_mode not in {"selected_target", "all_internal"}:
+                if storage.target_mode not in {
+                    "selected_target",
+                    "all_internal",
+                    "all_internal_non_root_low_occupancy",
+                }:
                     errors.append(f"{stage_ref} has invalid storage_benchmark.target_mode='{storage.target_mode}'")
                 if storage.target_mode == "selected_target" and not str(storage.target_path or "").strip():
                     errors.append(f"{stage_ref} selected_target requires storage_benchmark.target_path")
@@ -71,7 +76,31 @@ class ProfileValidator:
                 if storage.target_mode == "all_internal":
                     warnings.append(f"{stage_ref} benchmarks eligible internal drives sequentially")
                 if storage.allow_system_drive:
-                    warnings.append(f"{stage_ref} explicitly allows benchmarking the root/system drive")
+                    if storage.target_mode == "all_internal_non_root_low_occupancy":
+                        errors.append(
+                            f"{stage_ref} all_internal_non_root_low_occupancy requires "
+                            "storage_benchmark.allow_system_drive=false"
+                        )
+                    else:
+                        warnings.append(f"{stage_ref} explicitly allows benchmarking the root/system drive")
+                if storage.target_mode == "all_internal_non_root_low_occupancy":
+                    try:
+                        if isinstance(storage.max_used_percent, bool) or not isinstance(
+                            storage.max_used_percent, (int, float)
+                        ):
+                            raise ValueError
+                        max_used_percent = float(storage.max_used_percent)
+                        max_used_valid = math.isfinite(max_used_percent) and 0.0 <= max_used_percent <= 100.0
+                    except (TypeError, ValueError):
+                        max_used_valid = False
+                    if not max_used_valid:
+                        errors.append(
+                            f"{stage_ref} storage_benchmark.max_used_percent must be a finite number "
+                            "from 0.0 through 100.0"
+                        )
+                    warnings.append(
+                        f"{stage_ref} dynamically selects non-root internal drives using selected-filesystem occupancy"
+                    )
 
             module_names = self._enabled_module_names(stage)
             if stage.enabled:

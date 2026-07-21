@@ -152,8 +152,14 @@ class ProfileCliEditor:
         if test_type == "Linpack":
             return host.profile_editor.build_stage_modules(test_type)
         if test_type == "Storage Benchmark":
-            mode_raw = host._input("Target mode [1 selected target / 2 all internal, default 2]: ").strip()
-            target_mode = "selected_target" if mode_raw == "1" else "all_internal"
+            mode_raw = host._input(
+                "Target mode [1 selected target / 2 all internal / "
+                "3 all internal non-root low occupancy, default 2]: "
+            ).strip()
+            target_mode = {
+                "1": "selected_target",
+                "3": "all_internal_non_root_low_occupancy",
+            }.get(mode_raw, "all_internal")
             target_path = host._input("Writable target directory: ").strip() if target_mode == "selected_target" else ""
             try:
                 test_size_gib = max(1, min(8, int(host._input("Test size GiB [1]: ").strip() or "1")))
@@ -163,7 +169,21 @@ class ProfileCliEditor:
                 runs = max(1, min(9, int(host._input("Runs [5]: ").strip() or "5")))
             except Exception:
                 runs = 5
-            allow_system = host._input("Allow root/system drive? [y/N]: ").strip().lower() == "y"
+            max_used_percent = 3.0
+            if target_mode == "all_internal_non_root_low_occupancy":
+                try:
+                    max_used_percent = max(0.0, min(100.0, float(
+                        host._input("Maximum selected-filesystem usage percent [3.0]: ").strip() or "3.0"
+                    )))
+                except Exception:
+                    max_used_percent = 3.0
+                print(
+                    "Occupancy is measured from the selected writable filesystem/workspace, not raw disk contents. "
+                    "Root/system drives are always excluded, and unmounted filesystems are not measured."
+                )
+            allow_system = False
+            if target_mode != "all_internal_non_root_low_occupancy":
+                allow_system = host._input("Allow root/system drive? [y/N]: ").strip().lower() == "y"
             return StageModules(storage_benchmark=ModuleStorageBenchmark(
                 enabled=True,
                 target_mode=target_mode,
@@ -171,6 +191,7 @@ class ProfileCliEditor:
                 test_size_gib=test_size_gib,
                 runs=runs,
                 allow_system_drive=allow_system,
+                max_used_percent=max_used_percent,
             ))
         print("Combined builder")
         cpu_enabled = host._input("Include CPU? [y/N]: ").strip().lower() == "y"
@@ -487,12 +508,16 @@ class ProfileCliEditor:
         while True:
             current_label = labels[stage_index]
             print(f"\nStage {stage_index + 1}: {current_label}")
-            for index, action in enumerate(host.profile_edit_controller.STAGE_ACTIONS, start=1):
+            available_actions = host.profile_edit_controller.stage_actions(stage)
+            for index, action in enumerate(available_actions, start=1):
                 suffix = ""
                 if action.key == "strict":
                     suffix = f" ({host._strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)})"
                 print(f"{index}. {action.label}{suffix}")
-            action_spec = host.profile_edit_controller.stage_action(host._input("Select: ").strip())
+            action_spec = host.profile_edit_controller.stage_action(
+                host._input("Select: ").strip(),
+                available_actions,
+            )
             if action_spec is None:
                 continue
             action = action_spec.key
@@ -582,6 +607,12 @@ class ProfileCliEditor:
         if action == "storage_runs":
             value = host._input(
                 f"Storage benchmark runs 1-9 [{stage.modules.storage_benchmark.runs}]: "
+            ).strip()
+            return bool(value), value
+        if action == "storage_max_used_percent":
+            value = host._input(
+                "Storage maximum selected-filesystem usage percent 0-100 "
+                f"[{stage.modules.storage_benchmark.max_used_percent}]: "
             ).strip()
             return bool(value), value
         if action == "storage_allow_system":

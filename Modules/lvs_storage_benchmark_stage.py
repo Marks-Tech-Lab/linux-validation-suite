@@ -146,12 +146,20 @@ def run_storage_benchmark_stage(
         progress(f"{display_name} | completion-based | {phase}{device}{row}{repeat}")
 
     try:
-        if storage.target_mode == "all_internal":
+        if storage.target_mode in {"all_internal", "all_internal_non_root_low_occupancy"}:
+            low_occupancy = storage.target_mode == "all_internal_non_root_low_occupancy"
             root_confirmation = "BENCHMARK ROOT" if storage.allow_system_drive else None
-            plan = service.discover_all_eligible(
-                test_size_gib=storage.test_size_gib,
-                root_confirmation=root_confirmation,
-            )
+            if low_occupancy:
+                root_confirmation = None
+                plan = service.discover_all_internal_non_root_low_occupancy(
+                    test_size_gib=storage.test_size_gib,
+                    max_used_percent=storage.max_used_percent,
+                )
+            else:
+                plan = service.discover_all_eligible(
+                    test_size_gib=storage.test_size_gib,
+                    root_confirmation=root_confirmation,
+                )
             result_path = service.run_all_internal(
                 plan,
                 test_size_gib=storage.test_size_gib,
@@ -162,6 +170,8 @@ def run_storage_benchmark_stage(
                 progress=emit,
                 aggregate_dir=output_root,
                 embed_per_drive_results=True,
+                target_mode=storage.target_mode if low_occupancy else "",
+                max_used_percent=storage.max_used_percent if low_occupancy else None,
             )
             payload = _read_json(result_path / "storage_benchmark_all_internal.json")
         else:
@@ -229,6 +239,8 @@ def run_storage_benchmark_stage(
         "warnings": warnings,
         "errors": failures,
     }
+    if storage.target_mode == "all_internal_non_root_low_occupancy":
+        summary["max_used_percent"] = storage.max_used_percent
     stage_plan.update({
         "execution_mode": "completion",
         "duration_seconds": None,

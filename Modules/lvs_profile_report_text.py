@@ -216,6 +216,12 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
                 f"runs={storage.get('runs')}, estimated_max_writes={storage.get('estimated_max_writes_gib_per_drive')} GiB/drive, "
                 f"allow_system_drive={bool(storage.get('allow_system_drive'))}"
             )
+            if storage.get("target_mode") == "all_internal_non_root_low_occupancy":
+                lines.append(
+                    "  storage selection policy: "
+                    f"selected-filesystem used <= {float(storage.get('max_used_percent') or 0):.2f}%; "
+                    "root/system drives excluded; unmounted filesystems are not measured"
+                )
             preview = storage.get("target_preview") or {}
             if preview:
                 lines.append(
@@ -224,6 +230,28 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
                     f"skipped={len(preview.get('skipped_targets') or [])}"
                     + (f", warning={preview.get('preflight_warning')}" if preview.get("preflight_warning") else "")
                 )
+                for target in preview.get("included_targets") or []:
+                    free = target.get("free_bytes")
+                    free_text = f"{float(free) / 1024**3:.2f} GiB" if free is not None else "unavailable"
+                    used = target.get("used_percent")
+                    used_text = f"{float(used):.2f}%" if used is not None else "unavailable"
+                    lines.append(
+                        "    include "
+                        f"{target.get('device')}: workspace={target.get('workspace')}, "
+                        f"filesystem={target.get('filesystem') or 'unknown'}, used={used_text}, free={free_text}"
+                    )
+                    if target.get("warning"):
+                        lines.append(f"      warning: {target.get('warning')}")
+                for target in preview.get("skipped_targets") or []:
+                    used = target.get("used_percent")
+                    used_text = f", used={float(used):.2f}%" if used is not None else ""
+                    lines.append(
+                        "    skip "
+                        f"{target.get('device')}: {target.get('reason')}"
+                        f"{used_text}"
+                    )
+                    if target.get("warning"):
+                        lines.append(f"      warning: {target.get('warning')}")
         if {"gpu_3d", "vram"} & set(stage.get("workloads") or []):
             lines.extend(profile_execution_gpu_detail_lines(stage))
         commands = stage.get("commands") or []

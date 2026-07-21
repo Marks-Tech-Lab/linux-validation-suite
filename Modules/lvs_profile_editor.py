@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, List, Optional, Tuple
 
@@ -433,7 +434,18 @@ class ProfileEditor:
 
     def cycle_storage_target_mode(self, stage: StageConfig) -> str:
         storage = stage.modules.storage_benchmark
-        storage.target_mode = "selected_target" if storage.target_mode == "all_internal" else "all_internal"
+        modes = (
+            "all_internal",
+            "selected_target",
+            "all_internal_non_root_low_occupancy",
+        )
+        try:
+            index = modes.index(storage.target_mode)
+        except ValueError:
+            index = -1
+        storage.target_mode = modes[(index + 1) % len(modes)]
+        if storage.target_mode == "all_internal_non_root_low_occupancy":
+            storage.allow_system_drive = False
         return storage.target_mode
 
     def set_storage_target_path(self, stage: StageConfig, value: str) -> str:
@@ -448,8 +460,18 @@ class ProfileEditor:
         stage.modules.storage_benchmark.runs = self._clamp_int(value, 1, 9, 5)
         return stage.modules.storage_benchmark.runs
 
+    def set_storage_max_used_percent(self, stage: StageConfig, value: float) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("Storage Benchmark maximum used percent must be finite")
+        stage.modules.storage_benchmark.max_used_percent = max(0.0, min(100.0, parsed))
+        return stage.modules.storage_benchmark.max_used_percent
+
     def toggle_storage_allow_system_drive(self, stage: StageConfig) -> bool:
         storage = stage.modules.storage_benchmark
+        if storage.target_mode == "all_internal_non_root_low_occupancy":
+            storage.allow_system_drive = False
+            return False
         storage.allow_system_drive = not bool(storage.allow_system_drive)
         return storage.allow_system_drive
 

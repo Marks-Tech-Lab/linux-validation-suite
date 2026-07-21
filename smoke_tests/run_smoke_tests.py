@@ -1954,6 +1954,27 @@ def test_tui_profile_edit_adapter_helpers() -> None:
             assert_true(storage_stage.modules.storage_benchmark.allow_system_drive,
                         "TUI storage allow-system row toggles")
 
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_target_mode"]))
+            assert_equal(
+                storage_stage.modules.storage_benchmark.target_mode,
+                "all_internal_non_root_low_occupancy",
+                "TUI exposes low-occupancy target mode as the third mode",
+            )
+            assert_true(not storage_stage.modules.storage_benchmark.allow_system_drive,
+                        "TUI low-occupancy mode clears system-drive permission")
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            assert_true("storage_max_used_percent" in storage_rows and "storage_allow_system" not in storage_rows,
+                        "TUI shows threshold and hides system-drive toggle in low-occupancy mode")
+            await tui._activate_profile_edit_item(
+                tui.profile_edit_items.index(storage_rows["storage_max_used_percent"])
+            )
+            assert_equal(tui.pending_input_field, "__profile_stage_storage_max_used_percent",
+                         "TUI low-occupancy threshold opens its input prompt")
+            await tui._commit_profile_edit_input("__profile_stage_storage_max_used_percent", "2.5")
+            assert_equal(storage_stage.modules.storage_benchmark.max_used_percent, 2.5,
+                         "TUI commits the low-occupancy threshold")
+
             for kind, entered, expected_field in (
                 ("storage_target_path", "/safe/mounted/path", "__profile_stage_storage_target_path"),
                 ("storage_test_size", "99", "__profile_stage_storage_test_size"),
@@ -1985,7 +2006,12 @@ def test_tui_profile_edit_adapter_helpers() -> None:
             assert_true(saved_storage["enabled"], "TUI-authored profile JSON contains storage_benchmark")
             assert_equal(saved["stages"][1]["duration_seconds"], None,
                          "TUI-authored JSON retains null completion duration")
-            assert_equal(saved_storage["target_mode"], "selected_target", "TUI-authored JSON retains target mode")
+            assert_equal(saved_storage["target_mode"], "all_internal_non_root_low_occupancy",
+                         "TUI-authored JSON retains low-occupancy target mode")
+            assert_equal(saved_storage["max_used_percent"], 2.5,
+                         "TUI-authored JSON retains low-occupancy threshold")
+            assert_true(not saved_storage["allow_system_drive"],
+                        "TUI-authored low-occupancy JSON excludes system drives")
 
     asyncio.run(run_storage_authoring_check())
 
@@ -12824,6 +12850,25 @@ def test_storage_benchmark_profile_module_integration() -> None:
     assert_equal(cli_modules.storage_benchmark.test_size_gib, 1, "CLI profile authoring test size")
     assert_equal(cli_modules.storage_benchmark.runs, 5, "CLI profile authoring runs")
 
+    class FakeLowOccupancyProfileCliHost:
+        def __init__(self) -> None:
+            self.profile_editor = ProfileEditor()
+            self.inputs = iter(("3", "1", "5", "3.0"))
+
+        def _input(self, _prompt: str) -> str:
+            return next(self.inputs)
+
+    low_cli_modules = ProfileCliEditor(FakeLowOccupancyProfileCliHost()).build_stage_modules("Storage Benchmark")
+    assert_equal(
+        low_cli_modules.storage_benchmark.target_mode,
+        "all_internal_non_root_low_occupancy",
+        "CLI profile authoring exposes low-occupancy target mode",
+    )
+    assert_equal(low_cli_modules.storage_benchmark.max_used_percent, 3.0,
+                 "CLI profile authoring records low-occupancy threshold")
+    assert_true(not low_cli_modules.storage_benchmark.allow_system_drive,
+                "CLI low-occupancy authoring never enables system drives")
+
     with TemporaryDirectory(dir="/tmp") as temp_dir:
         root = Path(temp_dir)
         profile_path = root / "Storage Profile.json"
@@ -12851,6 +12896,8 @@ def test_storage_benchmark_profile_module_integration() -> None:
         stage = profile.stages[0]
         assert_equal(stage.duration_seconds, None, "completion profile JSON does not require duration_seconds")
         assert_equal(stage_execution_mode(stage), "completion", "storage stage execution mode")
+        assert_equal(stage.modules.storage_benchmark.max_used_percent, 3.0,
+                     "existing profile without max_used_percent loads with default")
         validation = ProfileValidator().validate(profile, ["Storage Benchmark"])
         assert_equal(validation["errors"], [], "storage-only completion stage validates")
         assert_true(any("sequentially" in item for item in validation["warnings"]),
@@ -12881,6 +12928,8 @@ def test_storage_benchmark_profile_module_integration() -> None:
         saved = json.loads(saved_path.read_text(encoding="utf-8"))
         assert_true("storage_benchmark" in saved["stages"][0]["modules"], "saved profile retains storage module")
         assert_equal(saved["stages"][0]["duration_seconds"], None, "saved completion stage has no fake duration")
+        assert_equal(saved["stages"][0]["modules"]["storage_benchmark"]["max_used_percent"], 3.0,
+                     "profile round-trip records additive default threshold")
 
         mixed = StageConfig(
             id="mixed",
@@ -12910,6 +12959,32 @@ def test_storage_benchmark_profile_module_integration() -> None:
             ValidationProfile(profile_name="Selected", stages=[editor_stage]), ["Storage Benchmark"]
         )
         assert_equal(selected_validation["errors"], [], "selected_target profile mode validates with a directory")
+
+        selected.target_mode = "all_internal_non_root_low_occupancy"
+        selected.target_path = ""
+        selected.allow_system_drive = False
+        selected.max_used_percent = 3.0
+        low_validation = ProfileValidator().validate(
+            ValidationProfile(profile_name="Low Occupancy", stages=[editor_stage]), ["Storage Benchmark"]
+        )
+        assert_equal(low_validation["errors"], [], "low-occupancy profile mode and threshold validate")
+        selected.allow_system_drive = True
+        root_allowed = ProfileValidator().validate(
+            ValidationProfile(profile_name="Low Occupancy", stages=[editor_stage]), ["Storage Benchmark"]
+        )
+        assert_true(any("allow_system_drive=false" in item for item in root_allowed["errors"]),
+                    "low-occupancy mode rejects allow_system_drive true")
+        selected.allow_system_drive = False
+        for invalid_threshold in (float("nan"), float("inf"), -0.01, 100.01, "3.0", "not-a-number", True):
+            selected.max_used_percent = invalid_threshold
+            invalid_validation = ProfileValidator().validate(
+                ValidationProfile(profile_name="Low Occupancy", stages=[editor_stage]), ["Storage Benchmark"]
+            )
+            assert_true(any("max_used_percent" in item for item in invalid_validation["errors"]),
+                        f"invalid low-occupancy threshold is rejected: {invalid_threshold}")
+        selected.max_used_percent = 3.0
+        selected.target_mode = "selected_target"
+        selected.target_path = "/safe/mounted/directory"
 
         class FakeProfileStorageService:
             def __init__(self, verdict: str = "WARN") -> None:
@@ -13122,6 +13197,13 @@ def test_storage_benchmark_cow_workspace_resolution() -> None:
         assert_equal([item.physical_devices for item in plan.targets], [("/dev/sda",)],
                      "all-internal discovery accepts exact single-leaf CoW workspace")
         assert_true(plan.targets[0].is_cow, "all-internal target records CoW status")
+        low_occupancy_plan = resolver.discover_all_internal_non_root_low_occupancy(
+            test_size_gib=1,
+            max_used_percent=3.0,
+        )
+        cow_skip = next(item for item in low_occupancy_plan.skipped_targets if item.device == "/dev/sda")
+        assert_true(cow_skip.is_cow and "copy-on-write" in cow_skip.resolution_warning,
+                    "occupancy-skipped Btrfs target retains CoW warning evidence")
 
         # A CoW filesystem spanning two physical leaves must remain rejected.
         (filesystem / "dm-1").symlink_to(dm1, target_is_directory=True)
@@ -13248,6 +13330,63 @@ def test_storage_benchmark_all_internal_discovery() -> None:
                      "multiple eligible drives discovered in deterministic order")
         assert_true(confirmed.targets[0].is_system_drive, "confirmed root drive marked system")
 
+        def low_occupancy_usage(path):
+            selected = Path(path)
+            if selected == target_sda:
+                return SimpleNamespace(total=100 * GIB, used=3 * GIB, free=97 * GIB)
+            if selected == target_c1:
+                return SimpleNamespace(total=100 * GIB, used=3 * GIB + 1, free=90 * GIB)
+            if selected == target_c2:
+                return SimpleNamespace(total=100 * GIB, used=1 * GIB, free=99 * GIB)
+            return SimpleNamespace(total=100 * GIB, used=1 * GIB, free=99 * GIB)
+
+        resolver.disk_usage = low_occupancy_usage
+        low_plan = resolver.discover_all_internal_non_root_low_occupancy(
+            test_size_gib=1,
+            max_used_percent=3.0,
+        )
+        assert_equal([target.physical_devices[0] for target in low_plan.targets], ["/dev/sda"],
+                     "exactly 3 percent is included and just over 3 percent is skipped")
+        low_reasons = {item.device: item.reason for item in low_plan.skipped_targets}
+        assert_true("always excluded" in low_reasons["/dev/nvme0n1"],
+                    "low-occupancy mode excludes root without confirmation")
+        assert_true("3.00% exceeds" in low_reasons["/dev/sdc"],
+                    "selected high-occupancy workspace is skipped")
+        sdc_skip = next(item for item in low_plan.skipped_targets if item.device == "/dev/sdc")
+        assert_equal(sdc_skip.target_path, target_c1,
+                     "lower-occupancy secondary filesystem is not selected opportunistically")
+        assert_equal(low_plan.targets[0].used_percent_at_selection, 3.0,
+                     "selection records unrounded occupancy computation")
+
+        resolver.disk_usage = lambda path: (
+            SimpleNamespace(total=100 * GIB, used=1 * GIB, free=3 * GIB)
+            if Path(path) == target_sda else low_occupancy_usage(path)
+        )
+        low_space = resolver.discover_all_internal_non_root_low_occupancy(test_size_gib=1)
+        low_space_reason = next(item.reason for item in low_space.skipped_targets if item.device == "/dev/sda")
+        assert_true("bytes required" in low_space_reason and "bytes available" in low_space_reason,
+                    "low occupancy still requires existing free-space margin")
+
+        resolver.disk_usage = lambda path: (
+            SimpleNamespace(total=0, used=0, free=0)
+            if Path(path) == target_sda else low_occupancy_usage(path)
+        )
+        invalid_total = resolver.discover_all_internal_non_root_low_occupancy(test_size_gib=1)
+        invalid_reason = next(item.reason for item in invalid_total.skipped_targets if item.device == "/dev/sda")
+        assert_true("zero or invalid total capacity" in invalid_reason,
+                    "zero filesystem capacity is skipped safely")
+
+        def failing_usage(path):
+            if Path(path) == target_sda:
+                raise OSError("statvfs unavailable")
+            return low_occupancy_usage(path)
+
+        resolver.disk_usage = failing_usage
+        usage_failure = resolver.discover_all_internal_non_root_low_occupancy(test_size_gib=1)
+        failure_reason = next(item.reason for item in usage_failure.skipped_targets if item.device == "/dev/sda")
+        assert_true("could not be measured safely" in failure_reason,
+                    "disk usage exceptions become explicit low-occupancy skips")
+
 
 def test_storage_benchmark_single_and_batch_artifacts() -> None:
     from Modules.lvs_storage_benchmark import StorageBenchmarkService
@@ -13255,7 +13394,8 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
     from Modules.lvs_result_artifact_inventory import ResultArtifactInventoryBuilder
     from Modules.lvs_result_report_adapters import list_result_entries, result_summary_text
     from Modules.lvs_storage_benchmark_target import (
-        StorageBenchmarkBatchPlan, StorageBenchmarkSkippedTarget, StorageBenchmarkTarget,
+        LowOccupancyTargetIneligible, StorageBenchmarkBatchPlan,
+        StorageBenchmarkSkippedTarget, StorageBenchmarkTarget,
     )
 
     class FakeResolver:
@@ -13267,6 +13407,22 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
 
         def revalidate(self, _target):
             return None
+
+        @staticmethod
+        def validate_max_used_percent(value):
+            return float(value)
+
+        def revalidate_low_occupancy(self, current, **_kwargs):
+            return StorageBenchmarkTarget(
+                current.target_path, current.mount_point, current.mount_source,
+                current.major_minor, current.physical_devices, False, 90 * 1024**3,
+                current.stat_device, filesystem_type="ext4",
+                used_percent_at_selection=2.0,
+                total_bytes_at_selection=100 * 1024**3,
+                used_bytes_at_selection=2 * 1024**3,
+                free_bytes_at_selection=90 * 1024**3,
+                selection_phase="execution_recheck",
+            )
 
     class EmptyTelemetry:
         def __init__(self, interval_seconds=5, **_kwargs):
@@ -13303,6 +13459,27 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
                     "normalized result records workspace filesystem attribution")
         assert_true("target_workspace_path" in single_manifest and "target_is_cow" in single_manifest,
                     "benchmark manifest records workspace and CoW status")
+        assert_true("target_mode" not in single_payload and "max_used_percent" not in single_payload,
+                    "existing selected-target artifact shape omits low-occupancy metadata")
+
+        low_single_dir = single_service.run(
+            target_path,
+            test_size_gib=1,
+            runs=1,
+            confirmed=True,
+            target_mode="all_internal_non_root_low_occupancy",
+            max_used_percent=3.0,
+            expected_target=target,
+        )
+        low_single_payload = json.loads((low_single_dir / "storage_benchmark.json").read_text(encoding="utf-8"))
+        low_single_manifest = json.loads((low_single_dir / "storage_benchmark_manifest.json").read_text(encoding="utf-8"))
+        for payload_name, payload in (("result", low_single_payload), ("manifest", low_single_manifest)):
+            assert_equal(payload["target_mode"], "all_internal_non_root_low_occupancy",
+                         f"low-occupancy per-drive {payload_name} records target mode")
+            assert_equal(payload["max_used_percent"], 3.0,
+                         f"low-occupancy per-drive {payload_name} records threshold")
+            assert_equal(payload["target_used_percent_at_selection"], 2.0,
+                         f"low-occupancy per-drive {payload_name} records occupancy evidence")
 
         session, token = single_service._make_session(target, 1)
         unexpected = session / "unexpected.txt"
@@ -13376,6 +13553,8 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
         aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
         assert_equal(aggregate["contract_id"], "lvs.storage_benchmark_batch", "batch contract id")
         assert_equal(aggregate["verdict"], "WARN", "warning/skipped batch verdict")
+        assert_true("target_mode" not in aggregate and "selection_policy" not in aggregate,
+                    "existing all-internal v1 aggregate shape omits low-occupancy metadata")
         assert_equal(batch_service.order, ["drive_a", "drive_b"], "batch executes targets sequentially")
         assert_equal(batch_service.max_active, 1, "batch never launches concurrent targets")
         assert_equal(len(aggregate["targets"][0].get("key_row_results", [])), 8, "batch key row results")
@@ -13417,6 +13596,81 @@ def test_storage_benchmark_single_and_batch_artifacts() -> None:
             raise AssertionError("batch accepted root drive without root confirmation")
         except ValueError:
             pass
+
+        low_root_service = FakeBatchService(root / "low_root_results")
+        low_root_dir = run_all_internal(
+            low_root_service,
+            root_plan,
+            test_size_gib=1,
+            runs=1,
+            confirmation="BENCHMARK ALL INTERNAL",
+            root_confirmation="BENCHMARK ROOT",
+            target_mode="all_internal_non_root_low_occupancy",
+            max_used_percent=3.0,
+        )
+        low_root_payload = json.loads(
+            (low_root_dir / "storage_benchmark_all_internal.json").read_text(encoding="utf-8")
+        )
+        assert_equal(low_root_service.order, [],
+                     "low-occupancy mode excludes root even when confirmation appears elsewhere")
+        assert_true("always excluded" in low_root_payload["targets"][0]["skipped_reason"],
+                    "low-occupancy root skip reason is explicit")
+
+        class OccupancyRoseService:
+            def __init__(self, results_dir: Path) -> None:
+                self.results_dir = results_dir
+                self.results_dir.mkdir()
+                self.run_calls = 0
+
+            @staticmethod
+            def estimated_maximum_written_gib(size, runs):
+                return size * (1 + 4 * runs)
+
+            @staticmethod
+            def _write_json(path, payload):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            def revalidate_low_occupancy_target(self, current, **_kwargs):
+                measured = StorageBenchmarkTarget(
+                    current.target_path, current.mount_point, current.mount_source,
+                    current.major_minor, current.physical_devices, False, 90 * 1024**3,
+                    current.stat_device, filesystem_type="ext4",
+                    used_percent_at_selection=4.0,
+                    total_bytes_at_selection=100 * 1024**3,
+                    used_bytes_at_selection=4 * 1024**3,
+                    free_bytes_at_selection=90 * 1024**3,
+                    selection_phase="execution_recheck",
+                )
+                raise LowOccupancyTargetIneligible(
+                    "selected filesystem usage 4.00% exceeds configured maximum 3.00%",
+                    measured,
+                )
+
+            def run(self, *_args, **_kwargs):
+                self.run_calls += 1
+                raise AssertionError("fio-backed run must not be invoked after occupancy rises")
+
+        occupancy_service = OccupancyRoseService(root / "occupancy_rise_results")
+        occupancy_dir = run_all_internal(
+            occupancy_service,
+            StorageBenchmarkBatchPlan((target_a,), {"/dev/sda": "Model A"}, ()),
+            test_size_gib=1,
+            runs=1,
+            confirmation="BENCHMARK ALL INTERNAL",
+            target_mode="all_internal_non_root_low_occupancy",
+            max_used_percent=3.0,
+        )
+        occupancy_payload = json.loads(
+            (occupancy_dir / "storage_benchmark_all_internal.json").read_text(encoding="utf-8")
+        )
+        assert_equal(occupancy_service.run_calls, 0,
+                     "preview-to-execution occupancy rise skips without invoking fio")
+        assert_equal((occupancy_payload["verdict"], occupancy_payload["status"]), ("WARN", "skipped"),
+                     "all targets becoming ineligible produces clear WARN/skipped outcome")
+        assert_equal(occupancy_payload["targets"][0]["target_used_percent_at_selection"], 4.0,
+                     "runtime skip records refreshed occupancy evidence")
+        assert_equal(occupancy_payload["max_used_percent"], 3.0,
+                     "batch aggregate records additive low-occupancy selection policy")
 
         cancel_event = threading.Event()
         cancel_service = FakeBatchService(root / "cancel_results", cancel_after_first=cancel_event)

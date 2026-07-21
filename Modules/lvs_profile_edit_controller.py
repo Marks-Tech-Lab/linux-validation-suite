@@ -46,6 +46,7 @@ class ProfileEditController:
         ProfileStageAction("storage_target_path", "Edit Storage Benchmark target path"),
         ProfileStageAction("storage_test_size", "Edit Storage Benchmark test size GiB"),
         ProfileStageAction("storage_runs", "Edit Storage Benchmark run count"),
+        ProfileStageAction("storage_max_used_percent", "Edit Storage Benchmark maximum used percent"),
         ProfileStageAction("storage_allow_system", "Toggle Storage Benchmark system-drive permission"),
         ProfileStageAction("strict", "Cycle stage strict threshold warnings override"),
         ProfileStageAction("back", "Back"),
@@ -54,9 +55,27 @@ class ProfileEditController:
     def __init__(self, profile_editor: ProfileEditor) -> None:
         self.profile_editor = profile_editor
 
-    def stage_action(self, selection: Any) -> Optional[ProfileStageAction]:
+    def stage_actions(self, stage: Any) -> tuple[ProfileStageAction, ...]:
+        low_occupancy = (
+            stage.modules.storage_benchmark.enabled
+            and stage.modules.storage_benchmark.target_mode == "all_internal_non_root_low_occupancy"
+        )
+        return tuple(
+            action for action in self.STAGE_ACTIONS
+            if not (
+                (action.key == "storage_max_used_percent" and not low_occupancy)
+                or (action.key == "storage_allow_system" and low_occupancy)
+            )
+        )
+
+    def stage_action(
+        self,
+        selection: Any,
+        actions: Iterable[ProfileStageAction] | None = None,
+    ) -> Optional[ProfileStageAction]:
+        available = tuple(actions) if actions is not None else self.STAGE_ACTIONS
         try:
-            return self.STAGE_ACTIONS[int(str(selection).strip()) - 1]
+            return available[int(str(selection).strip()) - 1]
         except (TypeError, ValueError, IndexError):
             return None
 
@@ -117,6 +136,16 @@ class ProfileEditController:
             return "VRAM module is not enabled on this stage."
         if action.startswith("storage_") and not stage.modules.storage_benchmark.enabled:
             return "Storage Benchmark module is not enabled on this stage."
+        if (
+            action == "storage_max_used_percent"
+            and stage.modules.storage_benchmark.target_mode != "all_internal_non_root_low_occupancy"
+        ):
+            return "Maximum used percent applies only to all_internal_non_root_low_occupancy."
+        if (
+            action == "storage_allow_system"
+            and stage.modules.storage_benchmark.target_mode == "all_internal_non_root_low_occupancy"
+        ):
+            return "Root/system drives are always excluded in all_internal_non_root_low_occupancy."
         return ""
 
     def apply_stage_action(
@@ -178,6 +207,8 @@ class ProfileEditController:
             changed = self.profile_editor.set_storage_test_size_gib(stage, int(value))
         elif action == "storage_runs":
             changed = self.profile_editor.set_storage_runs(stage, int(value))
+        elif action == "storage_max_used_percent":
+            changed = self.profile_editor.set_storage_max_used_percent(stage, float(value))
         elif action == "storage_allow_system":
             changed = self.profile_editor.toggle_storage_allow_system_drive(stage)
         elif action == "trim":
@@ -253,6 +284,7 @@ class ProfileEditController:
                 "__profile_stage_storage_target_path": "storage_target_path",
                 "__profile_stage_storage_test_size": "storage_test_size",
                 "__profile_stage_storage_runs": "storage_runs",
+                "__profile_stage_storage_max_used_percent": "storage_max_used_percent",
             }
             if normalized == "__profile_stage_trim_end":
                 if trim_start is None:
@@ -270,6 +302,8 @@ class ProfileEditController:
                 parsed: Any = value
                 if action in {"duration", "vram_allocation", "memory_allocation", "storage_test_size", "storage_runs"}:
                     parsed = int(float(value or "0"))
+                elif action == "storage_max_used_percent":
+                    parsed = float(value)
                 result = self.apply_stage_action(edit.profile, edit.labels, stage_index, action, parsed)
             else:
                 raise ValueError(f"Unsupported profile edit input: {field}")
