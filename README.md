@@ -203,6 +203,18 @@ their results may differ from raw-device or simpler non-CoW filesystem
 behavior. Unresolved multi-device, virtual, removable, USB, and network-backed
 mappings are ineligible.
 
+Profiles may also opt into
+`target_mode: all_internal_non_root_low_occupancy`. This mode selects only
+eligible internal non-root drives whose deterministically selected writable
+filesystem/workspace is at or below `max_used_percent`, which defaults to
+`3.0`. Occupancy is measured from that selected filesystem/workspace, not
+inferred from raw disk contents, and does not account for unmounted filesystems
+on the same physical drive. Root/system drives are always excluded. Occupancy
+and free space are rechecked immediately before each drive starts; if usage has
+risen above the threshold, that drive is skipped before `fio` runs. Existing
+USB, removable, network, virtual, ambiguous multi-device, and CoW/Btrfs safety
+policies remain in effect.
+
 Committed storage profiles are:
 
 - `Storage Benchmark Quick`: one-run completion-based sequential benchmark of
@@ -213,6 +225,10 @@ Committed storage profiles are:
 - `Quick Test`: now ends with a one-run Storage Benchmark stage. Its committed
   profile explicitly opts into the root/system drive, so that stage is reported
   with at least `WARN` when the system drive is benchmarked.
+
+`Storage Benchmark Quick` and `Storage Benchmark Sequential` remain unchanged
+`all_internal` profiles. The low-occupancy mode is available for explicitly
+configured profiles but is not their default.
 
 ## Enhanced Telemetry
 

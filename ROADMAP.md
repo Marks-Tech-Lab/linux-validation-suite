@@ -28,6 +28,11 @@ undecided work. Deferred or possible work is not committed release scope.
 - Completed post-release operator and documentation cleanup for storage
   dependencies and safeguards, GUI status, CPU cooler/PPT/TDP metadata, and
   Phase 1 historical status.
+- Added the optional `all_internal_non_root_low_occupancy` Storage Benchmark
+  target mode with a configurable filesystem-occupancy threshold, unconditional
+  root/system-drive exclusion, and execution-time occupancy and free-space
+  rechecks. Existing `all_internal` and `selected_target` modes and the
+  ready-made Storage Benchmark profiles remain unchanged.
 
 ## Deferred Compatibility And Output Work
 

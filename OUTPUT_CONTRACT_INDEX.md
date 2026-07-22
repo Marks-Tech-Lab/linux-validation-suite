@@ -401,6 +401,21 @@ storage_benchmark_batch`, plus `storage_benchmark_all_internal_summary.txt`.
 Each selected drive retains its independent v1 result folder and raw fio
 boundary; raw fio payloads are not copied into the batch contract.
 
+The optional `all_internal_non_root_low_occupancy` target mode adds selection
+metadata without changing required Storage Benchmark v1 fields, list shapes,
+or count meanings. When that mode is used, relevant manifest, result, batch,
+and target records may include `target_mode`, `max_used_percent`,
+`target_used_percent_at_selection`, `target_total_bytes_at_selection`,
+`target_used_bytes_at_selection`, `target_free_bytes_at_selection`, and
+`target_selection_phase`; the batch aggregate also includes
+`selection_policy`. Occupancy-related skips retain their reason and available
+selection evidence. These properties are optional; Storage Benchmark result,
+manifest, and batch records for the existing `all_internal` and
+`selected_target` modes do not require the low-occupancy selection evidence.
+Normal profile serialization, including `profile_used.json`, may retain the
+additive `max_used_percent` default, but it has no effect outside the
+low-occupancy target mode.
+
 When selected through `stages[].modules.storage_benchmark`, the benchmark is a
 completion-based stage. Its artifacts are rooted at `storage_benchmark/` inside
 the normal validation run directory. All-internal mode writes its aggregate JSON

@@ -64,6 +64,25 @@ drive requires typed confirmation.
 Single-device CoW/Btrfs benchmark workspaces are supported with warnings. Their
 results may differ from raw-device or simpler non-CoW filesystem behavior.
 
+The optional profile mode
+`target_mode: all_internal_non_root_low_occupancy` dynamically selects eligible
+internal non-root drives. Its `max_used_percent` setting defaults to `3.0` and
+is applied to the deterministically selected writable filesystem/workspace,
+not to guessed raw disk contents; unmounted filesystems on the same physical
+drive are not measured. Root/system drives are always excluded in this mode,
+and the existing USB, removable, network-backed, virtual, unresolved, and
+ambiguous multi-device exclusions still apply.
+
+The suite rechecks the selected filesystem's occupancy and free space
+immediately before each sequential target starts. If usage has risen above the
+configured threshold, the target is skipped before `fio` starts. Single-device
+CoW/Btrfs remains supported with the existing warning behavior.
+
+The ready-made `Storage Benchmark Quick.json` and `Storage Benchmark
+Sequential.json` profiles remain unchanged `all_internal` profiles. Use the
+low-occupancy mode only in a profile that explicitly selects it; existing
+`all_internal` and `selected_target` behavior is unchanged.
+
 CPU cooler, entered power-limit, PPT, and TDP values are descriptive run
 metadata. They do not configure firmware or enforce cooling or power policy,
 and they do not represent a committed future CPU cooler test module.
