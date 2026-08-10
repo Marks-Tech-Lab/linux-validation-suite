@@ -181,7 +181,11 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
         dependency_item_lines(
             "CPU native helper",
             bool(backends.get("cpu_native_helper")),
-            detail=str(cpu_helper.get("path") or cpu_helper.get("reason") or ""),
+            detail=str(
+                cpu_helper.get("path")
+                if backends.get("cpu_native_helper")
+                else cpu_helper.get("reason") or cpu_helper.get("path") or ""
+            ),
             fix="install gcc/build-essential and keep native/cpu_stress_helper.c available; Python fallback can still run basic CPU load",
             preferred=True,
         )
@@ -463,6 +467,7 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
         "cpu_temp_c": "CPU temperature",
         "cpu_power_w": "CPU package power",
         "cpu_clock_mhz": "CPU clock",
+        "cpu_utilization_percent": "CPU utilization",
         "cpu_core_clock_mhz": "Per-core CPU clocks",
         "memory_temp_c": "DIMM temperature",
         "storage_temp_c": "Storage temperature",

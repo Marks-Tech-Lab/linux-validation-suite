@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -222,6 +223,7 @@ from Modules.lvs_compat_export_helpers import (
     gpu_source_device_class,
     gpu_temp_export_name,
     gpu_worker_backend_name,
+    preserve_legacy_worker_evidence_contract,
     has_core_clock_data,
     has_core_type_data,
     resolve_gpu_source_device_name,
@@ -277,6 +279,12 @@ from Modules.lvs_stage_process_control import (
     stop_processes,
     stop_stage_processes,
 )
+from Modules.lvs_external_process_evidence import (
+    build_stress_ng_cpu_evidence,
+    executable_version,
+    parse_stress_ng_metrics_brief,
+    resolve_executable_path,
+)
 from Modules.lvs_stage_adapter import run_stage_adapter
 from Modules.lvs_stage_event_state import apply_stage_events
 from Modules.lvs_stage_execution import execute_stage_runtime
@@ -311,6 +319,9 @@ from Modules.lvs_cpu_power_limits import (
     select_rapl_package_dir,
 )
 from Modules.lvs_cpu_execution import (
+    CPU_KERNEL_FAMILY_CANDIDATES,
+    CPU_KERNEL_MODE_MAP,
+    CPU_MODE_OPTIONS,
     benchmark_cpu_kernel_candidate,
     best_valid_cpu_tuning_candidate,
     build_cpu_benchmark_result,
@@ -332,9 +343,25 @@ from Modules.lvs_cpu_execution import (
     parse_cpu_resolved_mode_probe,
     resolve_cpu_execution_policy,
 )
+from Modules.lvs_python_cpu_worker import (
+    python_cpu_workload,
+    supervise_python_cpu_workers,
+)
+from Modules.lvs_cpu_architecture import (
+    cpu_instruction_set_policy,
+    heatsoak_cpu_instruction_set,
+    native_cpu_helper_binary_name,
+    normalize_cpu_architecture,
+    python_cpu_fallback_policy,
+)
+from Modules.lvs_cpu_backend_policy import (
+    normalize_cpu_backend_preference,
+    select_cpu_backend,
+)
 from Modules.lvs_cpu_topology import (
     collect_cpu_topology_info,
     cpu_package_devices_from_topology,
+    parse_lscpu_cpu_identity,
     parse_proc_cpuinfo_models,
 )
 from Modules.lvs_heatsoak import HeatsoakManager
@@ -429,6 +456,7 @@ from Modules.lvs_system_identity import (
     parse_os_release_pretty_name,
 )
 from Modules.lvs_backend_readiness import (
+    CPU_HELPER_PROBE_MODES,
     build_backend_availability,
     build_backend_availability_from_probe_results,
     build_backend_details_payload,
@@ -776,6 +804,7 @@ from Modules.lvs_telemetry_sampling import (
 )
 from Modules.lvs_telemetry_samples import (
     telemetry_csv_fieldnames,
+    telemetry_metric_summaries,
     telemetry_sample_row,
     telemetry_values_with_unit_aliases,
     write_telemetry_csv,
@@ -819,14 +848,17 @@ from Modules.lvs_telemetry_cpu import (
     cpu_package_id_from_power_source,
     cpu_package_id_from_temp_source,
     cpu_package_ids_from_topology,
+    cpu_utilization_percent,
     discover_cpu_clock_source,
     discover_cpu_core_clock_sources,
     discover_cpu_core_topology,
     discover_cpu_power_candidates,
     discover_cpu_power_source,
     discover_cpu_temp_sources,
+    discover_cpu_utilization_source,
     parse_cpu_list,
     parse_explicit_core_type,
+    parse_proc_stat_cpu_counters,
     performance_tiers,
     read_cpu_clock_mhz,
     read_cpu_core_clocks,
@@ -3499,6 +3531,7 @@ def test_tui_run_presentation_helpers() -> None:
     live_progress = parse_progress_event(
         "2026-06-30T12:05:31-04:00 | stage=2 | elapsed=00:00:30 | remaining=00:04:30 | "
         "cpu_package_temp_c=72.0 | cpu_package_power_w=185.5 | cpu_clock_mhz=5100.0 | "
+        "cpu_utilization_percent=87.4 | "
         "cpu_package_count=2 | cpu_package_0_temp_c=68.0 | cpu_package_0_power_w=90.0 | "
         "cpu_package_0_clock_mhz=5000.0 | cpu_package_1_temp_c=72.0 | "
         "cpu_package_1_power_w=95.5 | cpu_package_1_clock_mhz=5200.0 | "
@@ -3543,6 +3576,7 @@ def test_tui_run_presentation_helpers() -> None:
     assert_equal(live_metrics.cpu_package_temp_c, 72.0, "TUI Live System CPU package temperature")
     assert_equal(live_metrics.cpu_package_power_w, 185.5, "TUI Live System CPU package power")
     assert_equal(live_metrics.cpu_clock_mhz, 5100.0, "TUI Live System CPU aggregate clock")
+    assert_equal(live_metrics.cpu_utilization_percent, 87.4, "TUI Live System CPU aggregate utilization")
     assert_equal(len(live_metrics.cpu_packages), 2, "TUI Live System parses two CPU packages")
     assert_equal(live_metrics.cpu_packages[1].clock_mhz, 5200.0, "TUI Live System CPU package clock")
     assert_equal(live_metrics.memory_used_gib, 31.25, "TUI Live System RAM used")
@@ -3562,6 +3596,8 @@ def test_tui_run_presentation_helpers() -> None:
         "Temp   72 °C",
         "Power  95.5 W",
         "Clock  5200 MHz",
+        "CPU Aggregate",
+        "Load   87.4%",
         "RAM",
         "Used   31.2 GiB",
         "Total  64 GiB",
@@ -3616,7 +3652,7 @@ def test_tui_run_presentation_helpers() -> None:
     clock_missing_text = live_system_text([clock_missing_event])
     assert_true("Temp   61 °C" in clock_missing_text, "TUI Live System renders CPU without clock")
     assert_true("Clock" not in clock_missing_text, "TUI Live System omits missing CPU clock safely")
-    assert_true("Load" not in clock_missing_text, "TUI Live System does not infer unavailable CPU load")
+    assert_true("Load   94%" in clock_missing_text, "TUI Live System renders available aggregate CPU load")
     assert_true("CPU 0" not in clock_missing_text, "TUI Live System keeps aggregate CPU fallback")
     capped_devices_event = SimpleNamespace(
         fields={
@@ -4149,6 +4185,61 @@ def test_report_summary_builder() -> None:
     assert_equal(report["DepartmentUseSummary"]["Status"], "not_ready", "report summary department status")
     assert_equal(report["ActionItemCategoryCounts"]["skipped_stage"], 1, "report summary skipped action count")
     assert_true(report["ActionItems"], "report summary action messages")
+
+    cpu_report = build_report_summary(
+        overall_result="Finished",
+        execution_detail="Finished",
+        elapsed="00:02:01",
+        segments=[
+            {
+                "TestDescription": "CPU",
+                "TestType": "CPU",
+                "Verdict": "pass",
+                "StabilityInterpretation": {},
+                "WorkerResults": [
+                    {
+                        "kind": "cpu",
+                        "status": "ok",
+                        "error_count": 0,
+                        "verify_passes": 152730,
+                    }
+                ],
+            }
+        ],
+        stability_interpretation={
+            "State": "stable",
+            "OutcomeClass": "verified_clean",
+            "WarningCategoryCounts": {},
+            "ErrorCategoryCounts": {},
+        },
+        all_error_events=[],
+        gpu_validation_details=[],
+        skipped_stages=[],
+    )
+    cpu_department = cpu_report["DepartmentUseSummary"]
+    assert_true(cpu_department["WorkerVerified"], "CPU worker evidence contributes to department verification")
+    assert_equal(cpu_department["WorkerResultCount"], 1, "CPU department worker result count")
+    assert_equal(cpu_department["SuccessfulWorkerResultCount"], 1, "CPU department worker success count")
+    assert_equal(cpu_department["VerificationPasses"], 152730, "CPU department verification passes")
+    assert_equal(cpu_report["GpuWorkerSummary"]["WorkerResultCount"], 0, "GPU worker summary remains GPU-only")
+    cpu_summary_text = RunSummaryTextExporter().build({"ReportSummary": cpu_report})
+    assert_true(
+        "Worker evidence: 1/1 successful, 152730 verification passes" in cpu_summary_text,
+        "CPU summary text uses generic worker-evidence label",
+    )
+
+    failed_cpu_report = build_report_summary(
+        overall_result="Failed",
+        execution_detail="failed",
+        elapsed="00:00:01",
+        segments=[{"WorkerResults": [{"kind": "cpu", "status": "error", "error_count": 1}]}],
+        stability_interpretation={"WarningCategoryCounts": {}, "ErrorCategoryCounts": {}},
+        all_error_events=[],
+        gpu_validation_details=[],
+        skipped_stages=[],
+    )
+    assert_equal(failed_cpu_report["DepartmentUseSummary"]["WorkerFailureCount"], 1, "CPU worker failure count")
+    assert_true(failed_cpu_report["DepartmentUseSummary"]["Blocking"], "CPU worker failure blocks department pass")
 
 
 def test_report_export_result_contract_bundle() -> None:
@@ -5025,7 +5116,11 @@ def test_final_run_artifact_writer_helpers() -> None:
     class FakeTelemetry:
         def __init__(self) -> None:
             self.csv_path = None
-            self.samples = []
+            self.samples = [
+                Sample(1.0, {"cpu_utilization_percent": None}),
+                Sample(2.0, {"cpu_utilization_percent": 75.0}),
+                Sample(3.0, {"cpu_utilization_percent": 25.0}),
+            ]
             self._gpu_sources = []
 
         def write_csv(self, path: Path) -> None:
@@ -5080,8 +5175,8 @@ def test_final_run_artifact_writer_helpers() -> None:
             manifest_payload={"profile_name": "Smoke"},
             app_name="LVS",
             app_version="0.0",
-            profile=SimpleNamespace(profile_name="Smoke"),
-            metadata=SimpleNamespace(profile_name="Smoke"),
+            profile=ValidationProfile(profile_name="Smoke"),
+            metadata=ValidationProfile(profile_name="Smoke"),
             started_iso="2026-06-12T00:00:00",
             ended_iso="2026-06-12T00:01:00",
             total_elapsed=60.4,
@@ -5094,7 +5189,7 @@ def test_final_run_artifact_writer_helpers() -> None:
             run_aborted=False,
             keep_raw_telemetry=True,
             export_compatibility_json=True,
-            export_extended_json=False,
+            export_extended_json=True,
             segment_parser=FakeSegmentParser(),
             exporter=FakeExporter(),
             summary_exporter=FakeSummaryExporter(),
@@ -5104,6 +5199,7 @@ def test_final_run_artifact_writer_helpers() -> None:
         )
         manifest = JsonStore.read(run_dir / "run_manifest.json", {})
         parsed = JsonStore.read(run_dir / "parsed_results_custom.json", {})
+        extended = JsonStore.read(run_dir / "parsed_results_extended.json", {})
         source_map = JsonStore.read(run_dir / "telemetry_source_map.json", {})
         assert_equal(result.overall_verdict, "warning", "artifact writer final verdict")
         assert_contract_identity(
@@ -5116,6 +5212,13 @@ def test_final_run_artifact_writer_helpers() -> None:
         assert_equal(manifest["verdict"], "warning", "artifact writer manifest verdict")
         assert_equal(plan[0]["verdict"], "warning", "artifact writer mirrors final plan verdict")
         assert_equal(parsed["ParserOutput"]["GpuCount"], 1, "artifact writer parsed export")
+        assert_true("telemetry_metrics" not in parsed, "legacy compatibility output excludes telemetry summaries")
+        assert_equal(
+            extended["telemetry_metrics"]["cpu_utilization_percent"],
+            {"sample_count": 2, "minimum": 25.0, "average": 50.0, "maximum": 75.0},
+            "extended output additive CPU utilization summary",
+        )
+        assert_snake_case_keys(extended["telemetry_metrics"], label="extended telemetry metrics")
         assert_equal((run_dir / "run_summary.txt").read_text(encoding="utf-8"), "Result: Warning\n", "artifact writer summary")
         assert_true((run_dir / "raw_telemetry.csv").exists(), "artifact writer raw telemetry")
         assert_contract_identity(
@@ -8129,7 +8232,13 @@ def test_post_run_and_heatsoak_helpers() -> None:
     assert_equal(stage.id, "heatsoak", "heatsoak stage id")
     assert_equal(stage.name, "Combined", "heatsoak stage type")
     assert_true(stage.modules.cpu.enabled, "heatsoak CPU enabled")
-    assert_equal(stage.modules.cpu.instruction_set, "avx", "heatsoak CPU instruction set")
+    assert_equal(
+        stage.modules.cpu.instruction_set,
+        heatsoak_cpu_instruction_set(normalize_cpu_architecture(os.uname().machine)),
+        "heatsoak CPU instruction set",
+    )
+    assert_equal(heatsoak_cpu_instruction_set("x86_64"), "avx", "x86 heatsoak remains AVX")
+    assert_equal(heatsoak_cpu_instruction_set("aarch64"), "auto", "ARM heatsoak uses portable auto")
     assert_true(stage.modules.gpu_3d.enabled, "heatsoak GPU enabled")
     assert_equal(stage.modules.gpu_3d.backend_preference, "auto", "heatsoak GPU backend")
     assert_equal(stage.modules.gpu_3d.compute_variant, "stress_hash", "heatsoak GPU variant")
@@ -11308,8 +11417,12 @@ def test_profile_dry_run_summary_formatting() -> None:
 
         def detect_capabilities(self):
             return {
+                "cpu_temp_c": {"available": True, "source": "fixture"},
+                "cpu_power_w": {"available": True, "source": "fixture"},
                 "memory_used_gb": {"available": True, "source": "/proc/meminfo"},
                 "memory_used_gib": {"available": True, "source": "/proc/meminfo"},
+                "gpu_temp_c": {"available": True, "source": "fixture", "count": 1},
+                "gpu_power_w": {"available": True, "source": "fixture", "count": 1},
                 "gpu_vram_used_gb": {"available": True, "source": "nvidia-smi", "count": 1},
                 "gpu_vram_used_gib": {"available": True, "source": "nvidia-smi", "count": 1},
             }
@@ -11361,6 +11474,64 @@ def test_profile_dry_run_summary_formatting() -> None:
         dry_run_report["telemetry_capabilities"]["gpu_vram_used_gb"],
         "dry-run GPU VRAM GiB capability alias",
     )
+
+    original_dry_run_plan = dry_run_module.build_dry_run_plan
+    cpu_profile = SimpleNamespace(
+        profile_name="CPU Only",
+        menu_description="",
+        menu_group="",
+        defaults=SimpleNamespace(telemetry_interval_seconds=1.0),
+        stages=[SimpleNamespace()],
+    )
+    cpu_orchestrator = SimpleNamespace(
+        validator=SimpleNamespace(validate=lambda _profile, _labels: {"errors": [], "warnings": []}),
+        workload_runner=dry_run_runner,
+        settings=SimpleNamespace(
+            runtime_environment={},
+            privileged_helper_enabled=False,
+            gpu_safe_mode=True,
+            gpu_safe_start_load_fraction=0.35,
+            gpu_internal_ramp_step_seconds=15.0,
+            gpu_external_max_processes=2,
+            gpu_retune_warmup_seconds=60.0,
+            gpu_retune_cooldown_seconds=30.0,
+            gpu_safe_max_tuning_step=2,
+            gpu_safe_max_vram_percent=90.0,
+            target_gpu_busy_min_percent=70.0,
+            target_gpu_busy_sustain_seconds=30.0,
+            target_gpu_memory_busy_min_percent=70.0,
+            target_gpu_memory_busy_sustain_seconds=30.0,
+        ),
+        _build_gpu_recovery_report=lambda: {"marker": {"stage_name": "GPU", "profile_name": "Old"}},
+        _stage_strict_threshold_recommendation_warnings=lambda _profile, _stage: False,
+        _strict_threshold_warning_scope=lambda _profile: "profile",
+    )
+    try:
+        dry_run_module.TelemetryCollector = FakeDryRunTelemetry
+        dry_run_module.build_dry_run_plan = lambda _runner, _profile, _labels: [
+            {
+                "label": "CPU",
+                "enabled": True,
+                "workloads": ["cpu"],
+                "issues": [],
+                "warnings": [],
+                "runnable": True,
+                "backend_usage": {"cpu": "stress_ng"},
+            }
+        ]
+        cpu_dry_run_report = dry_run_module.build_dry_run_report(
+            cpu_orchestrator,
+            Path("CPU Only.json"),
+            cpu_profile,
+            ["CPU"],
+        )
+    finally:
+        dry_run_module.TelemetryCollector = original_telemetry_collector
+        dry_run_module.build_dry_run_plan = original_dry_run_plan
+    cpu_warnings = cpu_dry_run_report["validation"]["warnings"]
+    assert_true(not any("GPU safe mode" in warning for warning in cpu_warnings), "CPU-only dry run omits GPU safe-mode warning")
+    assert_true(not any("Target 3D GPU" in warning for warning in cpu_warnings), "CPU-only dry run omits GPU busy warning")
+    assert_true(not any("Previous internal GPU" in warning for warning in cpu_warnings), "CPU-only dry run omits GPU recovery warning")
     audit_item = {"profile_file": "Smoke.json", "loaded": True, "runnable": False, "stage_count": 2}
     assert_equal(profile_audit_item_status(audit_item), "blocked", "profile audit item status")
     assert_equal(profile_audit_item_line(audit_item), "- Smoke.json: blocked, stages=2", "profile audit item line")
@@ -13892,8 +14063,14 @@ def test_telemetry_source_helpers() -> None:
         ],
         gpu_telemetry_matrix=lambda: matrix,
         memory_used_available=True,
+        cpu_utilization_source={"kind": "procfs", "path": "/proc/stat"},
     )
     assert_true(capability_summary["cpu_temp_c"]["available"], "capability summary CPU temp")
+    assert_equal(
+        capability_summary["cpu_utilization_percent"],
+        {"available": True, "source": "/proc/stat"},
+        "capability summary CPU utilization procfs source",
+    )
     assert_true(capability_summary["cpu_power_w"]["permission_issue"], "capability summary CPU power permission issue")
     assert_equal(capability_summary["cpu_core_clock_mhz"]["count"], 2, "capability summary core clock count")
     assert_true(capability_summary["storage_temp_c"]["available"], "capability summary storage primary")
@@ -13960,6 +14137,7 @@ def test_telemetry_source_helpers() -> None:
         privileged_helper_enabled=True,
         process_is_root=False,
         sudo_available=True,
+        cpu_utilization_source={"kind": "procfs", "path": "/proc/stat"},
     )
     assert_equal(
         privileged_capability_summary["telemetry_privilege"],
@@ -14084,6 +14262,7 @@ def test_telemetry_source_helpers() -> None:
         privileged_helper_enabled=True,
         process_is_root=False,
         sudo_available=True,
+        cpu_utilization_source={"kind": "procfs", "path": "/proc/stat"},
     )
     assert_required_fields(source_map, TELEMETRY_SOURCE_MAP_IDENTITY_FIELDS, label="telemetry source map")
     assert_contract_identity(
@@ -14092,6 +14271,20 @@ def test_telemetry_source_helpers() -> None:
         contract_version=1,
         kind="telemetry_source_map",
         label="telemetry source map",
+    )
+    assert_equal(
+        source_map["fields"]["cpu_utilization_percent"],
+        {
+            "field": "cpu_utilization_percent",
+            "category": "cpu",
+            "metric": "utilization_percent",
+            "source": "/proc/stat",
+            "available": True,
+            "kind": "procfs",
+            "path": "/proc/stat",
+            "access_mode": "direct",
+        },
+        "source map CPU utilization procfs evidence",
     )
     assert_equal(source_map["fields"]["gpu_0_power_w"]["slot"], "0000:13:00.0", "source map GPU slot")
     assert_equal(source_map["fields"]["memory_used_gib"]["metric"], "used_gib", "source map memory GiB metric")
@@ -14181,6 +14374,11 @@ def test_telemetry_source_helpers() -> None:
         privileged_source_map["telemetry_privilege"]["source_mode"],
         "sudo_telemetry",
         "source map telemetry privilege sudo mode",
+    )
+    assert_equal(
+        privileged_source_map["fields"]["cpu_utilization_percent"]["available"],
+        False,
+        "source map marks unavailable proc stat safely",
     )
 
 
@@ -14682,6 +14880,7 @@ def test_telemetry_sampling_helpers() -> None:
     collector._read_cpu_package_temps = lambda: {}
     collector._read_cpu_temp = lambda _package_temps: None
     collector._read_cpu_clock_mhz = lambda: None
+    collector._read_cpu_utilization_percent = lambda: None
     collector._read_memory_used_gb = lambda: 31.25
     collector._read_cpu_core_clocks = lambda: {}
     collector._read_memory_temps = lambda: {}
@@ -14696,6 +14895,7 @@ def test_telemetry_sampling_helpers() -> None:
     assert_equal(collected["memory_used_gib"], collected["memory_used_gb"], "collector memory alias equality")
     assert_equal(collected["gpu_vram_used_gib"], collected["gpu_vram_used_gb"], "collector aggregate VRAM alias equality")
     assert_equal(collected["gpu_2_vram_used_gib"], collected["gpu_2_vram_used_gb"], "collector dynamic VRAM alias equality")
+    assert_equal(collected["cpu_utilization_percent"], None, "collector first CPU utilization sample unavailable")
     assert_equal(parse_gpu_clock_text("2: 2400Mhz *\n1: 1200Mhz"), 2400.0, "AMD pp_dpm selected clock")
     assert_equal(parse_gpu_clock_text("2400000"), 2400.0, "raw kHz clock")
     objects = json_objects_from_text('noise {"engines":{"Render/3D":{"busy": "33.5%"}}} {"value": 2}')
@@ -14717,11 +14917,11 @@ def test_telemetry_sampling_helpers() -> None:
 def test_telemetry_sample_csv_helpers() -> None:
     samples = [
         Sample(1.5, {"gpu_0_temp_core_c": 70.0, "gpu_0_vram_used_gb": 8.0, "gpu_vram_used_gb": 8.0, "memory_used_gb": 20.0}),
-        Sample(2.5, {"cpu_temp_c": 55.0, "gpu_0_temp_core_c": None, "gpu_0_vram_used_gb": 9.0, "gpu_vram_used_gb": 9.0, "memory_used_gb": 21.0}),
+        Sample(2.5, {"cpu_temp_c": 55.0, "cpu_utilization_percent": 72.5, "gpu_0_temp_core_c": None, "gpu_0_vram_used_gb": 9.0, "gpu_vram_used_gb": 9.0, "memory_used_gb": 21.0}),
     ]
     assert_equal(
         telemetry_csv_fieldnames(samples),
-        ["timestamp", "cpu_temp_c", "gpu_0_temp_core_c", "gpu_0_vram_used_gb", "gpu_0_vram_used_gib", "gpu_vram_used_gb", "gpu_vram_used_gib", "memory_used_gb", "memory_used_gib"],
+        ["timestamp", "cpu_temp_c", "cpu_utilization_percent", "gpu_0_temp_core_c", "gpu_0_vram_used_gb", "gpu_0_vram_used_gib", "gpu_vram_used_gb", "gpu_vram_used_gib", "memory_used_gb", "memory_used_gib"],
         "telemetry CSV field ordering",
     )
     first_row = telemetry_sample_row(samples[0])
@@ -14735,6 +14935,7 @@ def test_telemetry_sample_csv_helpers() -> None:
         assert_true("gpu_0_vram_used_gb,gpu_0_vram_used_gib" in lines[0], "telemetry CSV dynamic VRAM aliases")
         assert_true("gpu_vram_used_gb,gpu_vram_used_gib" in lines[0], "telemetry CSV aggregate VRAM aliases")
         assert_true("memory_used_gb,memory_used_gib" in lines[0], "telemetry CSV memory aliases")
+        assert_true("cpu_temp_c,cpu_utilization_percent" in lines[0], "telemetry CSV CPU utilization ordering")
 
 
 def test_telemetry_memory_helpers() -> None:
@@ -15183,6 +15384,97 @@ def test_telemetry_cpu_helpers() -> None:
             "dual-package CPU temps are read",
         )
         assert_equal(collector._read_cpu_temp(package_temps), 62.5, "aggregate CPU temp uses hottest package")
+
+
+def test_cpu_utilization_telemetry_helpers() -> None:
+    base = parse_proc_stat_cpu_counters("cpu 100 10 40 500 20 5 5 0\ncpu0 1 1 1 1\n")
+    assert_equal(base, (100, 10, 40, 500, 20, 5, 5, 0), "proc stat aggregate parsing")
+    assert_equal(parse_proc_stat_cpu_counters("cpu 1 2 3 4\n"), (1, 2, 3, 4), "proc stat optional counters absent")
+    assert_equal(
+        parse_proc_stat_cpu_counters("cpu 1 2 3 4 5 6 7 8 9 10 11\n"),
+        (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+        "proc stat extra counters tolerated",
+    )
+    for malformed in (None, "", "cpu0 1 2 3 4\n", "cpu 1 2 bad 4\n", "cpu 1 2 3\n", "cpu 1 2 3 -4\n"):
+        assert_equal(parse_proc_stat_cpu_counters(malformed), None, "malformed proc stat handled safely")
+
+    assert_equal(cpu_utilization_percent(None, base), None, "first CPU utilization sample unavailable")
+    assert_equal(
+        cpu_utilization_percent((0, 0, 0, 0), (0, 0, 0, 100)),
+        0.0,
+        "idle-only CPU interval",
+    )
+    assert_equal(
+        cpu_utilization_percent((0, 0, 0, 0), (100, 0, 0, 0)),
+        100.0,
+        "fully busy CPU interval",
+    )
+    assert_equal(
+        cpu_utilization_percent(
+            (100, 0, 100, 100, 20, 0, 0, 0),
+            (120, 0, 120, 140, 30, 0, 0, 0),
+        ),
+        44.44,
+        "mixed CPU interval",
+    )
+    assert_equal(
+        cpu_utilization_percent((0, 0, 0, 0, 0), (0, 0, 0, 0, 100)),
+        0.0,
+        "CPU iowait counts as idle",
+    )
+    assert_equal(cpu_utilization_percent((1, 2, 3, 4), (1, 2, 3, 4)), None, "zero CPU counter delta")
+    assert_equal(cpu_utilization_percent((10, 2, 3, 4), (9, 2, 3, 5)), None, "reset CPU counters")
+    assert_equal(cpu_utilization_percent((1, 2, 3, 4), (2, 3, 4, 5, 6)), None, "changed CPU field count")
+    for architecture_name in ("x86_64", "aarch64"):
+        assert_equal(
+            cpu_utilization_percent((0, 0, 0, 0), (25, 0, 0, 75)),
+            25.0,
+            f"architecture-neutral CPU utilization on {architecture_name}",
+        )
+
+    assert_equal(
+        discover_cpu_utilization_source(read_text=lambda _path: "cpu 1 2 3 4 5 6 7 8\n"),
+        {"kind": "procfs", "label": "aggregate CPU counters", "path": "/proc/stat"},
+        "CPU utilization procfs source discovery",
+    )
+    assert_equal(
+        discover_cpu_utilization_source(read_text=lambda _path: "malformed"),
+        None,
+        "unavailable proc stat does not create a telemetry source",
+    )
+
+    def utilization_collector(snapshot_texts: list[str]) -> TelemetryCollector:
+        collector = object.__new__(TelemetryCollector)
+        collector._cpu_utilization_source = {"kind": "procfs", "path": "/proc/stat"}
+        collector._previous_cpu_stat_counters = None
+        snapshots = iter(snapshot_texts)
+        collector._safe_read_text = lambda _path: next(snapshots)
+        return collector
+
+    collector_a = utilization_collector(["cpu 0 0 0 100\n", "cpu 50 0 0 150\n"])
+    collector_b = utilization_collector(["cpu 0 0 0 200\n", "cpu 20 0 0 280\n"])
+    assert_equal(collector_a._read_cpu_utilization_percent(), None, "collector A starts with clean utilization state")
+    assert_equal(collector_b._read_cpu_utilization_percent(), None, "collector B starts with clean utilization state")
+    assert_equal(collector_a._read_cpu_utilization_percent(), 50.0, "collector A independent CPU utilization delta")
+    assert_equal(collector_b._read_cpu_utilization_percent(), 20.0, "collector B independent CPU utilization delta")
+    collector_reset = utilization_collector(["cpu 100 0 0 100\n", "cpu 10 0 0 10\n", "cpu 20 0 0 10\n"])
+    assert_equal(collector_reset._read_cpu_utilization_percent(), None, "reset collector first sample")
+    assert_equal(collector_reset._read_cpu_utilization_percent(), None, "reset collector rejects negative delta")
+    assert_equal(collector_reset._read_cpu_utilization_percent(), 100.0, "collector recovers after counter reset")
+
+    summaries = telemetry_metric_summaries(
+        [
+            Sample(1.0, {"cpu_utilization_percent": None}),
+            Sample(2.0, {"cpu_utilization_percent": 10.0}),
+            Sample(3.0, {"cpu_utilization_percent": 90.0}),
+        ],
+        ("cpu_utilization_percent",),
+    )
+    assert_equal(
+        summaries["cpu_utilization_percent"],
+        {"sample_count": 2, "minimum": 10.0, "average": 50.0, "maximum": 90.0},
+        "extended CPU utilization summary",
+    )
 
 
 def test_gpu_identity_helpers() -> None:
@@ -16029,6 +16321,16 @@ def test_cpu_power_limit_helpers() -> None:
 
 
 def test_cpu_topology_helpers() -> None:
+    assert_equal(
+        parse_lscpu_cpu_identity("Vendor ID: Qualcomm\nModel name: Oryon\n"),
+        "Qualcomm Oryon",
+        "ARM lscpu vendor/model identity",
+    )
+    assert_equal(
+        parse_lscpu_cpu_identity("Vendor ID: GenuineIntel\nModel name: GenuineIntel Test CPU\n"),
+        "GenuineIntel Test CPU",
+        "lscpu identity avoids duplicate vendor",
+    )
     cpuinfo_text = """
 processor   : 0
 model name  : AMD EPYC 9255 24-Core Processor
@@ -16081,6 +16383,35 @@ model name  : AMD EPYC 9255 24-Core Processor
             "CPU 1: AMD EPYC 9255 24-Core Processor",
             "package 1 display name",
         )
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "cpu"
+        for cpu_index in range(8):
+            topology = root / f"cpu{cpu_index}" / "topology"
+            topology.mkdir(parents=True)
+            (topology / "physical_package_id").write_text("0", encoding="utf-8")
+            (topology / "cluster_id").write_text(str(cpu_index // 4), encoding="utf-8")
+            (topology / "core_id").write_text(str(cpu_index % 4), encoding="utf-8")
+            (topology / "thread_siblings_list").write_text(str(cpu_index), encoding="utf-8")
+        read = lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None
+        arm_info = collect_cpu_topology_info(
+            cpu_root=root,
+            cpuinfo_text="",
+            read_text=read,
+            fallback_name="Qualcomm Oryon",
+        )
+        assert_equal(arm_info["PackageCount"], 1, "ARM cluster fixture package count")
+        assert_equal(arm_info["LogicalCpuCount"], 8, "ARM cluster fixture logical CPUs")
+        assert_equal(arm_info["PhysicalCoreCount"], 8, "ARM repeated cluster core IDs remain distinct")
+
+    class ArmIdentityCollector(SystemInfoCollector):
+        def _proc_cpuinfo_text(self) -> str:
+            return "processor: 0\nCPU implementer: 0x51\n"
+
+        def _lscpu_text(self) -> str:
+            return "Vendor ID: Qualcomm\nModel name: Oryon\n"
+
+    assert_equal(ArmIdentityCollector()._cpu_name(), "Qualcomm Oryon", "system inventory ARM CPU identity fallback")
 
 
 def test_run_progress_helpers() -> None:
@@ -16215,6 +16546,7 @@ def test_gpu_progress_helpers() -> None:
                     "cpu_package_0_power_w": 145.0,
                     "cpu_package_1_power_w": 165.5,
                     "cpu_clock_mhz": 5100.0,
+                    "cpu_utilization_percent": 87.4,
                     "cpu_core_0_clock_mhz": 5000.0,
                     "cpu_core_1_clock_mhz": 5200.0,
                     "memory_used_gb": 31.25,
@@ -16261,6 +16593,7 @@ def test_gpu_progress_helpers() -> None:
             "cpu_package_temp_c=72.0",
             "cpu_package_power_w=310.5",
             "cpu_clock_mhz=5100.0",
+            "cpu_utilization_percent=87.4",
             "cpu_package_count=2",
             "cpu_package_0_temp_c=68.0",
             "cpu_package_0_power_w=145.0",
@@ -19196,9 +19529,18 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
         mode="extreme",
         stress_ng_available=False,
         python_runtime="/usr/bin/python3",
+        result_file="/tmp/python-cpu.json",
+        resolved_mode="approximate",
     )
-    assert_equal(fallback_cmd[:2] if fallback_cmd else [], ["/usr/bin/python3", "-c"], "CPU Python fallback command")
-    assert_true("ITERATIONS = 180000" in fallback_cmd[2], "CPU fallback script intensity")
+    assert_equal(
+        fallback_cmd[:3] if fallback_cmd else [],
+        ["/usr/bin/python3", "-m", "Modules.lvs_python_cpu_worker"],
+        "CPU Python fallback module command",
+    )
+    assert_true("-c" not in fallback_cmd, "CPU Python fallback no longer defines multiprocessing targets in python -c")
+    assert_true("180000" in fallback_cmd, "CPU fallback command intensity")
+    assert_true("--result-file" in fallback_cmd and "/tmp/python-cpu.json" in fallback_cmd, "CPU fallback result path")
+    assert_true("--resolved-mode" in fallback_cmd and "approximate" in fallback_cmd, "CPU fallback resolved mode")
     assert_equal(cpu_fallback_params("sse", "normal")["algorithm"], "sha256", "CPU fallback SSE params")
     assert_true("count = 3" in build_cpu_fallback_script("auto", "normal", 3), "CPU fallback worker count")
 
@@ -19309,6 +19651,864 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
     )
 
 
+def test_cpu_python_fallback_x86_contract_and_architecture_policy() -> None:
+    expected_params = {
+        ("auto", "normal"): {"algorithm": "sha512", "iterations": 60000, "payload_bytes": 1024 * 1024},
+        ("auto", "extreme"): {"algorithm": "sha512", "iterations": 180000, "payload_bytes": 4 * 1024 * 1024},
+        ("scalar", "normal"): {"algorithm": "sha512", "iterations": 60000, "payload_bytes": 1024 * 1024},
+        ("scalar", "extreme"): {"algorithm": "sha512", "iterations": 180000, "payload_bytes": 4 * 1024 * 1024},
+        ("sse", "normal"): {"algorithm": "sha256", "iterations": 25000, "payload_bytes": 512 * 1024},
+        ("sse", "extreme"): {"algorithm": "sha256", "iterations": 25000, "payload_bytes": 512 * 1024},
+        ("avx", "normal"): {"algorithm": "sha512", "iterations": 120000, "payload_bytes": 2 * 1024 * 1024},
+        ("avx", "extreme"): {"algorithm": "sha512", "iterations": 120000, "payload_bytes": 2 * 1024 * 1024},
+        ("avx2", "normal"): {"algorithm": "sha512", "iterations": 120000, "payload_bytes": 2 * 1024 * 1024},
+        ("avx2", "extreme"): {"algorithm": "sha512", "iterations": 120000, "payload_bytes": 2 * 1024 * 1024},
+        ("avx512", "normal"): {"algorithm": "sha512", "iterations": 180000, "payload_bytes": 4 * 1024 * 1024},
+        ("avx512", "extreme"): {"algorithm": "sha512", "iterations": 180000, "payload_bytes": 4 * 1024 * 1024},
+    }
+    for key, expected in expected_params.items():
+        assert_equal(cpu_fallback_params(*key), expected, f"x86 Python fallback params {key}")
+
+    for instruction_set in ("auto", "scalar", "sse", "avx", "avx2", "avx512"):
+        policy = python_cpu_fallback_policy("x86_64", instruction_set)
+        assert_true(policy["allowed"], f"x86 Python fallback remains allowed for {instruction_set}")
+        assert_equal(policy["resolved_mode"], "approximate", f"x86 fallback metadata unchanged for {instruction_set}")
+
+    assert_equal(normalize_cpu_architecture("AMD64"), "x86_64", "AMD64 architecture alias")
+    assert_equal(normalize_cpu_architecture("aarch64"), "arm64", "aarch64 architecture alias")
+    assert_equal(normalize_cpu_architecture("ARM64"), "arm64", "ARM64 architecture alias")
+    for architecture in ("aarch64", "arm64"):
+        for instruction_set, allowed, resolved in (
+            ("auto", True, "portable"),
+            ("scalar", True, "scalar"),
+            ("sse", False, ""),
+            ("avx", False, ""),
+            ("avx2", False, ""),
+            ("avx512", False, ""),
+        ):
+            policy = python_cpu_fallback_policy(architecture, instruction_set)
+            assert_equal(policy["allowed"], allowed, f"{architecture} Python fallback policy for {instruction_set}")
+            assert_equal(policy["resolved_mode"], resolved, f"{architecture} fallback resolved mode for {instruction_set}")
+            if not allowed:
+                assert_true("x86 ISA" in policy["reason"] and "ARM64" in policy["reason"], "ARM rejection diagnostic")
+
+    script = build_cpu_fallback_script("avx512", "extreme", 3)
+    assert_true("ALGORITHM = 'sha512'" in script, "x86 fallback algorithm script contract")
+    assert_true("ITERATIONS = 180000" in script, "x86 fallback iteration script contract")
+    assert_true("PAYLOAD_BYTES = 4194304" in script, "x86 fallback payload script contract")
+    assert_true("os.sched_setaffinity(0, {worker_index % cpu_total})" in script, "fallback affinity configuration")
+    assert_true("count = 3" in script, "fallback worker count script contract")
+
+
+def test_native_cpu_scalar_architecture_policy_and_build_contract() -> None:
+    assert_equal(native_cpu_helper_binary_name("x86_64"), "cpu_stress_helper", "x86 helper path unchanged")
+    assert_equal(native_cpu_helper_binary_name("AMD64"), "cpu_stress_helper", "AMD64 helper path unchanged")
+    assert_equal(native_cpu_helper_binary_name("aarch64"), "cpu_stress_helper_arm64", "ARM helper artifact isolation")
+    assert_equal(native_cpu_helper_binary_name("arm64"), "cpu_stress_helper_arm64", "ARM64 helper artifact isolation")
+    for architecture in ("aarch64", "arm64"):
+        for instruction_set in ("auto", "scalar"):
+            policy = cpu_instruction_set_policy(architecture, instruction_set)
+            assert_true(policy["allowed"], f"{architecture} native {instruction_set} policy")
+        for instruction_set in ("sse", "avx", "avx2", "avx512"):
+            policy = cpu_instruction_set_policy(architecture, instruction_set)
+            assert_true(not policy["allowed"], f"{architecture} rejects native {instruction_set}")
+            assert_true("x86 ISA" in policy["reason"] and "ARM64" in policy["reason"], "native ARM ISA reason")
+
+    for instruction_set in ("auto", "scalar", "sse", "avx", "avx2", "avx512"):
+        assert_true(
+            cpu_instruction_set_policy("x86_64", instruction_set)["allowed"],
+            f"x86 native policy remains unchanged for {instruction_set}",
+        )
+
+    source = Path("native/cpu_stress_helper.c")
+    source_text = source.read_text(encoding="utf-8")
+    assert_true(
+        "#if defined(__x86_64__) || defined(__i386__)\n#include <immintrin.h>\n#endif" in source_text,
+        "native intrinsic header is isolated to x86 builds",
+    )
+    assert_true("static void run_scalar_loop" in source_text, "shared native scalar kernel remains present")
+    assert_true("static int requested_mode_supported" in source_text, "native helper validates requested ISA")
+    assert_true("write_result_file(result_file_path, resolve_mode(mode)" in source_text, "native result contract remains wired")
+    assert_true(
+        "pthread_setaffinity_np(pthread_self(), sizeof(set), &set)" in source_text,
+        "native helper preserves best-effort Linux affinity",
+    )
+    for evidence_field in (
+        "affinity_attempted_count",
+        "affinity_applied_count",
+        "affinity_failed_count",
+        "affinity_target_cpu",
+        "affinity_attempted",
+        "affinity_applied",
+        "affinity_error_code",
+        "observed_cpu",
+    ):
+        assert_true(f'\\"{evidence_field}\\"' in source_text, f"native result includes {evidence_field}")
+
+    compiler = find_c_compiler()
+    if compiler is None:
+        return
+    with TemporaryDirectory(dir="/tmp") as tmpdir:
+        binary = Path(tmpdir) / "cpu_stress_helper"
+        build = subprocess.run(
+            native_helper_build_command(compiler, source, binary),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert_equal(build.returncode, 0, f"native scalar helper compiles: {build.stderr}")
+        for requested, expected in (("auto", None), ("scalar", "scalar")):
+            probe = subprocess.run(
+                [str(binary), "--mode", requested, "--print-resolved-mode"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(probe.returncode, 0, f"native {requested} capability probe")
+            if expected is not None:
+                assert_equal(probe.stdout.strip(), expected, f"native {requested} resolved mode")
+
+        architecture = normalize_cpu_architecture(os.uname().machine)
+        if architecture == "arm64":
+            assert_equal(
+                subprocess.run(
+                    [str(binary), "--mode", "auto", "--print-resolved-mode"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip(),
+                "scalar",
+                "ARM native auto resolves scalar",
+            )
+            for requested in ("sse", "avx", "avx2", "avx512"):
+                probe = subprocess.run(
+                    [str(binary), "--mode", requested, "--print-resolved-mode"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert_equal(probe.returncode, 3, f"ARM native {requested} probe unavailable")
+                assert_true("x86 ISA" in probe.stderr, f"ARM native {requested} diagnostic")
+
+
+def test_native_cpu_neon_architecture_policy_and_profile() -> None:
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+
+    assert_true("neon" in CPU_MODE_OPTIONS, "NEON is a native CPU mode")
+    assert_true("sve" not in CPU_MODE_OPTIONS, "SVE is not claimed as an executable mode")
+    assert_equal(CPU_KERNEL_MODE_MAP["neon"], "neon", "NEON kernel maps truthfully")
+    assert_equal(CPU_KERNEL_FAMILY_CANDIDATES["neon"], ["neon"], "NEON family stays architecture-specific")
+    assert_equal(
+        cpu_candidate_kernel_flavors(
+            helper_available=True,
+            policy="capabilities",
+            resolved_mode="",
+            supports_kernel_flavor=lambda flavor: flavor in {"scalar", "neon"},
+        ),
+        ["scalar", "neon"],
+        "capability inventory includes scalar and NEON without changing x86 tuning order",
+    )
+    assert_true("neon" in CPU_HELPER_PROBE_MODES, "readiness probes NEON")
+    assert_true("sve" in CPU_HELPER_PROBE_MODES, "readiness records SVE unavailable")
+
+    for architecture in ("aarch64", "arm64"):
+        assert_true(cpu_instruction_set_policy(architecture, "neon")["allowed"], f"{architecture} allows native NEON")
+        fallback_policy = python_cpu_fallback_policy(architecture, "neon")
+        assert_true(not fallback_policy["allowed"], f"{architecture} Python fallback cannot approximate NEON")
+        assert_true("native CPU helper" in fallback_policy["reason"], "NEON fallback rejection is explicit")
+    x86_neon = cpu_instruction_set_policy("x86_64", "neon")
+    assert_true(not x86_neon["allowed"], "x86 rejects explicit NEON")
+    assert_true("ARM64 ISA" in x86_neon["reason"], "x86 NEON rejection is architecture-specific")
+
+    source = Path("native/cpu_stress_helper.c")
+    source_text = source.read_text(encoding="utf-8")
+    assert_true("#include <arm_neon.h>" in source_text, "native helper includes AArch64 NEON intrinsics")
+    assert_true("HWCAP_ASIMD" in source_text and "getauxval(AT_HWCAP)" in source_text, "NEON uses runtime HWCAP_ASIMD")
+    assert_true("static void run_neon_loop" in source_text, "native helper contains isolated NEON kernel")
+    assert_true("update_u32_stats(stats, sink, 16" in source_text, "NEON kernel feeds existing verification")
+    assert_true("run_cpu_canary(stats, seed, iteration" in source_text, "NEON kernel feeds existing canary")
+    assert_true("case KERNEL_NEON:" in source_text, "shared worker dispatch reaches NEON")
+
+    runner = WorkloadRunner()
+    runner._cpu_machine = lambda: "arm64"
+    runner._cpu_helper_status = lambda: {
+        "available": True,
+        "path": "build/cpu_stress_helper_arm64",
+        "reason": "",
+    }
+    runner._cpu_helper_resolved_mode = lambda mode: {"auto": "neon", "scalar": "scalar", "neon": "neon"}.get(mode, "")
+    runner._cpu_helper_default_kernel_flavor = lambda mode: "neon" if mode in {"auto", "neon"} else "scalar"
+    runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor in {"scalar", "neon"}
+    runner._cpu_power_tuning_available = lambda: False
+    runner._command_exists = lambda name: name in {"stress-ng", "build/cpu_stress_helper_arm64"}
+    runner._python_runtime = lambda: "/usr/bin/python3"
+
+    auto_cpu = ModuleCpu(enabled=True, instruction_set="auto", backend_preference="auto", threads="all")
+    scalar_cpu = ModuleCpu(enabled=True, instruction_set="scalar", backend_preference="native", threads="all")
+    neon_cpu = ModuleCpu(enabled=True, instruction_set="neon", backend_preference="native", threads="all")
+    assert_equal(runner._cpu_backend_name(auto_cpu), "cpu_native_helper", "ARM auto precedence remains native")
+    assert_equal(runner._cpu_resolved_mode(auto_cpu), "neon", "ARM auto resolves NEON with ASIMD")
+    assert_equal(runner._cpu_resolved_mode(scalar_cpu), "scalar", "ARM explicit scalar remains scalar")
+    assert_equal(runner._cpu_backend_name(neon_cpu), "cpu_native_helper", "ARM explicit NEON selects native helper")
+    assert_equal(runner._cpu_resolved_mode(neon_cpu), "neon", "ARM explicit NEON resolves truthfully")
+    worker_count = runner._cpu_worker_count(neon_cpu)
+    assert_equal(
+        runner._cpu_command(neon_cpu)[:5],
+        ["build/cpu_stress_helper_arm64", "--mode", "neon", "--threads", str(worker_count)],
+        "ARM NEON command keeps shared helper orchestration",
+    )
+    assert_equal(runner._cpu_helper_default_kernel_flavor("auto"), "neon", "ARM auto kernel flavor is NEON")
+
+    runner._cpu_helper_resolved_mode = lambda mode: "scalar" if mode in {"auto", "scalar"} else ""
+    assert_equal(runner._cpu_resolved_mode(auto_cpu), "scalar", "ARM auto falls back to scalar without ASIMD")
+    assert_equal(runner._cpu_backend_name(neon_cpu), "none", "ARM explicit NEON is unavailable without ASIMD")
+    assert_true("ASIMD/NEON" in runner._cpu_unavailable_reason(neon_cpu), "missing ASIMD reason is truthful")
+    stress_neon = ModuleCpu(enabled=True, instruction_set="neon", backend_preference="stress_ng")
+    python_neon = ModuleCpu(enabled=True, instruction_set="neon", backend_preference="python_fallback")
+    assert_equal(runner._cpu_backend_name(stress_neon), "none", "stress-ng does not approximate explicit NEON")
+    assert_equal(runner._cpu_backend_name(python_neon), "none", "Python fallback does not approximate explicit NEON")
+
+    runner._cpu_machine = lambda: "x86_64"
+    assert_equal(runner._cpu_backend_name(neon_cpu), "none", "x86 cannot select explicit NEON")
+    for mode in ("auto", "scalar", "sse", "avx", "avx2", "avx512"):
+        assert_true(cpu_instruction_set_policy("x86_64", mode)["allowed"], f"x86 policy unchanged for {mode}")
+
+    runner._cpu_machine = lambda: "arm64"
+    runner._cpu_helper_resolved_mode = lambda mode: {"auto": "neon", "scalar": "scalar", "neon": "neon"}.get(mode, "")
+    neon_path = Path("profiles") / "ARM64 Native CPU NEON.json"
+    profile = ProfileLoader(Path("profiles")).load_profile(neon_path)
+    labels = ProfileLoader(Path("profiles")).load_segment_labels(neon_path, profile)
+    validation = SharedProfileValidator().validate(profile, labels)
+    assert_equal(validation["errors"], [], "ARM NEON lab profile validates")
+    assert_equal(labels, ["ARM64 Native CPU NEON"], "ARM NEON sidecar has one stage label")
+    assert_true(
+        not any("label count mismatch" in warning for warning in validation["warnings"]),
+        "ARM NEON sidecar does not create a label-count warning",
+    )
+    profile_cpu = profile.stages[0].modules.cpu
+    assert_equal(profile_cpu.backend_preference, "native", "ARM NEON profile requests native backend")
+    assert_equal(profile_cpu.instruction_set, "neon", "ARM NEON profile requests NEON")
+    assert_equal(profile.stages[0].duration_seconds, 120, "ARM NEON profile duration")
+    assert_equal(profile.stages[0].normalization.trim_start_seconds, 10, "ARM NEON start trim")
+    assert_equal(profile.stages[0].normalization.trim_end_seconds, 10, "ARM NEON end trim")
+    diagnostic = build_stage_diagnostics_payload(runner, profile.stages[0], labels[0])
+    assert_true(diagnostic["runnable"], "ARM NEON dry run is runnable with ASIMD")
+    assert_equal(diagnostic["backend_usage"]["cpu"], "cpu_native_helper", "ARM NEON dry-run backend")
+    assert_equal(diagnostic["cpu_mode_requested"], "neon", "ARM NEON dry-run requested mode")
+    assert_equal(diagnostic["cpu_mode_resolved"], "neon", "ARM NEON dry-run resolved mode")
+    assert_equal(diagnostic["cpu_kernel_flavor"], "neon", "ARM NEON dry-run kernel flavor")
+
+    compiler = find_c_compiler()
+    if compiler is None:
+        return
+    with TemporaryDirectory(dir="/tmp") as tmpdir:
+        binary = Path(tmpdir) / "cpu_stress_helper"
+        build = subprocess.run(
+            native_helper_build_command(compiler, source, binary),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert_equal(build.returncode, 0, f"native NEON helper compiles: {build.stderr}")
+        architecture = normalize_cpu_architecture(os.uname().machine)
+        if architecture == "arm64":
+            for requested, expected in (("auto", "neon"), ("scalar", "scalar"), ("neon", "neon")):
+                probe = subprocess.run(
+                    [str(binary), "--mode", requested, "--print-resolved-mode"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert_equal(probe.returncode, 0, f"ARM {requested} capability probe")
+                assert_equal(probe.stdout.strip(), expected, f"ARM {requested} resolution")
+            kernel_probe = subprocess.run(
+                [str(binary), "--mode", "neon", "--print-kernel-flavor"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(kernel_probe.returncode, 0, "ARM NEON kernel probe")
+            assert_equal(kernel_probe.stdout.strip(), "neon", "ARM NEON kernel identity")
+            sve_probe = subprocess.run(
+                [str(binary), "--mode", "sve", "--print-resolved-mode"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(sve_probe.returncode, 3, "ARM SVE remains unavailable")
+
+            no_asimd_binary = Path(tmpdir) / "cpu_stress_helper_no_asimd"
+            no_asimd_command = native_helper_build_command(compiler, source, no_asimd_binary)
+            no_asimd_command.insert(1, "-DLVS_CPU_HELPER_TEST_DISABLE_ASIMD=1")
+            no_asimd_build = subprocess.run(
+                no_asimd_command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert_equal(no_asimd_build.returncode, 0, f"no-ASIMD helper compiles: {no_asimd_build.stderr}")
+            auto_probe = subprocess.run(
+                [str(no_asimd_binary), "--mode", "auto", "--print-resolved-mode"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(auto_probe.stdout.strip(), "scalar", "ARM auto falls back to scalar without ASIMD")
+            neon_probe = subprocess.run(
+                [str(no_asimd_binary), "--mode", "neon", "--print-resolved-mode"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(neon_probe.returncode, 3, "explicit NEON rejects absent ASIMD")
+        else:
+            neon_probe = subprocess.run(
+                [str(binary), "--mode", "neon", "--print-resolved-mode"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert_equal(neon_probe.returncode, 3, "x86 native helper rejects NEON")
+
+
+def test_python_cpu_fallback_worker_supervision() -> None:
+    assert_equal(
+        python_cpu_workload.__module__,
+        "Modules.lvs_python_cpu_worker",
+        "Python CPU worker target is importable",
+    )
+
+    class FakeProcess:
+        next_pid = 2000
+
+        def __init__(
+            self,
+            *,
+            target: object,
+            args: tuple,
+            daemon: bool,
+            initial_exit_code: int | None = None,
+            mark_ready: bool = True,
+        ) -> None:
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+            self.pid = FakeProcess.next_pid
+            FakeProcess.next_pid += 1
+            self.exitcode = initial_exit_code
+            self.started = False
+            self.terminated = False
+            self.mark_ready = mark_ready
+
+        def start(self) -> None:
+            self.started = True
+            if self.mark_ready:
+                self.args[-1].set()
+
+        def is_alive(self) -> bool:
+            return self.started and self.exitcode is None
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.exitcode = -15
+
+        def join(self, timeout: float = 0) -> None:
+            return None
+
+    def read_payload(path: Path) -> dict:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    class FakeEvent:
+        def __init__(self) -> None:
+            self.ready = False
+
+        def set(self) -> None:
+            self.ready = True
+
+        def is_set(self) -> bool:
+            return self.ready
+
+    with TemporaryDirectory() as tmpdir:
+        result_path = Path(tmpdir) / "healthy.json"
+        stop_state = {"requested": False}
+        processes: list[FakeProcess] = []
+
+        def healthy_factory(**kwargs: object) -> FakeProcess:
+            process = FakeProcess(**kwargs)
+            processes.append(process)
+            return process
+
+        return_code = supervise_python_cpu_workers(
+            worker_count=8,
+            algorithm="sha512",
+            iterations=60000,
+            payload_bytes=1024 * 1024,
+            resolved_mode="portable",
+            result_file=str(result_path),
+            stop_requested=lambda: stop_state["requested"],
+            process_factory=healthy_factory,
+            event_factory=FakeEvent,
+            sleep=lambda _seconds: stop_state.update(requested=True),
+        )
+        payload = read_payload(result_path)
+        assert_equal(return_code, 0, "healthy Python fallback expected-stop return code")
+        assert_equal(payload["status"], "ok", "healthy Python fallback result status")
+        assert_equal(payload["backend"], "python_fallback", "Python fallback result backend")
+        assert_equal(payload["requested_worker_count"], 8, "Python fallback requested worker evidence")
+        assert_equal(payload["started_worker_count"], 8, "Python fallback started worker evidence")
+        assert_equal(payload["healthy_worker_count"], 8, "Python fallback healthy worker evidence")
+        assert_equal(payload["completed_worker_count"], 8, "Python fallback completed worker evidence")
+        assert_equal(payload["failed_worker_count"], 0, "Python fallback healthy failure count")
+        assert_equal(payload["resolved_mode"], "portable", "Python fallback resolved-mode evidence")
+        assert_equal(len(payload["worker_pids"]), 8, "Python fallback PID evidence")
+        assert_true(all(process.terminated for process in processes), "healthy workers stop at expected boundary")
+
+    with TemporaryDirectory() as tmpdir:
+        result_path = Path(tmpdir) / "startup_failure.json"
+        created = {"count": 0}
+
+        def startup_failure_factory(**kwargs: object) -> FakeProcess:
+            created["count"] += 1
+            if created["count"] == 3:
+                raise RuntimeError("forkserver bootstrap unavailable")
+            return FakeProcess(**kwargs)
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            return_code = supervise_python_cpu_workers(
+                worker_count=8,
+                algorithm="sha512",
+                iterations=60000,
+                payload_bytes=1024 * 1024,
+                resolved_mode="portable",
+                result_file=str(result_path),
+                stop_requested=lambda: False,
+                process_factory=startup_failure_factory,
+                event_factory=FakeEvent,
+                sleep=lambda _seconds: None,
+            )
+        payload = read_payload(result_path)
+        assert_equal(return_code, 1, "Python fallback bootstrap failure return code")
+        assert_equal(payload["status"], "error", "Python fallback bootstrap failure status")
+        assert_equal(payload["started_worker_count"], 2, "Python fallback partial startup evidence")
+        assert_true(payload["failed_worker_count"] > 0, "Python fallback bootstrap failure count")
+        assert_true("failed to start" in stderr.getvalue(), "Python fallback startup error reaches stderr")
+
+    for label, exit_codes, expected_failures in (
+        ("one worker", [None, 7, None], 1),
+        ("all workers", [1, 1, 1], 3),
+    ):
+        with TemporaryDirectory() as tmpdir:
+            result_path = Path(tmpdir) / "worker_failure.json"
+            process_index = {"value": 0}
+
+            def failed_worker_factory(**kwargs: object) -> FakeProcess:
+                index = process_index["value"]
+                process_index["value"] += 1
+                return FakeProcess(
+                    **kwargs,
+                    initial_exit_code=exit_codes[index],
+                    mark_ready=exit_codes[index] is None or label == "one worker",
+                )
+
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                return_code = supervise_python_cpu_workers(
+                    worker_count=3,
+                    algorithm="sha512",
+                    iterations=60000,
+                    payload_bytes=1024 * 1024,
+                    resolved_mode="portable",
+                    result_file=str(result_path),
+                    stop_requested=lambda: False,
+                    process_factory=failed_worker_factory,
+                    event_factory=FakeEvent,
+                    sleep=lambda _seconds: None,
+                )
+            payload = read_payload(result_path)
+            assert_equal(return_code, 1, f"{label} unexpected exit return code")
+            assert_equal(payload["status"], "error", f"{label} unexpected exit status")
+            assert_equal(payload["failed_worker_count"], expected_failures, f"{label} failure evidence")
+            assert_true(payload["child_exit_information"], f"{label} child exit information")
+            assert_true("exited unexpectedly" in stderr.getvalue(), f"{label} failure reaches stderr")
+
+
+def test_cpu_python_fallback_arm_runner_selection_and_diagnostics() -> None:
+    from Modules.lvs_profile_models import StageModules
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+
+    runner = WorkloadRunner()
+    runner._cpu_machine = lambda: "arm64"
+    runner._cpu_helper_status = lambda: {"available": False, "path": "", "reason": "fixture"}
+    runner._command_exists = lambda name: False
+    runner._python_runtime = lambda: "/usr/bin/python3"
+
+    for instruction_set, resolved in (("auto", "portable"), ("scalar", "scalar")):
+        cpu = ModuleCpu(enabled=True, instruction_set=instruction_set)
+        assert_equal(runner._cpu_backend_name(cpu), "python_fallback", f"ARM {instruction_set} fallback backend")
+        command = runner._cpu_command(cpu)
+        assert_equal(
+            command[:3] if command else [],
+            ["/usr/bin/python3", "-m", "Modules.lvs_python_cpu_worker"],
+            f"ARM {instruction_set} fallback command",
+        )
+        assert_equal(runner._cpu_resolved_mode(cpu), resolved, f"ARM {instruction_set} truthful resolved mode")
+
+    for instruction_set in ("sse", "avx", "avx2", "avx512"):
+        cpu = ModuleCpu(enabled=True, instruction_set=instruction_set)
+        assert_equal(runner._cpu_backend_name(cpu), "none", f"ARM {instruction_set} Python fallback unavailable")
+        assert_equal(runner._cpu_command(cpu), None, f"ARM {instruction_set} produces no Python command")
+        assert_equal(runner._cpu_resolved_mode(cpu), "", f"ARM {instruction_set} has no resolved x86 mode")
+        stage = StageConfig(
+            id=f"arm_{instruction_set}",
+            name="CPU",
+            duration_seconds=60,
+            modules=StageModules(cpu=cpu),
+        )
+        diagnostic = build_stage_diagnostics_payload(runner, stage, "ARM CPU")
+        assert_true(not diagnostic["runnable"], f"ARM {instruction_set} stage is not runnable")
+        assert_true(
+            any("x86 ISA" in issue and "ARM64" in issue for issue in diagnostic["issues"]),
+            f"ARM {instruction_set} dry-run explains unsupported ISA",
+        )
+
+    runner._cpu_machine = lambda: "x86_64"
+    explicit = ModuleCpu(enabled=True, instruction_set="avx512", mode="extreme")
+    assert_equal(runner._cpu_backend_name(explicit), "python_fallback", "x86 explicit fallback precedence preserved")
+    assert_true(runner._cpu_command(explicit) is not None, "x86 explicit fallback command preserved")
+    assert_equal(runner._cpu_resolved_mode(explicit), "approximate", "x86 fallback resolved metadata preserved")
+
+    runner._cpu_helper_status = lambda: {"available": True, "path": "/tmp/cpu-helper", "reason": ""}
+    assert_equal(runner._cpu_backend_name(explicit), "cpu_native_helper", "native backend precedence")
+    runner._cpu_helper_status = lambda: {"available": False, "path": "", "reason": "fixture"}
+    runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3"}
+    assert_equal(runner._cpu_backend_name(explicit), "stress_ng", "stress-ng backend precedence")
+    runner._command_exists = lambda name: False
+    runner._python_runtime = lambda: None
+    assert_equal(runner._cpu_backend_name(explicit), "none", "no CPU backend fallback")
+
+    runner._python_runtime = lambda: "/usr/bin/python3"
+    original_cpu_count = os.cpu_count
+    try:
+        os.cpu_count = lambda: 8
+        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="all")), 8, "CPU all threads")
+        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="3")), 3, "CPU numeric threads")
+        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="99")), 8, "CPU threads clamp high")
+        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="0")), 1, "CPU threads clamp low")
+        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="bad")), 8, "CPU invalid threads use all")
+    finally:
+        os.cpu_count = original_cpu_count
+
+
+def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
+    from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
+
+    assert_equal(normalize_cpu_backend_preference(""), "auto", "empty CPU backend preference")
+    assert_equal(normalize_cpu_backend_preference("NATIVE"), "native", "native CPU backend preference")
+    assert_equal(normalize_cpu_backend_preference("bad"), "auto", "invalid runtime CPU backend preference")
+    availability = {"cpu_native_helper": True, "stress_ng": True, "python_fallback": True}
+    assert_equal(select_cpu_backend("auto", availability), "cpu_native_helper", "automatic native precedence")
+    assert_equal(
+        select_cpu_backend("auto", {**availability, "cpu_native_helper": False}),
+        "stress_ng",
+        "automatic stress-ng precedence",
+    )
+    assert_equal(select_cpu_backend("python_fallback", availability), "python_fallback", "explicit Python backend")
+    assert_equal(
+        select_cpu_backend("native", {**availability, "cpu_native_helper": False}),
+        "none",
+        "explicit unavailable native backend does not fall through",
+    )
+
+    runner = WorkloadRunner()
+    runner._cpu_machine = lambda: "arm64"
+    runner._cpu_helper_status = lambda: {"available": False, "path": "", "reason": "wrong architecture"}
+    runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3"}
+    runner._python_runtime = lambda: "/usr/bin/python3"
+    automatic = ModuleCpu(enabled=True, instruction_set="auto", backend_preference="auto")
+    explicit_python = ModuleCpu(enabled=True, instruction_set="auto", backend_preference="python_fallback")
+    assert_equal(runner._cpu_backend_name(automatic), "stress_ng", "automatic production precedence unchanged")
+    assert_equal(runner._cpu_backend_name(explicit_python), "python_fallback", "explicit Python bypasses stress-ng")
+    assert_equal(
+        runner._cpu_command(explicit_python)[:3],
+        ["/usr/bin/python3", "-m", "Modules.lvs_python_cpu_worker"],
+        "explicit Python module command",
+    )
+    unavailable_native = ModuleCpu(enabled=True, instruction_set="auto", backend_preference="native")
+    assert_equal(runner._cpu_backend_name(unavailable_native), "none", "explicit unavailable backend")
+    assert_true("native" in runner._cpu_unavailable_reason(unavailable_native), "explicit backend unavailable reason")
+
+    runner._cpu_helper_status = lambda: {"available": True, "path": "/bin/true", "reason": ""}
+    runner._cpu_helper_resolved_mode = lambda mode: "scalar" if mode in {"auto", "scalar"} else ""
+    runner._cpu_helper_default_kernel_flavor = lambda mode: "scalar"
+    runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor == "scalar"
+    runner._cpu_power_tuning_available = lambda: False
+    runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3", "/bin/true"}
+    for instruction_set in ("auto", "scalar"):
+        explicit_native = ModuleCpu(
+            enabled=True,
+            instruction_set=instruction_set,
+            backend_preference="native",
+        )
+        assert_equal(runner._cpu_backend_name(explicit_native), "cpu_native_helper", f"ARM native {instruction_set}")
+        assert_equal(runner._cpu_resolved_mode(explicit_native), "scalar", f"ARM native {instruction_set} resolves scalar")
+    for instruction_set in ("sse", "avx", "avx2", "avx512"):
+        explicit_native = ModuleCpu(
+            enabled=True,
+            instruction_set=instruction_set,
+            backend_preference="native",
+        )
+        assert_equal(runner._cpu_backend_name(explicit_native), "none", f"ARM native rejects {instruction_set}")
+        assert_true("x86 ISA" in runner._cpu_unavailable_reason(explicit_native), f"ARM native {instruction_set} reason")
+
+    loader = ProfileLoader(Path("profiles"))
+    validator = SharedProfileValidator()
+    expected = {
+        "ARM64 Python CPU Fallback Auto.json": ("auto", True, "portable"),
+        "ARM64 Python CPU Fallback Scalar.json": ("scalar", True, "scalar"),
+        "ARM64 Python CPU Fallback AVX2 Diagnostic.json": ("avx2", False, ""),
+    }
+    for filename, (instruction_set, runnable, resolved_mode) in expected.items():
+        path = Path("profiles") / filename
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        validation = validator.validate(profile, labels)
+        assert_equal(validation["errors"], [], f"{filename} validates")
+        cpu = profile.stages[0].modules.cpu
+        assert_equal(cpu.backend_preference, "python_fallback", f"{filename} explicit Python backend")
+        assert_equal(cpu.instruction_set, instruction_set, f"{filename} instruction set")
+        diagnostic = build_stage_diagnostics_payload(runner, profile.stages[0], labels[0])
+        assert_equal(diagnostic["cpu_backend_preference"], "python_fallback", f"{filename} requested backend")
+        assert_equal(diagnostic["backend_usage"]["cpu"], "python_fallback" if runnable else "none", f"{filename} backend")
+        assert_equal(diagnostic["runnable"], runnable, f"{filename} runnable state")
+        assert_equal(diagnostic["cpu_mode_requested"], instruction_set, f"{filename} requested mode")
+        assert_equal(diagnostic["cpu_mode_resolved"], resolved_mode, f"{filename} resolved mode")
+        if not runnable:
+            assert_true(any("x86 ISA" in issue and "ARM64" in issue for issue in diagnostic["issues"]), "AVX2 ARM diagnostic")
+
+    for filename in (
+        "ARM64 Python CPU Fallback Auto.json",
+        "ARM64 Native CPU Scalar.json",
+    ):
+        validated_profile = loader.load_profile(Path("profiles") / filename)
+        assert_equal(validated_profile.stages[0].duration_seconds, 120, f"{filename} validated duration unchanged")
+        assert_equal(validated_profile.defaults.trim_start_seconds, 10, f"{filename} validated start trim unchanged")
+        assert_equal(validated_profile.defaults.trim_end_seconds, 10, f"{filename} validated end trim unchanged")
+
+    native_path = Path("profiles") / "ARM64 Native CPU Scalar.json"
+    native_profile = loader.load_profile(native_path)
+    native_labels = loader.load_segment_labels(native_path, native_profile)
+    assert_equal(validator.validate(native_profile, native_labels)["errors"], [], "ARM native scalar profile validates")
+    native_cpu = native_profile.stages[0].modules.cpu
+    assert_equal(native_cpu.backend_preference, "native", "ARM scalar profile selects native backend")
+    assert_equal(native_cpu.instruction_set, "scalar", "ARM scalar profile requests scalar")
+    native_diagnostic = build_stage_diagnostics_payload(runner, native_profile.stages[0], native_labels[0])
+    assert_true(native_diagnostic["runnable"], "ARM native scalar profile dry run")
+    assert_equal(native_diagnostic["backend_usage"]["cpu"], "cpu_native_helper", "ARM native profile backend")
+    assert_equal(native_diagnostic["cpu_mode_resolved"], "scalar", "ARM native profile resolved mode")
+
+    short_profiles = {
+        "ARM64 CPU Utilization Native Scalar Short.json": {
+            "backend_preference": "native",
+            "backend": "cpu_native_helper",
+            "instruction_set": "scalar",
+            "resolved_mode": "scalar",
+            "kernel": "scalar",
+        },
+        "ARM64 CPU Utilization Python Fallback Short.json": {
+            "backend_preference": "python_fallback",
+            "backend": "python_fallback",
+            "instruction_set": "auto",
+            "resolved_mode": "portable",
+            "kernel": "",
+        },
+    }
+    for filename, expected_short in short_profiles.items():
+        path = Path("profiles") / filename
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        assert_equal(validator.validate(profile, labels)["errors"], [], f"{filename} validates")
+        assert_equal(labels, [profile.profile_name], f"{filename} has one matching sidecar label")
+        assert_equal(profile.menu_group, "advanced", f"{filename} advanced lab classification")
+        assert_equal(profile.defaults.telemetry_interval_seconds, 1.0, f"{filename} telemetry interval")
+        assert_equal(profile.defaults.trim_start_seconds, 5, f"{filename} default start trim")
+        assert_equal(profile.defaults.trim_end_seconds, 5, f"{filename} default end trim")
+        stage = profile.stages[0]
+        assert_equal(stage.duration_seconds, 30, f"{filename} short duration")
+        assert_equal(stage.normalization.trim_start_seconds, 5, f"{filename} stage start trim")
+        assert_equal(stage.normalization.trim_end_seconds, 5, f"{filename} stage end trim")
+        cpu = stage.modules.cpu
+        assert_true(cpu.enabled, f"{filename} CPU enabled")
+        assert_true(not stage.modules.memory.enabled, f"{filename} memory disabled")
+        assert_true(not stage.modules.gpu_3d.enabled, f"{filename} GPU disabled")
+        assert_true(not stage.modules.vram.enabled, f"{filename} VRAM disabled")
+        assert_true(not stage.modules.storage_benchmark.enabled, f"{filename} storage disabled")
+        assert_equal(cpu.mode, "normal", f"{filename} normal CPU mode")
+        assert_equal(cpu.load, "steady", f"{filename} steady CPU load")
+        assert_equal(cpu.threads, "all", f"{filename} all CPU threads")
+        assert_equal(cpu.backend_preference, expected_short["backend_preference"], f"{filename} requested backend")
+        assert_equal(cpu.instruction_set, expected_short["instruction_set"], f"{filename} requested mode")
+        diagnostic = build_stage_diagnostics_payload(runner, stage, labels[0])
+        assert_true(diagnostic["runnable"], f"{filename} dry run runnable")
+        assert_equal(diagnostic["duration_seconds"], 30, f"{filename} dry run duration")
+        assert_equal(diagnostic["cpu_backend_preference"], expected_short["backend_preference"], f"{filename} dry run requested backend")
+        assert_equal(diagnostic["backend_usage"]["cpu"], expected_short["backend"], f"{filename} dry run selected backend")
+        assert_equal(diagnostic["cpu_mode_requested"], expected_short["instruction_set"], f"{filename} dry run requested mode")
+        assert_equal(diagnostic["cpu_mode_resolved"], expected_short["resolved_mode"], f"{filename} dry run resolved mode")
+        assert_equal(diagnostic["cpu_kernel_flavor"], expected_short["kernel"], f"{filename} dry run kernel")
+        command = diagnostic["commands"][0]
+        if expected_short["backend"] == "cpu_native_helper":
+            assert_equal(command[:5], ["/bin/true", "--mode", "scalar", "--threads", "8"], f"{filename} native command")
+        else:
+            assert_equal(command[:3], ["/usr/bin/python3", "-m", "Modules.lvs_python_cpu_worker"], f"{filename} Python command")
+            worker_arg = command.index("--workers")
+            assert_equal(command[worker_arg + 1], "8", f"{filename} Python workers")
+
+    stress_path = Path("profiles") / "ARM64 stress-ng CPU Auto.json"
+    stress_profile = loader.load_profile(stress_path)
+    stress_labels = loader.load_segment_labels(stress_path, stress_profile)
+    assert_equal(validator.validate(stress_profile, stress_labels)["errors"], [], "ARM stress-ng profile validates")
+    stress_cpu = stress_profile.stages[0].modules.cpu
+    assert_equal(stress_cpu.backend_preference, "stress_ng", "ARM stress-ng profile selects backend")
+    assert_equal(stress_cpu.instruction_set, "auto", "ARM stress-ng profile requests auto")
+    stress_diagnostic = build_stage_diagnostics_payload(runner, stress_profile.stages[0], stress_labels[0])
+    assert_true(stress_diagnostic["runnable"], "ARM stress-ng profile dry run")
+    assert_equal(stress_diagnostic["backend_usage"]["cpu"], "stress_ng", "ARM stress-ng profile backend")
+    assert_equal(stress_diagnostic["cpu_mode_resolved"], "approximate", "stress-ng mode remains truthful")
+    assert_equal(
+        stress_diagnostic["commands"][0],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        "ARM stress-ng generic matrixprod command",
+    )
+
+    heatsoak_path = Path("profiles") / "ARM64 Combined Heatsoak Validation.json"
+    heatsoak_profile = loader.load_profile(heatsoak_path)
+    heatsoak_labels = loader.load_segment_labels(heatsoak_path, heatsoak_profile)
+    assert_equal(validator.validate(heatsoak_profile, heatsoak_labels)["errors"], [], "ARM heatsoak profile validates")
+    assert_equal(heatsoak_labels, [heatsoak_profile.profile_name], "ARM heatsoak has one matching label")
+    assert_equal(heatsoak_profile.menu_group, "advanced", "ARM heatsoak lab classification")
+    assert_equal(heatsoak_profile.defaults.telemetry_interval_seconds, 1.0, "ARM heatsoak telemetry interval")
+    heatsoak_stage = heatsoak_profile.stages[0]
+    assert_equal(heatsoak_stage.name, "Combined", "ARM heatsoak combined stage")
+    assert_equal(heatsoak_stage.duration_seconds, 120, "ARM heatsoak validation duration")
+    assert_equal(heatsoak_stage.normalization.trim_start_seconds, 10, "ARM heatsoak start trim")
+    assert_equal(heatsoak_stage.normalization.trim_end_seconds, 10, "ARM heatsoak end trim")
+    heatsoak_cpu = heatsoak_stage.modules.cpu
+    assert_equal(heatsoak_cpu.backend_preference, "auto", "ARM heatsoak preserves automatic CPU precedence")
+    assert_equal(heatsoak_cpu.instruction_set, "auto", "ARM heatsoak CPU auto request")
+    assert_equal(heatsoak_cpu.mode, "extreme", "ARM heatsoak CPU mode")
+    assert_equal(heatsoak_cpu.threads, "all", "ARM heatsoak all CPU threads")
+    heatsoak_gpu = heatsoak_stage.modules.gpu_3d
+    assert_equal(heatsoak_gpu.backend_preference, "auto", "ARM heatsoak GPU auto request")
+    assert_equal(heatsoak_gpu.compute_variant, "stress_hash", "ARM heatsoak Vulkan stress variant")
+    assert_equal(heatsoak_gpu.intensity, "extreme", "ARM heatsoak GPU intensity")
+    assert_true(not heatsoak_stage.modules.memory.enabled, "ARM heatsoak memory disabled")
+    assert_true(not heatsoak_stage.modules.vram.enabled, "ARM heatsoak VRAM disabled")
+    assert_true(not heatsoak_stage.modules.storage_benchmark.enabled, "ARM heatsoak storage disabled")
+
+    runner._cpu_machine = lambda: "arm64"
+    runner._cpu_helper_status = lambda: {
+        "available": True,
+        "path": "build/cpu_stress_helper_arm64",
+        "reason": "",
+    }
+    runner._cpu_helper_resolved_mode = lambda mode: "neon" if mode in {"auto", "neon"} else "scalar"
+    runner._cpu_helper_default_kernel_flavor = lambda mode: "neon" if mode == "auto" else mode
+    runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor in {"scalar", "neon"}
+    runner._cpu_power_tuning_available = lambda: False
+    runner._python_runtime = lambda: "/usr/bin/python3"
+    runner._command_exists = lambda _name: True
+    adreno_target = {
+        "card": "card1",
+        "slot": "",
+        "target_id": "card1",
+        "vendor": "qualcomm",
+        "vendor_id": "5143",
+        "device": "43030c00",
+        "driver": "msm_dpu",
+        "vram_total": 0,
+    }
+    vulkan_worker = GpuWorkerSpec(
+        workload="gpu_3d",
+        backend="python_vulkan_compute",
+        gpu_index=0,
+        card="card1",
+        slot="",
+        target_id="card1",
+        command=["/usr/bin/python3", "native/vulkan_compute_worker.py"],
+        backend_api_family="Vulkan",
+        suite_scaling_mode="parametric",
+        suite_verification="compute_readback",
+        resolved_device_name="Adreno X1-45",
+        device_class="integrated",
+        profile_mode="steady",
+        profile_intensity="extreme",
+        compute_variant="stress_hash",
+    )
+    runner._gpu_targets = lambda _selection: [adreno_target]
+    runner._gpu_3d_backend_candidates = lambda _gpu, _stage=None: [
+        "python_vulkan_compute",
+        "python_egl_gles2",
+        "python_opencl_compute",
+    ]
+    runner._resolve_gpu_backend_for_targets = lambda **_kwargs: {
+        "backend": "python_vulkan_compute",
+        "candidate_reports": [],
+        "support": {
+            "supported_targets": [{"target": adreno_target, "target_label": "card1"}],
+            "unsupported_targets": [],
+        },
+    }
+    runner._gpu_worker_specs = lambda _stage: [vulkan_worker]
+    runner._gpu_3d_command = lambda _gpu, _stage=None: vulkan_worker.command
+    runner._build_commands = lambda stage, cpu_kernel_flavor="": [
+        runner._cpu_command(stage.modules.cpu, cpu_kernel_flavor),
+        vulkan_worker.command,
+    ]
+    runner._missing_tools = lambda _commands: []
+    runner._vulkan_runtime_details = lambda: {"available": True}
+    runner._vulkan_device_for_target = lambda _target: {
+        "device": {"deviceName": "Adreno X1-45"},
+        "ambiguous": False,
+    }
+    runner._gpu_target_by_id = lambda _target_id: adreno_target
+    heatsoak_diagnostic = build_stage_diagnostics_payload(
+        runner,
+        heatsoak_stage,
+        heatsoak_labels[0],
+    )
+    assert_true(heatsoak_diagnostic["runnable"], "ARM heatsoak dry run runnable")
+    assert_equal(heatsoak_diagnostic["issues"], [], "ARM heatsoak dry run has no blocking issues")
+    assert_equal(heatsoak_diagnostic["backend_usage"]["cpu"], "cpu_native_helper", "ARM heatsoak native CPU backend")
+    assert_equal(heatsoak_diagnostic["cpu_mode_requested"], "auto", "ARM heatsoak requested CPU mode")
+    assert_equal(heatsoak_diagnostic["cpu_mode_resolved"], "neon", "ARM heatsoak resolves NEON")
+    assert_equal(heatsoak_diagnostic["cpu_kernel_flavor"], "neon", "ARM heatsoak NEON kernel")
+    assert_equal(heatsoak_diagnostic["cpu_tuning_policy"], "highest_supported", "ARM heatsoak no-power tuning policy")
+    assert_equal(
+        heatsoak_diagnostic["backend_usage"]["gpu_3d"],
+        "python_vulkan_compute",
+        "ARM heatsoak Vulkan compute backend",
+    )
+    assert_equal(heatsoak_diagnostic["gpu_3d_compute_variant"], "stress_hash", "ARM heatsoak stress-hash execution")
+    assert_equal(heatsoak_diagnostic["gpu_effective_targets"], ["card1"], "ARM heatsoak Adreno target")
+    assert_true(
+        any("experimental" in warning and "stress_hash" in warning for warning in heatsoak_diagnostic["warnings"]),
+        "ARM heatsoak dry run truthfully warns about experimental stress-hash variant",
+    )
+
+
 def test_memory_execution_helpers_build_commands_and_targets() -> None:
     assert_equal(memory_worker_count("all", 16), 16, "memory all-worker count")
     assert_equal(memory_worker_count("4", 16), 4, "memory explicit worker count")
@@ -19381,6 +20581,31 @@ def test_native_helper_status_helpers_resolve_build_states() -> None:
         assert_equal(missing["reason"], "native CPU helper source missing", "native helper missing source reason")
 
         source.write_text("int main(void){return 0;}\n", encoding="utf-8")
+        binary.write_text("runnable fixture\n", encoding="utf-8")
+        binary.chmod(0o755)
+        runnable = resolve_native_helper_status(
+            source=source,
+            binary=binary,
+            compiler="/usr/bin/gcc",
+            reason_label="CPU",
+            build_runner=lambda cmd: (_ for _ in ()).throw(AssertionError("fresh runnable helper must not rebuild")),
+            readiness_probe=lambda path: SimpleNamespace(returncode=0, stdout="scalar\n", stderr=""),
+        )
+        assert_true(runnable["available"], "x86 host runnable helper remains available")
+
+        wrong_architecture = resolve_native_helper_status(
+            source=source,
+            binary=binary,
+            compiler="/usr/bin/gcc",
+            reason_label="CPU",
+            build_runner=lambda cmd: (_ for _ in ()).throw(AssertionError("wrong-architecture helper must not rebuild")),
+            readiness_probe=lambda path: (_ for _ in ()).throw(OSError(8, "Exec format error")),
+        )
+        assert_true(not wrong_architecture["available"], "ARM host stale x86 helper unavailable")
+        assert_true("not runnable" in wrong_architecture["reason"], "wrong-architecture helper reason")
+        assert_true(binary.exists(), "wrong-architecture helper is preserved")
+
+        binary.unlink()
         no_compiler = resolve_native_helper_status(
             source=source,
             binary=binary,
@@ -19401,6 +20626,7 @@ def test_native_helper_status_helpers_resolve_build_states() -> None:
             compiler="/usr/bin/gcc",
             reason_label="CPU",
             build_runner=successful_build,
+            readiness_probe=lambda path: SimpleNamespace(returncode=0, stdout="scalar\n", stderr=""),
         )
         assert_equal(built["available"], True, "native helper successful build available")
         assert_equal(built["built"], True, "native helper successful build flag")
@@ -19463,17 +20689,20 @@ def test_native_helper_runtime_service() -> None:
             binary=binary,
             compiler_path=lambda: compiler_calls.append(True) or "/usr/bin/gcc",
             reason_label="CPU",
+            readiness_command=lambda path: [path, "--mode", "scalar", "--print-resolved-mode"],
         )
         assert_equal(status["available"], True, "native runtime built helper available")
         assert_equal(status["built"], True, "native runtime built helper flag")
         assert_equal(command_calls[0][1]["timeout"], 60, "native runtime build timeout")
         assert_equal(command_calls[0][1]["env"], {"LVS_NATIVE_TEST": "1"}, "native runtime build environment")
+        assert_equal(command_calls[1][0][-1], "--print-resolved-mode", "native runtime readiness probe")
         cached_status = service.helper_status(
             cache_key="cpu",
             source=source,
             binary=binary,
             compiler_path=lambda: compiler_calls.append(True) or "/unexpected/compiler",
             reason_label="CPU",
+            readiness_command=lambda path: [path, "--mode", "scalar", "--print-resolved-mode"],
         )
         assert_true(cached_status is status, "native runtime status cache identity")
         assert_equal(len(compiler_calls), 1, "native runtime cached status skips compiler lookup")
@@ -19493,7 +20722,7 @@ def test_native_helper_runtime_service() -> None:
         assert_true(not service.cpu_supports_kernel_flavor("scalar", helper_status=helper_status), "native runtime unsupported kernel")
         assert_true(not service.cpu_supports_kernel_flavor("scalar", helper_status=helper_status), "native runtime unsupported kernel cache")
         probe_calls = [call for call in command_calls if "--print-resolved-mode" in call[0] or "--print-kernel-flavor" in call[0]]
-        assert_equal(len(probe_calls), 4, "native runtime executes each normalized probe once")
+        assert_equal(len(probe_calls), 5, "native runtime executes readiness and normalized probes once")
         assert_true(all(call[1]["timeout"] == 10 for call in probe_calls), "native runtime probe timeout")
         assert_true(all(call[1]["env"] == {"LVS_NATIVE_TEST": "1"} for call in probe_calls), "native runtime probe environment")
 
@@ -19510,6 +20739,22 @@ def test_native_helper_runtime_service() -> None:
             "native runtime unavailable kernel cache",
         )
         assert_equal(len(unavailable_calls), 2, "native runtime caches unsupported result only")
+
+        wrong_arch_service = NativeHelperRuntimeService(
+            command_env=lambda: {},
+            run_command=lambda command, **kwargs: (_ for _ in ()).throw(OSError(8, "Exec format error")),
+        )
+        wrong_arch_status = wrong_arch_service.helper_status(
+            cache_key="cpu",
+            source=source,
+            binary=binary,
+            compiler_path=lambda: "/usr/bin/gcc",
+            reason_label="CPU",
+            readiness_command=lambda path: [path, "--mode", "scalar", "--print-resolved-mode"],
+        )
+        assert_true(not wrong_arch_status["available"], "native runtime rejects wrong-architecture helper")
+        assert_true("Exec format error" in wrong_arch_status["reason"], "native runtime reports execution failure")
+        assert_true(binary.exists(), "native runtime preserves wrong-architecture artifact")
 
 
 def test_backend_readiness_helpers_build_payloads() -> None:
@@ -21161,6 +22406,153 @@ def test_stage_launch_plan_helpers() -> None:
     assert_equal(build_stage_launch_commands(FakeRunner(), stage), [], "disabled stage launch plan")
 
 
+def test_external_cpu_process_evidence_helpers() -> None:
+    good_output = """stress-ng: info:  [88267] dispatching hogs: 8 cpu
+stress-ng: info:  [88267] stopping 8 stressors
+stress-ng: metrc: [88267] stressor       bogo ops real time  usr time  sys time   bogo ops/s     bogo ops/s
+stress-ng: metrc: [88267] cpu               88726    120.88    962.55      0.14       733.98          92.16
+stress-ng: info:  [88267] skipped: 0
+stress-ng: info:  [88267] passed: 8: cpu (8)
+stress-ng: info:  [88267] failed: 0
+stress-ng: info:  [88267] metrics untrustworthy: 0
+"""
+    parsed = parse_stress_ng_metrics_brief(good_output)
+    assert_equal(parsed["dispatched_stressor_count"], 8, "stress-ng dispatched count")
+    assert_equal(parsed["passed_stressor_count"], 8, "stress-ng passed count")
+    assert_equal(parsed["failed_stressor_count"], 0, "stress-ng failed count")
+    assert_equal(parsed["skipped_stressor_count"], 0, "stress-ng skipped count")
+    assert_equal(parsed["metrics_untrustworthy_count"], 0, "stress-ng metrics trust count")
+    assert_equal(parsed["stressor_metrics"][0]["bogo_ops"], 88726, "stress-ng bogo operations")
+    assert_equal(parsed["stressor_metrics"][0]["real_time_seconds"], 120.88, "stress-ng real time")
+
+    good_evidence = build_stress_ng_cpu_evidence(
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        good_output,
+    )
+    assert_equal(good_evidence["status"], "ok", "clean 8/8 stress-ng evidence")
+    assert_equal(good_evidence["error_count"], 0, "clean stress-ng error count")
+
+    failed_output = good_output.replace("passed: 8", "passed: 7").replace("failed: 0", "failed: 1")
+    failed_evidence = build_stress_ng_cpu_evidence(
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        failed_output,
+    )
+    assert_equal(failed_evidence["status"], "error", "explicit stress-ng failure status")
+    assert_true(failed_evidence["error_count"] > 0, "explicit stress-ng failure count")
+    failure_events = worker_result_events_from_payload(
+        failed_evidence,
+        "CPU",
+        entry_kind="cpu",
+        backend_name="stress_ng",
+    )
+    assert_true(any(event["severity"] == "error" for event in failure_events), "stress-ng failure prevents verified clean")
+
+    no_start_evidence = build_stress_ng_cpu_evidence(
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        "stress-ng: info: passed: 0\nstress-ng: info: failed: 0\nstress-ng: info: skipped: 0\n",
+    )
+    assert_equal(no_start_evidence["status"], "error", "missing stress-ng startup evidence")
+
+    with TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        stress_binary = bin_dir / "stress-ng"
+        stress_binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        stress_binary.chmod(0o755)
+        command_env = {"PATH": str(bin_dir)}
+        resolved = resolve_executable_path("stress-ng", command_env=command_env)
+        assert_equal(resolved, str(stress_binary.resolve()), "stress-ng executable PATH resolution")
+
+        version_calls: list[tuple[list[str], dict]] = []
+
+        def version_runner(command: list[str], **kwargs: object) -> SimpleNamespace:
+            version_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="stress-ng, version 0.19.11\n", stderr="")
+
+        assert_equal(
+            executable_version(resolved, command_env=command_env, run_command=version_runner),
+            "stress-ng, version 0.19.11",
+            "stress-ng version capture",
+        )
+        assert_equal(
+            executable_version(
+                resolved,
+                command_env=command_env,
+                run_command=lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="unsupported"),
+            ),
+            "",
+            "stress-ng missing version degrades gracefully",
+        )
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.pid = 4242
+                self.return_code: int | None = None
+                self.terminated = False
+
+            def poll(self) -> int | None:
+                return self.return_code
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def wait(self, timeout: float = 0) -> int:
+                self.return_code = 0
+                return 0
+
+            def kill(self) -> None:
+                self.return_code = -9
+
+        process = FakeProcess()
+        result_path = tmp_path / "worker_results" / "cpu.json"
+        logs_dir = tmp_path / "worker_logs"
+        logs_dir.mkdir()
+        command = ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"]
+        launched = launch_stage_processes_from_plan(
+            [SimpleNamespace(kind="cpu", command=command, gpu_spec=None, result_path=str(result_path))],
+            stage_id="cpu_stage",
+            worker_logs_dir=logs_dir,
+            command_env=command_env,
+            popen_factory=lambda *_args, **_kwargs: process,
+            version_runner=version_runner,
+            now_iso=lambda: "2026-08-10T12:00:00+00:00",
+            monotonic=lambda: 10.0,
+        )
+        assert_equal(launched[0].executable_resolved_path, str(stress_binary.resolve()), "launched executable provenance")
+        Path(launched[0].stdout_path).write_text(good_output, encoding="utf-8")
+        stop_stage_processes(
+            launched,
+            now_iso=lambda: "2026-08-10T12:00:30+00:00",
+            monotonic=lambda: 40.0,
+        )
+        evidence = read_worker_result(launched[0])
+        assert_equal(evidence["backend"], "stress_ng", "stress-ng backend evidence")
+        assert_equal(evidence["executed_command"], command, "materialized executed command evidence")
+        assert_equal(evidence["executable_requested"], "stress-ng", "requested executable evidence")
+        assert_equal(evidence["executable_resolved_path"], str(stress_binary.resolve()), "resolved executable evidence")
+        assert_equal(evidence["executable_version"], "stress-ng, version 0.19.11", "executed version evidence")
+        assert_equal(evidence["process_pid"], 4242, "stress-ng PID evidence")
+        assert_equal(evidence["process_elapsed_seconds"], 30.0, "stress-ng elapsed evidence")
+        assert_equal(evidence["observed_exit_code"], 0, "stress-ng return code evidence")
+        assert_equal(evidence["expected_termination"], True, "stress-ng expected termination evidence")
+        assert_true(result_path.exists(), "stress-ng worker evidence artifact written")
+        legacy_evidence = preserve_legacy_worker_evidence_contract(evidence)
+        assert_equal(legacy_evidence["status"], "ok", "legacy stress-ng status remains available")
+        assert_equal(legacy_evidence["observed_exit_code"], 0, "legacy stress-ng exit code remains available")
+        assert_true("executed_command" not in legacy_evidence, "legacy output excludes additive executed command")
+        assert_true("stressor_metrics" not in legacy_evidence, "legacy output excludes additive stress-ng metrics")
+        assert_true("backend" not in legacy_evidence, "legacy stress-ng worker shape remains unchanged")
+        assert_true("executed_command" in evidence, "extended worker evidence remains intact")
+
+        native_entry = StageProcess("cpu", ["build/cpu_stress_helper"], FakeProcess())
+        native_payload = apply_worker_entry_context({"status": "ok"}, native_entry)
+        assert_true("executed_command" not in native_payload, "native CPU evidence contract unchanged")
+        python_entry = StageProcess("cpu", [sys.executable, "-m", "Modules.lvs_python_cpu_worker"], FakeProcess())
+        python_payload = apply_worker_entry_context({"status": "ok"}, python_entry)
+        assert_true("executed_command" not in python_payload, "Python CPU evidence contract unchanged")
+
+
 def test_stage_process_control_helpers() -> None:
     created: list[dict] = []
 
@@ -21292,6 +22684,61 @@ def test_stage_worker_evidence_helpers() -> None:
         results, events = worker_result_events([error_entry], "Stage B", backend_profile)
         assert_equal(results[0]["result_path"], str(result_path), "worker result path preserved")
         assert_true(any(event["category"] == "verification_error" for event in events), "worker result event generated")
+
+        python_missing_entry = StageProcess(
+            kind="cpu",
+            command=[sys.executable, "-m", "Modules.lvs_python_cpu_worker", "--workers", "8"],
+            process=FakeProcess(0),
+            result_path=str(tmp_path / "missing-python-cpu.json"),
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+        )
+        missing_payload = read_worker_result(python_missing_entry)
+        assert_equal(missing_payload["status"], "error", "missing Python fallback result is not synthetic ok")
+        assert_equal(missing_payload["error_count"], 1, "missing Python fallback result error count")
+        assert_equal(missing_payload["result_missing"], True, "missing Python fallback result evidence")
+        assert_equal(missing_payload["stderr_tail"], "stderr line", "missing-result stderr evidence preserved")
+        missing_results, missing_events = worker_result_events([python_missing_entry], "CPU", backend_profile)
+        assert_equal(missing_results[0]["backend"], "python_fallback", "missing-result backend identity")
+        assert_true(
+            any(event["category"] == "verification_error" and event["severity"] == "error" for event in missing_events),
+            "missing Python fallback result prevents verified-clean stage",
+        )
+
+        failed_result_path = tmp_path / "failed-python-cpu.json"
+        failed_result_path.write_text(
+            json.dumps(
+                {
+                    "kind": "cpu",
+                    "backend": "python_fallback",
+                    "status": "error",
+                    "error_count": 8,
+                    "failed_worker_count": 8,
+                    "last_error": "all workers failed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        traceback_path = tmp_path / "python-cpu.stderr.log"
+        traceback_path.write_text(
+            "Traceback (most recent call last):\nAttributeError: module '__main__' has no attribute 'worker'\n",
+            encoding="utf-8",
+        )
+        failed_python_entry = StageProcess(
+            kind="cpu",
+            command=[sys.executable, "-m", "Modules.lvs_python_cpu_worker", "--workers", "8"],
+            process=FakeProcess(1),
+            result_path=str(failed_result_path),
+            stdout_path=str(stdout_path),
+            stderr_path=str(traceback_path),
+        )
+        failed_results, failed_events = worker_result_events([failed_python_entry], "CPU", backend_profile)
+        assert_equal(failed_results[0]["failed_worker_count"], 8, "child failure evidence preserved")
+        assert_true("AttributeError" in failed_results[0]["stderr_tail"], "child traceback evidence preserved")
+        assert_true(
+            any(event["severity"] == "error" for event in failed_events),
+            "explicit child failure produces stage error",
+        )
 
 
 def test_gpu_telemetry_warning_helpers() -> None:
@@ -21912,6 +23359,7 @@ def main() -> int:
         test_telemetry_sample_csv_helpers,
         test_telemetry_memory_helpers,
         test_telemetry_cpu_helpers,
+        test_cpu_utilization_telemetry_helpers,
         test_gpu_identity_helpers,
         test_gpu_target_helpers,
         test_gpu_capability_profile_helpers,
@@ -21955,6 +23403,12 @@ def main() -> int:
         test_cpu_execution_resolution_policy,
         test_cpu_execution_helpers_build_and_parse_helper_probes,
         test_cpu_execution_helpers_build_commands_and_benchmark_results,
+        test_cpu_python_fallback_x86_contract_and_architecture_policy,
+        test_native_cpu_scalar_architecture_policy_and_build_contract,
+        test_native_cpu_neon_architecture_policy_and_profile,
+        test_python_cpu_fallback_worker_supervision,
+        test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
+        test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
         test_native_helper_status_helpers_resolve_build_states,
         test_native_helper_runtime_service,
@@ -21972,6 +23426,7 @@ def main() -> int:
         test_stage_adapter_helpers,
         test_run_stage_loop_helpers,
         test_stage_launch_plan_helpers,
+        test_external_cpu_process_evidence_helpers,
         test_stage_process_control_helpers,
         test_stage_worker_evidence_helpers,
         test_gpu_telemetry_warning_helpers,

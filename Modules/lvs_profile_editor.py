@@ -34,7 +34,8 @@ class ProfileEditor:
     user input and when to persist through ProfileLoader.
     """
 
-    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512"]
+    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "neon"]
+    CPU_BACKEND_OPTIONS = ["auto", "native", "stress_ng", "python_fallback"]
     MEMORY_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512"]
     GPU_TARGET_OPTIONS = ["all", "discrete_all", "primary", "first"]
     GPU_3D_MODE_OPTIONS = ["steady", "variable"]
@@ -383,6 +384,11 @@ class ProfileEditor:
     def set_cpu_instruction_set(self, stage: StageConfig, instruction_set: str) -> str:
         normalized = self._normalize_choice(instruction_set, self.CPU_INSTRUCTION_OPTIONS, "auto")
         stage.modules.cpu.instruction_set = normalized
+        return normalized
+
+    def set_cpu_backend_preference(self, stage: StageConfig, backend_preference: str) -> str:
+        normalized = self._normalize_choice(backend_preference, self.CPU_BACKEND_OPTIONS, "auto")
+        stage.modules.cpu.backend_preference = normalized
         return normalized
 
     def set_cpu_threads(self, stage: StageConfig, threads: str) -> str:

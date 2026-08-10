@@ -7,6 +7,7 @@ import math
 from typing import Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
+from .lvs_cpu_backend_policy import CPU_BACKEND_PREFERENCES
 from .lvs_profile_models import StageConfig, ValidationProfile, stage_execution_mode
 
 
@@ -129,6 +130,11 @@ class ProfileValidator:
                     warnings.append(
                         f"{stage_ref} has unknown OpenCL gpu_3d.compute_variant='{stage.modules.gpu_3d.compute_variant}'; baseline will be used"
                     )
+
+            if stage.modules.cpu.enabled and stage.modules.cpu.backend_preference not in CPU_BACKEND_PREFERENCES:
+                errors.append(
+                    f"{stage_ref} has invalid cpu.backend_preference='{stage.modules.cpu.backend_preference}'"
+                )
 
         if enabled_stage_count == 0:
             errors.append("profile has no enabled stages")

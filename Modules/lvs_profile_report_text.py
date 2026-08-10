@@ -19,7 +19,12 @@ def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], me
         label = labels[index - 1] if index - 1 < len(labels) else stage.name
         workloads = []
         if stage.modules.cpu.enabled:
-            workloads.append(f"CPU/{stage.modules.cpu.instruction_set}/{stage.modules.cpu.threads}")
+            cpu = stage.modules.cpu
+            workloads.append(
+                f"CPU/{cpu.backend_preference}/{cpu.instruction_set}/{cpu.threads}"
+                if cpu.backend_preference != "auto"
+                else f"CPU/{cpu.instruction_set}/{cpu.threads}"
+            )
         if stage.modules.memory.enabled:
             workloads.append(f"RAM/{stage.modules.memory.allocation_percent}%")
         if stage.modules.gpu_3d.enabled:
@@ -109,7 +114,10 @@ def profile_execution_cpu_line(stage: Dict[str, Any]) -> str:
     cpu_requested = stage.get("cpu_mode_requested") or "-"
     cpu_resolved = stage.get("cpu_mode_resolved") or "-"
     cpu_kernel = stage.get("cpu_kernel_flavor") or "-"
-    return f"  cpu: backend={cpu_backend}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
+    cpu_preference = stage.get("cpu_backend_preference") or "auto"
+    if cpu_preference == "auto":
+        return f"  cpu: backend={cpu_backend}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
+    return f"  cpu: requested_backend={cpu_preference}, backend={cpu_backend}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
 
 
 def profile_execution_memory_line(stage: Dict[str, Any]) -> str:

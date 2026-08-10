@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
-CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512")
+CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon")
 CPU_KERNEL_MODE_MAP = {
     "scalar": "scalar",
     "sse2": "sse",
@@ -18,6 +18,7 @@ CPU_KERNEL_MODE_MAP = {
     "avx2_fma": "avx2",
     "avx512_fma": "avx512",
     "avx512_int": "avx512",
+    "neon": "neon",
 }
 CPU_KERNEL_FAMILY_CANDIDATES = {
     "scalar": ["scalar"],
@@ -25,6 +26,7 @@ CPU_KERNEL_FAMILY_CANDIDATES = {
     "avx": ["avx_fma", "avx"],
     "avx2": ["avx2_fma", "avx2"],
     "avx512": ["avx512_fma", "avx512_int"],
+    "neon": ["neon"],
 }
 CPU_KERNEL_MAX_POWER_ORDER = [
     "avx512_fma",
@@ -37,6 +39,7 @@ CPU_KERNEL_MAX_POWER_ORDER = [
     "sse2_int",
     "scalar",
 ]
+CPU_KERNEL_CAPABILITY_ORDER = [*CPU_KERNEL_MAX_POWER_ORDER, "neon"]
 
 
 def normalize_cpu_helper_mode(requested_mode: str) -> str:
@@ -124,6 +127,8 @@ def cpu_candidate_kernel_flavors(
         return []
     if policy == "max_power":
         ordered = CPU_KERNEL_MAX_POWER_ORDER
+    elif policy == "capabilities":
+        ordered = CPU_KERNEL_CAPABILITY_ORDER
     else:
         ordered = CPU_KERNEL_FAMILY_CANDIDATES.get((resolved_mode or "scalar").strip().lower(), ["scalar"])
     return [flavor for flavor in ordered if supports_kernel_flavor(flavor)]
@@ -253,6 +258,7 @@ def cpu_fallback_params(instruction_set: str, mode: str) -> Dict[str, Any]:
 
 
 def build_cpu_fallback_script(instruction_set: str, mode: str, worker_count: int) -> str:
+    """Return the legacy workload body for compatibility tests; runtime uses an importable module."""
     params = cpu_fallback_params(instruction_set, mode)
     return "\n".join(
         [
@@ -313,6 +319,7 @@ def build_cpu_command(
     python_runtime: str,
     cpu_kernel_flavor: str = "",
     result_file: str = "",
+    resolved_mode: str = "",
 ) -> Optional[List[str]]:
     if worker_count <= 0:
         return None
@@ -336,7 +343,25 @@ def build_cpu_command(
         return ["stress-ng", "--cpu", str(worker_count), "--cpu-method", method, "--metrics-brief"]
     if not python_runtime:
         return None
-    return [python_runtime, "-c", build_cpu_fallback_script(instruction_set, mode, worker_count)]
+    params = cpu_fallback_params(instruction_set, mode)
+    command = [
+        python_runtime,
+        "-m",
+        "Modules.lvs_python_cpu_worker",
+        "--workers",
+        str(worker_count),
+        "--algorithm",
+        str(params["algorithm"]),
+        "--iterations",
+        str(params["iterations"]),
+        "--payload-bytes",
+        str(params["payload_bytes"]),
+        "--resolved-mode",
+        resolved_mode,
+    ]
+    if result_file:
+        command.extend(["--result-file", result_file])
+    return command
 
 
 def build_cpu_benchmark_result(

@@ -1289,6 +1289,54 @@ def action_item_severity_counts(action_items: List[Dict[str, Any]]) -> Dict[str,
     return dict(sorted(counts.items()))
 
 
+def summarize_cpu_memory_worker_results(segments: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Summarize existing non-GPU worker evidence for the generic department report."""
+    result_count = 0
+    success_count = 0
+    failure_count = 0
+    verification_passes = 0
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        worker_results = segment.get("WorkerResults")
+        if not isinstance(worker_results, list):
+            worker_results = segment.get("worker_results")
+        if not isinstance(worker_results, list):
+            continue
+        for result in worker_results:
+            if not isinstance(result, dict):
+                continue
+            kind = str(result.get("kind") or result.get("Kind") or "").strip().lower()
+            if kind not in {"cpu", "memory"}:
+                continue
+            result_count += 1
+            status = str(result.get("status") or result.get("Status") or "").strip().lower()
+            try:
+                error_count = int(result.get("error_count") or result.get("ErrorCount") or 0)
+            except Exception:
+                error_count = 1
+            failed = error_count > 0 or status in {"error", "fail", "failed"}
+            if failed:
+                failure_count += 1
+            elif status in {"ok", "pass", "passed", "success", "successful"}:
+                success_count += 1
+            try:
+                verification_passes += int(
+                    result.get("verify_passes")
+                    or result.get("verification_passes")
+                    or result.get("VerificationPasses")
+                    or 0
+                )
+            except Exception:
+                pass
+    return {
+        "WorkerResultCount": result_count,
+        "SuccessfulWorkerResultCount": success_count,
+        "WorkerFailureCount": failure_count,
+        "VerificationPasses": verification_passes,
+    }
+
+
 def build_report_summary(
     *,
     overall_result: str,
@@ -1337,6 +1385,11 @@ def build_report_summary(
             verification_passes += int(detail.get("VerificationPasses") or 0)
         except Exception:
             pass
+    cpu_memory_summary = summarize_cpu_memory_worker_results(segments)
+    department_worker_count = len(gpu_validation_details) + cpu_memory_summary["WorkerResultCount"]
+    department_worker_success_count = worker_success_count + cpu_memory_summary["SuccessfulWorkerResultCount"]
+    department_worker_failure_count = worker_failure_count + cpu_memory_summary["WorkerFailureCount"]
+    department_verification_passes = verification_passes + cpu_memory_summary["VerificationPasses"]
     return {
         "Schema": "linux_validation_suite.report_summary.v1",
         "ReferenceContract": "Legacy custom JSON compatible extension",
@@ -1353,10 +1406,10 @@ def build_report_summary(
             warning_events=warning_events,
             error_events=error_events,
             skipped_stages=skipped_stages,
-            worker_result_count=len(gpu_validation_details),
-            worker_success_count=worker_success_count,
-            worker_failure_count=worker_failure_count,
-            verification_passes=verification_passes,
+            worker_result_count=department_worker_count,
+            worker_success_count=department_worker_success_count,
+            worker_failure_count=department_worker_failure_count,
+            verification_passes=department_verification_passes,
         ),
         "WarningCount": len(warning_events),
         "ErrorCount": len(error_events),

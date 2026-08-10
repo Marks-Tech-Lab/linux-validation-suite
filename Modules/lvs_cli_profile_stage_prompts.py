@@ -5,7 +5,7 @@ class ProfileCliStagePromptMixin:
     """CLI prompt helpers for CPU, memory, and allocation stage options."""
 
     def _choose_cpu_instruction_set(self, current: str = "auto") -> str:
-        options = ["auto", "sse", "avx", "avx2", "avx512"]
+        options = ["auto", "sse", "avx", "avx2", "avx512", "neon"]
         print("CPU instruction set:")
         for idx, name in enumerate(options, start=1):
             label = "Auto" if name == "auto" else name.upper()

@@ -47,6 +47,7 @@ def build_dry_run_report(
         if stage["enabled"]
         for workload in stage["workloads"]
     }
+    gpu_workloads_enabled = bool({"gpu_3d", "vram"} & enabled_workloads)
 
     for stage in plan:
         if not stage["enabled"]:
@@ -114,7 +115,7 @@ def build_dry_run_report(
         if stage["enabled"]
     ):
         warnings.append("GPU stages are using the suite-native Vulkan compute/readback backend; this is the preferred curated stress family when available")
-    if orchestrator.settings.gpu_safe_mode:
+    if gpu_workloads_enabled and orchestrator.settings.gpu_safe_mode:
         warnings.append(
             "GPU safe mode is enabled: "
             + f"internal backends ramp from {orchestrator.settings.gpu_safe_start_load_fraction * 100:.0f}% load over ~{orchestrator.settings.gpu_internal_ramp_step_seconds * 3:.0f}s, "
@@ -126,7 +127,7 @@ def build_dry_run_report(
         )
     recovery_report = orchestrator._build_gpu_recovery_report()
     safety_marker = recovery_report.get("marker")
-    if safety_marker:
+    if gpu_workloads_enabled and safety_marker:
         stage_name = str(safety_marker.get("stage_name") or "unknown stage")
         profile_name = str(safety_marker.get("profile_name") or "unknown profile")
         warnings.append(
@@ -146,11 +147,11 @@ def build_dry_run_report(
             warnings.append(
                 "No matching previous-boot kernel faults were found for the unclean GPU run marker"
             )
-    if orchestrator.settings.target_gpu_busy_min_percent > 0 and orchestrator.settings.target_gpu_busy_sustain_seconds > 0:
+    if gpu_workloads_enabled and orchestrator.settings.target_gpu_busy_min_percent > 0 and orchestrator.settings.target_gpu_busy_sustain_seconds > 0:
         warnings.append(
             f"Target 3D GPU load validation enabled: busy >= {orchestrator.settings.target_gpu_busy_min_percent}% for {orchestrator.settings.target_gpu_busy_sustain_seconds}s"
         )
-    if orchestrator.settings.target_gpu_memory_busy_min_percent > 0 and orchestrator.settings.target_gpu_memory_busy_sustain_seconds > 0:
+    if gpu_workloads_enabled and orchestrator.settings.target_gpu_memory_busy_min_percent > 0 and orchestrator.settings.target_gpu_memory_busy_sustain_seconds > 0:
         warnings.append(
             f"Target VRAM GPU load validation enabled: memory busy >= {orchestrator.settings.target_gpu_memory_busy_min_percent}% for {orchestrator.settings.target_gpu_memory_busy_sustain_seconds}s"
         )

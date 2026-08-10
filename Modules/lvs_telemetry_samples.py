@@ -9,6 +9,7 @@ constructing a ``TelemetryCollector``.
 
 import csv
 import re
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -71,3 +72,25 @@ def write_telemetry_csv(samples: Iterable[Sample], path: Path) -> None:
         writer.writeheader()
         for sample in rows:
             writer.writerow(telemetry_sample_row(sample))
+
+
+def telemetry_metric_summaries(
+    samples: Iterable[Sample],
+    field_names: Iterable[str],
+) -> Dict[str, Dict[str, Optional[float] | int]]:
+    """Build additive snake_case summaries for selected extended metrics."""
+    rows = list(samples)
+    summaries: Dict[str, Dict[str, Optional[float] | int]] = {}
+    for field_name in field_names:
+        values = [
+            float(sample.values[field_name])
+            for sample in rows
+            if sample.values.get(field_name) is not None
+        ]
+        summaries[str(field_name)] = {
+            "sample_count": len(values),
+            "minimum": round(min(values), 2) if values else None,
+            "average": round(statistics.mean(values), 2) if values else None,
+            "maximum": round(max(values), 2) if values else None,
+        }
+    return summaries

@@ -204,6 +204,7 @@ def build_telemetry_source_map(
     process_is_root: bool = False,
     sudo_available: bool = False,
     cpu_power_unreadable_sources: Iterable[TelemetrySource] = (),
+    cpu_utilization_source: Optional[TelemetrySource] = None,
 ) -> Dict[str, Any]:
     """Build a machine-readable map for raw telemetry CSV fields.
 
@@ -230,6 +231,22 @@ def build_telemetry_source_map(
         "cpu_temp_c": telemetry_source_record("cpu_temp_c", cpu_temp_source, category="cpu", metric="temperature_c"),
         "cpu_power_w": telemetry_source_record("cpu_power_w", cpu_power_source, category="cpu", metric="power_w"),
         "cpu_clock_mhz": telemetry_source_record("cpu_clock_mhz", cpu_clock_source, category="cpu", metric="clock_mhz"),
+        "cpu_utilization_percent": {
+            "field": "cpu_utilization_percent",
+            "category": "cpu",
+            "metric": "utilization_percent",
+            "source": str(cpu_utilization_source.get("path") or "/proc/stat") if cpu_utilization_source else "not found",
+            "available": cpu_utilization_source is not None,
+            **(
+                {
+                    "kind": cpu_utilization_source.get("kind", "procfs"),
+                    "path": cpu_utilization_source.get("path", "/proc/stat"),
+                    "access_mode": telemetry_source_access_mode(cpu_utilization_source),
+                }
+                if cpu_utilization_source
+                else {}
+            ),
+        },
         "memory_used_gb": {
             "field": "memory_used_gb",
             "category": "memory",
@@ -316,7 +333,7 @@ def build_telemetry_source_map(
 
     source_list: List[TelemetrySource] = []
     for source in (
-        [cpu_temp_source, cpu_power_source, cpu_clock_source]
+        [cpu_temp_source, cpu_power_source, cpu_clock_source, cpu_utilization_source]
         + cpu_package_temp_source_list
         + cpu_core_clock_source_list
         + memory_temp_source_list
@@ -478,6 +495,7 @@ def build_telemetry_capability_summary(
     privileged_helper_enabled: bool = False,
     process_is_root: bool = False,
     sudo_available: bool = False,
+    cpu_utilization_source: Optional[TelemetrySource] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build the diagnostics/export telemetry capability payload.
 
@@ -533,6 +551,10 @@ def build_telemetry_capability_summary(
         "cpu_clock_mhz": {
             "available": cpu_clock_source is not None,
             "source": describe_source(cpu_clock_source) if cpu_clock_source else "not found",
+        },
+        "cpu_utilization_percent": {
+            "available": cpu_utilization_source is not None,
+            "source": str(cpu_utilization_source.get("path") or "/proc/stat") if cpu_utilization_source else "not found",
         },
         "cpu_core_clock_mhz": {
             "available": bool(cpu_core_clock_source_list),
@@ -693,7 +715,7 @@ def build_telemetry_capability_summary(
     capabilities["gpu_vram_used_gib"] = dict(capabilities["gpu_vram_used_gb"])
     privilege_sources: List[TelemetrySource] = []
     for source in (
-        [cpu_temp_source, cpu_power_source, cpu_clock_source]
+        [cpu_temp_source, cpu_power_source, cpu_clock_source, cpu_utilization_source]
         + cpu_core_clock_source_list
         + memory_temp_source_list
         + storage_temp_source_list

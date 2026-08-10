@@ -197,11 +197,19 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     gpu_workers = runner._gpu_worker_specs(stage)
     missing_tools = runner._missing_tools(cmds)
     cpu_mode_requested = runner._cpu_helper_mode(stage.modules.cpu) if stage.modules.cpu.enabled else ""
+    cpu_preference_resolver = getattr(runner, "_cpu_backend_preference", None)
+    cpu_backend_preference = (
+        cpu_preference_resolver(stage.modules.cpu)
+        if stage.modules.cpu.enabled and cpu_preference_resolver
+        else "auto"
+    )
     cpu_mode_resolved = ""
     cpu_kernel_flavor = ""
     cpu_tuning_policy = ""
     cpu_kernel_candidates: List[str] = []
-    if stage.modules.cpu.enabled and backend_usage["cpu"] == "cpu_native_helper":
+    if stage.modules.cpu.enabled and backend_usage["cpu"] != "none" and (
+        backend_usage["cpu"] == "cpu_native_helper" or cpu_backend_preference != "auto"
+    ):
         cpu_preview = runner.resolve_cpu_execution(stage.modules.cpu, tune_max_power=False)
         cpu_mode_resolved = cpu_preview["resolved_mode"]
         cpu_kernel_flavor = cpu_preview["kernel_flavor"]
@@ -211,7 +219,9 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     if stage.enabled and not workloads:
         issues.append("enabled stage has no enabled workloads")
     if stage.modules.cpu.enabled and runner._cpu_command(stage.modules.cpu) is None:
-        issues.append("CPU workload selected but no backend is available")
+        unavailable_reason = getattr(runner, "_cpu_unavailable_reason", None)
+        cpu_unavailable_reason = unavailable_reason(stage.modules.cpu) if unavailable_reason else ""
+        issues.append(cpu_unavailable_reason or "CPU workload selected but no backend is available")
     if stage.modules.memory.enabled and runner._memory_command(stage.modules.memory) is None:
         issues.append("Memory workload selected but no backend is available")
     if stage.modules.gpu_3d.enabled and runner._gpu_3d_command(stage.modules.gpu_3d, stage) is None:
@@ -587,6 +597,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         ],
         "gpu_workers": [runner.serialize_gpu_worker(worker) for worker in gpu_workers],
         "backend_usage": backend_usage,
+        "cpu_backend_preference": cpu_backend_preference,
         "cpu_mode_requested": cpu_mode_requested,
         "cpu_mode_resolved": cpu_mode_resolved,
         "cpu_kernel_flavor": cpu_kernel_flavor,

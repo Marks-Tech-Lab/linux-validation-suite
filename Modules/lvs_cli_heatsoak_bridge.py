@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from .lvs_advanced_debug import AdvancedDebugLogger
+from .lvs_cpu_architecture import current_cpu_architecture, heatsoak_cpu_instruction_set
 from .lvs_heatsoak import HeatsoakManager
 from .lvs_profile_models import ModuleCpu, ModuleGpu3D, StageConfig, StageModules, StageNormalization
 
@@ -21,7 +22,7 @@ class HeatsoakBridgeMixin:
                     enabled=True,
                     mode="extreme",
                     load="steady",
-                    instruction_set="avx",
+                    instruction_set=heatsoak_cpu_instruction_set(current_cpu_architecture()),
                     threads="all",
                     priority="high",
                 ),

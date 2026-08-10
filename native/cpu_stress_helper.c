@@ -1,6 +1,13 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#endif
+#if defined(__aarch64__) && defined(__linux__)
+#include <arm_neon.h>
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
@@ -18,7 +25,9 @@ typedef enum {
     MODE_SSE = 2,
     MODE_AVX = 3,
     MODE_AVX2 = 4,
-    MODE_AVX512 = 5
+    MODE_AVX512 = 5,
+    MODE_NEON = 6,
+    MODE_SVE = 7
 } stress_mode_t;
 
 typedef enum {
@@ -31,7 +40,8 @@ typedef enum {
     KERNEL_AVX2 = 6,
     KERNEL_AVX2_FMA = 7,
     KERNEL_AVX512_FMA = 8,
-    KERNEL_AVX512_INT = 9
+    KERNEL_AVX512_INT = 9,
+    KERNEL_NEON = 10
 } kernel_flavor_t;
 
 typedef struct {
@@ -41,6 +51,11 @@ typedef struct {
     uint64_t first_error_iteration;
     uint64_t first_error_expected;
     uint64_t first_error_actual;
+    int affinity_target_cpu;
+    int affinity_attempted;
+    int affinity_applied;
+    int affinity_error_code;
+    int observed_cpu;
     int first_error_recorded;
     char first_error_kind[32];
 } worker_stats_t;
@@ -62,15 +77,27 @@ static void handle_signal(int signum) {
     keep_running = 0;
 }
 
-static void bind_worker_to_cpu(int worker_index, int cpu_count) {
+static void bind_worker_to_cpu(int worker_index, int cpu_count, worker_stats_t *stats) {
+    if (stats != NULL) {
+        stats->affinity_target_cpu = -1;
+        stats->observed_cpu = -1;
+    }
 #ifdef __linux__
     if (cpu_count <= 0) {
         return;
     }
+    int target_cpu = worker_index % cpu_count;
     cpu_set_t set;
     CPU_ZERO(&set);
-    CPU_SET(worker_index % cpu_count, &set);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    CPU_SET(target_cpu, &set);
+    int affinity_result = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (stats != NULL) {
+        stats->affinity_target_cpu = target_cpu;
+        stats->affinity_attempted = 1;
+        stats->affinity_applied = affinity_result == 0;
+        stats->affinity_error_code = affinity_result;
+        stats->observed_cpu = sched_getcpu();
+    }
 #else
     (void)worker_index;
     (void)cpu_count;
@@ -282,6 +309,10 @@ static const char *mode_name(stress_mode_t mode) {
             return "avx2";
         case MODE_AVX512:
             return "avx512";
+        case MODE_NEON:
+            return "neon";
+        case MODE_SVE:
+            return "sve";
         case MODE_AUTO:
             return "auto";
         case MODE_SCALAR:
@@ -308,6 +339,8 @@ static const char *kernel_flavor_name(kernel_flavor_t flavor) {
             return "avx512_fma";
         case KERNEL_AVX512_INT:
             return "avx512_int";
+        case KERNEL_NEON:
+            return "neon";
         case KERNEL_UNSPECIFIED:
             return "";
         case KERNEL_SCALAR:
@@ -630,6 +663,53 @@ static void run_avx512_int_loop(uint32_t seed, worker_stats_t *stats) {
 }
 #endif
 
+#if defined(__aarch64__) && defined(__linux__)
+static void run_neon_loop(uint32_t seed, worker_stats_t *stats) {
+    uint32x4_t v0 = {1U + seed, 2U, 3U, 4U};
+    uint32x4_t v1 = {5U, 6U + seed, 7U, 8U};
+    uint32x4_t v2 = {9U, 10U, 11U + seed, 12U};
+    uint32x4_t v3 = {13U, 14U, 15U, 16U + seed};
+    const uint32x4_t mul = vdupq_n_u32(1664525U);
+    const uint32x4_t add = vdupq_n_u32(1013904223U);
+    const uint32x4_t mix = vdupq_n_u32(0x9E3779B9U);
+    uint32_t sink[16] __attribute__((aligned(16)));
+    uint64_t last_checksum = 0;
+    uint64_t canary_state = 0xA51DA51D5A1D5A1DULL ^ seed;
+    uint64_t iteration = 0;
+    unsigned int repeat_count = 0;
+    while (keep_running) {
+        for (int i = 0; i < 300000; ++i) {
+            v0 = vaddq_u32(vmulq_u32(v0, mul), add);
+            v1 = veorq_u32(vaddq_u32(vmulq_u32(v1, mul), mix), v0);
+            v2 = vaddq_u32(vmulq_u32(v2, mul), vshlq_n_u32(v1, 1));
+            v3 = veorq_u32(vaddq_u32(v3, mix), vshrq_n_u32(v2, 3));
+            v0 = veorq_u32(v0, v3);
+            v2 = vaddq_u32(v2, v1);
+        }
+        vst1q_u32(&sink[0], v0);
+        vst1q_u32(&sink[4], v1);
+        vst1q_u32(&sink[8], v2);
+        vst1q_u32(&sink[12], v3);
+        vector_sink_u64 ^= (uint64_t)sink[0];
+        update_u32_stats(stats, sink, 16, &last_checksum, &repeat_count);
+        run_cpu_canary(stats, seed, iteration, &canary_state);
+        iteration += 1ULL;
+    }
+    vst1q_u32(&sink[0], vaddq_u32(v0, v2));
+    vector_sink_u64 ^= (uint64_t)sink[1];
+}
+#endif
+
+static int cpu_supports_neon(void) {
+#if defined(LVS_CPU_HELPER_TEST_DISABLE_ASIMD)
+    return 0;
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_ASIMD) != 0UL;
+#else
+    return 0;
+#endif
+}
+
 static int cpu_supports_fma(void) {
 #if defined(__x86_64__) || defined(__i386__)
     return __builtin_cpu_supports("fma");
@@ -671,9 +751,25 @@ static stress_mode_t resolve_mode(stress_mode_t requested) {
         return MODE_SCALAR;
     }
     return requested;
+#elif defined(__aarch64__) && defined(__linux__)
+    if (requested == MODE_AUTO) {
+        return cpu_supports_neon() ? MODE_NEON : MODE_SCALAR;
+    }
+    return requested;
 #else
     (void)requested;
     return MODE_SCALAR;
+#endif
+}
+
+static int requested_mode_supported(stress_mode_t requested) {
+#if defined(__x86_64__) || defined(__i386__)
+    return requested != MODE_NEON && requested != MODE_SVE;
+#elif defined(__aarch64__) && defined(__linux__)
+    return requested == MODE_AUTO || requested == MODE_SCALAR ||
+        (requested == MODE_NEON && cpu_supports_neon());
+#else
+    return requested == MODE_AUTO || requested == MODE_SCALAR;
 #endif
 }
 
@@ -704,6 +800,9 @@ static kernel_flavor_t parse_kernel_flavor(const char *raw) {
     }
     if (strcmp(raw, "avx512_int") == 0) {
         return KERNEL_AVX512_INT;
+    }
+    if (strcmp(raw, "neon") == 0) {
+        return KERNEL_NEON;
     }
     return KERNEL_UNSPECIFIED;
 }
@@ -750,6 +849,12 @@ static int kernel_flavor_supported(kernel_flavor_t flavor) {
 #else
             return 0;
 #endif
+        case KERNEL_NEON:
+#if defined(__aarch64__) && defined(__linux__)
+            return cpu_supports_neon();
+#else
+            return 0;
+#endif
         case KERNEL_UNSPECIFIED:
         default:
             return 0;
@@ -770,6 +875,8 @@ static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
         case KERNEL_AVX512_FMA:
         case KERNEL_AVX512_INT:
             return MODE_AVX512;
+        case KERNEL_NEON:
+            return MODE_NEON;
         case KERNEL_UNSPECIFIED:
         case KERNEL_SCALAR:
         default:
@@ -794,6 +901,10 @@ static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
             return KERNEL_AVX2;
         case MODE_AVX512:
             return KERNEL_AVX512_FMA;
+        case MODE_NEON:
+            return KERNEL_NEON;
+        case MODE_SVE:
+            return KERNEL_UNSPECIFIED;
         case MODE_AUTO:
         case MODE_SCALAR:
         default:
@@ -803,7 +914,7 @@ static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
 
 static void *worker_main(void *opaque) {
     worker_args_t *args = (worker_args_t *)opaque;
-    bind_worker_to_cpu(args->worker_index, args->cpu_count);
+    bind_worker_to_cpu(args->worker_index, args->cpu_count, args->stats);
     kernel_flavor_t flavor = args->kernel_flavor;
     if (flavor == KERNEL_UNSPECIFIED) {
         flavor = default_kernel_flavor(args->mode);
@@ -851,6 +962,11 @@ static void *worker_main(void *opaque) {
             run_avx512_int_loop(seed, args->stats);
             break;
 #endif
+        case KERNEL_NEON:
+#if defined(__aarch64__) && defined(__linux__)
+            run_neon_loop(seed, args->stats);
+            break;
+#endif
         case KERNEL_UNSPECIFIED:
         case KERNEL_SCALAR:
         default:
@@ -879,13 +995,19 @@ static stress_mode_t parse_mode(const char *raw) {
     if (strcmp(raw, "avx512") == 0) {
         return MODE_AVX512;
     }
+    if (strcmp(raw, "neon") == 0) {
+        return MODE_NEON;
+    }
+    if (strcmp(raw, "sve") == 0) {
+        return MODE_SVE;
+    }
     return MODE_AUTO;
 }
 
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int] [--threads N] [--print-resolved-mode] [--print-kernel-flavor] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon] [--threads N] [--print-resolved-mode] [--print-kernel-flavor] [--result-file <path>]\n",
         argv0
     );
 }
@@ -907,6 +1029,12 @@ static void write_result_file(
     if (handle == NULL) {
         return;
     }
+    int affinity_attempted_count = 0;
+    int affinity_applied_count = 0;
+    for (int index = 0; index < threads; ++index) {
+        affinity_attempted_count += worker_stats[index].affinity_attempted ? 1 : 0;
+        affinity_applied_count += worker_stats[index].affinity_applied ? 1 : 0;
+    }
     fprintf(
         handle,
         "{\n"
@@ -918,6 +1046,9 @@ static void write_result_file(
         "  \"verify_passes\": %" PRIu64 ",\n"
         "  \"canary_passes\": %" PRIu64 ",\n"
         "  \"error_count\": %" PRIu64 ",\n"
+        "  \"affinity_attempted_count\": %d,\n"
+        "  \"affinity_applied_count\": %d,\n"
+        "  \"affinity_failed_count\": %d,\n"
         "  \"threads_detail\": [\n",
         error_count == 0 ? "ok" : "error",
         mode_name(mode),
@@ -925,17 +1056,30 @@ static void write_result_file(
         threads,
         verify_passes,
         canary_passes,
-        error_count
+        error_count,
+        affinity_attempted_count,
+        affinity_applied_count,
+        affinity_attempted_count - affinity_applied_count
     );
     for (int index = 0; index < threads; ++index) {
         fprintf(
             handle,
             "    {\n"
             "      \"thread_index\": %d,\n"
+            "      \"affinity_target_cpu\": %d,\n"
+            "      \"affinity_attempted\": %s,\n"
+            "      \"affinity_applied\": %s,\n"
+            "      \"affinity_error_code\": %d,\n"
+            "      \"observed_cpu\": %d,\n"
             "      \"verify_passes\": %" PRIu64 ",\n"
             "      \"canary_passes\": %" PRIu64 ",\n"
             "      \"error_count\": %" PRIu64,
             index,
+            worker_stats[index].affinity_target_cpu,
+            worker_stats[index].affinity_attempted ? "true" : "false",
+            worker_stats[index].affinity_applied ? "true" : "false",
+            worker_stats[index].affinity_error_code,
+            worker_stats[index].observed_cpu,
             worker_stats[index].verify_passes,
             worker_stats[index].canary_passes,
             worker_stats[index].error_count
@@ -1009,6 +1153,21 @@ int main(int argc, char **argv) {
         }
         print_usage(argv[0]);
         return 2;
+    }
+
+    if (!requested_mode_supported(mode)) {
+        if (mode == MODE_NEON) {
+            fprintf(stderr, "requested CPU mode 'neon' requires Linux AArch64 ASIMD/NEON capability\n");
+        } else if (mode == MODE_SVE) {
+            fprintf(stderr, "requested CPU mode 'sve' is not implemented\n");
+        } else {
+            fprintf(
+                stderr,
+                "requested CPU mode '%s' is an x86 ISA and is not available on this architecture\n",
+                mode_name(mode)
+            );
+        }
+        return 3;
     }
 
     if (print_resolved_mode) {

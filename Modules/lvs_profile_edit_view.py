@@ -101,8 +101,10 @@ def profile_stage_detail_lines(
     lines.append(f"Enabled workloads: {', '.join(module_names) if module_names else 'none'}")
     if stage.modules.cpu.enabled:
         cpu = stage.modules.cpu
+        backend_text = f"backend={cpu.backend_preference}, " if cpu.backend_preference != "auto" else ""
         lines.append(
             "CPU: "
+            + backend_text
             + f"instruction={cpu.instruction_set}, threads={cpu.threads}, "
             + f"mode={cpu.mode}, load={cpu.load}, priority={cpu.priority}"
         )
@@ -501,7 +503,12 @@ class ProfileEditPresenter:
             label = labels[index - 1] if index - 1 < len(labels) else stage.name
             workloads: List[str] = []
             if stage.modules.cpu.enabled:
-                workloads.append(f"CPU/{stage.modules.cpu.instruction_set}")
+                cpu = stage.modules.cpu
+                workloads.append(
+                    f"CPU/{cpu.backend_preference}/{cpu.instruction_set}"
+                    if cpu.backend_preference != "auto"
+                    else f"CPU/{cpu.instruction_set}"
+                )
             if stage.modules.memory.enabled:
                 workloads.append(f"RAM/{stage.modules.memory.allocation_percent}%")
             if stage.modules.gpu_3d.enabled:

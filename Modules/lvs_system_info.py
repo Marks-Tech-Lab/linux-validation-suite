@@ -21,7 +21,11 @@ from .lvs_cpu_power_limits import (
     read_microunit_watts,
     select_rapl_package_dir,
 )
-from .lvs_cpu_topology import collect_cpu_topology_info, cpu_package_devices_from_topology
+from .lvs_cpu_topology import (
+    collect_cpu_topology_info,
+    cpu_package_devices_from_topology,
+    parse_lscpu_cpu_identity,
+)
 from .lvs_gpu_identity import (
     clean_runtime_gpu_name,
     device_class_from_vulkan_type,
@@ -247,7 +251,26 @@ class SystemInfoCollector:
                     return line.split(":", 1)[1].strip()
         except Exception:
             pass
+        identity = parse_lscpu_cpu_identity(self._lscpu_text())
+        if identity:
+            return identity
         return platform.processor() or "Unknown CPU"
+
+    def _lscpu_text(self) -> str:
+        try:
+            completed = subprocess.run(
+                ["lscpu"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={**os.environ, "LC_ALL": "C"},
+            )
+            if completed.returncode == 0:
+                return completed.stdout or ""
+        except Exception:
+            pass
+        return ""
 
     def _memory_gb(self) -> int:
         try:

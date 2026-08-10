@@ -1,0 +1,46 @@
+{
+  "profile_name": "ARM64 Combined Heatsoak Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Combined Heatsoak Validation_info.txt",
+  "menu_description": "ARM64 lab validation of concurrent native CPU auto and suite-native GPU auto heatsoak behavior",
+  "menu_group": "advanced",
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 10,
+    "trim_end_seconds": 10
+  },
+  "stages": [
+    {
+      "id": "arm64_combined_heatsoak_validation",
+      "name": "Combined",
+      "duration_seconds": 120,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "mode": "extreme",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 10,
+        "trim_end_seconds": 10
+      }
+    }
+  ]
+}

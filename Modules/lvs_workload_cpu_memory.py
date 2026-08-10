@@ -10,6 +10,17 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from Modules.lvs_cpu_architecture import (
+    cpu_instruction_set_policy,
+    current_cpu_architecture,
+    native_cpu_helper_binary_name,
+    python_cpu_fallback_policy,
+)
+from Modules.lvs_cpu_backend_policy import (
+    CPU_BACKEND_IDENTITIES,
+    normalize_cpu_backend_preference,
+    select_cpu_backend,
+)
 from Modules.lvs_cpu_execution import (
     benchmark_cpu_kernel_candidate,
     build_cpu_command,
@@ -62,7 +73,7 @@ class WorkloadCpuMemoryMixin:
         return DEFAULT_NATIVE_DIR / "cpu_stress_helper.c"
 
     def _cpu_helper_binary_path(self) -> Path:
-        return DEFAULT_BUILD_DIR / "cpu_stress_helper"
+        return DEFAULT_BUILD_DIR / native_cpu_helper_binary_name(self._cpu_machine())
 
     def _memory_helper_source_path(self) -> Path:
         return DEFAULT_NATIVE_DIR / "memory_stress_helper.c"
@@ -77,6 +88,7 @@ class WorkloadCpuMemoryMixin:
             binary=self._cpu_helper_binary_path(),
             compiler_path=self._compiler_path,
             reason_label="CPU",
+            readiness_command=lambda path: [path, "--mode", "scalar", "--print-resolved-mode"],
         )
 
     def _memory_helper_status(self) -> Dict[str, Any]:
@@ -93,6 +105,64 @@ class WorkloadCpuMemoryMixin:
             return sys.executable
         return None
 
+    def _cpu_machine(self) -> str:
+        return current_cpu_architecture()
+
+    def _cpu_python_fallback_policy(self, cpu: Any) -> Dict[str, Any]:
+        return python_cpu_fallback_policy(self._cpu_machine(), cpu.instruction_set)
+
+    def _cpu_instruction_set_policy(self, cpu: Any) -> Dict[str, Any]:
+        return cpu_instruction_set_policy(self._cpu_machine(), cpu.instruction_set)
+
+    def _cpu_backend_preference(self, cpu: Any) -> str:
+        return normalize_cpu_backend_preference(getattr(cpu, "backend_preference", "auto"))
+
+    def _cpu_backend_availability(self, cpu: Any) -> Dict[str, bool]:
+        instruction_policy = self._cpu_instruction_set_policy(cpu)
+        if not instruction_policy.get("allowed"):
+            return {
+                "cpu_native_helper": False,
+                "stress_ng": False,
+                "python_fallback": False,
+            }
+        python_policy = self._cpu_python_fallback_policy(cpu)
+        requested_mode = str(instruction_policy.get("requested_mode") or "auto")
+        helper_available = bool(self._cpu_helper_status().get("available"))
+        if requested_mode == "neon":
+            helper_available = helper_available and self._cpu_helper_resolved_mode("neon") == "neon"
+        return {
+            "cpu_native_helper": helper_available,
+            "stress_ng": requested_mode != "neon" and self._command_exists("stress-ng"),
+            "python_fallback": bool(self._python_runtime()) and bool(python_policy.get("allowed")),
+        }
+
+    def _cpu_unavailable_reason(self, cpu: Any) -> str:
+        if self._cpu_backend_name(cpu) != "none":
+            return ""
+        instruction_policy = self._cpu_instruction_set_policy(cpu)
+        if not instruction_policy.get("allowed"):
+            return str(instruction_policy.get("reason") or "")
+        policy = self._cpu_python_fallback_policy(cpu)
+        preference = self._cpu_backend_preference(cpu)
+        if preference == "python_fallback" and not policy.get("allowed"):
+            return str(policy.get("reason") or "")
+        if preference != "auto":
+            backend = CPU_BACKEND_IDENTITIES[preference]
+            if preference == "native":
+                requested_mode = str(instruction_policy.get("requested_mode") or "auto")
+                helper = self._cpu_helper_status()
+                if requested_mode == "neon" and helper.get("available"):
+                    return (
+                        "Requested CPU mode 'neon' is unavailable: the native helper did not "
+                        "detect Linux AArch64 ASIMD/NEON capability"
+                    )
+                helper_reason = str(helper.get("reason") or "")
+                return f"Requested CPU backend '{preference}' is unavailable" + (
+                    f": {helper_reason}" if helper_reason else ""
+                )
+            return f"Requested CPU backend '{backend}' is unavailable"
+        return str(policy.get("reason") or "") if not policy.get("allowed") else ""
+
     def _cpu_command(
         self,
         cpu: Any,
@@ -100,28 +170,27 @@ class WorkloadCpuMemoryMixin:
         result_file: str = "",
     ) -> Optional[List[str]]:
         worker_count = self._cpu_worker_count(cpu)
+        backend = self._cpu_backend_name(cpu)
+        if backend == "none":
+            return None
         helper = self._cpu_helper_status()
+        python_runtime = self._python_runtime() or ""
         return build_cpu_command(
             worker_count=worker_count,
-            helper_available=bool(helper.get("available")),
+            helper_available=backend == "cpu_native_helper",
             helper_path=str(helper.get("path") or ""),
             requested_mode=self._cpu_helper_mode(cpu),
             instruction_set=cpu.instruction_set,
             mode=cpu.mode,
-            stress_ng_available=self._command_exists("stress-ng"),
-            python_runtime=self._python_runtime() or "",
+            stress_ng_available=backend == "stress_ng",
+            python_runtime=python_runtime if backend == "python_fallback" else "",
             cpu_kernel_flavor=cpu_kernel_flavor,
             result_file=result_file,
+            resolved_mode=self._cpu_resolved_mode(cpu),
         )
 
     def _cpu_backend_name(self, cpu: Any) -> str:
-        if self._cpu_helper_status()["available"]:
-            return "cpu_native_helper"
-        if self._command_exists("stress-ng"):
-            return "stress_ng"
-        if self._python_runtime():
-            return "python_fallback"
-        return "none"
+        return select_cpu_backend(self._cpu_backend_preference(cpu), self._cpu_backend_availability(cpu))
 
     def _cpu_helper_mode(self, cpu: Any) -> str:
         return normalize_cpu_helper_mode(cpu.instruction_set)
@@ -149,7 +218,7 @@ class WorkloadCpuMemoryMixin:
             return []
         return cpu_candidate_kernel_flavors(
             helper_available=True,
-            policy="max_power",
+            policy="capabilities",
             resolved_mode="",
             supports_kernel_flavor=self._cpu_helper_supports_kernel_flavor,
         )
@@ -229,7 +298,7 @@ class WorkloadCpuMemoryMixin:
         if backend == "stress_ng":
             return "approximate"
         if backend == "python_fallback":
-            return "approximate"
+            return str(self._cpu_python_fallback_policy(cpu).get("resolved_mode") or "")
         return ""
 
     def _memory_command(self, mem: Any, result_file: str = "") -> Optional[List[str]]:

@@ -51,6 +51,7 @@ def resolve_native_helper_status(
     compiler: Optional[str],
     reason_label: str,
     build_runner: Callable[[list[str]], Any],
+    readiness_probe: Optional[Callable[[Path], Any]] = None,
 ) -> Dict[str, Any]:
     status = native_helper_status_base(source, binary, compiler)
 
@@ -58,10 +59,29 @@ def resolve_native_helper_status(
         status["reason"] = f"native {reason_label} helper source missing"
         return status
 
-    if native_helper_binary_ready(source, binary):
-        status["available"] = True
-        status["reason"] = ""
-        return status
+    def probe_binary() -> bool:
+        if readiness_probe is None:
+            return True
+        try:
+            completed = readiness_probe(binary)
+        except Exception as exc:
+            status["reason"] = f"native {reason_label} helper is not runnable: {exc}"
+            return False
+        if completed.returncode == 0:
+            return True
+        stderr = (completed.stderr or "").strip()
+        stdout = (completed.stdout or "").strip()
+        detail = stderr or stdout or f"exit code {completed.returncode}"
+        status["reason"] = f"native {reason_label} helper is not runnable: {detail}"
+        return False
+
+    if binary.exists() and os.access(binary, os.X_OK):
+        if not probe_binary():
+            return status
+        if native_helper_binary_ready(source, binary):
+            status["available"] = True
+            status["reason"] = ""
+            return status
 
     if not compiler:
         status["reason"] = "no C compiler found; install gcc or build-essential"
@@ -76,8 +96,10 @@ def resolve_native_helper_status(
         return status
 
     if completed.returncode == 0 and binary.exists() and os.access(binary, os.X_OK):
-        status["available"] = True
-        status["built"] = True
+        if probe_binary():
+            status["available"] = True
+            status["built"] = True
+            return status
         return status
 
     stderr = (completed.stderr or "").strip()
@@ -110,6 +132,7 @@ class NativeHelperRuntimeService:
         binary: Path,
         compiler_path: Callable[[], Optional[str]],
         reason_label: str,
+        readiness_command: Optional[Callable[[str], list[str]]] = None,
     ) -> Dict[str, Any]:
         cached = self._status_cache.get(cache_key)
         if cached is not None:
@@ -125,12 +148,25 @@ class NativeHelperRuntimeService:
                 env=self._command_env(),
             )
 
+        def run_readiness_probe(path: Path) -> Any:
+            if readiness_command is None:
+                return None
+            return self._run_command(
+                readiness_command(str(path)),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=self._command_env(),
+            )
+
         status = resolve_native_helper_status(
             source=source,
             binary=binary,
             compiler=compiler_path(),
             reason_label=reason_label,
             build_runner=run_build,
+            readiness_probe=run_readiness_probe if readiness_command is not None else None,
         )
         self._status_cache[cache_key] = status
         return status

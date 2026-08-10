@@ -95,6 +95,10 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     if cpu_clock_mhz is not None:
         parts.append(f"cpu_clock_mhz={round(cpu_clock_mhz, 2)}")
 
+    cpu_utilization = _progress_number(values.get("cpu_utilization_percent"))
+    if cpu_utilization is not None:
+        parts.append(f"cpu_utilization_percent={round(cpu_utilization, 2)}")
+
     package_temps_indexed = dict(_indexed_progress_values(values, r"cpu_package_(\d+)_temp_c"))
     package_powers_indexed = dict(_indexed_progress_values(values, r"cpu_package_(\d+)_power_w"))
     package_clocks_indexed = _cpu_package_clock_values(telemetry, values)

@@ -9,6 +9,71 @@ from typing import Any, Iterable
 from .lvs_gpu_export_helpers import normalize_gpu_interface
 
 
+_ADDITIVE_STRESS_NG_EVIDENCE_FIELDS = {
+    "backend",
+    "errors",
+    "requested_stressor_count",
+    "dispatched_stressor_count",
+    "passed_stressor_count",
+    "failed_stressor_count",
+    "skipped_stressor_count",
+    "metrics_untrustworthy_count",
+    "stressor_metrics",
+    "executed_command",
+    "executable_requested",
+    "executable_resolved_path",
+    "executable_version",
+    "process_pid",
+    "process_started_iso",
+    "process_ended_iso",
+    "process_elapsed_seconds",
+    "expected_termination",
+    "result_write_error",
+}
+
+_ADDITIVE_NATIVE_AFFINITY_FIELDS = {
+    "affinity_attempted_count",
+    "affinity_applied_count",
+    "affinity_failed_count",
+    "affinity_target_cpu",
+    "affinity_attempted",
+    "affinity_applied",
+    "affinity_error_code",
+    "observed_cpu",
+}
+
+
+def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
+    """Remove additive CPU evidence from the legacy compatibility document only."""
+    if isinstance(value, list):
+        return [preserve_legacy_worker_evidence_contract(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    is_stress_ng_evidence = (
+        str(value.get("kind") or "").lower() == "cpu"
+        and (
+            str(value.get("backend") or "").lower() == "stress_ng"
+            or str(value.get("executable_requested") or "").endswith("stress-ng")
+        )
+    )
+    has_native_affinity_evidence = any(
+        key in value
+        for key in (
+            "affinity_attempted_count",
+            "affinity_target_cpu",
+            "affinity_error_code",
+        )
+    )
+    blocked = set(_ADDITIVE_NATIVE_AFFINITY_FIELDS) if has_native_affinity_evidence else set()
+    if is_stress_ng_evidence:
+        blocked.update(_ADDITIVE_STRESS_NG_EVIDENCE_FIELDS)
+    return {
+        key: preserve_legacy_worker_evidence_contract(item)
+        for key, item in value.items()
+        if key not in blocked
+    }
+
+
 def compatibility_elapsed_string(seconds: float) -> str:
     total = int(round(seconds))
     h = total // 3600

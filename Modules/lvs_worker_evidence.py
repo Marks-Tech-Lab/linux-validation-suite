@@ -57,6 +57,28 @@ def apply_worker_entry_context(
         payload.setdefault("stdout_path", entry.stdout_path)
     if getattr(entry, "stderr_path", None):
         payload.setdefault("stderr_path", entry.stderr_path)
+    command = list(getattr(entry, "command", []) or [])
+    is_stress_ng_cpu = (
+        str(getattr(entry, "kind", "") or "") == "cpu"
+        and bool(command)
+        and Path(str(command[0])).name == "stress-ng"
+    )
+    if is_stress_ng_cpu:
+        payload.setdefault("backend", "stress_ng")
+        payload.setdefault("executed_command", command)
+        payload.setdefault("executable_requested", str(getattr(entry, "executable_requested", "") or command[0]))
+        payload.setdefault("executable_resolved_path", str(getattr(entry, "executable_resolved_path", "") or ""))
+        payload.setdefault("executable_version", str(getattr(entry, "executable_version", "") or ""))
+        process_pid = getattr(getattr(entry, "process", None), "pid", None)
+        if process_pid is not None:
+            payload.setdefault("process_pid", int(process_pid))
+        payload.setdefault("process_started_iso", str(getattr(entry, "started_iso", "") or ""))
+        payload.setdefault("process_ended_iso", str(getattr(entry, "ended_iso", "") or ""))
+        started_monotonic = getattr(entry, "started_monotonic", None)
+        ended_monotonic = getattr(entry, "ended_monotonic", None)
+        if started_monotonic is not None and ended_monotonic is not None:
+            payload.setdefault("process_elapsed_seconds", max(0.0, float(ended_monotonic) - float(started_monotonic)))
+        payload.setdefault("expected_termination", bool(getattr(entry, "expected_termination", False)))
     if return_code is not None:
         payload["observed_exit_code"] = int(return_code)
         if return_code < 0:

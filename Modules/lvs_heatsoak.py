@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 from .lvs_advanced_debug import AdvancedDebugLogger
 from .lvs_core import format_duration_hms, now_local_iso
+from .lvs_cpu_architecture import current_cpu_architecture, heatsoak_cpu_instruction_set
 from .lvs_profile_models import (
     ModuleCpu,
     ModuleGpu3D,
@@ -35,7 +36,7 @@ class HeatsoakManager:
                     enabled=True,
                     mode="extreme",
                     load="steady",
-                    instruction_set="avx",
+                    instruction_set=heatsoak_cpu_instruction_set(current_cpu_architecture()),
                     threads="all",
                     priority="high",
                 ),
@@ -88,7 +89,7 @@ class HeatsoakManager:
             print("Heatsoak will run any launchable CPU/GPU workers and then continue to the logged test.")
         print(
             "\nStarting heatsoak: "
-            + f"{format_duration_hms(duration_seconds)} | Power Test (3D Auto + AVX, all CPUs/GPUs)"
+            + f"{format_duration_hms(duration_seconds)} | Power Test (3D Auto + {stage.modules.cpu.instruction_set.upper()}, all CPUs/GPUs)"
         )
         print("Heatsoak is not written to the result folder or compatibility export.")
         stage_processes = runner.launch_stage_processes(stage, result_dir=None)

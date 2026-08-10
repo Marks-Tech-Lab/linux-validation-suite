@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Iterable, List
 
 
-CPU_HELPER_PROBE_MODES = ("auto", "scalar", "sse", "avx", "avx2", "avx512")
+CPU_HELPER_PROBE_MODES = ("auto", "scalar", "sse", "avx", "avx2", "avx512", "neon", "sve")
 BACKEND_COMMAND_NAMES = (
     "stress-ng",
     "glmark2",

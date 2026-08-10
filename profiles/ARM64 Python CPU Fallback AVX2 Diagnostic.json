@@ -1,0 +1,36 @@
+{
+  "profile_name": "ARM64 Python CPU Fallback AVX2 Diagnostic",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Python CPU Fallback AVX2 Diagnostic_info.txt",
+  "menu_description": "ARM64 diagnostic proving explicit AVX2 is rejected by the Python CPU fallback",
+  "menu_group": "diagnostic",
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 10,
+    "trim_end_seconds": 10
+  },
+  "stages": [
+    {
+      "id": "arm64_python_cpu_avx2_diagnostic",
+      "name": "CPU",
+      "duration_seconds": 120,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "python_fallback",
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "avx2",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 10,
+        "trim_end_seconds": 10
+      }
+    }
+  ]
+}

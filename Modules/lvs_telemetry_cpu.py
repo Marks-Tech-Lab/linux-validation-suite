@@ -15,6 +15,66 @@ ReadText = Callable[[Path], Optional[str]]
 SensorLabel = Callable[[Path], str]
 HwmonTempThresholds = Callable[[Path], tuple[Optional[float], Optional[float], str]]
 ThermalZoneThresholds = Callable[[Path], tuple[Optional[float], Optional[float], str]]
+CpuStatCounters = tuple[int, ...]
+
+
+def parse_proc_stat_cpu_counters(text: Optional[str]) -> Optional[CpuStatCounters]:
+    """Parse the aggregate CPU counters from Linux ``/proc/stat``."""
+    if text is None:
+        return None
+    aggregate_line = next(
+        (line for line in str(text).splitlines() if line.startswith("cpu ")),
+        None,
+    )
+    if aggregate_line is None:
+        return None
+    fields = aggregate_line.split()[1:]
+    if len(fields) < 4:
+        return None
+    try:
+        counters = tuple(int(field) for field in fields)
+    except (TypeError, ValueError):
+        return None
+    return counters if all(counter >= 0 for counter in counters) else None
+
+
+def cpu_utilization_percent(
+    previous: Optional[CpuStatCounters],
+    current: Optional[CpuStatCounters],
+) -> Optional[float]:
+    """Calculate aggregate CPU utilization from two procfs counter snapshots.
+
+    Linux guest counters are already included in user/nice, so the conventional
+    total uses user through steal (the first eight counters) and avoids counting
+    guest time twice. Idle time includes both idle and iowait.
+    """
+    if previous is None or current is None or len(previous) != len(current):
+        return None
+    deltas = tuple(after - before for before, after in zip(previous, current))
+    if any(delta < 0 for delta in deltas):
+        return None
+    total_delta = sum(deltas[:8])
+    if total_delta <= 0:
+        return None
+    idle_delta = deltas[3] + (deltas[4] if len(deltas) > 4 else 0)
+    busy_delta = total_delta - idle_delta
+    utilization = (busy_delta / total_delta) * 100.0
+    return round(min(100.0, max(0.0, utilization)), 2)
+
+
+def discover_cpu_utilization_source(
+    proc_stat_path: Path = Path("/proc/stat"),
+    read_text: Optional[ReadText] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the aggregate CPU-utilization source when procfs is readable."""
+    reader = read_text or read_text_cpu_sysfs
+    if parse_proc_stat_cpu_counters(reader(proc_stat_path)) is None:
+        return None
+    return {
+        "kind": "procfs",
+        "label": "aggregate CPU counters",
+        "path": str(proc_stat_path),
+    }
 
 
 def read_text_cpu_sysfs(path: Path) -> Optional[str]:

@@ -10,6 +10,23 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 ReadText = Callable[[Path], Optional[str]]
 
 
+def parse_lscpu_cpu_identity(lscpu_text: str) -> str:
+    """Return a useful vendor/model identity when /proc/cpuinfo lacks model name."""
+    fields: Dict[str, str] = {}
+    for raw_line in str(lscpu_text or "").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = [part.strip() for part in raw_line.split(":", 1)]
+        fields[key.lower()] = value
+    model = fields.get("model name", "")
+    vendor = fields.get("vendor id", "")
+    if not model:
+        return ""
+    if vendor and vendor.lower() not in model.lower():
+        return f"{vendor} {model}"
+    return model
+
+
 def parse_proc_cpuinfo_models(cpuinfo_text: str) -> Dict[int, str]:
     """Return processor index -> model name from /proc/cpuinfo text."""
     models: Dict[int, str] = {}
@@ -135,6 +152,8 @@ def collect_cpu_topology_info(
         topology_dir = cpu_dir / "topology"
         package_id = _safe_int(reader(topology_dir / "physical_package_id"))
         core_id = _safe_int(reader(topology_dir / "core_id"))
+        cluster_id = _safe_int(reader(topology_dir / "cluster_id"))
+        thread_siblings = str(reader(topology_dir / "thread_siblings_list") or "").strip()
         if package_id is None:
             package_id = 0
         logical_count += 1
@@ -151,7 +170,14 @@ def collect_cpu_topology_info(
         if not record.get("Name") or record.get("Name") == "Unknown CPU":
             record["Name"] = model_name
         record["LogicalCpuIndexes"].append(cpu_index)
-        physical_key = f"package{package_id}:core{core_id}" if core_id is not None else f"package{package_id}:cpu{cpu_index}"
+        if thread_siblings:
+            physical_key = f"package{package_id}:threads{thread_siblings}"
+        elif core_id is not None and cluster_id is not None:
+            physical_key = f"package{package_id}:cluster{cluster_id}:core{core_id}"
+        elif core_id is not None:
+            physical_key = f"package{package_id}:core{core_id}"
+        else:
+            physical_key = f"package{package_id}:cpu{cpu_index}"
         record["PhysicalCoreKeys"].add(physical_key)
         all_physical_keys.add(physical_key)
 

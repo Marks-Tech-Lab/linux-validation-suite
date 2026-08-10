@@ -38,6 +38,7 @@ from .lvs_telemetry_cpu import (
     discover_cpu_core_clock_sources,
     discover_cpu_core_topology,
     discover_cpu_clock_source,
+    discover_cpu_utilization_source,
     discover_cpu_power_source,
     discover_cpu_temp_sources,
     parse_cpu_list,
@@ -50,6 +51,8 @@ from .lvs_telemetry_cpu import (
     read_cpu_power_component,
     read_cpu_temp,
     read_cpu_sysfs_int,
+    parse_proc_stat_cpu_counters,
+    cpu_utilization_percent,
     read_energy_power_source,
     read_hwmon_power_source,
     read_temperature_path,
@@ -129,6 +132,8 @@ class TelemetryCollector:
         self._cpu_power_unreadable_sources: List[Dict[str, Any]] = []
         self._cpu_power_source = self._discover_cpu_power_source()
         self._cpu_clock_source = self._discover_cpu_clock_source()
+        self._cpu_utilization_source = self._discover_cpu_utilization_source()
+        self._previous_cpu_stat_counters = None
         self._cpu_core_topology = self._discover_cpu_core_topology()
         self._cpu_package_temp_sources = self._assign_cpu_package_temp_sources()
         self._cpu_core_clock_sources = self._discover_cpu_core_clock_sources()
@@ -200,6 +205,7 @@ class TelemetryCollector:
             "cpu_temp_c": self._read_cpu_temp(cpu_package_temps),
             "cpu_power_w": cpu_power_w,
             "cpu_clock_mhz": self._read_cpu_clock_mhz(),
+            "cpu_utilization_percent": self._read_cpu_utilization_percent(),
             "memory_used_gb": self._read_memory_used_gb(),
         }
         values.update(cpu_package_temps)
@@ -294,6 +300,7 @@ class TelemetryCollector:
             privileged_helper_enabled=self._privileged_helper_enabled,
             process_is_root=self._process_is_root(),
             sudo_available=self._sudo_available(),
+            cpu_utilization_source=self._cpu_utilization_source,
         )
 
     def _gpu_telemetry_matrix(self) -> List[Dict[str, Any]]:
@@ -315,6 +322,7 @@ class TelemetryCollector:
             process_is_root=self._process_is_root(),
             sudo_available=self._sudo_available(),
             cpu_power_unreadable_sources=self._cpu_power_unreadable_sources,
+            cpu_utilization_source=self._cpu_utilization_source,
         )
 
     def _process_is_root(self) -> bool:
@@ -373,6 +381,17 @@ class TelemetryCollector:
     def _read_cpu_clock_mhz(self) -> Optional[float]:
         return read_cpu_clock_mhz(self._cpu_clock_source, self._safe_read_text)
 
+    def _read_cpu_utilization_percent(self) -> Optional[float]:
+        if not getattr(self, "_cpu_utilization_source", None):
+            return None
+        path = Path(str(self._cpu_utilization_source.get("path") or "/proc/stat"))
+        current = parse_proc_stat_cpu_counters(self._safe_read_text(path))
+        if current is None:
+            return None
+        previous = getattr(self, "_previous_cpu_stat_counters", None)
+        self._previous_cpu_stat_counters = current
+        return cpu_utilization_percent(previous, current)
+
     def _read_cpu_core_clocks(self) -> Dict[str, Optional[float]]:
         return read_cpu_core_clocks(self._cpu_core_clock_sources, self._safe_read_text)
 
@@ -425,6 +444,9 @@ class TelemetryCollector:
 
     def _discover_cpu_clock_source(self) -> Optional[Dict[str, Any]]:
         return discover_cpu_clock_source(read_text=self._safe_read_text)
+
+    def _discover_cpu_utilization_source(self) -> Optional[Dict[str, Any]]:
+        return discover_cpu_utilization_source(read_text=self._safe_read_text)
 
     def _discover_cpu_core_topology(self) -> Dict[int, Dict[str, Any]]:
         return discover_cpu_core_topology(read_text=self._safe_read_text)

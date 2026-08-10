@@ -1,0 +1,36 @@
+{
+  "profile_name": "ARM64 stress-ng CPU Auto",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 stress-ng CPU Auto_info.txt",
+  "menu_description": "ARM64 lab validation of the generic stress-ng matrixprod CPU backend",
+  "menu_group": "advanced",
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 10,
+    "trim_end_seconds": 10
+  },
+  "stages": [
+    {
+      "id": "arm64_stress_ng_cpu_auto",
+      "name": "CPU",
+      "duration_seconds": 120,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "stress_ng",
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 10,
+        "trim_end_seconds": 10
+      }
+    }
+  ]
+}

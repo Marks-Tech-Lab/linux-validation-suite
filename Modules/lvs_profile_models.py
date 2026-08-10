@@ -22,6 +22,7 @@ class StageNormalization:
 @dataclass
 class ModuleCpu:
     enabled: bool = False
+    backend_preference: str = "auto"
     mode: str = "normal"
     load: str = "steady"
     instruction_set: str = "auto"

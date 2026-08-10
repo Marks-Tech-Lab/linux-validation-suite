@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from Modules.lvs_core import JsonStore
+from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
 from Modules.lvs_output_contract_identity import (
     RUN_MANIFEST_CONTRACT_ID,
     RUN_MANIFEST_KIND,
@@ -16,6 +17,7 @@ from Modules.lvs_output_contract_identity import (
     stamp_contract_identity,
 )
 from Modules.lvs_run_finalization import finalize_run_stage_windows
+from Modules.lvs_telemetry_samples import telemetry_metric_summaries
 
 
 @dataclass(frozen=True)
@@ -101,7 +103,7 @@ def write_final_run_artifacts(
         system_info["Hardware"].get("Gpu", []),
         system_info["Hardware"].get("Cpu", {}),
     )
-    compat = exporter.build(
+    compatibility_payload = exporter.build(
         metadata,
         started_iso,
         ended_iso,
@@ -113,6 +115,7 @@ def write_final_run_artifacts(
         recovery_report,
         skipped_stages,
     )
+    compat = preserve_legacy_worker_evidence_contract(compatibility_payload)
 
     if export_compatibility_json:
         JsonStore.write(run_dir / "parsed_results_custom.json", compat)
@@ -131,6 +134,10 @@ def write_final_run_artifacts(
                 "stage_windows": [asdict(w) for w in stage_windows],
                 "system_info": system_info,
                 "gpu_recovery": recovery_report,
+                "telemetry_metrics": telemetry_metric_summaries(
+                    telemetry.samples,
+                    ("cpu_utilization_percent",),
+                ),
                 "compatibility_export": compat,
             },
         )

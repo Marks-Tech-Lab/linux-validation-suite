@@ -48,8 +48,14 @@ class SummaryTextBuilder:
         lines.append(f"Blocking: {bool(summary.get('Blocking'))}")
         lines.append(f"Confidence: {self._format_stage_purpose(summary.get('Confidence'))}")
         if summary.get("WorkerResultCount") is not None:
+            gpu_summary = report.get("GpuWorkerSummary") if isinstance(report.get("GpuWorkerSummary"), dict) else {}
+            worker_label = (
+                "GPU workers"
+                if int(gpu_summary.get("WorkerResultCount") or 0) == int(summary.get("WorkerResultCount") or 0)
+                else "Worker evidence"
+            )
             lines.append(
-                "GPU workers: "
+                f"{worker_label}: "
                 + f"{summary.get('SuccessfulWorkerResultCount', 0)}/{summary.get('WorkerResultCount', 0)} successful, "
                 + f"{summary.get('VerificationPasses', 0)} verification passes"
             )

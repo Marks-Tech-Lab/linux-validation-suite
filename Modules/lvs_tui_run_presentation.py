@@ -70,6 +70,7 @@ class LiveSystemMetrics:
     cpu_package_temp_c: float | None = None
     cpu_package_power_w: float | None = None
     cpu_clock_mhz: float | None = None
+    cpu_utilization_percent: float | None = None
     memory_used_gib: float | None = None
     memory_total_gib: float | None = None
     memory_used_percent: float | None = None
@@ -141,6 +142,7 @@ def _has_live_system_metrics(metrics: LiveSystemMetrics) -> bool:
         metrics.cpu_package_temp_c,
         metrics.cpu_package_power_w,
         metrics.cpu_clock_mhz,
+        metrics.cpu_utilization_percent,
         metrics.memory_used_gib,
         metrics.memory_total_gib,
         metrics.memory_used_percent,
@@ -229,6 +231,7 @@ def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bo
             cpu_package_temp_c=_metric_number(fields.get("cpu_package_temp_c")),
             cpu_package_power_w=_metric_number(fields.get("cpu_package_power_w")),
             cpu_clock_mhz=_metric_number(fields.get("cpu_clock_mhz")),
+            cpu_utilization_percent=_metric_number(fields.get("cpu_utilization_percent")),
             memory_used_gib=_metric_number(fields.get("memory_used_gib")),
             memory_total_gib=_metric_number(fields.get("memory_total_gib")),
             memory_used_percent=_metric_number(fields.get("memory_used_percent")),
@@ -276,13 +279,23 @@ def live_system_text(events: Iterable[object]) -> str:
         hidden_packages = max(0, system.cpu_package_count - len(system.cpu_packages))
         if hidden_packages:
             lines.append(f"  +{hidden_packages} more")
+        aggregate_lines = []
         if system.cpu_clock_mhz is not None and not any(
             package.clock_mhz is not None for package in system.cpu_packages
         ):
-            lines.extend(["", "CPU Aggregate", f"  Clock  {_compact_number(system.cpu_clock_mhz)} MHz"])
+            aggregate_lines.append(f"  Clock  {_compact_number(system.cpu_clock_mhz)} MHz")
+        if system.cpu_utilization_percent is not None:
+            aggregate_lines.append(f"  Load   {_compact_number(system.cpu_utilization_percent)}%")
+        if aggregate_lines:
+            lines.extend(["", "CPU Aggregate", *aggregate_lines])
     elif any(
         value is not None
-        for value in (system.cpu_package_temp_c, system.cpu_package_power_w, system.cpu_clock_mhz)
+        for value in (
+            system.cpu_package_temp_c,
+            system.cpu_package_power_w,
+            system.cpu_clock_mhz,
+            system.cpu_utilization_percent,
+        )
     ):
         lines.extend(["", "CPU"])
         if system.cpu_package_temp_c is not None:
@@ -291,6 +304,8 @@ def live_system_text(events: Iterable[object]) -> str:
             lines.append(f"  Power  {_compact_number(system.cpu_package_power_w)} W")
         if system.cpu_clock_mhz is not None:
             lines.append(f"  Clock  {_compact_number(system.cpu_clock_mhz)} MHz")
+        if system.cpu_utilization_percent is not None:
+            lines.append(f"  Load   {_compact_number(system.cpu_utilization_percent)}%")
     if system.memory_used_gib is not None:
         lines.extend(["", "RAM", f"  Used   {_compact_number(system.memory_used_gib)} GiB"])
         if system.memory_total_gib is not None:

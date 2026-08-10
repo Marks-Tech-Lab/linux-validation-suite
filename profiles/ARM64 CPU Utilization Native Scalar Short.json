@@ -1,0 +1,36 @@
+{
+  "profile_name": "ARM64 CPU Utilization Native Scalar Short",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 CPU Utilization Native Scalar Short_info.txt",
+  "menu_description": "ARM64 lab comparison of aggregate CPU utilization with the native scalar backend",
+  "menu_group": "advanced",
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 5,
+    "trim_end_seconds": 5
+  },
+  "stages": [
+    {
+      "id": "arm64_cpu_utilization_native_scalar_short",
+      "name": "CPU",
+      "duration_seconds": 30,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "native",
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "scalar",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 5,
+        "trim_end_seconds": 5
+      }
+    }
+  ]
+}
