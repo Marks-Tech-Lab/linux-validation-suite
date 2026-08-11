@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from Modules.lvs_cpu_architecture import (
+    cpu_max_power_kernel_order,
     cpu_instruction_set_policy,
     current_cpu_architecture,
     native_cpu_helper_binary_name,
@@ -32,6 +33,13 @@ from Modules.lvs_cpu_execution import (
     cpu_tuning_policy,
     normalize_cpu_helper_mode,
     resolve_cpu_execution_policy,
+)
+from Modules.lvs_cpu_targeting import (
+    common_kernel_capabilities,
+    discover_linux_cpu_sets,
+    mode_for_common_kernel,
+    resolve_target_cpu_ids,
+    select_common_kernel,
 )
 from Modules.lvs_memory_execution import (
     build_memory_command,
@@ -131,12 +139,17 @@ class WorkloadCpuMemoryMixin:
         python_policy = self._cpu_python_fallback_policy(cpu)
         requested_mode = str(instruction_policy.get("requested_mode") or "auto")
         helper_available = bool(self._cpu_helper_status().get("available"))
-        if requested_mode == "neon":
-            helper_available = helper_available and self._cpu_helper_resolved_mode("neon") == "neon"
+        capability = self._cpu_capability_plan(cpu) if helper_available else {}
+        helper_available = helper_available and bool(capability.get("selected_kernel_flavor"))
+        generic_backend_request = requested_mode == "auto"
         return {
             "cpu_native_helper": helper_available,
-            "stress_ng": requested_mode != "neon" and self._command_exists("stress-ng"),
-            "python_fallback": bool(self._python_runtime()) and bool(python_policy.get("allowed")),
+            "stress_ng": generic_backend_request and self._command_exists("stress-ng"),
+            "python_fallback": (
+                generic_backend_request
+                and bool(self._python_runtime())
+                and bool(python_policy.get("allowed"))
+            ),
         }
 
     def _cpu_unavailable_reason(self, cpu: Any) -> str:
@@ -147,6 +160,12 @@ class WorkloadCpuMemoryMixin:
             return str(instruction_policy.get("reason") or "")
         policy = self._cpu_python_fallback_policy(cpu)
         preference = self._cpu_backend_preference(cpu)
+        requested_mode = str(instruction_policy.get("requested_mode") or "auto")
+        if requested_mode != "auto" and preference in {"python_fallback", "stress_ng"}:
+            return (
+                f"Explicit CPU instruction set '{requested_mode}' requires the native CPU helper; "
+                f"backend '{preference}' does not enforce that ISA"
+            )
         if preference == "python_fallback" and not policy.get("allowed"):
             return str(policy.get("reason") or "")
         if preference != "auto":
@@ -160,10 +179,19 @@ class WorkloadCpuMemoryMixin:
                         "detect Linux AArch64 ASIMD/NEON capability"
                     )
                 helper_reason = str(helper.get("reason") or "")
+                if helper.get("available"):
+                    capability = self._cpu_capability_plan(cpu)
+                    if not capability.get("selected_kernel_flavor"):
+                        return str(capability.get("unavailable_reason") or "requested CPU ISA is not valid across all target CPUs")
                 return f"Requested CPU backend '{preference}' is unavailable" + (
                     f": {helper_reason}" if helper_reason else ""
                 )
             return f"Requested CPU backend '{backend}' is unavailable"
+        if requested_mode != "auto":
+            return (
+                f"Explicit CPU instruction set '{requested_mode}' requires the native CPU helper "
+                "and must be valid across every selected CPU"
+            )
         return str(policy.get("reason") or "") if not policy.get("allowed") else ""
 
     def _cpu_command(
@@ -172,12 +200,25 @@ class WorkloadCpuMemoryMixin:
         cpu_kernel_flavor: str = "",
         result_file: str = "",
     ) -> Optional[List[str]]:
-        worker_count = self._cpu_worker_count(cpu)
+        target_plan = self._cpu_target_plan(cpu)
+        target_cpu_ids = list(target_plan.get("target_cpu_ids") or [])
+        worker_count = len(target_cpu_ids)
         backend = self._cpu_backend_name(cpu)
         if backend == "none":
             return None
         helper = self._cpu_helper_status()
         python_runtime = self._python_runtime() or ""
+        if backend == "cpu_native_helper":
+            capability = self._cpu_capability_plan(cpu, target_plan=target_plan)
+            common = set(capability.get("common_kernel_flavors") or [])
+            if cpu_kernel_flavor and cpu_kernel_flavor not in common:
+                raise RuntimeError(
+                    f"CPU target set changed before launch; kernel '{cpu_kernel_flavor}' is not safe "
+                    f"across target CPUs {target_cpu_ids}"
+                )
+            cpu_kernel_flavor = cpu_kernel_flavor or str(capability.get("selected_kernel_flavor") or "")
+            if not cpu_kernel_flavor:
+                return None
         return build_cpu_command(
             worker_count=worker_count,
             helper_available=backend == "cpu_native_helper",
@@ -190,6 +231,7 @@ class WorkloadCpuMemoryMixin:
             cpu_kernel_flavor=cpu_kernel_flavor,
             result_file=result_file,
             resolved_mode=self._cpu_resolved_mode(cpu),
+            target_cpu_ids=target_cpu_ids,
         )
 
     def _cpu_backend_name(self, cpu: Any) -> str:
@@ -210,22 +252,81 @@ class WorkloadCpuMemoryMixin:
             helper_status=self._cpu_helper_status,
         )
 
-    def _cpu_helper_supports_kernel_flavor(self, flavor: str) -> bool:
+    def _cpu_helper_supports_kernel_flavor(self, flavor: str, cpu_id: Optional[int] = None) -> bool:
         return self._native_helper_runtime.cpu_supports_kernel_flavor(
             flavor,
             helper_status=self._cpu_helper_status,
+            cpu_id=cpu_id,
         )
+
+    def _cpu_helper_supported_kernel_flavors(self, cpu_id: Optional[int] = None) -> List[str]:
+        return self._native_helper_runtime.cpu_supported_kernel_flavors(
+            helper_status=self._cpu_helper_status,
+            cpu_id=cpu_id,
+        )
+
+    def _cpu_target_plan(self, cpu: Any) -> Dict[str, Any]:
+        return resolve_target_cpu_ids(discover_linux_cpu_sets(), getattr(cpu, "threads", "all"))
+
+    def _cpu_capability_plan(
+        self,
+        cpu: Any,
+        *,
+        target_plan: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        target = dict(target_plan or self._cpu_target_plan(cpu))
+        target_ids = list(target.get("target_cpu_ids") or [])
+        architecture = self._cpu_machine()
+        flavors = list(cpu_max_power_kernel_order(architecture))
+        per_cpu: Dict[int, List[str]] = {}
+        if architecture == "arm64":
+            # Linux AArch64 HWCAP is the process-safe common capability set;
+            # it is intentionally not inferred from per-core model names.
+            supported_global = set(self._cpu_helper_supported_kernel_flavors())
+            common_global = [flavor for flavor in flavors if flavor in supported_global]
+            if common_global:
+                per_cpu = {cpu_id: list(common_global) for cpu_id in target_ids}
+            capability_scope = "linux_aarch64_hwcap_common_set"
+        else:
+            for cpu_id in target_ids:
+                supported = set(self._cpu_helper_supported_kernel_flavors(cpu_id))
+                if supported:
+                    per_cpu[cpu_id] = [flavor for flavor in flavors if flavor in supported]
+            capability_scope = "per_cpu_affinity_pinned_cpuid"
+        intersection = common_kernel_capabilities(target_ids, per_cpu)
+        requested = self._cpu_helper_mode(cpu)
+        selected = select_common_kernel(
+            architecture=architecture,
+            requested_mode=requested,
+            common_flavors=intersection["common_kernel_flavors"],
+        )
+        reason = ""
+        if not target_ids:
+            reason = "no online CPUs are available within the process affinity/cpuset"
+        elif not selected:
+            reason = (
+                f"CPU instruction set '{requested}' is not supported across the complete target CPU set "
+                f"{target_ids}"
+            )
+        return {
+            **target,
+            **intersection,
+            "capability_scope": capability_scope,
+            "common_safe_instruction_set": mode_for_common_kernel(selected),
+            "selected_kernel_flavor": selected,
+            "capability_intersection_reason": (
+                "intersection_of_all_target_cpu_capabilities"
+                if intersection["capability_intersection_complete"]
+                else "incomplete_per_cpu_capability_evidence"
+            ),
+            "unavailable_reason": reason,
+        }
 
     def _cpu_supported_kernel_flavors(self) -> List[str]:
         if not self._cpu_helper_status()["available"]:
             return []
-        return cpu_candidate_kernel_flavors(
-            helper_available=True,
-            policy="capabilities",
-            resolved_mode="",
-            supports_kernel_flavor=self._cpu_helper_supports_kernel_flavor,
-            architecture=self._cpu_machine(),
-        )
+        cpu = type("CpuRequest", (), {"threads": "all", "instruction_set": "auto"})()
+        return list(self._cpu_capability_plan(cpu).get("common_kernel_flavors") or [])
 
     def _cpu_mode_for_kernel_flavor(self, flavor: str) -> str:
         return cpu_mode_for_kernel_flavor(flavor)
@@ -248,11 +349,13 @@ class WorkloadCpuMemoryMixin:
         )
 
     def _cpu_candidate_kernel_flavors(self, cpu: Any) -> List[str]:
+        capability = self._cpu_capability_plan(cpu)
+        common = set(capability.get("common_kernel_flavors") or [])
         return cpu_candidate_kernel_flavors(
             helper_available=bool(self._cpu_helper_status()["available"]),
             policy=self._cpu_tuning_policy(cpu),
             resolved_mode=self._cpu_resolved_mode(cpu) or "scalar",
-            supports_kernel_flavor=self._cpu_helper_supports_kernel_flavor,
+            supports_kernel_flavor=lambda flavor: flavor in common,
             architecture=self._cpu_machine(),
         )
 
@@ -262,6 +365,9 @@ class WorkloadCpuMemoryMixin:
         resolved_mode = self._cpu_resolved_mode(cpu)
         tuning_policy = self._cpu_tuning_policy(cpu)
         kernel_flavor = self._cpu_helper_default_kernel_flavor(requested_mode) if backend == "cpu_native_helper" else ""
+        capability = self._cpu_capability_plan(cpu) if backend == "cpu_native_helper" else self._cpu_target_plan(cpu)
+        if backend == "cpu_native_helper":
+            kernel_flavor = str(capability.get("selected_kernel_flavor") or "")
         candidates = self._cpu_candidate_kernel_flavors(cpu) if backend == "cpu_native_helper" else []
         return resolve_cpu_execution_policy(
             backend=backend,
@@ -271,11 +377,26 @@ class WorkloadCpuMemoryMixin:
             tuning_policy=tuning_policy,
             candidate_kernel_flavors=candidates,
             tune_max_power=tune_max_power,
-            worker_count=lambda: self._cpu_worker_count(cpu),
+            worker_count=lambda: tuple(capability.get("target_cpu_ids") or []),
             power_tuning_available=self._cpu_power_tuning_available,
             benchmark_candidate=lambda flavor: self._benchmark_cpu_kernel(cpu, flavor),
             tuning_cache=self._cpu_tuning_cache,
-        )
+        ) | {
+            key: capability.get(key)
+            for key in (
+                "available_cpu_ids",
+                "online_cpu_ids",
+                "allowed_cpu_ids",
+                "target_cpu_ids",
+                "requested_thread_count",
+                "actual_worker_count",
+                "capability_scope",
+                "common_safe_instruction_set",
+                "per_cpu_capabilities",
+                "capability_probe_failures",
+                "capability_intersection_reason",
+            )
+        }
 
     def _benchmark_cpu_kernel(self, cpu: Any, kernel_flavor: str) -> Dict[str, Any]:
         return benchmark_cpu_kernel_candidate(
@@ -299,7 +420,7 @@ class WorkloadCpuMemoryMixin:
         backend = self._cpu_backend_name(cpu)
         requested = self._cpu_helper_mode(cpu)
         if backend == "cpu_native_helper":
-            return self._cpu_helper_resolved_mode(requested) or requested
+            return str(self._cpu_capability_plan(cpu).get("common_safe_instruction_set") or "")
         if backend == "stress_ng":
             return "approximate"
         if backend == "python_fallback":
@@ -352,21 +473,18 @@ class WorkloadCpuMemoryMixin:
         )
 
     def _cpu_worker_count(self, cpu: Any) -> int:
-        total = max(1, os.cpu_count() or 1)
-        threads = (cpu.threads or "all").strip().lower()
-        if not threads or threads == "all":
-            return total
-        try:
-            requested = int(threads)
-        except Exception:
-            return total
-        return max(1, min(requested, total))
+        return len(self._cpu_target_plan(cpu).get("target_cpu_ids") or [])
 
     def _cpu_fallback_params(self, cpu: Any) -> Dict[str, Any]:
         return cpu_fallback_params(cpu.instruction_set, cpu.mode)
 
     def _cpu_fallback_script(self, cpu: Any, worker_count: int) -> str:
-        return build_cpu_fallback_script(cpu.instruction_set, cpu.mode, worker_count)
+        return build_cpu_fallback_script(
+            cpu.instruction_set,
+            cpu.mode,
+            worker_count,
+            list(self._cpu_target_plan(cpu).get("target_cpu_ids") or []),
+        )
 
     def _memory_fallback_script(self, target_bytes: int, result_file: str = "") -> str:
         return build_memory_fallback_script(target_bytes, result_file)

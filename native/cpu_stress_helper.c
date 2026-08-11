@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
 #include <immintrin.h>
 #endif
 #if defined(__aarch64__) && defined(__linux__)
@@ -54,6 +55,7 @@ typedef struct {
     int affinity_target_cpu;
     int affinity_attempted;
     int affinity_applied;
+    int affinity_required;
     int affinity_error_code;
     int observed_cpu;
     int first_error_recorded;
@@ -62,7 +64,7 @@ typedef struct {
 
 typedef struct {
     int worker_index;
-    int cpu_count;
+    int target_cpu;
     stress_mode_t mode;
     kernel_flavor_t kernel_flavor;
     worker_stats_t *stats;
@@ -77,20 +79,34 @@ static void handle_signal(int signum) {
     keep_running = 0;
 }
 
-static void bind_worker_to_cpu(int worker_index, int cpu_count, worker_stats_t *stats) {
+static int bind_current_thread_to_cpu(int target_cpu) {
+#ifdef __linux__
+    if (target_cpu < 0) {
+        return EINVAL;
+    }
+    size_t set_size = CPU_ALLOC_SIZE((size_t)target_cpu + 1U);
+    cpu_set_t *set = CPU_ALLOC((size_t)target_cpu + 1U);
+    if (set == NULL) {
+        return ENOMEM;
+    }
+    CPU_ZERO_S(set_size, set);
+    CPU_SET_S(target_cpu, set_size, set);
+    int result = pthread_setaffinity_np(pthread_self(), set_size, set);
+    CPU_FREE(set);
+    return result;
+#else
+    (void)target_cpu;
+    return ENOSYS;
+#endif
+}
+
+static int bind_worker_to_cpu(int target_cpu, worker_stats_t *stats) {
     if (stats != NULL) {
         stats->affinity_target_cpu = -1;
         stats->observed_cpu = -1;
     }
 #ifdef __linux__
-    if (cpu_count <= 0) {
-        return;
-    }
-    int target_cpu = worker_index % cpu_count;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(target_cpu, &set);
-    int affinity_result = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    int affinity_result = bind_current_thread_to_cpu(target_cpu);
     if (stats != NULL) {
         stats->affinity_target_cpu = target_cpu;
         stats->affinity_attempted = 1;
@@ -98,9 +114,10 @@ static void bind_worker_to_cpu(int worker_index, int cpu_count, worker_stats_t *
         stats->affinity_error_code = affinity_result;
         stats->observed_cpu = sched_getcpu();
     }
+    return affinity_result;
 #else
-    (void)worker_index;
-    (void)cpu_count;
+    (void)target_cpu;
+    return ENOSYS;
 #endif
 }
 
@@ -136,10 +153,29 @@ static uint64_t checksum_f32(const float *values, int count) {
     return checksum;
 }
 
+static void record_worker_error(worker_stats_t *stats, const char *kind, uint64_t iteration, uint64_t expected, uint64_t actual);
+
 static void update_checksum_stats(worker_stats_t *stats, uint64_t checksum, uint64_t *last_checksum, unsigned int *repeat_count) {
     if (stats == NULL) {
         return;
     }
+#ifdef __linux__
+    if (stats->affinity_required && stats->affinity_applied) {
+        int current_cpu = sched_getcpu();
+        stats->observed_cpu = current_cpu;
+        if (current_cpu < 0 || current_cpu != stats->affinity_target_cpu) {
+            record_worker_error(
+                stats,
+                "affinity_lost",
+                stats->verify_passes,
+                (uint64_t)stats->affinity_target_cpu,
+                current_cpu < 0 ? UINT64_MAX : (uint64_t)current_cpu
+            );
+            keep_running = 0;
+            return;
+        }
+    }
+#endif
     stats->verify_passes += 1;
     if (*last_checksum == checksum) {
         *repeat_count += 1U;
@@ -278,6 +314,7 @@ static void run_scalar_loop(uint64_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 400000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             a = bound_scalar_value((a * 1.0000001192092896) + b);
             b = bound_scalar_value((b * 0.9999998807907104) + a);
             a = bound_scalar_value((a * b * 0.0001220703125) + 0.3333333333333333);
@@ -365,6 +402,7 @@ static void run_sse_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 200000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm_add_ps(_mm_mul_ps(v0, mul), add);
             v1 = _mm_add_ps(_mm_mul_ps(v1, mul), v0);
             v0 = _mm_sub_ps(_mm_mul_ps(v0, v1), add);
@@ -402,6 +440,7 @@ static void run_sse2_int_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 260000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm_add_epi16(_mm_mullo_epi16(v0, mul), add);
             v1 = _mm_xor_si128(_mm_add_epi16(_mm_mullo_epi16(v1, mul), add), v0);
             v0 = _mm_add_epi16(v0, _mm_slli_epi16(v1, 1));
@@ -432,6 +471,7 @@ static void run_avx_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 240000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm256_add_ps(_mm256_mul_ps(v0, mul), add);
             v1 = _mm256_add_ps(_mm256_mul_ps(v1, mul), v0);
             v0 = _mm256_sub_ps(_mm256_mul_ps(v0, v1), add);
@@ -471,6 +511,7 @@ static void run_avx_fma_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 220000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             a = _mm256_fmadd_ps(a, mul0, b);
             b = _mm256_fmadd_ps(b, mul1, c);
             c = _mm256_fmadd_ps(c, mul0, d);
@@ -514,6 +555,7 @@ static void run_avx2_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 300000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm256_add_epi32(_mm256_mullo_epi32(v0, mul), add);
             v1 = _mm256_xor_si256(_mm256_add_epi32(_mm256_mullo_epi32(v1, mul), add), v0);
             v0 = _mm256_add_epi32(v0, _mm256_slli_epi32(v1, 1));
@@ -548,6 +590,7 @@ static void run_avx2_fma_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 220000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             a = _mm256_fmadd_ps(a, mul0, b);
             b = _mm256_fmadd_ps(b, mul1, c);
             c = _mm256_fmadd_ps(c, mul0, d);
@@ -602,6 +645,7 @@ static void run_avx512_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 240000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             a = _mm512_fmadd_ps(a, mul0, b);
             b = _mm512_fmadd_ps(b, mul1, c);
             c = _mm512_fmadd_ps(c, mul0, d);
@@ -647,6 +691,7 @@ static void run_avx512_int_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 280000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm512_add_epi32(v0, add);
             v1 = _mm512_xor_si512(_mm512_add_epi32(v1, mix), v0);
             v0 = _mm512_add_epi32(v0, _mm512_slli_epi32(v1, 1));
@@ -679,6 +724,7 @@ static void run_neon_loop(uint32_t seed, worker_stats_t *stats) {
     unsigned int repeat_count = 0;
     while (keep_running) {
         for (int i = 0; i < 300000; ++i) {
+            if ((i & 4095) == 0 && !keep_running) break;
             v0 = vaddq_u32(vmulq_u32(v0, mul), add);
             v1 = veorq_u32(vaddq_u32(vmulq_u32(v1, mul), mix), v0);
             v2 = vaddq_u32(vmulq_u32(v2, mul), vshlq_n_u32(v1, 1));
@@ -710,9 +756,57 @@ static int cpu_supports_neon(void) {
 #endif
 }
 
+#if defined(__x86_64__) || defined(__i386__)
+static uint64_t read_xcr0(void) {
+    uint32_t eax = 0;
+    uint32_t edx = 0;
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+    return ((uint64_t)edx << 32) | eax;
+}
+
+static int current_cpu_supports_sse2(void) {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (edx & bit_SSE2) != 0U;
+}
+
+static int current_cpu_supports_avx(void) {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+        return 0;
+    }
+    if ((ecx & bit_AVX) == 0U || (ecx & bit_OSXSAVE) == 0U) {
+        return 0;
+    }
+    return (read_xcr0() & 0x6U) == 0x6U;
+}
+
+static int current_cpu_supports_fma(void) {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    return current_cpu_supports_avx() && __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & bit_FMA) != 0U;
+}
+
+static int current_cpu_supports_avx2(void) {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (!current_cpu_supports_avx() || __get_cpuid_max(0, NULL) < 7U) {
+        return 0;
+    }
+    __cpuid_count(7, 0, eax, ebx, ecx, edx);
+    return (ebx & bit_AVX2) != 0U;
+}
+
+static int current_cpu_supports_avx512f(void) {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (!current_cpu_supports_avx() || __get_cpuid_max(0, NULL) < 7U) {
+        return 0;
+    }
+    __cpuid_count(7, 0, eax, ebx, ecx, edx);
+    return (ebx & bit_AVX512F) != 0U && (read_xcr0() & 0xE6U) == 0xE6U;
+}
+#endif
+
 static int cpu_supports_fma(void) {
 #if defined(__x86_64__) || defined(__i386__)
-    return __builtin_cpu_supports("fma");
+    return current_cpu_supports_fma();
 #else
     return 0;
 #endif
@@ -721,33 +815,33 @@ static int cpu_supports_fma(void) {
 static stress_mode_t resolve_mode(stress_mode_t requested) {
 #if defined(__x86_64__) || defined(__i386__)
     if (requested == MODE_AUTO) {
-        if (__builtin_cpu_supports("avx512f")) {
+        if (current_cpu_supports_avx512f()) {
             return MODE_AVX512;
         }
-        if (__builtin_cpu_supports("avx2")) {
+        if (current_cpu_supports_avx2()) {
             return MODE_AVX2;
         }
-        if (__builtin_cpu_supports("avx")) {
+        if (current_cpu_supports_avx()) {
             return MODE_AVX;
         }
-        if (__builtin_cpu_supports("sse2")) {
+        if (current_cpu_supports_sse2()) {
             return MODE_SSE;
         }
         return MODE_SCALAR;
     }
     if (
         requested == MODE_AVX512 &&
-        !__builtin_cpu_supports("avx512f")
+        !current_cpu_supports_avx512f()
     ) {
         return MODE_AVX2;
     }
-    if (requested == MODE_AVX2 && !__builtin_cpu_supports("avx2")) {
+    if (requested == MODE_AVX2 && !current_cpu_supports_avx2()) {
         return MODE_AVX;
     }
-    if (requested == MODE_AVX && !__builtin_cpu_supports("avx")) {
+    if (requested == MODE_AVX && !current_cpu_supports_avx()) {
         return MODE_SSE;
     }
-    if (requested == MODE_SSE && !__builtin_cpu_supports("sse2")) {
+    if (requested == MODE_SSE && !current_cpu_supports_sse2()) {
         return MODE_SCALAR;
     }
     return requested;
@@ -814,38 +908,38 @@ static int kernel_flavor_supported(kernel_flavor_t flavor) {
         case KERNEL_SSE2:
         case KERNEL_SSE2_INT:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("sse2");
+            return current_cpu_supports_sse2();
 #else
             return 0;
 #endif
         case KERNEL_AVX:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("avx");
+            return current_cpu_supports_avx();
 #else
             return 0;
 #endif
         case KERNEL_AVX_FMA:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("avx") && cpu_supports_fma();
+            return current_cpu_supports_avx() && cpu_supports_fma();
 #else
             return 0;
 #endif
         case KERNEL_AVX2:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("avx2");
+            return current_cpu_supports_avx2();
 #else
             return 0;
 #endif
         case KERNEL_AVX2_FMA:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("avx2") && cpu_supports_fma();
+            return current_cpu_supports_avx2() && cpu_supports_fma();
 #else
             return 0;
 #endif
         case KERNEL_AVX512_FMA:
         case KERNEL_AVX512_INT:
 #if defined(__x86_64__) || defined(__i386__)
-            return __builtin_cpu_supports("avx512f");
+            return current_cpu_supports_avx512f();
 #else
             return 0;
 #endif
@@ -914,10 +1008,25 @@ static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
 
 static void *worker_main(void *opaque) {
     worker_args_t *args = (worker_args_t *)opaque;
-    bind_worker_to_cpu(args->worker_index, args->cpu_count, args->stats);
+    int affinity_result = bind_worker_to_cpu(args->target_cpu, args->stats);
     kernel_flavor_t flavor = args->kernel_flavor;
     if (flavor == KERNEL_UNSPECIFIED) {
         flavor = default_kernel_flavor(args->mode);
+    }
+#if defined(__x86_64__) || defined(__i386__)
+    args->stats->affinity_required = flavor != KERNEL_SCALAR;
+    if (flavor != KERNEL_SCALAR && affinity_result != 0) {
+        args->stats->error_count += 1ULL;
+        args->stats->first_error_recorded = 1;
+        snprintf(args->stats->first_error_kind, sizeof(args->stats->first_error_kind), "%s", "affinity_required");
+        return NULL;
+    }
+#endif
+    if (affinity_result == 0 && !kernel_flavor_supported(flavor)) {
+        args->stats->error_count += 1ULL;
+        args->stats->first_error_recorded = 1;
+        snprintf(args->stats->first_error_kind, sizeof(args->stats->first_error_kind), "%s", "isa_not_supported");
+        return NULL;
     }
     uint32_t seed = (uint32_t)(args->worker_index + 1);
 
@@ -1007,20 +1116,81 @@ static stress_mode_t parse_mode(const char *raw) {
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon] [--threads N] [--print-resolved-mode] [--print-kernel-flavor] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--result-file <path>]\n",
         argv0
     );
+}
+
+static int parse_cpu_ids(const char *raw, int *cpu_ids, int capacity) {
+    if (raw == NULL || *raw == '\0' || cpu_ids == NULL || capacity <= 0) {
+        return 0;
+    }
+    char *copy = strdup(raw);
+    if (copy == NULL) {
+        return -1;
+    }
+    int count = 0;
+    char *save = NULL;
+    for (char *token = strtok_r(copy, ",", &save); token != NULL; token = strtok_r(NULL, ",", &save)) {
+        char *end = NULL;
+        long value = strtol(token, &end, 10);
+        if (end == token || *end != '\0' || value < 0 || value > INT32_MAX || count >= capacity) {
+            free(copy);
+            return -1;
+        }
+        for (int index = 0; index < count; ++index) {
+            if (cpu_ids[index] == (int)value) {
+                free(copy);
+                return -1;
+            }
+        }
+        cpu_ids[count++] = (int)value;
+    }
+    free(copy);
+    return count;
+}
+
+static int allowed_cpu_ids(int *cpu_ids, int capacity) {
+#ifdef __linux__
+    long configured = sysconf(_SC_NPROCESSORS_CONF);
+    size_t cpu_capacity = (size_t)(configured > 0 ? configured : 1024);
+    cpu_set_t *set = CPU_ALLOC(cpu_capacity);
+    if (set == NULL) {
+        return 0;
+    }
+    size_t set_size = CPU_ALLOC_SIZE(cpu_capacity);
+    CPU_ZERO_S(set_size, set);
+    if (sched_getaffinity(0, set_size, set) != 0) {
+        CPU_FREE(set);
+        return 0;
+    }
+    int count = 0;
+    for (size_t cpu_id = 0; cpu_id < cpu_capacity && count < capacity; ++cpu_id) {
+        if (CPU_ISSET_S(cpu_id, set_size, set)) {
+            cpu_ids[count++] = (int)cpu_id;
+        }
+    }
+    CPU_FREE(set);
+    return count;
+#else
+    for (int index = 0; index < capacity; ++index) {
+        cpu_ids[index] = index;
+    }
+    return capacity;
+#endif
 }
 
 static void write_result_file(
     const char *path,
     stress_mode_t mode,
     kernel_flavor_t kernel_flavor,
+    int requested_threads,
     int threads,
     uint64_t verify_passes,
     uint64_t canary_passes,
     uint64_t error_count,
-    const worker_stats_t *worker_stats
+    const worker_stats_t *worker_stats,
+    const int *target_cpu_ids
 ) {
     if (path == NULL || *path == '\0') {
         return;
@@ -1046,10 +1216,10 @@ static void write_result_file(
         "  \"verify_passes\": %" PRIu64 ",\n"
         "  \"canary_passes\": %" PRIu64 ",\n"
         "  \"error_count\": %" PRIu64 ",\n"
-        "  \"affinity_attempted_count\": %d,\n"
-        "  \"affinity_applied_count\": %d,\n"
-        "  \"affinity_failed_count\": %d,\n"
-        "  \"threads_detail\": [\n",
+        "  \"requested_thread_count\": %d,\n"
+        "  \"actual_worker_count\": %d,\n"
+        "  \"capability_scope\": \"%s\",\n"
+        "  \"target_cpu_ids\": [",
         error_count == 0 ? "ok" : "error",
         mode_name(mode),
         kernel_flavor_name(kernel_flavor),
@@ -1057,6 +1227,26 @@ static void write_result_file(
         verify_passes,
         canary_passes,
         error_count,
+        requested_threads,
+        threads,
+#if defined(__x86_64__) || defined(__i386__)
+        "per_cpu_affinity_pinned_cpuid"
+#elif defined(__aarch64__)
+        "linux_aarch64_hwcap_common_set"
+#else
+        "generic"
+#endif
+    );
+    for (int index = 0; index < threads; ++index) {
+        fprintf(handle, "%s%d", index == 0 ? "" : ", ", target_cpu_ids[index]);
+    }
+    fprintf(
+        handle,
+        "],\n"
+        "  \"affinity_attempted_count\": %d,\n"
+        "  \"affinity_applied_count\": %d,\n"
+        "  \"affinity_failed_count\": %d,\n"
+        "  \"threads_detail\": [\n",
         affinity_attempted_count,
         affinity_applied_count,
         affinity_attempted_count - affinity_applied_count
@@ -1069,6 +1259,7 @@ static void write_result_file(
             "      \"affinity_target_cpu\": %d,\n"
             "      \"affinity_attempted\": %s,\n"
             "      \"affinity_applied\": %s,\n"
+            "      \"affinity_required\": %s,\n"
             "      \"affinity_error_code\": %d,\n"
             "      \"observed_cpu\": %d,\n"
             "      \"verify_passes\": %" PRIu64 ",\n"
@@ -1078,6 +1269,7 @@ static void write_result_file(
             worker_stats[index].affinity_target_cpu,
             worker_stats[index].affinity_attempted ? "true" : "false",
             worker_stats[index].affinity_applied ? "true" : "false",
+            worker_stats[index].affinity_required ? "true" : "false",
             worker_stats[index].affinity_error_code,
             worker_stats[index].observed_cpu,
             worker_stats[index].verify_passes,
@@ -1115,6 +1307,9 @@ int main(int argc, char **argv) {
     int threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
     int print_resolved_mode = 0;
     int print_kernel_flavor = 0;
+    int print_supported_kernels = 0;
+    int probe_cpu = -1;
+    const char *cpu_ids_raw = NULL;
     if (threads <= 0) {
         threads = 1;
     }
@@ -1129,6 +1324,14 @@ int main(int argc, char **argv) {
             if (threads <= 0) {
                 threads = 1;
             }
+            continue;
+        }
+        if (strcmp(argv[i], "--cpu-ids") == 0 && i + 1 < argc) {
+            cpu_ids_raw = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "--probe-cpu") == 0 && i + 1 < argc) {
+            probe_cpu = atoi(argv[++i]);
             continue;
         }
         if (strcmp(argv[i], "--kernel-flavor") == 0 && i + 1 < argc) {
@@ -1147,12 +1350,24 @@ int main(int argc, char **argv) {
             print_kernel_flavor = 1;
             continue;
         }
+        if (strcmp(argv[i], "--print-supported-kernels") == 0) {
+            print_supported_kernels = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--result-file") == 0 && i + 1 < argc) {
             result_file_path = argv[++i];
             continue;
         }
         print_usage(argv[0]);
         return 2;
+    }
+
+    if (probe_cpu >= 0) {
+        int probe_affinity_result = bind_current_thread_to_cpu(probe_cpu);
+        if (probe_affinity_result != 0) {
+            fprintf(stderr, "unable to pin capability probe to CPU %d: %s\n", probe_cpu, strerror(probe_affinity_result));
+            return 5;
+        }
     }
 
     if (!requested_mode_supported(mode)) {
@@ -1183,6 +1398,27 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (print_supported_kernels) {
+        const kernel_flavor_t flavors[] = {
+            KERNEL_AVX512_FMA, KERNEL_AVX512_INT,
+            KERNEL_AVX2_FMA, KERNEL_AVX2,
+            KERNEL_AVX_FMA, KERNEL_AVX,
+            KERNEL_SSE2, KERNEL_SSE2_INT,
+            KERNEL_NEON, KERNEL_SCALAR
+        };
+        int printed = 0;
+        size_t flavor_count = sizeof(flavors) / sizeof(flavors[0]);
+        for (size_t index = 0; index < flavor_count; ++index) {
+            if (!kernel_flavor_supported(flavors[index])) {
+                continue;
+            }
+            printf("%s%s", printed ? "," : "", kernel_flavor_name(flavors[index]));
+            printed = 1;
+        }
+        putchar('\n');
+        return printed ? 0 : 3;
+    }
+
     if (print_kernel_flavor) {
         kernel_flavor_t resolved_flavor = kernel_flavor;
         if (resolved_flavor == KERNEL_UNSPECIFIED) {
@@ -1196,7 +1432,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (kernel_flavor != KERNEL_UNSPECIFIED && !kernel_flavor_supported(kernel_flavor)) {
+    if (kernel_flavor != KERNEL_UNSPECIFIED && cpu_ids_raw == NULL && !kernel_flavor_supported(kernel_flavor)) {
         fprintf(stderr, "kernel flavor not supported on this CPU\n");
         return 3;
     }
@@ -1207,23 +1443,40 @@ int main(int argc, char **argv) {
     pthread_t *workers = calloc((size_t)threads, sizeof(*workers));
     worker_args_t *worker_args = calloc((size_t)threads, sizeof(*worker_args));
     worker_stats_t *worker_stats = calloc((size_t)threads, sizeof(*worker_stats));
-    if (workers == NULL || worker_args == NULL || worker_stats == NULL) {
+    int *target_cpu_ids = calloc((size_t)threads, sizeof(*target_cpu_ids));
+    if (workers == NULL || worker_args == NULL || worker_stats == NULL || target_cpu_ids == NULL) {
         fprintf(stderr, "allocation failure\n");
         free(workers);
         free(worker_args);
         free(worker_stats);
+        free(target_cpu_ids);
         return 1;
     }
 
+    int target_count = cpu_ids_raw != NULL
+        ? parse_cpu_ids(cpu_ids_raw, target_cpu_ids, threads)
+        : allowed_cpu_ids(target_cpu_ids, threads);
+    if (target_count != threads) {
+        fprintf(stderr, "CPU target list contains %d valid CPUs for %d requested workers\n", target_count, threads);
+        free(workers);
+        free(worker_args);
+        free(worker_stats);
+        free(target_cpu_ids);
+        return 2;
+    }
+
+    const int requested_threads = threads;
+    int worker_creation_failed = 0;
     for (int i = 0; i < threads; ++i) {
         worker_args[i].worker_index = i;
-        worker_args[i].cpu_count = threads;
+        worker_args[i].target_cpu = target_cpu_ids[i];
         worker_args[i].mode = mode;
         worker_args[i].kernel_flavor = kernel_flavor;
         worker_args[i].stats = &worker_stats[i];
         if (pthread_create(&workers[i], NULL, worker_main, &worker_args[i]) != 0) {
             fprintf(stderr, "pthread_create failed: %s\n", strerror(errno));
             keep_running = 0;
+            worker_creation_failed = 1;
             threads = i;
             break;
         }
@@ -1249,9 +1502,13 @@ int main(int argc, char **argv) {
         total_canary_passes += worker_stats[i].canary_passes;
         total_error_count += worker_stats[i].error_count;
     }
-    write_result_file(result_file_path, resolve_mode(mode), resolved_flavor, threads, total_verify_passes, total_canary_passes, total_error_count, worker_stats);
+    if (worker_creation_failed) {
+        total_error_count += 1ULL;
+    }
+    write_result_file(result_file_path, mode_for_kernel_flavor(resolved_flavor), resolved_flavor, requested_threads, threads, total_verify_passes, total_canary_passes, total_error_count, worker_stats, target_cpu_ids);
     free(workers);
     free(worker_args);
     free(worker_stats);
+    free(target_cpu_ids);
     return total_error_count == 0 ? 0 : 4;
 }

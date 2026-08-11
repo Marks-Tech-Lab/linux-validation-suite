@@ -351,6 +351,7 @@ from Modules.lvs_cpu_execution import (
     benchmark_cpu_kernel_candidate,
     best_valid_cpu_tuning_candidate,
     build_cpu_benchmark_result,
+    build_cpu_capability_probe_command,
     build_cpu_command,
     build_cpu_default_kernel_probe_command,
     build_cpu_execution_base,
@@ -366,14 +367,17 @@ from Modules.lvs_cpu_execution import (
     normalize_cpu_helper_mode,
     normalize_cpu_probe_mode,
     parse_cpu_default_kernel_probe,
+    parse_cpu_capability_probe,
     parse_cpu_resolved_mode_probe,
     resolve_cpu_execution_policy,
 )
 from Modules.lvs_python_cpu_worker import (
+    apply_python_cpu_affinity,
     python_cpu_workload,
     supervise_python_cpu_workers,
 )
 from Modules.lvs_cpu_architecture import (
+    X86_MAX_POWER_KERNEL_ORDER,
     cpu_max_power_kernel_order,
     cpu_instruction_set_policy,
     heatsoak_cpu_instruction_set,
@@ -390,6 +394,14 @@ from Modules.lvs_cpu_topology import (
     cpu_package_devices_from_topology,
     parse_lscpu_cpu_identity,
     parse_proc_cpuinfo_models,
+)
+from Modules.lvs_cpu_targeting import (
+    common_kernel_capabilities,
+    discover_linux_cpu_sets,
+    format_linux_cpu_list,
+    parse_linux_cpu_list,
+    resolve_target_cpu_ids,
+    select_common_kernel,
 )
 from Modules.lvs_heatsoak import HeatsoakManager
 from Modules.lvs_gpu_identity import (
@@ -8316,7 +8328,7 @@ def test_post_run_and_heatsoak_helpers() -> None:
         heatsoak_cpu_instruction_set(normalize_cpu_architecture(os.uname().machine)),
         "heatsoak CPU instruction set",
     )
-    assert_equal(heatsoak_cpu_instruction_set("x86_64"), "avx", "x86 heatsoak remains AVX")
+    assert_equal(heatsoak_cpu_instruction_set("x86_64"), "auto", "x86 heatsoak uses common-safe Auto")
     assert_equal(heatsoak_cpu_instruction_set("aarch64"), "auto", "ARM heatsoak uses portable auto")
     assert_true(stage.modules.gpu_3d.enabled, "heatsoak GPU enabled")
     assert_equal(stage.modules.gpu_3d.backend_preference, "auto", "heatsoak GPU backend")
@@ -16812,6 +16824,32 @@ model name  : AMD EPYC 9255 24-Core Processor
             "package0:cluster1:core0",
             "ARM telemetry physical key includes cluster identity",
         )
+        assert_equal(len(arm_info["Packages"][0]["Clusters"]), 2, "ARM topology exports arbitrary cluster records")
+        assert_equal(len(arm_info["Packages"][0]["LogicalCpus"]), 8, "ARM topology preserves logical CPU identities")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "cpu"
+        # Three clusters with mixed SMT/non-SMT cores and repeated core IDs.
+        rows = (
+            (0, 0, 0, 0, "0-1"),
+            (1, 0, 0, 0, "0-1"),
+            (2, 0, 1, 0, "2"),
+            (4, 0, 1, 1, "4"),
+            (6, 0, 2, 0, "6-7"),
+            (7, 0, 2, 0, "6-7"),
+        )
+        for cpu_id, package_id, cluster_id, core_id, siblings in rows:
+            topology = root / f"cpu{cpu_id}" / "topology"
+            topology.mkdir(parents=True)
+            (topology / "physical_package_id").write_text(str(package_id), encoding="utf-8")
+            (topology / "cluster_id").write_text(str(cluster_id), encoding="utf-8")
+            (topology / "core_id").write_text(str(core_id), encoding="utf-8")
+            (topology / "thread_siblings_list").write_text(siblings, encoding="utf-8")
+        read = lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None
+        mixed = collect_cpu_topology_info(cpu_root=root, read_text=read, fallback_name="Synthetic CPU")
+        assert_equal(mixed["LogicalCpuCount"], 6, "mixed topology logical count")
+        assert_equal(mixed["PhysicalCoreCount"], 4, "mixed SMT/non-SMT physical count")
+        assert_equal(len(mixed["Packages"][0]["Clusters"]), 3, "three performance clusters are not collapsed")
 
     class ArmIdentityCollector(SystemInfoCollector):
         def _proc_cpuinfo_text(self) -> str:
@@ -16821,6 +16859,202 @@ model name  : AMD EPYC 9255 24-Core Processor
             return "Vendor ID: Qualcomm\nModel name: Oryon\n"
 
     assert_equal(ArmIdentityCollector()._cpu_name(), "Qualcomm Oryon", "system inventory ARM CPU identity fallback")
+
+
+def test_cpu_target_sets_affinity_and_common_isa_policy() -> None:
+    assert_equal(parse_linux_cpu_list("0-2,4,6-7"), [0, 1, 2, 4, 6, 7], "Linux CPU-list parser")
+    assert_equal(format_linux_cpu_list([8, 9, 10, 12, 15, 16]), "8-10,12,15-16", "Linux CPU-list formatter")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "cpu"
+        root.mkdir()
+        (root / "present").write_text("0-15\n", encoding="utf-8")
+        (root / "online").write_text("0-7,10-15\n", encoding="utf-8")
+        cpu_sets = discover_linux_cpu_sets(
+            cpu_root=root,
+            affinity_getter=lambda _pid: {8, 10, 12, 14},
+            cpu_count_getter=lambda: 16,
+        )
+        assert_equal(cpu_sets["available_cpu_ids"], list(range(16)), "present CPU IDs")
+        assert_equal(cpu_sets["online_cpu_ids"], [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15], "online CPU IDs")
+        assert_equal(cpu_sets["allowed_cpu_ids"], [8, 10, 12, 14], "process cpuset IDs")
+        assert_equal(cpu_sets["executable_cpu_ids"], [10, 12, 14], "online intersects allowed")
+        assert_equal(resolve_target_cpu_ids(cpu_sets, "all")["target_cpu_ids"], [10, 12, 14], "all targets sparse IDs")
+        assert_equal(resolve_target_cpu_ids(cpu_sets, "2")["target_cpu_ids"], [10, 12], "integer selection deterministic")
+        (root / "online").write_text("0-7,12-15\n", encoding="utf-8")
+        changed = discover_linux_cpu_sets(cpu_root=root, affinity_getter=lambda _pid: {10, 12, 14})
+        assert_equal(changed["executable_cpu_ids"], [12, 14], "offline CPU removed before launch")
+
+    one = resolve_target_cpu_ids(
+        {"executable_cpu_ids": [7], "available_cpu_ids": [7], "online_cpu_ids": [7], "allowed_cpu_ids": [7]},
+        "all",
+    )
+    assert_equal(one["target_cpu_ids"], [7], "single nonzero CPU ID")
+    assert_equal(one["actual_worker_count"], 1, "single-core worker count")
+
+    sse = {"sse2", "sse2_int", "scalar"}
+    avx_fma_capable = {*sse, "avx", "avx_fma"}
+    avx2_fma_capable = {*avx_fma_capable, "avx2", "avx2_fma"}
+    avx512_capable = {*avx2_fma_capable, "avx512_fma", "avx512_int"}
+    cases = (
+        ([0, 1], {0: sse, 1: sse}, "sse2"),
+        ([0, 1], {0: avx2_fma_capable, 1: avx2_fma_capable}, "avx2_fma"),
+        ([0, 1], {0: avx512_capable, 1: avx512_capable}, "avx512_fma"),
+        ([0, 1], {0: avx2_fma_capable, 1: avx_fma_capable}, "avx_fma"),
+        ([0, 1], {0: avx512_capable, 1: avx2_fma_capable}, "avx2_fma"),
+        ([0, 2, 6], {0: avx512_capable, 2: avx2_fma_capable, 6: sse}, "sse2"),
+    )
+    for targets, per_cpu, expected in cases:
+        common = common_kernel_capabilities(targets, per_cpu)
+        assert_equal(
+            select_common_kernel(architecture="x86_64", requested_mode="auto", common_flavors=common["common_kernel_flavors"]),
+            expected,
+            f"mixed ISA intersection {targets}",
+        )
+    mixed = common_kernel_capabilities([0, 1], {0: avx2_fma_capable, 1: avx_fma_capable})
+    assert_equal(
+        select_common_kernel(architecture="x86_64", requested_mode="avx2", common_flavors=mixed["common_kernel_flavors"]),
+        "",
+        "explicit AVX2 rejected when one target is AVX-only",
+    )
+    sparse_high = common_kernel_capabilities([0, 2], {0: avx512_capable, 2: avx512_capable, 4: sse, 6: sse})
+    assert_equal(
+        select_common_kernel(architecture="x86_64", requested_mode="auto", common_flavors=sparse_high["common_kernel_flavors"]),
+        "avx512_fma",
+        "allowed sparse subset may use its proven common ISA",
+    )
+    incomplete = common_kernel_capabilities([0, 1], {0: avx2_fma_capable})
+    assert_true(not incomplete["capability_intersection_complete"], "missing per-CPU evidence is incomplete")
+    assert_equal(select_common_kernel(architecture="x86_64", requested_mode="auto", common_flavors=incomplete["common_kernel_flavors"]), "", "incomplete evidence fails conservatively")
+    assert_equal(select_common_kernel(architecture="arm64", requested_mode="auto", common_flavors={"neon", "scalar"}), "neon", "ARM common HWCAP selects NEON")
+    assert_equal(select_common_kernel(architecture="arm64", requested_mode="auto", common_flavors={"scalar"}), "scalar", "ARM scalar-only fallback")
+
+    applied = apply_python_cpu_affinity(
+        0,
+        12,
+        affinity_setter=lambda _pid, ids: None,
+        affinity_getter=lambda _pid: {12},
+    )
+    assert_true(applied["affinity_applied"], "Python affinity success evidence")
+    assert_equal(applied["observed_allowed_cpu_ids"], [12], "Python observed affinity evidence")
+    denied = apply_python_cpu_affinity(
+        1,
+        99,
+        affinity_setter=lambda _pid, _ids: (_ for _ in ()).throw(OSError(22, "Invalid argument")),
+    )
+    assert_equal(denied["affinity_status"], "failed", "Python invalid/offline CPU affinity failure")
+    unavailable = apply_python_cpu_affinity(2, 4, affinity_available=False)
+    assert_equal(unavailable["affinity_status"], "unavailable", "Python affinity unavailable evidence")
+
+    slow_payload = {
+        "kind": "cpu",
+        "status": "ok",
+        "error_count": 0,
+        "verify_passes": 4,
+        "canary_passes": 4,
+        "threads_detail": [
+            {"thread_index": 0, "verify_passes": 1, "error_count": 0},
+            {"thread_index": 1, "verify_passes": 3, "error_count": 0},
+        ],
+    }
+    assert_equal(worker_result_events_from_payload(slow_payload, "Slow CPU"), [], "unequal low throughput is not a correctness failure")
+
+
+def test_x86_native_kernel_exact_prerequisites() -> None:
+    # Test-only oracle for the native helper's C predicates. Production
+    # planning intentionally consumes the helper's exact flavor inventory
+    # instead of maintaining a second prerequisite implementation in Python.
+    prerequisites = {
+        "scalar": frozenset(),
+        "sse2": frozenset({"sse2"}),
+        "sse2_int": frozenset({"sse2"}),
+        "avx": frozenset({"avx", "osxsave", "xcr0_xmm_ymm"}),
+        "avx_fma": frozenset({"avx", "fma", "osxsave", "xcr0_xmm_ymm"}),
+        "avx2": frozenset({"avx", "avx2", "osxsave", "xcr0_xmm_ymm"}),
+        "avx2_fma": frozenset({"avx", "avx2", "fma", "osxsave", "xcr0_xmm_ymm"}),
+        "avx512_fma": frozenset({"avx", "avx512f", "osxsave", "xcr0_xmm_ymm", "xcr0_opmask_zmm"}),
+        "avx512_int": frozenset({"avx", "avx512f", "osxsave", "xcr0_xmm_ymm", "xcr0_opmask_zmm"}),
+    }
+
+    def flavors_for(capabilities: set[str]) -> list[str]:
+        return [flavor for flavor in X86_MAX_POWER_KERNEL_ORDER if prerequisites[flavor].issubset(capabilities)]
+
+    avx_os = {"sse2", "avx", "osxsave", "xcr0_xmm_ymm"}
+    avx2_no_fma = {*avx_os, "avx2"}
+    avx2_fma = {*avx2_no_fma, "fma"}
+    assert_true("avx2" in flavors_for(avx2_no_fma), "AVX2 kernel accepts AVX2 without FMA")
+    assert_true("avx2_fma" not in flavors_for(avx2_no_fma), "AVX2/FMA requires independent FMA")
+    assert_true("avx2_fma" in flavors_for(avx2_fma), "AVX2/FMA homogeneous capability")
+    assert_true("avx" in flavors_for(avx_os), "AVX kernel accepts AVX without FMA")
+    assert_true("avx_fma" not in flavors_for(avx_os), "AVX/FMA requires independent FMA")
+    assert_true("avx_fma" in flavors_for({*avx_os, "fma"}), "AVX/FMA capability")
+
+    no_ymm_os = {"sse2", "avx", "avx2", "fma", "osxsave"}
+    no_osxsave = {"sse2", "avx", "avx2", "fma", "xcr0_xmm_ymm"}
+    assert_true("avx" not in flavors_for(no_ymm_os), "CPUID AVX without XCR0 YMM is unsafe")
+    assert_true("avx2" not in flavors_for(no_ymm_os), "CPUID AVX2 without XCR0 YMM is unsafe")
+    assert_true("avx" not in flavors_for(no_osxsave), "AVX state requires OSXSAVE")
+
+    avx512_base = {*avx_os, "avx512f", "xcr0_opmask_zmm"}
+    assert_true("avx512_fma" in flavors_for(avx512_base), "AVX-512F contains required EVEX fused operations")
+    assert_true("avx512_int" in flavors_for(avx512_base), "AVX-512 integer kernel uses AVX-512F only")
+    assert_true("avx512_fma" in flavors_for(avx512_base - {"fma"}), "AVX-512 fused kernel does not require legacy FMA CPUID")
+    for missing in ("avx", "osxsave", "xcr0_xmm_ymm", "xcr0_opmask_zmm", "avx512f"):
+        supported = flavors_for(avx512_base - {missing})
+        assert_true("avx512_fma" not in supported, f"AVX-512 fused kernel rejects missing {missing}")
+        assert_true("avx512_int" not in supported, f"AVX-512 integer kernel rejects missing {missing}")
+
+    mixed_avx2 = common_kernel_capabilities(
+        [0, 1],
+        {
+            0: flavors_for(avx2_fma),
+            1: flavors_for(avx2_no_fma),
+        },
+    )
+    assert_equal(
+        select_common_kernel(architecture="x86_64", requested_mode="auto", common_flavors=mixed_avx2["common_kernel_flavors"]),
+        "avx2",
+        "mixed AVX2 FMA/non-FMA selects non-FMA AVX2",
+    )
+    assert_equal(
+        select_common_kernel(architecture="x86_64", requested_mode="avx2", common_flavors=mixed_avx2["common_kernel_flavors"]),
+        "avx2",
+        "explicit AVX2 family falls back only to its valid non-FMA kernel",
+    )
+    exact_common = set(mixed_avx2["common_kernel_flavors"])
+    tuned_candidates = cpu_candidate_kernel_flavors(
+        helper_available=True,
+        policy="max_power",
+        resolved_mode="avx2",
+        supports_kernel_flavor=lambda flavor: flavor in exact_common,
+        architecture="x86_64",
+    )
+    assert_true("avx2" in tuned_candidates and "avx2_fma" not in tuned_candidates, "max-power candidates honor exact FMA prerequisite")
+    mixed_avx = common_kernel_capabilities(
+        [0, 1],
+        {
+            0: flavors_for({*avx_os, "fma"}),
+            1: flavors_for(avx_os),
+        },
+    )
+    assert_equal(
+        select_common_kernel(architecture="x86_64", requested_mode="avx", common_flavors=mixed_avx["common_kernel_flavors"]),
+        "avx",
+        "mixed AVX FMA/non-FMA selects non-FMA AVX",
+    )
+    assert_equal(prerequisites["avx2_fma"] - prerequisites["avx2"], frozenset({"fma"}), "AVX2 FMA exact delta")
+    assert_equal(prerequisites["avx_fma"] - prerequisites["avx"], frozenset({"fma"}), "AVX FMA exact delta")
+
+    source_text = Path("native/cpu_stress_helper.c").read_text(encoding="utf-8")
+    assert_true('__attribute__((target("avx")))' in source_text, "plain AVX kernel target excludes FMA")
+    assert_true('__attribute__((target("avx,fma")))' in source_text, "AVX FMA kernel target is exact")
+    assert_true('__attribute__((target("avx2")))' in source_text, "plain AVX2 kernel target excludes FMA")
+    assert_true('__attribute__((target("avx2,fma")))' in source_text, "AVX2 FMA kernel target is exact")
+    assert_true(source_text.count('__attribute__((target("avx512f")))') == 2, "both AVX-512 kernels require only AVX-512F")
+    assert_true("(read_xcr0() & 0x6U) == 0x6U" in source_text, "XMM/YMM XCR0 validation")
+    assert_true("(read_xcr0() & 0xE6U) == 0xE6U" in source_text, "opmask/ZMM XCR0 validation")
+    assert_true("current_cpu_supports_avx2() && cpu_supports_fma()" in source_text, "worker AVX2/FMA revalidation")
+    assert_true("current_cpu_supports_avx() && cpu_supports_fma()" in source_text, "worker AVX/FMA revalidation")
 
 
 def test_run_progress_helpers() -> None:
@@ -19974,6 +20208,16 @@ def test_cpu_execution_helpers_build_and_parse_helper_probes() -> None:
         ["/tmp/cpu_helper", "--kernel-flavor", "avx2_fma", "--print-kernel-flavor"],
         "CPU kernel-support probe command",
     )
+    assert_equal(
+        build_cpu_capability_probe_command("/tmp/cpu_helper", cpu_id=8),
+        ["/tmp/cpu_helper", "--probe-cpu", "8", "--print-supported-kernels"],
+        "CPU per-target capability probe command",
+    )
+    assert_equal(
+        parse_cpu_capability_probe(0, "avx2_fma,avx2,avx,scalar\n"),
+        ["avx2_fma", "avx2", "avx", "scalar"],
+        "CPU capability probe parse",
+    )
     assert_equal(parse_cpu_resolved_mode_probe(0, "AVX512\n"), "avx512", "CPU resolved-mode probe parse")
     assert_equal(parse_cpu_resolved_mode_probe(1, "avx2"), "", "CPU resolved-mode probe rejects nonzero")
     assert_equal(parse_cpu_resolved_mode_probe(0, "bad"), "", "CPU resolved-mode probe rejects unknown")
@@ -19995,6 +20239,7 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
         python_runtime="/usr/bin/python3",
         cpu_kernel_flavor="avx2_fma",
         result_file="/tmp/result.json",
+        target_cpu_ids=[0, 2, 4, 6],
     )
     assert_equal(
         helper_cmd,
@@ -20004,6 +20249,8 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
             "auto",
             "--threads",
             "4",
+            "--cpu-ids",
+            "0,2,4,6",
             "--kernel-flavor",
             "avx2_fma",
             "--result-file",
@@ -20021,8 +20268,13 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
         mode="normal",
         stress_ng_available=True,
         python_runtime="/usr/bin/python3",
+        target_cpu_ids=[8, 10],
     )
-    assert_equal(stress_cmd, ["stress-ng", "--cpu", "2", "--cpu-method", "int64", "--metrics-brief"], "CPU stress-ng SSE command")
+    assert_equal(
+        stress_cmd,
+        ["stress-ng", "--cpu", "2", "--cpu-method", "int64", "--metrics-brief", "--taskset", "8,10"],
+        "CPU stress-ng target-set command",
+    )
 
     fallback_cmd = build_cpu_command(
         worker_count=1,
@@ -20035,6 +20287,7 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
         python_runtime="/usr/bin/python3",
         result_file="/tmp/python-cpu.json",
         resolved_mode="approximate",
+        target_cpu_ids=[6],
     )
     assert_equal(
         fallback_cmd[:3] if fallback_cmd else [],
@@ -20045,6 +20298,7 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
     assert_true("180000" in fallback_cmd, "CPU fallback command intensity")
     assert_true("--result-file" in fallback_cmd and "/tmp/python-cpu.json" in fallback_cmd, "CPU fallback result path")
     assert_true("--resolved-mode" in fallback_cmd and "approximate" in fallback_cmd, "CPU fallback resolved mode")
+    assert_true("--cpu-ids" in fallback_cmd and "6" in fallback_cmd, "CPU fallback target CPU IDs")
     assert_equal(cpu_fallback_params("sse", "normal")["algorithm"], "sha256", "CPU fallback SSE params")
     assert_true("count = 3" in build_cpu_fallback_script("auto", "normal", 3), "CPU fallback worker count")
 
@@ -20173,10 +20427,14 @@ def test_cpu_python_fallback_x86_contract_and_architecture_policy() -> None:
     for key, expected in expected_params.items():
         assert_equal(cpu_fallback_params(*key), expected, f"x86 Python fallback params {key}")
 
-    for instruction_set in ("auto", "scalar", "sse", "avx", "avx2", "avx512"):
+    for instruction_set in ("auto",):
         policy = python_cpu_fallback_policy("x86_64", instruction_set)
-        assert_true(policy["allowed"], f"x86 Python fallback remains allowed for {instruction_set}")
-        assert_equal(policy["resolved_mode"], "approximate", f"x86 fallback metadata unchanged for {instruction_set}")
+        assert_true(policy["allowed"], f"x86 generic Python fallback remains allowed for {instruction_set}")
+        assert_equal(policy["resolved_mode"], "approximate", f"x86 fallback metadata for {instruction_set}")
+    for instruction_set in ("scalar", "sse", "avx", "avx2", "avx512"):
+        policy = python_cpu_fallback_policy("x86_64", instruction_set)
+        assert_true(not policy["allowed"], f"x86 Python fallback does not enforce {instruction_set}")
+        assert_true("native CPU helper" in policy["reason"], "explicit Python fallback reason")
 
     assert_equal(normalize_cpu_architecture("AMD64"), "x86_64", "AMD64 architecture alias")
     assert_equal(normalize_cpu_architecture("aarch64"), "arm64", "aarch64 architecture alias")
@@ -20184,7 +20442,7 @@ def test_cpu_python_fallback_x86_contract_and_architecture_policy() -> None:
     for architecture in ("aarch64", "arm64"):
         for instruction_set, allowed, resolved in (
             ("auto", True, "portable"),
-            ("scalar", True, "scalar"),
+            ("scalar", False, ""),
             ("sse", False, ""),
             ("avx", False, ""),
             ("avx2", False, ""),
@@ -20194,13 +20452,17 @@ def test_cpu_python_fallback_x86_contract_and_architecture_policy() -> None:
             assert_equal(policy["allowed"], allowed, f"{architecture} Python fallback policy for {instruction_set}")
             assert_equal(policy["resolved_mode"], resolved, f"{architecture} fallback resolved mode for {instruction_set}")
             if not allowed:
-                assert_true("x86 ISA" in policy["reason"] and "ARM64" in policy["reason"], "ARM rejection diagnostic")
+                if instruction_set == "scalar":
+                    assert_true("native CPU helper" in policy["reason"], "explicit scalar fallback rejection")
+                else:
+                    assert_true("x86 ISA" in policy["reason"] and "ARM64" in policy["reason"], "ARM rejection diagnostic")
 
     script = build_cpu_fallback_script("avx512", "extreme", 3)
     assert_true("ALGORITHM = 'sha512'" in script, "x86 fallback algorithm script contract")
     assert_true("ITERATIONS = 180000" in script, "x86 fallback iteration script contract")
     assert_true("PAYLOAD_BYTES = 4194304" in script, "x86 fallback payload script contract")
-    assert_true("os.sched_setaffinity(0, {worker_index % cpu_total})" in script, "fallback affinity configuration")
+    assert_true("CPU_IDS = [0, 1, 2]" in script, "fallback deterministic target IDs")
+    assert_true("os.sched_setaffinity(0, {CPU_IDS[worker_index]})" in script, "fallback affinity configuration")
     assert_true("count = 3" in script, "fallback worker count script contract")
 
 
@@ -20227,16 +20489,20 @@ def test_native_cpu_scalar_architecture_policy_and_build_contract() -> None:
     source = Path("native/cpu_stress_helper.c")
     source_text = source.read_text(encoding="utf-8")
     assert_true(
-        "#if defined(__x86_64__) || defined(__i386__)\n#include <immintrin.h>\n#endif" in source_text,
+        "#include <cpuid.h>\n#include <immintrin.h>" in source_text,
         "native intrinsic header is isolated to x86 builds",
     )
     assert_true("static void run_scalar_loop" in source_text, "shared native scalar kernel remains present")
     assert_true("static int requested_mode_supported" in source_text, "native helper validates requested ISA")
-    assert_true("write_result_file(result_file_path, resolve_mode(mode)" in source_text, "native result contract remains wired")
+    assert_true("write_result_file(result_file_path, mode_for_kernel_flavor(resolved_flavor)" in source_text, "native result reports executed kernel mode")
+    assert_true("requested_threads, threads" in source_text, "native result distinguishes requested and actually created workers")
     assert_true(
-        "pthread_setaffinity_np(pthread_self(), sizeof(set), &set)" in source_text,
-        "native helper preserves best-effort Linux affinity",
+        "pthread_setaffinity_np(pthread_self(), set_size, set)" in source_text,
+        "native helper supports sparse and large Linux CPU IDs",
     )
+    assert_true("--probe-cpu" in source_text and "current_cpu_supports_avx2" in source_text, "x86 capability probe is pinned and direct")
+    assert_true("affinity_required" in source_text, "ISA-sensitive x86 worker refuses unpinned execution")
+    assert_true("affinity_lost" in source_text and "sched_getcpu()" in source_text, "ISA-sensitive x86 worker detects migration after launch")
     for evidence_field in (
         "affinity_attempted_count",
         "affinity_applied_count",
@@ -20347,6 +20613,7 @@ def test_native_cpu_neon_architecture_policy_and_profile() -> None:
     runner._cpu_helper_resolved_mode = lambda mode: {"auto": "neon", "scalar": "scalar", "neon": "neon"}.get(mode, "")
     runner._cpu_helper_default_kernel_flavor = lambda mode: "neon" if mode in {"auto", "neon"} else "scalar"
     runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor in {"scalar", "neon"}
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["neon", "scalar"]
     runner._cpu_power_tuning_available = lambda: False
     runner._command_exists = lambda name: name in {"stress-ng", "build/cpu_stress_helper_arm64"}
     runner._python_runtime = lambda: "/usr/bin/python3"
@@ -20367,6 +20634,7 @@ def test_native_cpu_neon_architecture_policy_and_profile() -> None:
     )
     assert_equal(runner._cpu_helper_default_kernel_flavor("auto"), "neon", "ARM auto kernel flavor is NEON")
 
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["scalar"]
     runner._cpu_helper_resolved_mode = lambda mode: "scalar" if mode in {"auto", "scalar"} else ""
     assert_equal(runner._cpu_resolved_mode(auto_cpu), "scalar", "ARM auto falls back to scalar without ASIMD")
     assert_equal(runner._cpu_backend_name(neon_cpu), "none", "ARM explicit NEON is unavailable without ASIMD")
@@ -20383,6 +20651,7 @@ def test_native_cpu_neon_architecture_policy_and_profile() -> None:
 
     runner._cpu_machine = lambda: "arm64"
     runner._cpu_helper_resolved_mode = lambda mode: {"auto": "neon", "scalar": "scalar", "neon": "neon"}.get(mode, "")
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["neon", "scalar"]
     neon_path = Path("profiles") / "ARM64 Native CPU NEON.json"
     profile = ProfileLoader(Path("profiles")).load_profile(neon_path)
     labels = ProfileLoader(Path("profiles")).load_segment_labels(neon_path, profile)
@@ -20519,7 +20788,7 @@ def test_python_cpu_fallback_worker_supervision() -> None:
         def start(self) -> None:
             self.started = True
             if self.mark_ready:
-                self.args[-1].set()
+                self.args[5].set()
 
         def is_alive(self) -> bool:
             return self.started and self.exitcode is None
@@ -20659,7 +20928,7 @@ def test_cpu_python_fallback_arm_runner_selection_and_diagnostics() -> None:
     runner._command_exists = lambda name: False
     runner._python_runtime = lambda: "/usr/bin/python3"
 
-    for instruction_set, resolved in (("auto", "portable"), ("scalar", "scalar")):
+    for instruction_set, resolved in (("auto", "portable"),):
         cpu = ModuleCpu(enabled=True, instruction_set=instruction_set)
         assert_equal(runner._cpu_backend_name(cpu), "python_fallback", f"ARM {instruction_set} fallback backend")
         command = runner._cpu_command(cpu)
@@ -20669,6 +20938,9 @@ def test_cpu_python_fallback_arm_runner_selection_and_diagnostics() -> None:
             f"ARM {instruction_set} fallback command",
         )
         assert_equal(runner._cpu_resolved_mode(cpu), resolved, f"ARM {instruction_set} truthful resolved mode")
+
+    scalar_fallback = ModuleCpu(enabled=True, instruction_set="scalar")
+    assert_equal(runner._cpu_backend_name(scalar_fallback), "none", "explicit scalar requires the native helper")
 
     for instruction_set in ("sse", "avx", "avx2", "avx512"):
         cpu = ModuleCpu(enabled=True, instruction_set=instruction_set)
@@ -20690,30 +20962,36 @@ def test_cpu_python_fallback_arm_runner_selection_and_diagnostics() -> None:
 
     runner._cpu_machine = lambda: "x86_64"
     explicit = ModuleCpu(enabled=True, instruction_set="avx512", mode="extreme")
-    assert_equal(runner._cpu_backend_name(explicit), "python_fallback", "x86 explicit fallback precedence preserved")
-    assert_true(runner._cpu_command(explicit) is not None, "x86 explicit fallback command preserved")
-    assert_equal(runner._cpu_resolved_mode(explicit), "approximate", "x86 fallback resolved metadata preserved")
+    assert_equal(runner._cpu_backend_name(explicit), "none", "x86 explicit ISA is not approximated by Python")
+    assert_equal(runner._cpu_command(explicit), None, "x86 explicit fallback command is rejected")
 
     runner._cpu_helper_status = lambda: {"available": True, "path": "/tmp/cpu-helper", "reason": ""}
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: [
+        "avx512_fma", "avx512_int", "avx2_fma", "avx2", "avx_fma", "avx", "sse2", "sse2_int", "scalar"
+    ]
     assert_equal(runner._cpu_backend_name(explicit), "cpu_native_helper", "native backend precedence")
     runner._cpu_helper_status = lambda: {"available": False, "path": "", "reason": "fixture"}
     runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3"}
-    assert_equal(runner._cpu_backend_name(explicit), "stress_ng", "stress-ng backend precedence")
+    assert_equal(runner._cpu_backend_name(explicit), "none", "stress-ng does not approximate explicit AVX-512")
     runner._command_exists = lambda name: False
     runner._python_runtime = lambda: None
     assert_equal(runner._cpu_backend_name(explicit), "none", "no CPU backend fallback")
 
     runner._python_runtime = lambda: "/usr/bin/python3"
-    original_cpu_count = os.cpu_count
-    try:
-        os.cpu_count = lambda: 8
-        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="all")), 8, "CPU all threads")
-        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="3")), 3, "CPU numeric threads")
-        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="99")), 8, "CPU threads clamp high")
-        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="0")), 1, "CPU threads clamp low")
-        assert_equal(runner._cpu_worker_count(ModuleCpu(threads="bad")), 8, "CPU invalid threads use all")
-    finally:
-        os.cpu_count = original_cpu_count
+    runner._cpu_target_plan = lambda cpu: resolve_target_cpu_ids(
+        {
+            "available_cpu_ids": list(range(8)),
+            "online_cpu_ids": list(range(8)),
+            "allowed_cpu_ids": list(range(8)),
+            "executable_cpu_ids": list(range(8)),
+        },
+        cpu.threads,
+    )
+    assert_equal(runner._cpu_worker_count(ModuleCpu(threads="all")), 8, "CPU all target CPUs")
+    assert_equal(runner._cpu_worker_count(ModuleCpu(threads="3")), 3, "CPU numeric threads")
+    assert_equal(runner._cpu_worker_count(ModuleCpu(threads="99")), 8, "CPU threads clamp high")
+    assert_equal(runner._cpu_worker_count(ModuleCpu(threads="0")), 1, "CPU threads clamp low")
+    assert_equal(runner._cpu_worker_count(ModuleCpu(threads="bad")), 8, "CPU invalid threads use all")
 
 
 def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
@@ -20758,6 +21036,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     runner._cpu_helper_resolved_mode = lambda mode: "scalar" if mode in {"auto", "scalar"} else ""
     runner._cpu_helper_default_kernel_flavor = lambda mode: "scalar"
     runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor == "scalar"
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["scalar"]
     runner._cpu_power_tuning_available = lambda: False
     runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3", "/bin/true"}
     for instruction_set in ("auto", "scalar"):
@@ -20781,7 +21060,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     validator = SharedProfileValidator()
     expected = {
         "ARM64 Python CPU Fallback Auto.json": ("auto", True, "portable"),
-        "ARM64 Python CPU Fallback Scalar.json": ("scalar", True, "scalar"),
+        "ARM64 Python CPU Fallback Scalar.json": ("scalar", False, ""),
         "ARM64 Python CPU Fallback AVX2 Diagnostic.json": ("avx2", False, ""),
     }
     for filename, (instruction_set, runnable, resolved_mode) in expected.items():
@@ -20800,7 +21079,10 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         assert_equal(diagnostic["cpu_mode_requested"], instruction_set, f"{filename} requested mode")
         assert_equal(diagnostic["cpu_mode_resolved"], resolved_mode, f"{filename} resolved mode")
         if not runnable:
-            assert_true(any("x86 ISA" in issue and "ARM64" in issue for issue in diagnostic["issues"]), "AVX2 ARM diagnostic")
+            if instruction_set == "avx2":
+                assert_true(any("x86 ISA" in issue and "ARM64" in issue for issue in diagnostic["issues"]), "AVX2 ARM diagnostic")
+            else:
+                assert_true(any("native CPU helper" in issue for issue in diagnostic["issues"]), "explicit scalar requires native")
 
     for filename in (
         "ARM64 Python CPU Fallback Auto.json",
@@ -20893,7 +21175,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     assert_equal(stress_diagnostic["cpu_mode_resolved"], "approximate", "stress-ng mode remains truthful")
     assert_equal(
         stress_diagnostic["commands"][0],
-        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief", "--taskset", "0,1,2,3,4,5,6,7"],
         "ARM stress-ng generic matrixprod command",
     )
 
@@ -20931,6 +21213,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     runner._cpu_helper_resolved_mode = lambda mode: "neon" if mode in {"auto", "neon"} else "scalar"
     runner._cpu_helper_default_kernel_flavor = lambda mode: "neon" if mode == "auto" else mode
     runner._cpu_helper_supports_kernel_flavor = lambda flavor: flavor in {"scalar", "neon"}
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["neon", "scalar"]
     runner._cpu_power_tuning_available = lambda: False
     runner._python_runtime = lambda: "/usr/bin/python3"
     runner._command_exists = lambda _name: True
@@ -22083,6 +22366,10 @@ def test_native_helper_runtime_service() -> None:
                 binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 binary.chmod(0o755)
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if "--print-supported-kernels" in command:
+                probe_index = command.index("--probe-cpu")
+                assert_equal(command[probe_index : probe_index + 2], ["--probe-cpu", "12"], "native per-CPU capability probe target")
+                return SimpleNamespace(returncode=0, stdout="avx2_fma,avx2,avx,scalar\n", stderr="")
             if "--mode" in command and "--print-resolved-mode" in command:
                 return SimpleNamespace(returncode=0, stdout="avx2\n", stderr="")
             if "--mode" in command and "--print-kernel-flavor" in command:
@@ -22139,6 +22426,16 @@ def test_native_helper_runtime_service() -> None:
         assert_true(service.cpu_supports_kernel_flavor("avx2_fma", helper_status=helper_status), "native runtime supported kernel cache")
         assert_true(not service.cpu_supports_kernel_flavor("scalar", helper_status=helper_status), "native runtime unsupported kernel")
         assert_true(not service.cpu_supports_kernel_flavor("scalar", helper_status=helper_status), "native runtime unsupported kernel cache")
+        assert_equal(
+            service.cpu_supported_kernel_flavors(helper_status=helper_status, cpu_id=12),
+            ["avx2_fma", "avx2", "avx", "scalar"],
+            "native runtime pinned capability inventory",
+        )
+        assert_equal(
+            service.cpu_supported_kernel_flavors(helper_status=helper_status, cpu_id=12),
+            ["avx2_fma", "avx2", "avx", "scalar"],
+            "native runtime pinned capability inventory cache",
+        )
         probe_calls = [call for call in command_calls if "--print-resolved-mode" in call[0] or "--print-kernel-flavor" in call[0]]
         assert_equal(len(probe_calls), 5, "native runtime executes readiness and normalized probes once")
         assert_true(all(call[1]["timeout"] == 10 for call in probe_calls), "native runtime probe timeout")
@@ -24892,6 +25189,8 @@ def main() -> int:
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,
         test_cpu_topology_helpers,
+        test_cpu_target_sets_affinity_and_common_isa_policy,
+        test_x86_native_kernel_exact_prerequisites,
         test_run_progress_helpers,
         test_cli_live_run_presenter_helpers,
         test_gpu_progress_helpers,

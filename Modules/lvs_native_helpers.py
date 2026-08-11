@@ -8,11 +8,13 @@ from typing import Any, Callable, Dict, Optional
 
 from .lvs_cpu_execution import (
     build_cpu_default_kernel_probe_command,
+    build_cpu_capability_probe_command,
     build_cpu_kernel_support_probe_command,
     build_cpu_resolved_mode_probe_command,
     cpu_kernel_support_probe_matches,
     normalize_cpu_probe_mode,
     parse_cpu_default_kernel_probe,
+    parse_cpu_capability_probe,
     parse_cpu_resolved_mode_probe,
 )
 
@@ -122,7 +124,8 @@ class NativeHelperRuntimeService:
         self._status_cache: Dict[str, Dict[str, Any]] = {}
         self._resolved_mode_cache: Dict[str, str] = {}
         self._kernel_flavor_cache: Dict[str, str] = {}
-        self._supported_kernel_cache: Dict[str, bool] = {}
+        self._supported_kernel_cache: Dict[tuple[str, Optional[int]], bool] = {}
+        self._cpu_capability_cache: Dict[Optional[int], list[str]] = {}
 
     def helper_status(
         self,
@@ -236,18 +239,22 @@ class NativeHelperRuntimeService:
         flavor: str,
         *,
         helper_status: Callable[[], Dict[str, Any]],
+        cpu_id: Optional[int] = None,
     ) -> bool:
         normalized = str(flavor or "").strip().lower()
         if not normalized:
             return False
-        cached = self._supported_kernel_cache.get(normalized)
+        cache_key = (normalized, None if cpu_id is None else int(cpu_id))
+        cached = self._supported_kernel_cache.get(cache_key)
         if cached is not None:
             return cached
         helper = helper_status()
         if not helper.get("available"):
-            self._supported_kernel_cache[normalized] = False
+            self._supported_kernel_cache[cache_key] = False
             return False
-        command = build_cpu_kernel_support_probe_command(str(helper.get("path") or ""), normalized)
+        command = build_cpu_kernel_support_probe_command(
+            str(helper.get("path") or ""), normalized, cpu_id=cpu_id
+        )
         try:
             completed = self._run_command(
                 command,
@@ -258,8 +265,39 @@ class NativeHelperRuntimeService:
                 env=self._command_env(),
             )
         except Exception:
-            self._supported_kernel_cache[normalized] = False
+            self._supported_kernel_cache[cache_key] = False
             return False
         supported = cpu_kernel_support_probe_matches(completed.returncode, completed.stdout or "", normalized)
-        self._supported_kernel_cache[normalized] = supported
+        self._supported_kernel_cache[cache_key] = supported
         return supported
+
+    def cpu_supported_kernel_flavors(
+        self,
+        *,
+        helper_status: Callable[[], Dict[str, Any]],
+        cpu_id: Optional[int] = None,
+    ) -> list[str]:
+        cache_key = None if cpu_id is None else int(cpu_id)
+        if cache_key in self._cpu_capability_cache:
+            return list(self._cpu_capability_cache[cache_key])
+        helper = helper_status()
+        if not helper.get("available"):
+            return []
+        command = build_cpu_capability_probe_command(str(helper.get("path") or ""), cpu_id=cpu_id)
+        try:
+            completed = self._run_command(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=self._command_env(),
+            )
+        except Exception:
+            return []
+        flavors = parse_cpu_capability_probe(completed.returncode, completed.stdout or "")
+        if flavors:
+            self._cpu_capability_cache[cache_key] = list(flavors)
+            for flavor in flavors:
+                self._supported_kernel_cache[(flavor, cache_key)] = True
+        return flavors

@@ -22,6 +22,9 @@ CPU_KERNEL_MODE_MAP = {
     "avx512_int": "avx512",
     "neon": "neon",
 }
+# Public ISA modes select a kernel family. Within AVX/AVX2, the established
+# deliberate preference is the FMA flavor when every target CPU proves FMA,
+# followed by the non-FMA flavor. ``--kernel-flavor`` remains exact.
 CPU_KERNEL_FAMILY_CANDIDATES = {
     "scalar": ["scalar"],
     "sse": ["sse2", "sse2_int"],
@@ -45,17 +48,60 @@ def normalize_cpu_probe_mode(requested_mode: str) -> str:
     return (requested_mode or "auto").strip().lower() or "auto"
 
 
-def build_cpu_resolved_mode_probe_command(helper_path: str, requested_mode: str) -> List[str]:
-    return [helper_path, "--mode", normalize_cpu_probe_mode(requested_mode), "--print-resolved-mode"]
+def _cpu_probe_target_args(cpu_id: Optional[int]) -> List[str]:
+    return [] if cpu_id is None else ["--probe-cpu", str(int(cpu_id))]
 
 
-def build_cpu_default_kernel_probe_command(helper_path: str, requested_mode: str) -> List[str]:
-    return [helper_path, "--mode", normalize_cpu_probe_mode(requested_mode), "--print-kernel-flavor"]
+def build_cpu_resolved_mode_probe_command(
+    helper_path: str, requested_mode: str, cpu_id: Optional[int] = None
+) -> List[str]:
+    return [
+        helper_path,
+        "--mode",
+        normalize_cpu_probe_mode(requested_mode),
+        *_cpu_probe_target_args(cpu_id),
+        "--print-resolved-mode",
+    ]
 
 
-def build_cpu_kernel_support_probe_command(helper_path: str, kernel_flavor: str) -> List[str]:
+def build_cpu_default_kernel_probe_command(
+    helper_path: str, requested_mode: str, cpu_id: Optional[int] = None
+) -> List[str]:
+    return [
+        helper_path,
+        "--mode",
+        normalize_cpu_probe_mode(requested_mode),
+        *_cpu_probe_target_args(cpu_id),
+        "--print-kernel-flavor",
+    ]
+
+
+def build_cpu_kernel_support_probe_command(
+    helper_path: str, kernel_flavor: str, cpu_id: Optional[int] = None
+) -> List[str]:
     normalized = (kernel_flavor or "").strip().lower()
-    return [helper_path, "--kernel-flavor", normalized, "--print-kernel-flavor"]
+    return [
+        helper_path,
+        "--kernel-flavor",
+        normalized,
+        *_cpu_probe_target_args(cpu_id),
+        "--print-kernel-flavor",
+    ]
+
+
+def build_cpu_capability_probe_command(helper_path: str, cpu_id: Optional[int] = None) -> List[str]:
+    return [helper_path, *_cpu_probe_target_args(cpu_id), "--print-supported-kernels"]
+
+
+def parse_cpu_capability_probe(return_code: int, stdout: str) -> List[str]:
+    if return_code != 0:
+        return []
+    supported = []
+    for value in str(stdout or "").strip().lower().split(","):
+        flavor = value.strip()
+        if flavor in CPU_KERNEL_MODE_MAP and flavor not in supported:
+            supported.append(flavor)
+    return supported
 
 
 def parse_cpu_resolved_mode_probe(return_code: int, stdout: str) -> str:
@@ -250,7 +296,12 @@ def cpu_fallback_params(instruction_set: str, mode: str) -> Dict[str, Any]:
     return {"algorithm": "sha512", "iterations": 60000, "payload_bytes": 1024 * 1024}
 
 
-def build_cpu_fallback_script(instruction_set: str, mode: str, worker_count: int) -> str:
+def build_cpu_fallback_script(
+    instruction_set: str,
+    mode: str,
+    worker_count: int,
+    target_cpu_ids: Optional[List[int]] = None,
+) -> str:
     """Return the legacy workload body for compatibility tests; runtime uses an importable module."""
     params = cpu_fallback_params(instruction_set, mode)
     return "\n".join(
@@ -264,11 +315,11 @@ def build_cpu_fallback_script(instruction_set: str, mode: str, worker_count: int
             f"ALGORITHM = {params['algorithm']!r}",
             f"ITERATIONS = {params['iterations']}",
             f"PAYLOAD_BYTES = {params['payload_bytes']}",
+            f"CPU_IDS = {[int(cpu_id) for cpu_id in (target_cpu_ids or range(max(1, worker_count)))]!r}",
             "def worker(worker_index):",
             "    try:",
             "        if hasattr(os, 'sched_setaffinity'):",
-            "            cpu_total = max(1, os.cpu_count() or 1)",
-            "            os.sched_setaffinity(0, {worker_index % cpu_total})",
+            "            os.sched_setaffinity(0, {CPU_IDS[worker_index]})",
             "    except Exception:",
             "        pass",
             "    seed = bytearray(PAYLOAD_BYTES)",
@@ -313,6 +364,7 @@ def build_cpu_command(
     cpu_kernel_flavor: str = "",
     result_file: str = "",
     resolved_mode: str = "",
+    target_cpu_ids: Optional[List[int]] = None,
 ) -> Optional[List[str]]:
     if worker_count <= 0:
         return None
@@ -324,6 +376,8 @@ def build_cpu_command(
             "--threads",
             str(worker_count),
         ]
+        if target_cpu_ids:
+            cmd.extend(["--cpu-ids", ",".join(str(int(cpu_id)) for cpu_id in target_cpu_ids)])
         if cpu_kernel_flavor:
             cmd.extend(["--kernel-flavor", cpu_kernel_flavor])
         if result_file:
@@ -333,7 +387,10 @@ def build_cpu_command(
         method = "matrixprod"
         if (instruction_set or "").strip().lower() == "sse":
             method = "int64"
-        return ["stress-ng", "--cpu", str(worker_count), "--cpu-method", method, "--metrics-brief"]
+        command = ["stress-ng", "--cpu", str(worker_count), "--cpu-method", method, "--metrics-brief"]
+        if target_cpu_ids:
+            command.extend(["--taskset", ",".join(str(int(cpu_id)) for cpu_id in target_cpu_ids)])
+        return command
     if not python_runtime:
         return None
     params = cpu_fallback_params(instruction_set, mode)
@@ -352,6 +409,8 @@ def build_cpu_command(
         "--resolved-mode",
         resolved_mode,
     ]
+    if target_cpu_ids:
+        command.extend(["--cpu-ids", ",".join(str(int(cpu_id)) for cpu_id in target_cpu_ids)])
     if result_file:
         command.extend(["--result-file", result_file])
     return command

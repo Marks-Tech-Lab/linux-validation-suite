@@ -8,16 +8,56 @@ import hashlib
 import json
 import multiprocessing as mp
 import os
+import queue
 import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from Modules.lvs_cpu_targeting import discover_linux_cpu_sets, parse_linux_cpu_list
+
 
 PYTHON_CPU_FALLBACK_BACKEND = "python_fallback"
 SUPERVISION_INTERVAL_SECONDS = 0.2
-WORKER_STARTUP_TIMEOUT_SECONDS = 10.0
+WORKER_STARTUP_TIMEOUT_SECONDS = 30.0
+
+
+def apply_python_cpu_affinity(
+    worker_index: int,
+    target_cpu_id: int,
+    *,
+    affinity_setter: Optional[Callable[[int, set[int]], None]] = None,
+    affinity_getter: Optional[Callable[[int], Any]] = None,
+    affinity_available: Optional[bool] = None,
+) -> Dict[str, Any]:
+    setter = (
+        None
+        if affinity_available is False
+        else affinity_setter if affinity_setter is not None else getattr(os, "sched_setaffinity", None)
+    )
+    getter = affinity_getter if affinity_getter is not None else getattr(os, "sched_getaffinity", None)
+    evidence: Dict[str, Any] = {
+        "worker_index": worker_index,
+        "affinity_requested": True,
+        "affinity_target_cpu": int(target_cpu_id),
+        "affinity_applied": False,
+        "affinity_status": "unavailable",
+        "affinity_error": "",
+        "observed_allowed_cpu_ids": [],
+    }
+    if setter is None:
+        return evidence
+    try:
+        setter(0, {int(target_cpu_id)})
+        evidence["affinity_applied"] = True
+        evidence["affinity_status"] = "applied"
+        if getter is not None:
+            evidence["observed_allowed_cpu_ids"] = sorted(getter(0))
+    except Exception as exc:
+        evidence["affinity_status"] = "failed"
+        evidence["affinity_error"] = f"{type(exc).__name__}: {exc}"
+    return evidence
 
 
 def python_cpu_workload(
@@ -25,26 +65,35 @@ def python_cpu_workload(
     algorithm: str,
     iterations: int,
     payload_bytes: int,
+    target_cpu_id: int,
     ready_event: Any,
+    evidence_queue: Any,
+    progress_counter: Any,
 ) -> None:
     """Run one CPU fallback workload; this top-level target is spawn/forkserver importable."""
+    affinity = apply_python_cpu_affinity(worker_index, target_cpu_id)
     try:
-        if hasattr(os, "sched_setaffinity"):
-            cpu_total = max(1, os.cpu_count() or 1)
-            os.sched_setaffinity(0, {worker_index % cpu_total})
+        evidence_queue.put(affinity)
     except Exception:
         pass
+    # Readiness means the child process and its affinity attempt completed. It
+    # deliberately precedes payload initialization so weak CPUs do not trip a
+    # modern-speed startup deadline.
+    ready_event.set()
 
     seed = bytearray(payload_bytes)
     for index in range(payload_bytes):
         seed[index] = (index + worker_index) & 0xFF
-    ready_event.set()
     salt_counter = worker_index + 1
     while True:
         salt = salt_counter.to_bytes(16, "little", signed=False)
         digest = hashlib.pbkdf2_hmac(algorithm, seed, salt, iterations, dklen=64)
         seed[:64] = digest
         salt_counter += 1
+        try:
+            progress_counter.value += 1
+        except Exception:
+            pass
 
 
 def _child_exit_information(processes: List[Any], expected_termination: bool) -> List[Dict[str, Any]]:
@@ -90,30 +139,52 @@ def supervise_python_cpu_workers(
     resolved_mode: str,
     result_file: str,
     stop_requested: Callable[[], bool],
+    target_cpu_ids: Optional[List[int]] = None,
     process_factory: Callable[..., Any] = mp.Process,
     event_factory: Callable[[], Any] = mp.Event,
+    queue_factory: Callable[[], Any] = mp.Queue,
+    value_factory: Callable[..., Any] = mp.Value,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     requested_count = max(1, int(worker_count))
+    target_ids = [int(cpu_id) for cpu_id in (target_cpu_ids or [])]
+    if len(target_ids) < requested_count:
+        discovered = list(discover_linux_cpu_sets().get("executable_cpu_ids") or [])
+        target_ids = discovered[:requested_count]
+    if len(target_ids) < requested_count:
+        target_ids.extend([-1] * (requested_count - len(target_ids)))
     processes: List[Any] = []
     ready_events: List[Any] = []
     startup_errors: List[str] = []
     unexpected_exits: List[Dict[str, Any]] = []
+    affinity_queue = queue_factory()
+    progress_counters: List[Any] = []
 
     for worker_index in range(requested_count):
         if stop_requested():
             break
         try:
             ready_event = event_factory()
+            progress_counter = value_factory("Q", 0, lock=False)
             process = process_factory(
                 target=python_cpu_workload,
-                args=(worker_index, algorithm, iterations, payload_bytes, ready_event),
+                args=(
+                    worker_index,
+                    algorithm,
+                    iterations,
+                    payload_bytes,
+                    target_ids[worker_index],
+                    ready_event,
+                    affinity_queue,
+                    progress_counter,
+                ),
                 daemon=True,
             )
             process.start()
             processes.append(process)
             ready_events.append(ready_event)
+            progress_counters.append(progress_counter)
         except Exception as exc:
             startup_errors.append(f"worker {worker_index} failed to start: {exc}")
             break
@@ -171,6 +242,18 @@ def supervise_python_cpu_workers(
     )
     _stop_children(processes)
 
+    affinity_evidence: List[Dict[str, Any]] = []
+    while True:
+        try:
+            item = affinity_queue.get_nowait()
+        except queue.Empty:
+            break
+        except Exception:
+            break
+        if isinstance(item, dict):
+            affinity_evidence.append(item)
+    affinity_evidence.sort(key=lambda item: int(item.get("worker_index") or 0))
+
     failed_worker_count = max(
         len(startup_errors) + len(unexpected_exits),
         requested_count - ready_count,
@@ -195,6 +278,9 @@ def supervise_python_cpu_workers(
         "last_error": errors[-1] if errors else "",
         "errors": errors,
         "requested_worker_count": requested_count,
+        "requested_thread_count": requested_count,
+        "target_cpu_ids": target_ids[:requested_count],
+        "actual_worker_count": len(processes),
         "launched_worker_count": len(processes),
         "started_worker_count": ready_count,
         "healthy_worker_count": healthy_before_shutdown,
@@ -209,6 +295,20 @@ def supervise_python_cpu_workers(
         "supervisor_pid": os.getpid(),
         "multiprocessing_start_method": mp.get_start_method(),
         "termination_reason": "expected_stop" if expected_stop else "worker_failure",
+        "affinity_requested": True,
+        "affinity_applied_count": sum(1 for item in affinity_evidence if item.get("affinity_applied")),
+        "affinity_failed_count": sum(1 for item in affinity_evidence if item.get("affinity_status") == "failed"),
+        "affinity_unavailable_count": sum(1 for item in affinity_evidence if item.get("affinity_status") == "unavailable"),
+        "affinity_evidence": affinity_evidence,
+        "worker_progress": [
+            {
+                "worker_index": index,
+                "target_cpu_id": target_ids[index],
+                "completed_pbkdf2_iterations": int(getattr(counter, "value", 0) or 0),
+            }
+            for index, counter in enumerate(progress_counters)
+        ],
+        "capability_scope": "generic_approximate_workload_no_isa_enforcement",
     }
     try:
         write_worker_result(result_file, payload)
@@ -228,6 +328,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iterations", type=int, required=True)
     parser.add_argument("--payload-bytes", type=int, required=True)
     parser.add_argument("--resolved-mode", default="")
+    parser.add_argument("--cpu-ids", default="")
     parser.add_argument("--result-file", default="")
     return parser
 
@@ -249,6 +350,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         payload_bytes=args.payload_bytes,
         resolved_mode=args.resolved_mode,
         result_file=args.result_file,
+        target_cpu_ids=parse_linux_cpu_list(args.cpu_ids),
         stop_requested=lambda: stopping,
     )
 

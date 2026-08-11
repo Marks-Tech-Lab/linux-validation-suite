@@ -49,8 +49,9 @@ def native_cpu_helper_binary_name(machine: str) -> str:
 
 
 def heatsoak_cpu_instruction_set(machine: str) -> str:
-    """Preserve the established x86 heatsoak while avoiding an x86-only request on ARM."""
-    return "auto" if normalize_cpu_architecture(machine) == "arm64" else "avx"
+    """Use the highest ISA proven safe across the heatsoak target CPU set."""
+    del machine
+    return "auto"
 
 
 def cpu_instruction_set_policy(machine: str, instruction_set: str) -> Dict[str, Any]:
@@ -107,8 +108,19 @@ def python_cpu_fallback_policy(machine: str, instruction_set: str) -> Dict[str, 
                 "and is not available through the Python CPU fallback"
             ),
         }
+    if requested != "auto":
+        return {
+            "allowed": False,
+            "architecture": architecture,
+            "requested_mode": requested,
+            "resolved_mode": "",
+            "reason": (
+                f"CPU instruction set '{requested}' is not enforced by the generic Python CPU fallback; "
+                "use the native CPU helper for an explicit ISA request"
+            ),
+        }
     if architecture == "arm64":
-        resolved_mode = "scalar" if requested == "scalar" else "portable"
+        resolved_mode = "portable"
     else:
         resolved_mode = "approximate"
     return {

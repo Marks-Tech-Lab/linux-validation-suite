@@ -169,6 +169,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_workload_cpu_memory.py` | Internal adapter | Connects CPU and memory execution helpers to the workload runner. |
 | `lvs_workload_gpu_runtime.py`, `lvs_workload_gpu_workers.py` | Internal adapter | Connect GPU runtime resolution and worker policy to the runner. |
 | `lvs_cpu_execution.py`, `lvs_memory_execution.py` | Internal | Build and evaluate CPU and memory workload commands. |
+| `lvs_cpu_targeting.py` | Internal policy | Resolve Linux online/allowed CPU IDs and common-safe per-target CPU ISA capability. |
 | `lvs_system_memory_budget.py` | Internal policy | Resolve one launch-time system-memory pool across RAM and shared-GPU consumers. |
 | `lvs_linux_memory.py`, `lvs_runtime_memory_guard.py` | Internal policy | Read Linux memory accounting without double counting and enforce one stage-wide runtime MemAvailable safety boundary. |
 | `lvs_python_memory_worker.py` | Internal worker | Execute the Python RAM fallback while durably recording exact incremental allocation attainment. |

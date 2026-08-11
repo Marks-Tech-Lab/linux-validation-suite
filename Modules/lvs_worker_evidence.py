@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from Modules.lvs_stability_events import create_stability_event
+from Modules.lvs_cpu_targeting import parse_linux_cpu_list
 
 
 def read_log_tail(path: Optional[str], max_chars: int = 4000) -> str:
@@ -79,6 +80,13 @@ def apply_worker_entry_context(
         if started_monotonic is not None and ended_monotonic is not None:
             payload.setdefault("process_elapsed_seconds", max(0.0, float(ended_monotonic) - float(started_monotonic)))
         payload.setdefault("expected_termination", bool(getattr(entry, "expected_termination", False)))
+        if "--taskset" in command:
+            taskset_index = command.index("--taskset")
+            target_text = command[taskset_index + 1] if taskset_index + 1 < len(command) else ""
+            payload.setdefault("target_cpu_ids", parse_linux_cpu_list(target_text))
+            payload.setdefault("affinity_requested", True)
+            payload.setdefault("affinity_status", "requested_via_stress_ng_taskset_not_independently_verified")
+            payload.setdefault("capability_scope", "generic_external_workload_no_isa_enforcement")
     if return_code is not None:
         payload["observed_exit_code"] = int(return_code)
         if return_code < 0:

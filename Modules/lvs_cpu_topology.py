@@ -164,18 +164,28 @@ def collect_cpu_topology_info(
                 "PackageId": package_id,
                 "Name": model_name,
                 "LogicalCpuIndexes": [],
+                "LogicalCpus": [],
                 "PhysicalCoreKeys": set(),
             },
         )
         if not record.get("Name") or record.get("Name") == "Unknown CPU":
             record["Name"] = model_name
         record["LogicalCpuIndexes"].append(cpu_index)
-        if thread_siblings:
-            physical_key = f"package{package_id}:threads{thread_siblings}"
-        elif core_id is not None and cluster_id is not None:
+        record["LogicalCpus"].append(
+            {
+                "CpuId": cpu_index,
+                "PackageId": package_id,
+                "ClusterId": cluster_id,
+                "CoreId": core_id,
+                "ThreadSiblings": thread_siblings,
+            }
+        )
+        if core_id is not None and cluster_id is not None:
             physical_key = f"package{package_id}:cluster{cluster_id}:core{core_id}"
         elif core_id is not None:
             physical_key = f"package{package_id}:core{core_id}"
+        elif thread_siblings:
+            physical_key = f"package{package_id}:threads{thread_siblings}"
         else:
             physical_key = f"package{package_id}:cpu{cpu_index}"
         record["PhysicalCoreKeys"].add(physical_key)
@@ -186,6 +196,30 @@ def collect_cpu_topology_info(
         record = packages[package_id]
         logical_indexes = sorted(record.get("LogicalCpuIndexes", []))
         physical_keys = sorted(record.get("PhysicalCoreKeys", []))
+        logical_cpus = sorted(record.get("LogicalCpus", []), key=lambda item: int(item["CpuId"]))
+        clusters: Dict[str, Dict[str, Any]] = {}
+        for logical_cpu in logical_cpus:
+            cluster_id = logical_cpu.get("ClusterId")
+            cluster_key = str(cluster_id) if cluster_id is not None else "unspecified"
+            cluster = clusters.setdefault(
+                cluster_key,
+                {"ClusterId": cluster_id, "LogicalCpuIndexes": [], "PhysicalCoreKeys": set()},
+            )
+            cluster["LogicalCpuIndexes"].append(int(logical_cpu["CpuId"]))
+            core_id = logical_cpu.get("CoreId")
+            if core_id is not None:
+                cluster["PhysicalCoreKeys"].add(f"package{package_id}:cluster{cluster_key}:core{core_id}")
+            else:
+                cluster["PhysicalCoreKeys"].add(f"package{package_id}:cluster{cluster_key}:cpu{logical_cpu['CpuId']}")
+        cluster_records = [
+            {
+                "ClusterId": item["ClusterId"],
+                "LogicalCpuCount": len(item["LogicalCpuIndexes"]),
+                "LogicalCpuRange": _compact_cpu_list(item["LogicalCpuIndexes"]),
+                "PhysicalCoreCount": len(item["PhysicalCoreKeys"]),
+            }
+            for _, item in sorted(clusters.items(), key=lambda entry: (entry[1]["ClusterId"] is None, entry[0]))
+        ]
         package_records.append(
             {
                 "PackageId": package_id,
@@ -193,6 +227,8 @@ def collect_cpu_topology_info(
                 "LogicalCpuCount": len(logical_indexes),
                 "LogicalCpuRange": _compact_cpu_list(logical_indexes),
                 "PhysicalCoreCount": len(physical_keys),
+                "Clusters": cluster_records,
+                "LogicalCpus": logical_cpus,
             }
         )
 

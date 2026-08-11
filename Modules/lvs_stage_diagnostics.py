@@ -216,6 +216,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     cpu_kernel_flavor = ""
     cpu_tuning_policy = ""
     cpu_kernel_candidates: List[str] = []
+    cpu_preview: Dict[str, Any] = {}
     if stage.modules.cpu.enabled and backend_usage["cpu"] != "none" and (
         backend_usage["cpu"] == "cpu_native_helper" or cpu_backend_preference != "auto"
     ):
@@ -659,6 +660,23 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         "cpu_kernel_flavor": cpu_kernel_flavor,
         "cpu_tuning_policy": cpu_tuning_policy,
         "cpu_kernel_candidates": cpu_kernel_candidates,
+        "cpu_targeting": {
+            key: cpu_preview.get(key)
+            for key in (
+                "available_cpu_ids",
+                "online_cpu_ids",
+                "allowed_cpu_ids",
+                "target_cpu_ids",
+                "requested_thread_count",
+                "actual_worker_count",
+                "capability_scope",
+                "common_safe_instruction_set",
+                "per_cpu_capabilities",
+                "capability_probe_failures",
+                "capability_intersection_reason",
+            )
+            if key in cpu_preview
+        },
         "commands": cmds,
         "missing_tools": missing_tools,
         "issues": issues,

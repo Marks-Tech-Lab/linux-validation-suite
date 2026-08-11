@@ -38,8 +38,28 @@ _ADDITIVE_NATIVE_AFFINITY_FIELDS = {
     "affinity_target_cpu",
     "affinity_attempted",
     "affinity_applied",
+    "affinity_required",
     "affinity_error_code",
     "observed_cpu",
+}
+
+_ADDITIVE_CPU_TARGETING_FIELDS = {
+    "available_cpu_ids",
+    "online_cpu_ids",
+    "allowed_cpu_ids",
+    "target_cpu_ids",
+    "requested_thread_count",
+    "actual_worker_count",
+    "affinity_requested",
+    "affinity_status",
+    "affinity_unavailable_count",
+    "affinity_evidence",
+    "worker_progress",
+    "capability_scope",
+    "common_safe_instruction_set",
+    "per_cpu_capabilities",
+    "capability_probe_failures",
+    "capability_intersection_reason",
 }
 
 _ADDITIVE_PYTHON_MEMORY_FIELDS = {
@@ -151,6 +171,8 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         )
     )
     blocked = set(_ADDITIVE_GPU_MEMORY_PLAN_FIELDS)
+    if str(value.get("kind") or "").lower() == "cpu":
+        blocked.update(_ADDITIVE_CPU_TARGETING_FIELDS)
     if str(value.get("kind") or "").lower() == "memory" and str(value.get("backend") or "").lower() == "python_fallback":
         blocked.update(_ADDITIVE_PYTHON_MEMORY_FIELDS)
     if has_native_affinity_evidence:
