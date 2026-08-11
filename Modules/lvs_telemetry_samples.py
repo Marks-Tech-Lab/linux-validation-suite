@@ -22,6 +22,12 @@ class Sample:
 
 
 _DYNAMIC_GPU_VRAM_GB_FIELD = re.compile(r"^gpu_\d+_vram_used_gb$")
+_CPU_CORE_UTILIZATION_FIELD = re.compile(r"^cpu_core_(\d+)_utilization_percent$")
+_EXTENDED_FIXED_TELEMETRY_FIELDS = (
+    "memory_temp_c",
+    "llcc_correctable_error_count",
+    "llcc_uncorrectable_error_count",
+)
 
 
 def telemetry_unit_alias_name(field_name: str) -> Optional[str]:
@@ -94,3 +100,28 @@ def telemetry_metric_summaries(
             "maximum": round(max(values), 2) if values else None,
         }
     return summaries
+
+
+def cpu_utilization_metric_field_names(samples: Iterable[Sample]) -> List[str]:
+    """Return aggregate plus observed canonical per-core utilization fields."""
+    rows = list(samples)
+    per_core = {
+        key
+        for sample in rows
+        for key in sample.values
+        if _CPU_CORE_UTILIZATION_FIELD.fullmatch(str(key))
+    }
+    return [
+        "cpu_utilization_percent",
+        *sorted(per_core, key=lambda key: int(_CPU_CORE_UTILIZATION_FIELD.fullmatch(key).group(1))),
+    ]
+
+
+def extended_telemetry_metric_field_names(samples: Iterable[Sample]) -> List[str]:
+    """Return additive metrics owned by the extended result contract."""
+    rows = list(samples)
+    observed = {str(key) for sample in rows for key in sample.values}
+    return [
+        *cpu_utilization_metric_field_names(rows),
+        *(field for field in _EXTENDED_FIXED_TELEMETRY_FIELDS if field in observed),
+    ]

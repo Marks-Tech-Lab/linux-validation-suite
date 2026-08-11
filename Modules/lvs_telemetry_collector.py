@@ -33,6 +33,7 @@ from .lvs_telemetry_cpu import (
     aggregate_cpu_package_power_source,
     assign_cpu_package_temp_sources,
     classify_physical_cpu_cores,
+    cpu_core_utilization_sources,
     cpu_core_classification_summary_from_topology,
     cpu_index_from_name,
     discover_cpu_core_clock_sources,
@@ -51,7 +52,7 @@ from .lvs_telemetry_cpu import (
     read_cpu_power_component,
     read_cpu_temp,
     read_cpu_sysfs_int,
-    parse_proc_stat_cpu_counters,
+    parse_proc_stat_cpu_snapshot,
     cpu_utilization_percent,
     read_energy_power_source,
     read_hwmon_power_source,
@@ -63,6 +64,7 @@ from .lvs_telemetry_cpu import (
     score_thermal_zone,
 )
 from .lvs_telemetry_device import discover_device_temp_sources, read_device_temps
+from .lvs_telemetry_edac import discover_llcc_edac_sources, read_llcc_edac_counters
 from .lvs_telemetry_memory import (
     cached_ipmi_sensor_temperatures,
     discover_memory_temp_sources_with_ipmi,
@@ -134,11 +136,18 @@ class TelemetryCollector:
         self._cpu_clock_source = self._discover_cpu_clock_source()
         self._cpu_utilization_source = self._discover_cpu_utilization_source()
         self._previous_cpu_stat_counters = None
+        self._previous_cpu_core_stat_counters: Dict[int, tuple[int, ...]] = {}
+        self._last_cpu_core_utilization_values: Dict[str, Optional[float]] = {}
         self._cpu_core_topology = self._discover_cpu_core_topology()
+        self._cpu_core_utilization_sources = cpu_core_utilization_sources(
+            self._cpu_core_topology.keys(),
+            self._cpu_utilization_source,
+        )
         self._cpu_package_temp_sources = self._assign_cpu_package_temp_sources()
         self._cpu_core_clock_sources = self._discover_cpu_core_clock_sources()
         self._ipmi_sensor_snapshot_cache: Optional[tuple[float, Dict[str, Optional[float]]]] = None
         self._memory_temp_sources = self._discover_memory_temp_sources()
+        self._llcc_edac_sources = self._discover_llcc_edac_sources()
         self._storage_temp_sources = self._discover_storage_temp_sources()
         self._device_temp_sources = self._discover_device_temp_sources()
         self._gpu_sources = self._discover_gpu_sources()
@@ -208,10 +217,12 @@ class TelemetryCollector:
             "cpu_utilization_percent": self._read_cpu_utilization_percent(),
             "memory_used_gb": self._read_memory_used_gb(),
         }
+        values.update(getattr(self, "_last_cpu_core_utilization_values", {}))
         values.update(cpu_package_temps)
         values.update(self._last_cpu_package_power_values)
         values.update(self._read_cpu_core_clocks())
         values.update(self._read_memory_temps())
+        values.update(self._read_llcc_edac_counters())
         values.update(self._read_storage_temps())
         values.update(self._read_device_temps())
         values.update(self._read_gpu_values(sample_time))
@@ -285,8 +296,10 @@ class TelemetryCollector:
             cpu_power_unreadable_sources=self._cpu_power_unreadable_sources,
             cpu_clock_source=self._cpu_clock_source,
             cpu_core_clock_sources=self._cpu_core_clock_sources,
+            cpu_core_utilization_sources=self._cpu_core_utilization_sources,
             cpu_core_classification=self.cpu_core_classification_summary(),
             memory_temp_sources=self._memory_temp_sources,
+            llcc_edac_sources=self._llcc_edac_sources,
             storage_temp_sources=self._storage_temp_sources,
             device_temp_sources=self._device_temp_sources,
             gpu_sources=self._gpu_sources,
@@ -313,7 +326,9 @@ class TelemetryCollector:
             cpu_power_source=self._cpu_power_source,
             cpu_clock_source=self._cpu_clock_source,
             cpu_core_clock_sources=self._cpu_core_clock_sources,
+            cpu_core_utilization_sources=self._cpu_core_utilization_sources,
             memory_temp_sources=self._memory_temp_sources,
+            llcc_edac_sources=self._llcc_edac_sources,
             storage_temp_sources=self._storage_temp_sources,
             device_temp_sources=self._device_temp_sources,
             gpu_sources=self._gpu_sources,
@@ -385,11 +400,32 @@ class TelemetryCollector:
         if not getattr(self, "_cpu_utilization_source", None):
             return None
         path = Path(str(self._cpu_utilization_source.get("path") or "/proc/stat"))
-        current = parse_proc_stat_cpu_counters(self._safe_read_text(path))
+        current, current_per_cpu = parse_proc_stat_cpu_snapshot(self._safe_read_text(path))
         if current is None:
             return None
         previous = getattr(self, "_previous_cpu_stat_counters", None)
         self._previous_cpu_stat_counters = current
+        previous_per_cpu = getattr(self, "_previous_cpu_core_stat_counters", {})
+        self._previous_cpu_core_stat_counters = current_per_cpu
+        utilization_sources = getattr(self, "_cpu_core_utilization_sources", [])
+        self._cpu_core_utilization_sources = utilization_sources
+        known_indexes = {
+            int(source.get("cpu_index"))
+            for source in utilization_sources
+            if source.get("cpu_index") is not None
+        }
+        new_indexes = sorted(set(current_per_cpu) - known_indexes)
+        if new_indexes:
+            utilization_sources.extend(
+                cpu_core_utilization_sources(new_indexes, self._cpu_utilization_source)
+            )
+        self._last_cpu_core_utilization_values = {
+            f"cpu_core_{cpu_index}_utilization_percent": cpu_utilization_percent(
+                previous_per_cpu.get(cpu_index),
+                counters,
+            )
+            for cpu_index, counters in sorted(current_per_cpu.items())
+        }
         return cpu_utilization_percent(previous, current)
 
     def _read_cpu_core_clocks(self) -> Dict[str, Optional[float]]:
@@ -484,6 +520,15 @@ class TelemetryCollector:
             self._command_exists,
             self._local_ipmi_device_available,
             lambda: self._read_ipmi_sensor_temperatures_cached(force=True),
+        )
+
+    def _discover_llcc_edac_sources(self) -> List[Dict[str, Any]]:
+        return discover_llcc_edac_sources(read_text=self._safe_read_text)
+
+    def _read_llcc_edac_counters(self) -> Dict[str, Optional[float]]:
+        return read_llcc_edac_counters(
+            getattr(self, "_llcc_edac_sources", []),
+            self._safe_read_text,
         )
 
     def _local_ipmi_device_available(self) -> bool:

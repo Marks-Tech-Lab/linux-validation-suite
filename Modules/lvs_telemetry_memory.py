@@ -122,6 +122,33 @@ def spd5118_memory_temp_sources(
     return sources
 
 
+def platform_memory_temp_sources(
+    thermal_root: Path = Path("/sys/class/thermal"),
+    read_text: ReadText | None = None,
+) -> List[Dict[str, Any]]:
+    """Discover a labeled platform memory thermal zone without relying on its index."""
+    if read_text is None:
+        read_text = read_text_memory_sysfs
+    sources: List[Dict[str, Any]] = []
+    for zone_dir in sorted(thermal_root.glob("thermal_zone*")):
+        zone_type = str(read_text(zone_dir / "type") or "").strip()
+        normalized = zone_type.lower().replace("_", "-")
+        if normalized not in {"mem-thermal", "memory-thermal"}:
+            continue
+        path = zone_dir / "temp"
+        if read_text(path) is None:
+            continue
+        sources.append(
+            {
+                "kind": "thermal_zone_memory",
+                "path": str(path),
+                "label": zone_type or "mem-thermal",
+                "key": "memory_temp_c",
+            }
+        )
+    return sources[:1]
+
+
 def ipmi_memory_temp_sources(
     temperatures: Dict[str, Optional[float]],
     sensor_index: int = 0,
@@ -252,12 +279,21 @@ def discover_memory_temp_sources_with_ipmi(
     command_exists: CommandExists,
     local_ipmi_available: Callable[[], bool],
     read_ipmi_temperatures_cached: ReadIpmiTemperatures,
+    *,
+    hwmon_root: Path = Path("/sys/class/hwmon"),
+    thermal_root: Path = Path("/sys/class/thermal"),
 ) -> List[Dict[str, Any]]:
-    sources = discover_memory_temp_sources(read_text=read_text)
+    sources = discover_memory_temp_sources(
+        hwmon_root=hwmon_root,
+        thermal_root=thermal_root,
+        read_text=read_text,
+    )
     if sources:
         return sources
     if command_exists("ipmitool") and local_ipmi_available():
         return discover_memory_temp_sources(
+            hwmon_root=hwmon_root,
+            thermal_root=thermal_root,
             read_text=read_text,
             ipmi_temperatures=read_ipmi_temperatures_cached(),
         )
@@ -275,10 +311,14 @@ def local_ipmi_device_available(
 
 def discover_memory_temp_sources(
     hwmon_root: Path = Path("/sys/class/hwmon"),
+    thermal_root: Path = Path("/sys/class/thermal"),
     read_text: ReadText | None = None,
     ipmi_temperatures: Dict[str, Optional[float]] | None = None,
 ) -> List[Dict[str, Any]]:
     sources = spd5118_memory_temp_sources(hwmon_root, read_text)
+    if sources:
+        return sources
+    sources = platform_memory_temp_sources(thermal_root, read_text)
     if sources:
         return sources
     return ipmi_memory_temp_sources(ipmi_temperatures or {}, sensor_index=len(sources))

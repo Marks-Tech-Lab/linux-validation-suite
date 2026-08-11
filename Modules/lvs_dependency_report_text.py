@@ -94,7 +94,7 @@ def dependency_summary_text(
     for key, label in [
         ("cpu_temp_c", "CPU temp"),
         ("cpu_power_w", "CPU package power"),
-        ("memory_temp_c", "DIMM temp"),
+        ("memory_temp_c", "Memory temp"),
         ("gpu_temp_c", "GPU temp"),
         ("gpu_power_w", "GPU power"),
         ("gpu_busy_percent", "GPU busy"),
@@ -469,7 +469,7 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
         "cpu_clock_mhz": "CPU clock",
         "cpu_utilization_percent": "CPU utilization",
         "cpu_core_clock_mhz": "Per-core CPU clocks",
-        "memory_temp_c": "DIMM temperature",
+        "memory_temp_c": "Memory temperature",
         "storage_temp_c": "Storage temperature",
         "memory_used_gb": "System memory usage",
         "gpu_temp_c": "GPU temperature",

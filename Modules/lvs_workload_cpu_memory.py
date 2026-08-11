@@ -39,6 +39,7 @@ from Modules.lvs_memory_execution import (
     memory_target_bytes,
     memory_worker_count,
 )
+from Modules.lvs_memory_architecture import native_memory_helper_binary_name
 from Modules.lvs_native_helpers import find_c_compiler
 from Modules.lvs_telemetry_collector import TelemetryCollector
 
@@ -79,7 +80,7 @@ class WorkloadCpuMemoryMixin:
         return DEFAULT_NATIVE_DIR / "memory_stress_helper.c"
 
     def _memory_helper_binary_path(self) -> Path:
-        return DEFAULT_BUILD_DIR / "memory_stress_helper"
+        return DEFAULT_BUILD_DIR / native_memory_helper_binary_name(self._cpu_machine())
 
     def _cpu_helper_status(self) -> Dict[str, Any]:
         return self._native_helper_runtime.helper_status(
@@ -98,6 +99,7 @@ class WorkloadCpuMemoryMixin:
             binary=self._memory_helper_binary_path(),
             compiler_path=self._compiler_path,
             reason_label="memory",
+            readiness_command=lambda path: [path, "--help"],
         )
 
     def _python_runtime(self) -> Optional[str]:
@@ -221,6 +223,7 @@ class WorkloadCpuMemoryMixin:
             policy="capabilities",
             resolved_mode="",
             supports_kernel_flavor=self._cpu_helper_supports_kernel_flavor,
+            architecture=self._cpu_machine(),
         )
 
     def _cpu_mode_for_kernel_flavor(self, flavor: str) -> str:
@@ -249,6 +252,7 @@ class WorkloadCpuMemoryMixin:
             policy=self._cpu_tuning_policy(cpu),
             resolved_mode=self._cpu_resolved_mode(cpu) or "scalar",
             supports_kernel_flavor=self._cpu_helper_supports_kernel_flavor,
+            architecture=self._cpu_machine(),
         )
 
     def resolve_cpu_execution(self, cpu: Any, tune_max_power: bool = False) -> Dict[str, Any]:

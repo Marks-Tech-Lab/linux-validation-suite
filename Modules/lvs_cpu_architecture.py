@@ -9,6 +9,18 @@ from typing import Any, Dict
 
 X86_CPU_INSTRUCTION_SETS = frozenset({"sse", "avx", "avx2", "avx512"})
 ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon"})
+X86_MAX_POWER_KERNEL_ORDER = (
+    "avx512_fma",
+    "avx512_int",
+    "avx2_fma",
+    "avx2",
+    "avx_fma",
+    "avx",
+    "sse2",
+    "sse2_int",
+    "scalar",
+)
+ARM64_MAX_POWER_KERNEL_ORDER = ("neon", "scalar")
 
 
 def normalize_cpu_architecture(machine: str) -> str:
@@ -22,6 +34,13 @@ def normalize_cpu_architecture(machine: str) -> str:
 
 def current_cpu_architecture() -> str:
     return normalize_cpu_architecture(platform.machine())
+
+
+def cpu_max_power_kernel_order(machine: str) -> tuple[str, ...]:
+    """Return only implemented kernel candidates for the requested architecture."""
+    if normalize_cpu_architecture(machine) == "arm64":
+        return ARM64_MAX_POWER_KERNEL_ORDER
+    return X86_MAX_POWER_KERNEL_ORDER
 
 
 def native_cpu_helper_binary_name(machine: str) -> str:

@@ -175,6 +175,12 @@ def telemetry_source_record(
         "nic_index",
         "wifi_index",
         "board_sensor_index",
+        "cpu_index",
+        "component_count",
+        "aggregation",
+        "controller_count",
+        "bank_count",
+        "error_scope",
         "pcie_link",
     ):
         if source.get(key) not in (None, ""):
@@ -205,6 +211,8 @@ def build_telemetry_source_map(
     sudo_available: bool = False,
     cpu_power_unreadable_sources: Iterable[TelemetrySource] = (),
     cpu_utilization_source: Optional[TelemetrySource] = None,
+    cpu_core_utilization_sources: Iterable[TelemetrySource] = (),
+    llcc_edac_sources: Iterable[TelemetrySource] = (),
 ) -> Dict[str, Any]:
     """Build a machine-readable map for raw telemetry CSV fields.
 
@@ -214,7 +222,9 @@ def build_telemetry_source_map(
     """
     cpu_package_temp_source_list = list(cpu_package_temp_sources)
     cpu_core_clock_source_list = list(cpu_core_clock_sources)
+    cpu_core_utilization_source_list = list(cpu_core_utilization_sources)
     memory_temp_source_list = list(memory_temp_sources)
+    llcc_edac_source_list = list(llcc_edac_sources)
     storage_temp_source_list = list(storage_temp_sources)
     device_temp_source_list = list(device_temp_sources)
     gpu_source_list = list(gpu_sources)
@@ -284,10 +294,31 @@ def build_telemetry_source_map(
         if field:
             fields[field] = telemetry_source_record(field, source, category="cpu_core", metric="clock_mhz")
 
+    for source in cpu_core_utilization_source_list:
+        field = str(source.get("key") or "")
+        if field:
+            fields[field] = telemetry_source_record(
+                field,
+                source,
+                category="cpu_core",
+                metric="utilization_percent",
+            )
+
     for source in memory_temp_source_list:
         field = str(source.get("key") or "")
         if field:
-            fields[field] = telemetry_source_record(field, source, category="memory_module", metric="temperature_c")
+            category = "memory" if field == "memory_temp_c" else "memory_module"
+            fields[field] = telemetry_source_record(field, source, category=category, metric="temperature_c")
+
+    for source in llcc_edac_source_list:
+        field = str(source.get("key") or "")
+        if field:
+            fields[field] = telemetry_source_record(
+                field,
+                source,
+                category="llcc",
+                metric=str(source.get("metric") or field),
+            )
 
     for source in storage_temp_source_list:
         field = str(source.get("key") or "")
@@ -336,7 +367,9 @@ def build_telemetry_source_map(
         [cpu_temp_source, cpu_power_source, cpu_clock_source, cpu_utilization_source]
         + cpu_package_temp_source_list
         + cpu_core_clock_source_list
+        + cpu_core_utilization_source_list
         + memory_temp_source_list
+        + llcc_edac_source_list
         + storage_temp_source_list
         + device_temp_source_list
         + gpu_source_list
@@ -496,6 +529,8 @@ def build_telemetry_capability_summary(
     process_is_root: bool = False,
     sudo_available: bool = False,
     cpu_utilization_source: Optional[TelemetrySource] = None,
+    cpu_core_utilization_sources: Iterable[TelemetrySource] = (),
+    llcc_edac_sources: Iterable[TelemetrySource] = (),
 ) -> Dict[str, Dict[str, Any]]:
     """Build the diagnostics/export telemetry capability payload.
 
@@ -504,7 +539,9 @@ def build_telemetry_capability_summary(
     dependency reports, manifests, and frontends.
     """
     cpu_core_clock_source_list = list(cpu_core_clock_sources)
+    cpu_core_utilization_source_list = list(cpu_core_utilization_sources)
     memory_temp_source_list = list(memory_temp_sources)
+    llcc_edac_source_list = list(llcc_edac_sources)
     storage_temp_source_list = list(storage_temp_sources)
     device_temp_source_list = list(device_temp_sources)
     primary_storage_temp_source_list = [
@@ -556,16 +593,39 @@ def build_telemetry_capability_summary(
             "available": cpu_utilization_source is not None,
             "source": str(cpu_utilization_source.get("path") or "/proc/stat") if cpu_utilization_source else "not found",
         },
+        "cpu_core_utilization_percent": {
+            "available": bool(cpu_core_utilization_source_list),
+            "source": (
+                str(cpu_utilization_source.get("path") or "/proc/stat")
+                if cpu_core_utilization_source_list and cpu_utilization_source
+                else "not found"
+            ),
+            "count": len(cpu_core_utilization_source_list),
+        },
         "cpu_core_clock_mhz": {
             "available": bool(cpu_core_clock_source_list),
             "source": describe_source(cpu_core_clock_source_list[0]) if cpu_core_clock_source_list else "not found",
             "count": len(cpu_core_clock_source_list),
             "classification": cpu_core_classification,
         },
+        "cpu_throttle_indication": {
+            "available": False,
+            "source": "not found",
+        },
         "memory_temp_c": {
             "available": bool(memory_temp_source_list),
             "source": describe_source(memory_temp_source_list[0]) if memory_temp_source_list else "not found",
             "count": len(memory_temp_source_list),
+        },
+        "llcc_correctable_error_count": {
+            "available": any(source.get("key") == "llcc_correctable_error_count" for source in llcc_edac_source_list),
+            "source": describe_source(next((source for source in llcc_edac_source_list if source.get("key") == "llcc_correctable_error_count"), None)),
+            "scope": "last_level_cache",
+        },
+        "llcc_uncorrectable_error_count": {
+            "available": any(source.get("key") == "llcc_uncorrectable_error_count" for source in llcc_edac_source_list),
+            "source": describe_source(next((source for source in llcc_edac_source_list if source.get("key") == "llcc_uncorrectable_error_count"), None)),
+            "scope": "last_level_cache",
         },
         "storage_temp_c": {
             "available": bool(primary_storage_temp_source_list),

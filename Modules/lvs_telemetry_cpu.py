@@ -18,24 +18,46 @@ ThermalZoneThresholds = Callable[[Path], tuple[Optional[float], Optional[float],
 CpuStatCounters = tuple[int, ...]
 
 
-def parse_proc_stat_cpu_counters(text: Optional[str]) -> Optional[CpuStatCounters]:
-    """Parse the aggregate CPU counters from Linux ``/proc/stat``."""
-    if text is None:
-        return None
-    aggregate_line = next(
-        (line for line in str(text).splitlines() if line.startswith("cpu ")),
-        None,
-    )
-    if aggregate_line is None:
-        return None
-    fields = aggregate_line.split()[1:]
-    if len(fields) < 4:
+def _parse_proc_stat_cpu_line(line: str) -> Optional[tuple[str, CpuStatCounters]]:
+    fields = str(line or "").split()
+    if len(fields) < 5 or not re.fullmatch(r"cpu\d*", fields[0]):
         return None
     try:
-        counters = tuple(int(field) for field in fields)
+        counters = tuple(int(field) for field in fields[1:])
     except (TypeError, ValueError):
         return None
-    return counters if all(counter >= 0 for counter in counters) else None
+    if any(counter < 0 for counter in counters):
+        return None
+    return fields[0], counters
+
+
+def parse_proc_stat_cpu_snapshot(
+    text: Optional[str],
+) -> tuple[Optional[CpuStatCounters], Dict[int, CpuStatCounters]]:
+    """Parse aggregate and per-CPU counters from one Linux ``/proc/stat`` read."""
+    if text is None:
+        return None, {}
+    aggregate: Optional[CpuStatCounters] = None
+    per_cpu: Dict[int, CpuStatCounters] = {}
+    for line in str(text).splitlines():
+        parsed = _parse_proc_stat_cpu_line(line)
+        if parsed is None:
+            continue
+        label, counters = parsed
+        if label == "cpu":
+            aggregate = counters
+            continue
+        try:
+            per_cpu[int(label.removeprefix("cpu"))] = counters
+        except ValueError:
+            continue
+    return aggregate, per_cpu
+
+
+def parse_proc_stat_cpu_counters(text: Optional[str]) -> Optional[CpuStatCounters]:
+    """Parse the aggregate CPU counters from Linux ``/proc/stat``."""
+    aggregate, _per_cpu = parse_proc_stat_cpu_snapshot(text)
+    return aggregate
 
 
 def cpu_utilization_percent(
@@ -77,6 +99,26 @@ def discover_cpu_utilization_source(
     }
 
 
+def cpu_core_utilization_sources(
+    cpu_indexes: Iterable[int],
+    cpu_utilization_source: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build canonical per-core utilization source records for source mapping."""
+    if not cpu_utilization_source:
+        return []
+    path = str(cpu_utilization_source.get("path") or "/proc/stat")
+    return [
+        {
+            "kind": "procfs_cpu",
+            "label": f"cpu{cpu_index} counters",
+            "path": path,
+            "key": f"cpu_core_{cpu_index}_utilization_percent",
+            "cpu_index": cpu_index,
+        }
+        for cpu_index in sorted({int(index) for index in cpu_indexes if int(index) >= 0})
+    ]
+
+
 def read_text_cpu_sysfs(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8", errors="ignore").strip()
@@ -116,7 +158,16 @@ def read_cpu_temp(
         if values:
             return max(values)
     for source in cpu_temp_sources:
-        value = read_temperature_path(Path(str(source.get("path") or "")), read_text)
+        if source.get("kind") == "aggregate_temperature":
+            values = [
+                read_temperature_path(Path(str(component.get("path") or "")), read_text)
+                for component in source.get("sources", [])
+                if isinstance(component, dict)
+            ]
+            valid_values = [value for value in values if value is not None]
+            value = max(valid_values) if valid_values else None
+        else:
+            value = read_temperature_path(Path(str(source.get("path") or "")), read_text)
         if value is not None:
             return value
     return None
@@ -361,6 +412,50 @@ def score_thermal_zone(zone_type: str) -> int:
     return score
 
 
+def is_multi_zone_cpu_thermal_type(zone_type: str) -> bool:
+    """Recognize explicitly named CPU/core/subsystem zones without numeric paths."""
+    normalized = str(zone_type or "").strip().lower().replace("_", "-")
+    return bool(
+        re.fullmatch(r"cpu\d+-\d+-(?:top|btm)-thermal", normalized)
+        or re.fullmatch(r"cpuss\d+-(?:top|btm)-thermal", normalized)
+    )
+
+
+def aggregate_cpu_thermal_source(sources: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return a max aggregate for platforms exposing an explicit CPU-zone set."""
+    components = [
+        dict(source)
+        for source in sources
+        if source.get("kind") == "thermal_zone"
+        and is_multi_zone_cpu_thermal_type(str(source.get("label") or ""))
+    ]
+    if len(components) < 2:
+        return None
+    components.sort(key=lambda source: str(source.get("label") or source.get("path") or ""))
+    warn_values = [
+        float(source["warn_threshold_c"])
+        for source in components
+        if source.get("warn_threshold_c") is not None
+    ]
+    fail_values = [
+        float(source["fail_threshold_c"])
+        for source in components
+        if source.get("fail_threshold_c") is not None
+    ]
+    return {
+        "kind": "aggregate_temperature",
+        "path": ", ".join(str(source.get("path") or "") for source in components),
+        "label": f"maximum of {len(components)} CPU thermal zones",
+        "aggregation": "maximum",
+        "score": max(int(source.get("score") or 0) for source in components) + 1000,
+        "warn_threshold_c": min(warn_values) if warn_values else None,
+        "fail_threshold_c": min(fail_values) if fail_values else None,
+        "threshold_source": "aggregate_thermal_zone_trips" if warn_values or fail_values else "suite_default",
+        "sources": components,
+        "component_count": len(components),
+    }
+
+
 def score_cpu_power_source(hwmon_name: str, label: str) -> int:
     text = f"{hwmon_name} {label}".lower()
     score = 0
@@ -472,6 +567,9 @@ def discover_cpu_temp_sources(
         )
 
     sources.sort(key=lambda item: item["score"], reverse=True)
+    aggregate_source = aggregate_cpu_thermal_source(sources)
+    if aggregate_source:
+        sources.insert(0, aggregate_source)
     return sources
 
 
@@ -889,17 +987,20 @@ def discover_cpu_core_topology(
             continue
         topology_dir = cpu_dir / "topology"
         package_id = read_cpu_sysfs_int(topology_dir / "physical_package_id", read_text)
+        cluster_id = read_cpu_sysfs_int(topology_dir / "cluster_id", read_text)
         core_id = read_cpu_sysfs_int(topology_dir / "core_id", read_text)
         siblings_text = read_text(topology_dir / "thread_siblings_list") or ""
         siblings = parse_cpu_list(siblings_text)
-        physical_key = (
-            f"package{package_id}:core{core_id}"
-            if package_id is not None and core_id is not None
-            else f"cpu{min(siblings) if siblings else cpu_index}"
-        )
+        if package_id is not None and cluster_id is not None and core_id is not None:
+            physical_key = f"package{package_id}:cluster{cluster_id}:core{core_id}"
+        elif package_id is not None and core_id is not None:
+            physical_key = f"package{package_id}:core{core_id}"
+        else:
+            physical_key = f"cpu{min(siblings) if siblings else cpu_index}"
         entry = {
             "cpu_index": cpu_index,
             "package_id": package_id,
+            "cluster_id": cluster_id,
             "core_id": core_id,
             "physical_core_key": physical_key,
             "physical_core_index": 0,

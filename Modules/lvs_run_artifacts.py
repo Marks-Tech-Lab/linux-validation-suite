@@ -17,7 +17,10 @@ from Modules.lvs_output_contract_identity import (
     stamp_contract_identity,
 )
 from Modules.lvs_run_finalization import finalize_run_stage_windows
-from Modules.lvs_telemetry_samples import telemetry_metric_summaries
+from Modules.lvs_telemetry_samples import (
+    extended_telemetry_metric_field_names,
+    telemetry_metric_summaries,
+)
 
 
 @dataclass(frozen=True)
@@ -136,7 +139,7 @@ def write_final_run_artifacts(
                 "gpu_recovery": recovery_report,
                 "telemetry_metrics": telemetry_metric_summaries(
                     telemetry.samples,
-                    ("cpu_utilization_percent",),
+                    extended_telemetry_metric_field_names(telemetry.samples),
                 ),
                 "compatibility_export": compat,
             },

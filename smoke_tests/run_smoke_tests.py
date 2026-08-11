@@ -348,6 +348,7 @@ from Modules.lvs_python_cpu_worker import (
     supervise_python_cpu_workers,
 )
 from Modules.lvs_cpu_architecture import (
+    cpu_max_power_kernel_order,
     cpu_instruction_set_policy,
     heatsoak_cpu_instruction_set,
     native_cpu_helper_binary_name,
@@ -415,6 +416,7 @@ from Modules.lvs_memory_execution import (
     memory_target_bytes,
     memory_worker_count,
 )
+from Modules.lvs_memory_architecture import native_memory_helper_binary_name
 from Modules.lvs_native_helpers import (
     NativeHelperRuntimeService,
     find_c_compiler,
@@ -440,6 +442,7 @@ from Modules.lvs_storage_health import (
 )
 from Modules.lvs_pcie_link import pcie_link_info_for_path, read_pcie_link_info, trusted_pcie_link_for_slot
 from Modules.lvs_telemetry_storage_sources import discover_storage_temp_sources, read_storage_temps
+from Modules.lvs_telemetry_edac import discover_llcc_edac_sources, read_llcc_edac_counters
 from Modules.lvs_system_info import SystemInfoCollector
 from Modules.lvs_stability_events import (
     create_stability_event,
@@ -803,6 +806,8 @@ from Modules.lvs_telemetry_sampling import (
     walk_json_numbers,
 )
 from Modules.lvs_telemetry_samples import (
+    cpu_utilization_metric_field_names,
+    extended_telemetry_metric_field_names,
     telemetry_csv_fieldnames,
     telemetry_metric_summaries,
     telemetry_sample_row,
@@ -838,12 +843,15 @@ from Modules.lvs_telemetry_memory import (
     run_ipmitool_sensor_text,
     looks_like_ipmi_memory_temperature,
     memory_usage_gib_from_meminfo,
+    platform_memory_temp_sources,
 )
 from Modules.lvs_telemetry_cpu import (
+    aggregate_cpu_thermal_source,
     add_privileged_cpu_power_sources,
     aggregate_cpu_package_power_source,
     assign_cpu_package_temp_sources,
     cpu_core_classification_summary_from_topology,
+    cpu_core_utilization_sources,
     cpu_index_from_name,
     cpu_package_id_from_power_source,
     cpu_package_id_from_temp_source,
@@ -859,6 +867,7 @@ from Modules.lvs_telemetry_cpu import (
     parse_cpu_list,
     parse_explicit_core_type,
     parse_proc_stat_cpu_counters,
+    parse_proc_stat_cpu_snapshot,
     performance_tiers,
     read_cpu_clock_mhz,
     read_cpu_core_clocks,
@@ -5117,9 +5126,9 @@ def test_final_run_artifact_writer_helpers() -> None:
         def __init__(self) -> None:
             self.csv_path = None
             self.samples = [
-                Sample(1.0, {"cpu_utilization_percent": None}),
-                Sample(2.0, {"cpu_utilization_percent": 75.0}),
-                Sample(3.0, {"cpu_utilization_percent": 25.0}),
+                Sample(1.0, {"cpu_utilization_percent": None, "cpu_core_0_utilization_percent": None, "memory_temp_c": 40.0, "llcc_correctable_error_count": 2.0, "llcc_uncorrectable_error_count": 0.0}),
+                Sample(2.0, {"cpu_utilization_percent": 75.0, "cpu_core_0_utilization_percent": 80.0, "memory_temp_c": 44.0, "llcc_correctable_error_count": 2.0, "llcc_uncorrectable_error_count": 0.0}),
+                Sample(3.0, {"cpu_utilization_percent": 25.0, "cpu_core_0_utilization_percent": 20.0, "memory_temp_c": 46.0, "llcc_correctable_error_count": 3.0, "llcc_uncorrectable_error_count": 0.0}),
             ]
             self._gpu_sources = []
 
@@ -5217,6 +5226,26 @@ def test_final_run_artifact_writer_helpers() -> None:
             extended["telemetry_metrics"]["cpu_utilization_percent"],
             {"sample_count": 2, "minimum": 25.0, "average": 50.0, "maximum": 75.0},
             "extended output additive CPU utilization summary",
+        )
+        assert_equal(
+            extended["telemetry_metrics"]["cpu_core_0_utilization_percent"],
+            {"sample_count": 2, "minimum": 20.0, "average": 50.0, "maximum": 80.0},
+            "extended output additive per-core utilization summary",
+        )
+        assert_equal(
+            extended["telemetry_metrics"]["memory_temp_c"],
+            {"sample_count": 3, "minimum": 40.0, "average": 43.33, "maximum": 46.0},
+            "extended output additive memory temperature summary",
+        )
+        assert_equal(
+            extended["telemetry_metrics"]["llcc_correctable_error_count"],
+            {"sample_count": 3, "minimum": 2.0, "average": 2.33, "maximum": 3.0},
+            "extended output additive LLCC correctable error summary",
+        )
+        assert_equal(
+            extended["telemetry_metrics"]["llcc_uncorrectable_error_count"],
+            {"sample_count": 3, "minimum": 0.0, "average": 0.0, "maximum": 0.0},
+            "extended output additive LLCC uncorrectable error summary",
         )
         assert_snake_case_keys(extended["telemetry_metrics"], label="extended telemetry metrics")
         assert_equal((run_dir / "run_summary.txt").read_text(encoding="utf-8"), "Result: Warning\n", "artifact writer summary")
@@ -14064,6 +14093,39 @@ def test_telemetry_source_helpers() -> None:
         gpu_telemetry_matrix=lambda: matrix,
         memory_used_available=True,
         cpu_utilization_source={"kind": "procfs", "path": "/proc/stat"},
+        cpu_core_utilization_sources=[
+            {
+                "kind": "procfs_cpu",
+                "key": "cpu_core_0_utilization_percent",
+                "label": "cpu0 counters",
+                "path": "/proc/stat",
+                "cpu_index": 0,
+            }
+        ],
+        llcc_edac_sources=[
+            {
+                "kind": "llcc_edac",
+                "key": "llcc_correctable_error_count",
+                "label": "Qualcomm LLCC aggregate correctable error count",
+                "path": "/sys/devices/system/edac/qcom-llcc/qcom-llcc0/ce_count",
+                "metric": "correctable_error_count",
+                "aggregation": "direct",
+                "controller_count": 1,
+                "bank_count": 8,
+                "error_scope": "last_level_cache",
+            },
+            {
+                "kind": "llcc_edac",
+                "key": "llcc_uncorrectable_error_count",
+                "label": "Qualcomm LLCC aggregate uncorrectable error count",
+                "path": "/sys/devices/system/edac/qcom-llcc/qcom-llcc0/ue_count",
+                "metric": "uncorrectable_error_count",
+                "aggregation": "direct",
+                "controller_count": 1,
+                "bank_count": 8,
+                "error_scope": "last_level_cache",
+            },
+        ],
     )
     assert_true(capability_summary["cpu_temp_c"]["available"], "capability summary CPU temp")
     assert_equal(
@@ -14071,6 +14133,20 @@ def test_telemetry_source_helpers() -> None:
         {"available": True, "source": "/proc/stat"},
         "capability summary CPU utilization procfs source",
     )
+    assert_equal(
+        capability_summary["cpu_core_utilization_percent"],
+        {"available": True, "source": "/proc/stat", "count": 1},
+        "capability summary per-core CPU utilization procfs source",
+    )
+    assert_true(not capability_summary["cpu_power_w"]["available"], "unreadable CPU power remains unavailable")
+    assert_equal(
+        capability_summary["cpu_throttle_indication"],
+        {"available": False, "source": "not found"},
+        "CPU throttle capability remains explicitly unavailable",
+    )
+    assert_true(capability_summary["llcc_correctable_error_count"]["available"], "LLCC CE capability available")
+    assert_true(capability_summary["llcc_uncorrectable_error_count"]["available"], "LLCC UE capability available")
+    assert_equal(capability_summary["llcc_correctable_error_count"]["scope"], "last_level_cache", "LLCC capability scope")
     assert_true(capability_summary["cpu_power_w"]["permission_issue"], "capability summary CPU power permission issue")
     assert_equal(capability_summary["cpu_core_clock_mhz"]["count"], 2, "capability summary core clock count")
     assert_true(capability_summary["storage_temp_c"]["available"], "capability summary storage primary")
@@ -14169,6 +14245,28 @@ def test_telemetry_source_helpers() -> None:
         cpu_clock_source={"kind": "cpufreq", "label": "scaling_cur_freq", "path": "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"},
         cpu_core_clock_sources=[
             {"kind": "cpufreq_core", "key": "cpu_core_0_clock_mhz", "label": "Core 0 Clock", "path": "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"}
+        ],
+        cpu_core_utilization_sources=[
+            {
+                "kind": "procfs_cpu",
+                "key": "cpu_core_0_utilization_percent",
+                "label": "cpu0 counters",
+                "path": "/proc/stat",
+                "cpu_index": 0,
+            }
+        ],
+        llcc_edac_sources=[
+            {
+                "kind": "llcc_edac",
+                "key": "llcc_correctable_error_count",
+                "label": "Qualcomm LLCC aggregate correctable error count",
+                "path": "/sys/devices/system/edac/qcom-llcc/qcom-llcc0/ce_count",
+                "metric": "correctable_error_count",
+                "aggregation": "direct",
+                "controller_count": 1,
+                "bank_count": 8,
+                "error_scope": "last_level_cache",
+            }
         ],
         memory_temp_sources=[
             {"kind": "ipmi_memory_temp", "key": "memory_module_0_temp_c", "label": "DIMM_A1", "sensor_id": "DIMM_A1", "module_index": 0, "path": "ipmitool sensor"}
@@ -14286,6 +14384,25 @@ def test_telemetry_source_helpers() -> None:
         },
         "source map CPU utilization procfs evidence",
     )
+    assert_equal(
+        source_map["fields"]["cpu_core_0_utilization_percent"],
+        {
+            "field": "cpu_core_0_utilization_percent",
+            "category": "cpu_core",
+            "metric": "utilization_percent",
+            "source": "procfs_cpu:cpu0 counters (/proc/stat)",
+            "available": True,
+            "kind": "procfs_cpu",
+            "label": "cpu0 counters",
+            "path": "/proc/stat",
+            "access_mode": "direct",
+            "cpu_index": 0,
+        },
+        "source map per-core CPU utilization procfs evidence",
+    )
+    assert_equal(source_map["fields"]["llcc_correctable_error_count"]["category"], "llcc", "LLCC source-map category")
+    assert_equal(source_map["fields"]["llcc_correctable_error_count"]["error_scope"], "last_level_cache", "LLCC source-map scope")
+    assert_equal(source_map["fields"]["llcc_correctable_error_count"]["bank_count"], 8, "LLCC source-map bank metadata")
     assert_equal(source_map["fields"]["gpu_0_power_w"]["slot"], "0000:13:00.0", "source map GPU slot")
     assert_equal(source_map["fields"]["memory_used_gib"]["metric"], "used_gib", "source map memory GiB metric")
     assert_equal(
@@ -14916,12 +15033,12 @@ def test_telemetry_sampling_helpers() -> None:
 
 def test_telemetry_sample_csv_helpers() -> None:
     samples = [
-        Sample(1.5, {"gpu_0_temp_core_c": 70.0, "gpu_0_vram_used_gb": 8.0, "gpu_vram_used_gb": 8.0, "memory_used_gb": 20.0}),
-        Sample(2.5, {"cpu_temp_c": 55.0, "cpu_utilization_percent": 72.5, "gpu_0_temp_core_c": None, "gpu_0_vram_used_gb": 9.0, "gpu_vram_used_gb": 9.0, "memory_used_gb": 21.0}),
+        Sample(1.5, {"cpu_core_0_utilization_percent": None, "gpu_0_temp_core_c": 70.0, "gpu_0_vram_used_gb": 8.0, "gpu_vram_used_gb": 8.0, "memory_used_gb": 20.0}),
+        Sample(2.5, {"cpu_temp_c": 55.0, "cpu_utilization_percent": 72.5, "cpu_core_0_utilization_percent": 75.0, "gpu_0_temp_core_c": None, "gpu_0_vram_used_gb": 9.0, "gpu_vram_used_gb": 9.0, "memory_used_gb": 21.0}),
     ]
     assert_equal(
         telemetry_csv_fieldnames(samples),
-        ["timestamp", "cpu_temp_c", "cpu_utilization_percent", "gpu_0_temp_core_c", "gpu_0_vram_used_gb", "gpu_0_vram_used_gib", "gpu_vram_used_gb", "gpu_vram_used_gib", "memory_used_gb", "memory_used_gib"],
+        ["timestamp", "cpu_core_0_utilization_percent", "cpu_temp_c", "cpu_utilization_percent", "gpu_0_temp_core_c", "gpu_0_vram_used_gb", "gpu_0_vram_used_gib", "gpu_vram_used_gb", "gpu_vram_used_gib", "memory_used_gb", "memory_used_gib"],
         "telemetry CSV field ordering",
     )
     first_row = telemetry_sample_row(samples[0])
@@ -14935,6 +15052,7 @@ def test_telemetry_sample_csv_helpers() -> None:
         assert_true("gpu_0_vram_used_gb,gpu_0_vram_used_gib" in lines[0], "telemetry CSV dynamic VRAM aliases")
         assert_true("gpu_vram_used_gb,gpu_vram_used_gib" in lines[0], "telemetry CSV aggregate VRAM aliases")
         assert_true("memory_used_gb,memory_used_gib" in lines[0], "telemetry CSV memory aliases")
+        assert_true("cpu_core_0_utilization_percent" in lines[0], "telemetry CSV per-core CPU utilization")
         assert_true("cpu_temp_c,cpu_utilization_percent" in lines[0], "telemetry CSV CPU utilization ordering")
 
 
@@ -15006,7 +15124,13 @@ DIMM_B2 Temp | 43.500 | C | ok
     with TemporaryDirectory(dir="/tmp") as tmp:
         empty_hwmon_root = Path(tmp) / "empty_hwmon"
         empty_hwmon_root.mkdir()
-        ipmi_sources = discover_memory_temp_sources(hwmon_root=empty_hwmon_root, ipmi_temperatures=ipmi_values)
+        empty_thermal_root = Path(tmp) / "empty_thermal"
+        empty_thermal_root.mkdir()
+        ipmi_sources = discover_memory_temp_sources(
+            hwmon_root=empty_hwmon_root,
+            thermal_root=empty_thermal_root,
+            ipmi_temperatures=ipmi_values,
+        )
         assert_equal([source["sensor_id"] for source in ipmi_sources], ["DDR_A1 Temp", "DIMM_B2 Temp"], "IPMI memory source filtering")
         assert_equal(ipmi_sources[0]["key"], "memory_module_0_temp_c", "IPMI memory source key")
         fallback_sources = discover_memory_temp_sources_with_ipmi(
@@ -15014,6 +15138,8 @@ DIMM_B2 Temp | 43.500 | C | ok
             command_exists=lambda command: command == "ipmitool",
             local_ipmi_available=lambda: True,
             read_ipmi_temperatures_cached=lambda: ipmi_values,
+            hwmon_root=empty_hwmon_root,
+            thermal_root=empty_thermal_root,
         )
         assert_equal(
             [source["sensor_id"] for source in fallback_sources],
@@ -15033,6 +15159,33 @@ DIMM_B2 Temp | 43.500 | C | ok
             {"memory_module_0_temp_c": 40.0, "memory_module_1_temp_c": 43.5},
             "memory temp reader combines SPD and IPMI sources",
         )
+        thermal_root = Path(tmp) / "thermal"
+        memory_zone = thermal_root / "thermal_zone12"
+        memory_zone.mkdir(parents=True)
+        (memory_zone / "type").write_text("mem-thermal", encoding="utf-8")
+        (memory_zone / "temp").write_text("41500", encoding="utf-8")
+        platform_sources = platform_memory_temp_sources(thermal_root)
+        assert_equal(len(platform_sources), 1, "platform memory thermal source count")
+        assert_equal(platform_sources[0]["key"], "memory_temp_c", "platform memory canonical field")
+        assert_equal(platform_sources[0]["label"], "mem-thermal", "platform memory source label")
+        assert_equal(
+            discover_memory_temp_sources(
+                hwmon_root=empty_hwmon_root,
+                thermal_root=thermal_root,
+                ipmi_temperatures=ipmi_values,
+            )[0]["kind"],
+            "thermal_zone_memory",
+            "platform memory thermal source precedes IPMI fallback",
+        )
+        assert_equal(
+            read_memory_temps(
+                platform_sources,
+                read_temperature=read_temperature_path,
+                read_ipmi_temperatures_cached=lambda: {},
+            ),
+            {"memory_temp_c": 41.5},
+            "platform memory temperature reading",
+        )
         hwmon_root = Path(tmp) / "hwmon"
         hwmon = hwmon_root / "hwmon0"
         hwmon.mkdir(parents=True)
@@ -15041,6 +15194,7 @@ DIMM_B2 Temp | 43.500 | C | ok
         (hwmon / "temp2_input").write_text("41000", encoding="utf-8")
         spd_sources = discover_memory_temp_sources(
             hwmon_root=hwmon_root,
+            thermal_root=thermal_root,
             ipmi_temperatures={"DDR_A1 Temp": 42.0},
         )
         assert_equal(len(spd_sources), 2, "SPD5118 memory source count")
@@ -15244,6 +15398,49 @@ def test_telemetry_cpu_helpers() -> None:
         assert_equal(hwmon_temp_source["label"], "Tctl", "CPU temp discovery hwmon label")
         assert_equal(hwmon_temp_source["warn_threshold_c"], 90.0, "CPU temp discovery threshold callback")
         assert_equal(cpu_temp_sources[0]["label"], "x86_pkg_temp", "CPU temp discovery preserves scoring order")
+        arm_thermal_root = root / "arm_thermal"
+        cpu_zone_types = [
+            f"cpu{cluster}-{core}-{side}-thermal"
+            for cluster in (0, 1)
+            for core in range(4)
+            for side in ("top", "btm")
+        ] + [
+            f"cpuss{cluster}-{side}-thermal"
+            for cluster in (0, 1)
+            for side in ("top", "btm")
+        ]
+        for zone_index, zone_type in enumerate(cpu_zone_types):
+            zone_dir = arm_thermal_root / f"thermal_zone{zone_index}"
+            zone_dir.mkdir(parents=True)
+            (zone_dir / "type").write_text(zone_type, encoding="utf-8")
+            (zone_dir / "temp").write_text(str(40000 + zone_index * 1000), encoding="utf-8")
+        for offset, zone_type in enumerate(("gpuss-thermal", "mem-thermal", "pmic-thermal", "battery"), start=len(cpu_zone_types)):
+            zone_dir = arm_thermal_root / f"thermal_zone{offset}"
+            zone_dir.mkdir(parents=True)
+            (zone_dir / "type").write_text(zone_type, encoding="utf-8")
+            (zone_dir / "temp").write_text("99000", encoding="utf-8")
+        arm_temp_sources = discover_cpu_temp_sources(
+            hwmon_root=root / "empty_arm_hwmon",
+            thermal_root=arm_thermal_root,
+            thermal_zone_thresholds=lambda _path: (95.0, 105.0, "fixture-zone"),
+        )
+        arm_aggregate = arm_temp_sources[0]
+        assert_equal(arm_aggregate["kind"], "aggregate_temperature", "Snapdragon CPU zone-set aggregation")
+        assert_equal(arm_aggregate["component_count"], 20, "Snapdragon CPU zone-set source count")
+        assert_equal(arm_aggregate["aggregation"], "maximum", "Snapdragon CPU aggregation metadata")
+        assert_equal(
+            {source["label"] for source in arm_aggregate["sources"]},
+            set(cpu_zone_types),
+            "Snapdragon CPU aggregation excludes non-CPU thermal zones",
+        )
+        assert_equal(read_cpu_temp(arm_temp_sources), 59.0, "Snapdragon aggregate CPU temp takes valid maximum")
+        single_x86_source = discover_cpu_temp_sources(
+            hwmon_root=root / "empty_arm_hwmon",
+            thermal_root=thermal_root,
+            thermal_zone_thresholds=lambda _path: (91.0, 101.0, "fixture-zone"),
+        )
+        assert_equal(single_x86_source[0]["kind"], "thermal_zone", "x86 single-source temperature policy unchanged")
+        assert_equal(read_cpu_temp(single_x86_source), 66.0, "x86 CPU temperature reading unchanged")
         powercap_root = root / "powercap"
         readable_rapl = powercap_root / "intel-rapl:0"
         unreadable_rapl = powercap_root / "intel-rapl:1"
@@ -15389,6 +15586,16 @@ def test_telemetry_cpu_helpers() -> None:
 def test_cpu_utilization_telemetry_helpers() -> None:
     base = parse_proc_stat_cpu_counters("cpu 100 10 40 500 20 5 5 0\ncpu0 1 1 1 1\n")
     assert_equal(base, (100, 10, 40, 500, 20, 5, 5, 0), "proc stat aggregate parsing")
+    aggregate, per_cpu = parse_proc_stat_cpu_snapshot(
+        "cpu 100 10 40 500 20 5 5 0\ncpu0 25 0 0 75\ncpu1 75 0 0 25\n"
+    )
+    assert_equal(aggregate, base, "proc stat snapshot aggregate parsing")
+    assert_equal(per_cpu, {0: (25, 0, 0, 75), 1: (75, 0, 0, 25)}, "proc stat per-core parsing")
+    assert_equal(
+        parse_proc_stat_cpu_snapshot("cpu 1 2 3 4\ncpu0 1 2 bad 4\ncpu2 2 0 0 8\n"),
+        ((1, 2, 3, 4), {2: (2, 0, 0, 8)}),
+        "malformed per-core line does not invalidate aggregate snapshot",
+    )
     assert_equal(parse_proc_stat_cpu_counters("cpu 1 2 3 4\n"), (1, 2, 3, 4), "proc stat optional counters absent")
     assert_equal(
         parse_proc_stat_cpu_counters("cpu 1 2 3 4 5 6 7 8 9 10 11\n"),
@@ -15447,33 +15654,116 @@ def test_cpu_utilization_telemetry_helpers() -> None:
         collector = object.__new__(TelemetryCollector)
         collector._cpu_utilization_source = {"kind": "procfs", "path": "/proc/stat"}
         collector._previous_cpu_stat_counters = None
+        collector._previous_cpu_core_stat_counters = {}
+        collector._last_cpu_core_utilization_values = {}
+        collector._cpu_core_utilization_sources = cpu_core_utilization_sources(
+            [0, 1], collector._cpu_utilization_source
+        )
         snapshots = iter(snapshot_texts)
         collector._safe_read_text = lambda _path: next(snapshots)
         return collector
 
-    collector_a = utilization_collector(["cpu 0 0 0 100\n", "cpu 50 0 0 150\n"])
-    collector_b = utilization_collector(["cpu 0 0 0 200\n", "cpu 20 0 0 280\n"])
+    collector_a = utilization_collector([
+        "cpu 0 0 0 100\ncpu0 0 0 0 100\n",
+        "cpu 50 0 0 150\ncpu0 50 0 0 150\n",
+    ])
+    collector_b = utilization_collector([
+        "cpu 0 0 0 200\ncpu0 0 0 0 200\n",
+        "cpu 20 0 0 280\ncpu0 20 0 0 280\n",
+    ])
     assert_equal(collector_a._read_cpu_utilization_percent(), None, "collector A starts with clean utilization state")
     assert_equal(collector_b._read_cpu_utilization_percent(), None, "collector B starts with clean utilization state")
     assert_equal(collector_a._read_cpu_utilization_percent(), 50.0, "collector A independent CPU utilization delta")
     assert_equal(collector_b._read_cpu_utilization_percent(), 20.0, "collector B independent CPU utilization delta")
+    assert_equal(
+        collector_a._last_cpu_core_utilization_values["cpu_core_0_utilization_percent"],
+        50.0,
+        "collector A owns independent per-core utilization state",
+    )
+    assert_equal(
+        collector_b._last_cpu_core_utilization_values["cpu_core_0_utilization_percent"],
+        20.0,
+        "collector B owns independent per-core utilization state",
+    )
     collector_reset = utilization_collector(["cpu 100 0 0 100\n", "cpu 10 0 0 10\n", "cpu 20 0 0 10\n"])
     assert_equal(collector_reset._read_cpu_utilization_percent(), None, "reset collector first sample")
     assert_equal(collector_reset._read_cpu_utilization_percent(), None, "reset collector rejects negative delta")
     assert_equal(collector_reset._read_cpu_utilization_percent(), 100.0, "collector recovers after counter reset")
 
-    summaries = telemetry_metric_summaries(
+    per_core = utilization_collector(
         [
-            Sample(1.0, {"cpu_utilization_percent": None}),
-            Sample(2.0, {"cpu_utilization_percent": 10.0}),
-            Sample(3.0, {"cpu_utilization_percent": 90.0}),
-        ],
-        ("cpu_utilization_percent",),
+            "cpu 0 0 0 200\ncpu0 0 0 0 100\ncpu1 0 0 0 100\n",
+            "cpu 100 0 0 300\ncpu0 0 0 0 200\ncpu1 100 0 0 100\n",
+        ]
     )
+    assert_equal(per_core._read_cpu_utilization_percent(), None, "first aggregate sample unavailable")
+    assert_equal(
+        per_core._last_cpu_core_utilization_values,
+        {"cpu_core_0_utilization_percent": None, "cpu_core_1_utilization_percent": None},
+        "first per-core samples unavailable",
+    )
+    assert_equal(per_core._read_cpu_utilization_percent(), 50.0, "aggregate utilization delta unchanged")
+    assert_equal(
+        per_core._last_cpu_core_utilization_values,
+        {"cpu_core_0_utilization_percent": 0.0, "cpu_core_1_utilization_percent": 100.0},
+        "per-core idle and busy utilization deltas",
+    )
+
+    hotplug = utilization_collector(
+        [
+            "cpu 10 0 0 90\ncpu0 10 0 0 90\n",
+            "cpu 30 0 0 170\ncpu0 20 0 0 180\ncpu2 10 0 0 90\n",
+            "cpu 50 0 0 250\ncpu2 30 0 0 170\n",
+        ]
+    )
+    hotplug._read_cpu_utilization_percent()
+    hotplug._read_cpu_utilization_percent()
+    assert_equal(hotplug._last_cpu_core_utilization_values["cpu_core_2_utilization_percent"], None, "appearing CPU starts unavailable")
+    assert_true(
+        any(source["key"] == "cpu_core_2_utilization_percent" for source in hotplug._cpu_core_utilization_sources),
+        "appearing CPU gains a procfs source-map record",
+    )
+    hotplug._read_cpu_utilization_percent()
+    assert_equal(
+        hotplug._last_cpu_core_utilization_values,
+        {"cpu_core_2_utilization_percent": 20.0},
+        "missing CPU is omitted safely while remaining CPU retains state",
+    )
+
+    utilization_samples = [
+        Sample(1.0, {"cpu_utilization_percent": None, "cpu_core_0_utilization_percent": None}),
+        Sample(2.0, {"cpu_utilization_percent": 10.0, "cpu_core_0_utilization_percent": 20.0}),
+        Sample(3.0, {"cpu_utilization_percent": 90.0, "cpu_core_0_utilization_percent": 80.0}),
+    ]
+    metric_fields = cpu_utilization_metric_field_names(utilization_samples)
+    assert_equal(
+        metric_fields,
+        ["cpu_utilization_percent", "cpu_core_0_utilization_percent"],
+        "extended aggregation discovers canonical per-core fields",
+    )
+    summaries = telemetry_metric_summaries(utilization_samples, metric_fields)
     assert_equal(
         summaries["cpu_utilization_percent"],
         {"sample_count": 2, "minimum": 10.0, "average": 50.0, "maximum": 90.0},
         "extended CPU utilization summary",
+    )
+    assert_equal(
+        summaries["cpu_core_0_utilization_percent"],
+        {"sample_count": 2, "minimum": 20.0, "average": 50.0, "maximum": 80.0},
+        "extended per-core utilization summary",
+    )
+    extended_samples = [
+        Sample(1.0, {"memory_temp_c": 42.0, "llcc_correctable_error_count": 0.0}),
+        Sample(2.0, {"memory_temp_c": 48.0, "llcc_correctable_error_count": 1.0}),
+    ]
+    assert_equal(
+        extended_telemetry_metric_field_names(extended_samples),
+        [
+            "cpu_utilization_percent",
+            "memory_temp_c",
+            "llcc_correctable_error_count",
+        ],
+        "extended aggregation includes only observed memory and LLCC metrics",
     )
 
 
@@ -15779,6 +16069,24 @@ Memory Device
     assert_equal(inxi_modules[0]["PartNumber"], "G.Skill F5-6000J3444F64G", "inxi memory part number")
     assert_equal(inxi_modules[0]["CapacityGB"], 16, "inxi memory capacity")
     assert_equal(inxi_modules[0]["OperatingSpeedMTs"], 6000, "inxi operating memory speed")
+    soldered_text = """
+Memory Device
+        Size: 16 GB
+        Form Factor: Row Of Chips
+        Locator: System Board Memory
+        Bank Locator: Not Specified
+        Type: LPDDR5X
+        Speed: 8448 MT/s
+        Configured Memory Speed: 8448 MT/s
+        Manufacturer: SK Hynix
+        Part Number: H58G66AK8BX067
+"""
+    soldered = normalize_memory_modules_for_export(parse_dmidecode_memory_modules(soldered_text))
+    assert_equal(len(soldered), 1, "soldered LPDDR firmware memory-device row")
+    assert_equal(soldered[0]["Type"], "LPDDR5X", "soldered memory type remains firmware-reported")
+    assert_equal(soldered[0]["Position"], "System Board Memory", "soldered memory uses generic firmware locator")
+    assert_equal(soldered[0]["OperatingSpeedMTs"], 8448, "soldered memory configured speed remains reported")
+    assert_true("channel_count" not in soldered[0] and "ChannelCount" not in soldered[0], "memory inventory does not invent channel count")
 
 
 def test_storage_inventory_helpers() -> None:
@@ -16403,6 +16711,15 @@ model name  : AMD EPYC 9255 24-Core Processor
         assert_equal(arm_info["PackageCount"], 1, "ARM cluster fixture package count")
         assert_equal(arm_info["LogicalCpuCount"], 8, "ARM cluster fixture logical CPUs")
         assert_equal(arm_info["PhysicalCoreCount"], 8, "ARM repeated cluster core IDs remain distinct")
+        telemetry_topology = discover_cpu_core_topology(cpu_root=root, read_text=read)
+        telemetry_summary = cpu_core_classification_summary_from_topology(telemetry_topology)
+        assert_equal(telemetry_summary["logical_count"], 8, "ARM telemetry topology logical CPUs")
+        assert_equal(telemetry_summary["physical_count"], 8, "ARM telemetry repeated core IDs remain distinct")
+        assert_equal(
+            telemetry_topology[4]["physical_core_key"],
+            "package0:cluster1:core0",
+            "ARM telemetry physical key includes cluster identity",
+        )
 
     class ArmIdentityCollector(SystemInfoCollector):
         def _proc_cpuinfo_text(self) -> str:
@@ -19300,6 +19617,30 @@ def test_cpu_execution_helpers_select_policy_candidates_and_best_result() -> Non
         supports_kernel_flavor=lambda flavor: flavor in supported,
     )
     assert_equal(max_power_candidates, ["avx512_fma", "avx2_fma", "scalar"], "CPU max-power candidate order")
+    assert_equal(
+        cpu_max_power_kernel_order("x86_64"),
+        (
+            "avx512_fma",
+            "avx512_int",
+            "avx2_fma",
+            "avx2",
+            "avx_fma",
+            "avx",
+            "sse2",
+            "sse2_int",
+            "scalar",
+        ),
+        "x86 max-power architecture policy order remains exact",
+    )
+    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar"), "AArch64 max-power architecture policy order")
+    arm_candidates = cpu_candidate_kernel_flavors(
+        helper_available=True,
+        policy="max_power",
+        resolved_mode="neon",
+        supports_kernel_flavor=lambda flavor: flavor in {"neon", "scalar"},
+        architecture="aarch64",
+    )
+    assert_equal(arm_candidates, ["neon", "scalar"], "AArch64 max-power candidate generation")
 
     family_candidates = cpu_candidate_kernel_flavors(
         helper_available=True,
@@ -19372,6 +19713,23 @@ def test_cpu_execution_resolution_policy() -> None:
     )
     assert_equal(len(unavailable_calls), 1, "CPU resolver checks tuning telemetry")
     assert_equal(unavailable["candidate_results"], [], "CPU resolver unavailable telemetry skips benchmarks")
+    arm_unavailable_calls = []
+    arm_unavailable = resolve_cpu_execution_policy(
+        backend="cpu_native_helper",
+        requested_mode="auto",
+        resolved_mode="neon",
+        kernel_flavor="neon",
+        tuning_policy=cpu_tuning_policy("auto", False),
+        candidate_kernel_flavors=["neon"],
+        tune_max_power=False,
+        worker_count=unexpected_worker_count,
+        power_tuning_available=lambda: arm_unavailable_calls.append(True) or False,
+        benchmark_candidate=unexpected_benchmark,
+        tuning_cache={},
+    )
+    assert_equal(arm_unavailable["tuning_policy"], "highest_supported", "ARM Auto stays highest-supported without power")
+    assert_equal(arm_unavailable["kernel_flavor"], "neon", "ARM highest-supported keeps the resolved NEON backend")
+    assert_equal(arm_unavailable_calls, [], "ARM without CPU power does not begin a tuning probe")
 
     tuning_cache = {}
     worker_calls = []
@@ -20510,6 +20868,10 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
 
 
 def test_memory_execution_helpers_build_commands_and_targets() -> None:
+    assert_equal(native_memory_helper_binary_name("x86_64"), "memory_stress_helper", "x86 memory helper path unchanged")
+    assert_equal(native_memory_helper_binary_name("AMD64"), "memory_stress_helper", "AMD64 memory helper path unchanged")
+    assert_equal(native_memory_helper_binary_name("aarch64"), "memory_stress_helper_arm64", "ARM memory helper artifact isolation")
+    assert_equal(native_memory_helper_binary_name("arm64"), "memory_stress_helper_arm64", "ARM64 memory helper artifact isolation")
     assert_equal(memory_worker_count("all", 16), 16, "memory all-worker count")
     assert_equal(memory_worker_count("4", 16), 4, "memory explicit worker count")
     assert_equal(memory_worker_count("bad", 16), 16, "memory invalid worker count fallback")
@@ -20555,6 +20917,99 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
     assert_equal(fallback_cmd[:2] if fallback_cmd else [], ["/usr/bin/python3", "-c"], "memory Python fallback command")
     assert_true("95 / 100.0" in fallback_cmd[2], "memory fallback clamps allocation percent")
     assert_true("target_kb = int" in build_memory_fallback_script(80), "memory fallback script target")
+
+    source_text = Path("native/memory_stress_helper.c").read_text(encoding="utf-8")
+    assert_true("immintrin.h" not in source_text and "arm_neon.h" not in source_text, "native memory helper has no ISA intrinsic dependency")
+    assert_true("pthread_setaffinity_np" in source_text, "native memory helper retains shared best-effort CPU affinity")
+    assert_true("mix64" in source_text and "walking_bit" in source_text and "address_xor" in source_text, "native memory helper retains integrity patterns")
+
+    runner = WorkloadRunner()
+    runner._cpu_machine = lambda: "arm64"
+    assert_equal(
+        runner._memory_helper_binary_path(),
+        Path("build/memory_stress_helper_arm64"),
+        "ARM workload runner uses isolated memory helper artifact",
+    )
+    runner._cpu_machine = lambda: "x86_64"
+    assert_equal(
+        runner._memory_helper_binary_path(),
+        Path("build/memory_stress_helper"),
+        "x86 workload runner keeps established memory helper artifact",
+    )
+
+    profile_path = Path("profiles") / "ARM64 Native Memory Validation.json"
+    loader = ProfileLoader(Path("profiles"))
+    profile = loader.load_profile(profile_path)
+    labels = loader.load_segment_labels(profile_path, profile)
+    validation = SharedProfileValidator().validate(profile, labels)
+    assert_equal(validation["errors"], [], "ARM native memory lab profile validates")
+    assert_equal(labels, ["ARM64 Native Memory Integrity + Bandwidth Pressure"], "ARM memory sidecar label")
+    assert_equal(profile.defaults.trim_start_seconds, 10, "ARM memory profile start trim")
+    assert_equal(profile.defaults.trim_end_seconds, 10, "ARM memory profile end trim")
+    assert_equal(profile.stages[0].duration_seconds, 120, "ARM memory profile validation duration")
+    assert_equal(profile.stages[0].normalization.trim_start_seconds, 10, "ARM memory stage start trim")
+    assert_equal(profile.stages[0].normalization.trim_end_seconds, 10, "ARM memory stage end trim")
+    memory = profile.stages[0].modules.memory
+    assert_equal(memory.instruction_set, "auto", "ARM memory profile has no x86 ISA request")
+    assert_equal(memory.allocation_percent, 60, "ARM memory profile bounded allocation")
+    assert_equal(memory.threads, "all", "ARM memory profile uses shared worker policy")
+    runner._cpu_machine = lambda: "arm64"
+    runner._memory_helper_status = lambda: {
+        "available": True,
+        "path": "build/memory_stress_helper_arm64",
+        "reason": "",
+    }
+    runner._read_meminfo_kb = lambda key: {
+        "MemTotal": 16 * 1024 * 1024,
+        "MemAvailable": 12 * 1024 * 1024,
+    }.get(key, 0)
+    runner._command_exists = lambda name: name == "build/memory_stress_helper_arm64"
+    assert_equal(runner._memory_backend_name(memory), "memory_native_helper", "ARM memory dry-run backend is native")
+    assert_equal(
+        runner._memory_command(memory),
+        [
+            "build/memory_stress_helper_arm64",
+            "--bytes",
+            str(int(16 * 1024 * 1024 * 0.60) * 1024),
+            "--threads",
+            str(os.cpu_count() or 1),
+        ],
+        "ARM memory dry-run command has portable helper, bounded bytes, and no x86 ISA flag",
+    )
+
+
+def test_llcc_edac_telemetry_helpers() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "qcom-llcc"
+        controller = root / "qcom-llcc0"
+        controller.mkdir(parents=True)
+        (controller / "ce_count").write_text("3", encoding="utf-8")
+        (controller / "ue_count").write_text("1", encoding="utf-8")
+        for bank_index in range(1, 9):
+            bank = controller / f"bank{bank_index}"
+            bank.mkdir()
+            (bank / "ce_count").write_text(str(bank_index), encoding="utf-8")
+            (bank / "ue_count").write_text("0", encoding="utf-8")
+        sources = discover_llcc_edac_sources(root)
+        assert_equal(
+            [source["key"] for source in sources],
+            ["llcc_correctable_error_count", "llcc_uncorrectable_error_count"],
+            "LLCC EDAC canonical additive fields",
+        )
+        assert_true(all(source["error_scope"] == "last_level_cache" for source in sources), "LLCC scope is cache, not DRAM")
+        assert_true(all(source["bank_count"] == 8 for source in sources), "LLCC metadata records eight banks")
+        assert_true(all("/bank" not in source["path"] for source in sources), "LLCC fields use aggregate counters without bank double counting")
+        assert_equal(
+            read_llcc_edac_counters(sources, lambda path: path.read_text(encoding="utf-8").strip()),
+            {"llcc_correctable_error_count": 3.0, "llcc_uncorrectable_error_count": 1.0},
+            "LLCC aggregate counters read directly",
+        )
+        (controller / "ce_count").write_text("bad", encoding="utf-8")
+        assert_equal(
+            discover_llcc_edac_sources(root),
+            [sources[1]],
+            "malformed LLCC counter degrades independently",
+        )
 
 
 def test_native_helper_status_helpers_resolve_build_states() -> None:
@@ -23410,6 +23865,7 @@ def main() -> int:
         test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
         test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
+        test_llcc_edac_telemetry_helpers,
         test_native_helper_status_helpers_resolve_build_states,
         test_native_helper_runtime_service,
         test_backend_readiness_helpers_build_payloads,

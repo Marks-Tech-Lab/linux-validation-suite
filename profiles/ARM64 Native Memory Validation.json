@@ -1,0 +1,33 @@
+{
+  "profile_name": "ARM64 Native Memory Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Native Memory Validation_info.txt",
+  "menu_description": "ARM64 lab validation of the shared native memory integrity and bandwidth-pressure helper",
+  "menu_group": "advanced",
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 10,
+    "trim_end_seconds": 10
+  },
+  "stages": [
+    {
+      "id": "arm64_native_memory_validation",
+      "name": "Memory Integrity + Bandwidth Pressure",
+      "duration_seconds": 120,
+      "enabled": true,
+      "modules": {
+        "memory": {
+          "enabled": true,
+          "allocation_percent": 60,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 10,
+        "trim_end_seconds": 10
+      }
+    }
+  ]
+}
