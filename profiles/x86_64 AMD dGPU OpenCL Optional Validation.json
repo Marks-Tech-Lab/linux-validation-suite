@@ -1,0 +1,12 @@
+{
+  "profile_name": "x86_64 AMD dGPU OpenCL Optional Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 AMD dGPU OpenCL Optional Validation_info.txt",
+  "menu_description": "Optional sustained AMD dedicated-GPU OpenCL compute and VRAM validation",
+  "menu_group": "gpu",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "amd_dgpu_opencl_compute", "name": "AMD dGPU OpenCL Compute", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "discrete_all", "backend_preference": "opencl", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "amd_dgpu_opencl_vram", "name": "AMD dGPU OpenCL VRAM", "duration_seconds": 600, "modules": {"vram": {"enabled": true, "allocation_percent": 90, "gpus": "discrete_all", "priority": "high", "backend_preference": "opencl"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

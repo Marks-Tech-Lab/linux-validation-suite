@@ -1,0 +1,11 @@
+{
+  "profile_name": "x86_64 CPU AVX512 Optional Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 CPU AVX512 Optional Validation_info.txt",
+  "menu_description": "Optional sustained x86_64 AVX512 family validation when readiness proves support",
+  "menu_group": "advanced",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "x86_cpu_native_avx512", "name": "CPU Native AVX512 Family", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "avx512", "threads": "all", "priority": "high", "dataset": "large"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

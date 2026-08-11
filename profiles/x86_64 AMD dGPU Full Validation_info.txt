@@ -1,0 +1,3 @@
+AMD dGPU Vulkan Compute and Readback Sustained
+AMD dGPU Vulkan Transfer and Readback Sustained
+AMD dGPU Vulkan Stateful Dedicated Memory Sustained

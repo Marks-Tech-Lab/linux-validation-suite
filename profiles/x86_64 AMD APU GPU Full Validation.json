@@ -1,0 +1,13 @@
+{
+  "profile_name": "x86_64 AMD APU GPU Full Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 AMD APU GPU Full Validation_info.txt",
+  "menu_description": "Final sustained AMD APU shared-GPU controlled-backend validation",
+  "menu_group": "gpu",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "amd_apu_vulkan_compute", "name": "AMD APU Vulkan Compute", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "amd_apu_vulkan_transfer", "name": "AMD APU Vulkan Transfer", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "amd_apu_vulkan_stateful", "name": "AMD APU Vulkan Stateful Memory", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "allocation_percent": 80, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

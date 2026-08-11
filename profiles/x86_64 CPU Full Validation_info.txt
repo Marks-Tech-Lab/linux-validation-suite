@@ -1,0 +1,6 @@
+x86_64 Native Scalar Sustained
+x86_64 Native SSE Family Sustained
+x86_64 Native AVX Family Sustained
+x86_64 Native AVX2 Family Sustained
+x86_64 stress-ng Matrixprod Sustained
+x86_64 Python CPU Fallback Sustained

@@ -461,6 +461,8 @@ from Modules.lvs_memory_execution import (
     build_memory_fallback_script,
     memory_target_bytes,
     memory_worker_count,
+    normalize_memory_backend_preference,
+    select_memory_backend,
 )
 from Modules.lvs_python_memory_worker import (
     allocate_python_memory_chunks,
@@ -16110,6 +16112,8 @@ def test_gpu_target_helpers() -> None:
     assert_equal(gpu_card_class(cards[0]), "discrete", "NVIDIA target class")
     assert_equal([card["card"] for card in likely_discrete_gpu_cards(cards)], ["card0"], "likely discrete cards")
     assert_equal([card["card"] for card in gpu_targets("all", cards)], ["card0", "card1", "card2"], "all GPU targets")
+    assert_equal([card["card"] for card in gpu_targets("integrated_all", cards)], ["card2"], "integrated-only GPU targets")
+    assert_equal(gpu_target_summary("igpu_all"), "integrated_all", "integrated target summary alias")
     assert_equal([card["card"] for card in gpu_targets("discrete_max_vram", cards)], ["card0"], "max VRAM target")
     assert_equal([card["card"] for card in gpu_targets("slots:0000:02:00.0", cards)], ["card1"], "slot target")
     assert_equal([card["card"] for card in gpu_targets("cards:card2", cards)], ["card2"], "card target")
@@ -16117,6 +16121,9 @@ def test_gpu_target_helpers() -> None:
     assert_equal(gpu_target_summary("slots: 0000:02:00.0 , card1"), "slots:0000:02:00.0,card1", "slot summary")
     assert_equal(gpu_target_display_label(cards[0]), "card0 | 0000:01:00.0 | NVIDIA | 24.0 GB", "target label")
     assert_equal(gpu_target_by_id(cards, "0000:03:00.0"), cards[2], "target lookup")
+    integrated_only = [cards[2]]
+    assert_equal(gpu_targets("discrete_all", integrated_only), [], "dGPU-only selection fails closed on iGPU-only systems")
+    assert_equal(gpu_targets("discrete_max_vram", integrated_only), [], "maximum-dGPU selection fails closed without a dGPU")
     pci_names = {"10de": {"2684": "GB202 [GeForce RTX 5090]"}}
     assert_equal(
         lookup_pci_device_name(pci_names, "0x10de", "2684"),
@@ -21477,6 +21484,17 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
     assert_equal(memory_worker_count("bad", 16), 16, "memory invalid worker count fallback")
     assert_equal(memory_target_bytes(50, 1024 * 1024, 1024 * 1024), 512 * 1024 * 1024, "memory target total cap")
     assert_equal(memory_target_bytes(95, 0, 0), 0, "memory target fails closed without Linux memory accounting")
+    assert_equal(normalize_memory_backend_preference("stress-ng"), "stress_ng", "memory backend alias normalization")
+    assert_equal(
+        select_memory_backend(
+            "python_fallback",
+            helper_available=True,
+            stress_ng_available=True,
+            python_runtime="/usr/bin/python3",
+        ),
+        "python_fallback",
+        "explicit memory backend bypasses higher-priority available backends",
+    )
 
     helper_cmd = build_memory_command(
         helper_available=True,
@@ -21504,6 +21522,17 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         python_runtime="/usr/bin/python3",
     )
     assert_equal(stress_cmd, ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--vm-keep"], "memory stress-ng resolved-byte command")
+    explicit_stress_cmd = build_memory_command(
+        helper_available=True,
+        helper_path="/tmp/memory_helper",
+        target_bytes=1024,
+        worker_count=2,
+        allocation_percent=80,
+        stress_ng_available=True,
+        python_runtime="/usr/bin/python3",
+        backend_preference="stress_ng",
+    )
+    assert_equal(explicit_stress_cmd, stress_cmd, "explicit stress-ng memory backend is selectable despite native availability")
 
     fallback_cmd = build_memory_command(
         helper_available=False,
@@ -21516,6 +21545,17 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
     )
     assert_equal(fallback_cmd[:2] if fallback_cmd else [], ["/usr/bin/python3", "-c"], "memory Python fallback command")
     assert_true("run_python_memory_worker(1024" in fallback_cmd[2], "memory fallback receives resolved target bytes")
+    explicit_fallback_cmd = build_memory_command(
+        helper_available=True,
+        helper_path="/tmp/memory_helper",
+        target_bytes=1024,
+        worker_count=2,
+        allocation_percent=80,
+        stress_ng_available=True,
+        python_runtime="/usr/bin/python3",
+        backend_preference="python_fallback",
+    )
+    assert_true("run_python_memory_worker(1024" in explicit_fallback_cmd[2], "explicit Python memory backend is selectable")
     fallback_script = build_memory_fallback_script(80, "/tmp/memory-result.json")
     assert_true("run_python_memory_worker(80" in fallback_script, "memory fallback script receives resolved bytes")
     assert_true("/tmp/memory-result.json" in fallback_script, "memory fallback script receives result path")
@@ -21585,6 +21625,74 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         ],
         "ARM memory dry-run command has portable helper, bounded bytes, and no x86 ISA flag",
     )
+
+
+def test_final_hardware_validation_profile_pack() -> None:
+    expected = {
+        "ARM64 CPU Full Validation": (4, 2400),
+        "ARM64 CPU Targeting Functional": (3, 270),
+        "ARM64 Memory Full Validation": (3, 1800),
+        "ARM64 GPU Full Validation": (4, 2400),
+        "ARM64 Combined Full Validation": (5, 3000),
+        "x86_64 CPU Full Validation": (6, 3600),
+        "x86_64 CPU AVX512 Optional Validation": (1, 600),
+        "x86_64 CPU Targeting Functional": (3, 270),
+        "x86_64 Memory Full Validation": (3, 1800),
+        "x86_64 Intel iGPU Full Validation": (3, 1800),
+        "x86_64 AMD APU GPU Full Validation": (3, 1800),
+        "x86_64 AMD dGPU Full Validation": (3, 1800),
+        "x86_64 NVIDIA dGPU Full Validation": (3, 1800),
+        "x86_64 iGPU EGL Optional Validation": (1, 600),
+        "x86_64 iGPU OpenCL Optional Validation": (2, 1200),
+        "x86_64 AMD dGPU OpenCL Optional Validation": (2, 1200),
+        "x86_64 NVIDIA dGPU OpenCL Optional Validation": (2, 1200),
+        "x86_64 Multi-GPU Combined Full Validation": (6, 3600),
+    }
+    loader = ProfileLoader(Path("profiles"))
+    validator = SharedProfileValidator()
+    for profile_name, (stage_count, total_seconds) in expected.items():
+        path = Path("profiles") / f"{profile_name}.json"
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        source = loader.inspect_segment_label_source(path, profile)
+        validation = validator.validate(profile, labels)
+        assert_equal(validation["errors"], [], f"{profile_name} validates")
+        assert_equal(len(profile.stages), stage_count, f"{profile_name} stage count")
+        assert_equal(sum(int(stage.duration_seconds or 0) for stage in profile.stages), total_seconds, f"{profile_name} duration")
+        assert_equal(len(labels), stage_count, f"{profile_name} label count")
+        assert_equal(source["issues"], [], f"{profile_name} sidecar")
+        expected_duration = 90 if "Targeting Functional" in profile_name else 600
+        assert_true(all(stage.duration_seconds == expected_duration for stage in profile.stages), f"{profile_name} stage durations")
+
+    arm_memory = loader.load_profile(Path("profiles/ARM64 Memory Full Validation.json"))
+    x86_memory = loader.load_profile(Path("profiles/x86_64 Memory Full Validation.json"))
+    for profile in (arm_memory, x86_memory):
+        assert_equal(
+            [stage.modules.memory.backend_preference for stage in profile.stages],
+            ["native", "stress_ng", "python_fallback"],
+            f"{profile.profile_name} explicitly selects each RAM backend",
+        )
+        assert_true(all(stage.modules.memory.allocation_percent == 80 for stage in profile.stages), f"{profile.profile_name} RAM intent")
+    from Modules.lvs_profile_report_text import profile_summary_text
+
+    memory_report = profile_summary_text(
+        Path("profiles/ARM64 Memory Full Validation.json"),
+        arm_memory,
+        loader.load_segment_labels(Path("profiles/ARM64 Memory Full Validation.json"), arm_memory),
+        lambda value: value,
+    )
+    assert_true("RAM/native/80%" in memory_report, "profile overview exposes requested RAM backend")
+    arm_payload = Path("profiles/ARM64 GPU Full Validation.json").read_text(encoding="utf-8").lower()
+    assert_true("opencl" not in arm_payload, "ARM GPU validation does not invent OpenCL")
+    assert_true(not any(token in arm_payload for token in ('"sve"', '"sve2"', '"sme"')), "ARM pack does not add unsupported ISA")
+    x86_cpu = loader.load_profile(Path("profiles/x86_64 CPU Full Validation.json"))
+    assert_equal(
+        [stage.modules.cpu.instruction_set for stage in x86_cpu.stages[:4]],
+        ["scalar", "sse", "avx", "avx2"],
+        "x86 sustained profile uses only public native ISA families",
+    )
+    avx512 = loader.load_profile(Path("profiles/x86_64 CPU AVX512 Optional Validation.json"))
+    assert_equal(avx512.stages[0].modules.cpu.instruction_set, "avx512", "AVX512 is isolated as optional")
 
 
 def test_unified_system_memory_reserve_and_allocation_policy() -> None:
@@ -25509,6 +25617,7 @@ def main() -> int:
         test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
         test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
+        test_final_hardware_validation_profile_pack,
         test_python_memory_fallback_exact_allocation_evidence,
         test_unified_system_memory_reserve_and_allocation_policy,
         test_linux_memory_accounting_semantics,

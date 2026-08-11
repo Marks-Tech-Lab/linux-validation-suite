@@ -1,0 +1,3 @@
+AMD APU Vulkan Compute and Readback Sustained
+AMD APU Vulkan Transfer and Readback Sustained
+AMD APU Vulkan Stateful Shared Memory Sustained

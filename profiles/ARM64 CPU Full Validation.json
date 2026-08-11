@@ -1,0 +1,14 @@
+{
+  "profile_name": "ARM64 CPU Full Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 CPU Full Validation_info.txt",
+  "menu_description": "Final sustained ARM64 CPU backend and kernel validation",
+  "menu_group": "advanced",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "arm64_cpu_native_scalar", "name": "CPU Native Scalar", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "scalar", "threads": "all", "priority": "high", "dataset": "large"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_cpu_native_neon", "name": "CPU Native NEON", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "neon", "threads": "all", "priority": "high", "dataset": "large"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_cpu_stress_ng", "name": "CPU stress-ng Matrixprod", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "stress_ng", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "high", "dataset": "large"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_cpu_python", "name": "CPU Python Fallback", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "python_fallback", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "high", "dataset": "large"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

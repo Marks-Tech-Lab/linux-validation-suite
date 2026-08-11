@@ -1,0 +1,11 @@
+{
+  "profile_name": "x86_64 iGPU EGL Optional Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 iGPU EGL Optional Validation_info.txt",
+  "menu_description": "Optional sustained shared iGPU EGL GLES render validation",
+  "menu_group": "gpu",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "x86_igpu_egl", "name": "iGPU EGL GLES", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "egl", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

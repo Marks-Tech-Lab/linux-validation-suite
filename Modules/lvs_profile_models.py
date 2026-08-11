@@ -34,6 +34,7 @@ class ModuleCpu:
 @dataclass
 class ModuleMemory:
     enabled: bool = False
+    backend_preference: str = "auto"
     allocation_percent: int = 80
     instruction_set: str = "auto"
     priority: str = "normal"

@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
 from .lvs_cpu_backend_policy import CPU_BACKEND_PREFERENCES
+from .lvs_memory_execution import MEMORY_BACKEND_PREFERENCES
 from .lvs_profile_models import StageConfig, ValidationProfile, stage_execution_mode
 
 
@@ -134,6 +135,10 @@ class ProfileValidator:
             if stage.modules.cpu.enabled and stage.modules.cpu.backend_preference not in CPU_BACKEND_PREFERENCES:
                 errors.append(
                     f"{stage_ref} has invalid cpu.backend_preference='{stage.modules.cpu.backend_preference}'"
+                )
+            if stage.modules.memory.enabled and stage.modules.memory.backend_preference not in MEMORY_BACKEND_PREFERENCES:
+                errors.append(
+                    f"{stage_ref} has invalid memory.backend_preference='{stage.modules.memory.backend_preference}'"
                 )
 
         if enabled_stage_count == 0:

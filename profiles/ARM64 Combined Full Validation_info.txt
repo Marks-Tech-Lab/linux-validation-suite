@@ -1,0 +1,5 @@
+ARM64 Native Auto CPU plus Native RAM
+ARM64 Native Auto CPU plus Adreno Vulkan Compute
+ARM64 Native RAM plus Adreno Stateful Shared Memory
+ARM64 CPU RAM and Adreno Stateful Shared Memory
+ARM64 Full CPU RAM Vulkan Compute and Shared GPU Memory

@@ -1,0 +1,3 @@
+x86_64 Native Auto Common-Safe ISA and Affinity
+x86_64 Python Allowed-CPU Affinity Evidence
+x86_64 stress-ng Authoritative Taskset Evidence

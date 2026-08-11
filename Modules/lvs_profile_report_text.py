@@ -26,7 +26,12 @@ def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], me
                 else f"CPU/{cpu.instruction_set}/{cpu.threads}"
             )
         if stage.modules.memory.enabled:
-            workloads.append(f"RAM/{stage.modules.memory.allocation_percent}%")
+            memory = stage.modules.memory
+            workloads.append(
+                f"RAM/{memory.backend_preference}/{memory.allocation_percent}%"
+                if memory.backend_preference != "auto"
+                else f"RAM/{memory.allocation_percent}%"
+            )
         if stage.modules.gpu_3d.enabled:
             workloads.append(f"3D/{stage.modules.gpu_3d.backend_preference}/{stage.modules.gpu_3d.gpus}")
         if stage.modules.vram.enabled:

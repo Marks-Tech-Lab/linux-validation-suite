@@ -1,0 +1,13 @@
+{
+  "profile_name": "ARM64 Memory Full Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Memory Full Validation_info.txt",
+  "menu_description": "Final sustained ARM64 native, stress-ng, and Python RAM validation",
+  "menu_group": "advanced",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "arm64_memory_native", "name": "Memory Native", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "native", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_memory_stress_ng", "name": "Memory stress-ng", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "stress_ng", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_memory_python", "name": "Memory Python Fallback", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "python_fallback", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

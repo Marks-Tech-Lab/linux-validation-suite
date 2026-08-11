@@ -46,6 +46,8 @@ from Modules.lvs_memory_execution import (
     build_memory_fallback_script,
     memory_target_bytes,
     memory_worker_count,
+    normalize_memory_backend_preference,
+    select_memory_backend,
 )
 from Modules.lvs_memory_architecture import native_memory_helper_binary_name
 from Modules.lvs_linux_memory import read_linux_memory_snapshot
@@ -450,16 +452,18 @@ class WorkloadCpuMemoryMixin:
             stress_ng_available=self._command_exists("stress-ng"),
             python_runtime=self._python_runtime() or "",
             result_file=result_file,
+            backend_preference=getattr(mem, "backend_preference", "auto"),
         )
 
     def _memory_backend_name(self, mem: Any) -> str:
-        if self._memory_helper_status()["available"]:
-            return "memory_native_helper"
-        if self._command_exists("stress-ng"):
-            return "stress_ng"
-        if self._python_runtime():
-            return "python_fallback"
-        return "none"
+        helper = self._memory_helper_status()
+        selected = select_memory_backend(
+            normalize_memory_backend_preference(getattr(mem, "backend_preference", "auto")),
+            helper_available=bool(helper.get("available")),
+            stress_ng_available=self._command_exists("stress-ng"),
+            python_runtime=self._python_runtime() or "",
+        )
+        return "memory_native_helper" if selected == "native" else selected
 
     def _memory_worker_count(self, mem: Any) -> int:
         return memory_worker_count(mem.threads, os.cpu_count() or 1)

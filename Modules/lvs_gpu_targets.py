@@ -367,11 +367,14 @@ def gpu_targets(selection: Any, cards: List[Dict[str, Any]]) -> List[Dict[str, A
     mode = (str(selection or "all")).strip().lower()
     if mode == "all":
         return cards
+    if mode in {"integrated_all", "igpu_all", "shared_all"}:
+        return [card for card in cards if gpu_card_class(card) == "integrated"]
     if mode in {"discrete_all", "dgpu_all"}:
-        discrete_cards = likely_discrete_gpu_cards(cards)
-        return discrete_cards or cards
+        return likely_discrete_gpu_cards(cards)
     if mode in {"discrete_max_vram", "dgpu_max_vram"}:
-        candidates = likely_discrete_gpu_cards(cards) or cards
+        candidates = likely_discrete_gpu_cards(cards)
+        if not candidates:
+            return []
         best = max(candidates, key=lambda card: (card["vram_total"], card["slot"]))
         return [best]
     if mode.startswith("slots:"):
@@ -396,6 +399,8 @@ def gpu_target_summary(selection: Any) -> str:
     mode = (text or "all").strip().lower()
     if mode == "all":
         return "all"
+    if mode in {"integrated_all", "igpu_all", "shared_all"}:
+        return "integrated_all"
     if mode in {"discrete_all", "dgpu_all"}:
         return "discrete_all"
     if mode in {"discrete_max_vram", "dgpu_max_vram"}:

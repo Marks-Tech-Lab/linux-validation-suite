@@ -1,0 +1,12 @@
+{
+  "profile_name": "x86_64 iGPU OpenCL Optional Validation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 iGPU OpenCL Optional Validation_info.txt",
+  "menu_description": "Optional sustained shared iGPU OpenCL compute and memory validation",
+  "menu_group": "gpu",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "x86_igpu_opencl_compute", "name": "iGPU OpenCL Compute", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "opencl", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "x86_igpu_opencl_memory", "name": "iGPU OpenCL Shared Memory", "duration_seconds": 600, "modules": {"vram": {"enabled": true, "allocation_percent": 80, "gpus": "integrated_all", "priority": "high", "backend_preference": "opencl"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

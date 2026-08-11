@@ -112,8 +112,10 @@ def profile_stage_detail_lines(
         lines.append("CPU: disabled")
     if stage.modules.memory.enabled:
         memory = stage.modules.memory
+        backend_text = f"backend={memory.backend_preference}, " if memory.backend_preference != "auto" else ""
         lines.append(
             "Memory/RAM: "
+            + backend_text
             + f"allocation={memory.allocation_percent}%, instruction={memory.instruction_set}, "
             + f"threads={memory.threads}, priority={memory.priority}"
         )

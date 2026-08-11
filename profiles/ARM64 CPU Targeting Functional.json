@@ -1,0 +1,13 @@
+{
+  "profile_name": "ARM64 CPU Targeting Functional",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 CPU Targeting Functional_info.txt",
+  "menu_description": "Short ARM64 Auto, affinity, and external taskset evidence checks",
+  "menu_group": "diagnostic",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 10, "trim_end_seconds": 10},
+  "stages": [
+    {"id": "arm64_target_native_auto", "name": "CPU Native Auto Targeting", "duration_seconds": 90, "modules": {"cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "normal", "dataset": "large"}}, "normalization": {"trim_start_seconds": 10, "trim_end_seconds": 10}},
+    {"id": "arm64_target_python", "name": "CPU Python Affinity", "duration_seconds": 90, "modules": {"cpu": {"enabled": true, "backend_preference": "python_fallback", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "normal", "dataset": "large"}}, "normalization": {"trim_start_seconds": 10, "trim_end_seconds": 10}},
+    {"id": "arm64_target_stress_ng", "name": "CPU stress-ng Taskset", "duration_seconds": 90, "modules": {"cpu": {"enabled": true, "backend_preference": "stress_ng", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "normal", "dataset": "large"}}, "normalization": {"trim_start_seconds": 10, "trim_end_seconds": 10}}
+  ]
+}

@@ -1,0 +1,6 @@
+x86_64 Native Auto CPU plus Native RAM
+x86_64 Native RAM plus Shared iGPU Stateful Memory
+x86_64 Native RAM plus Dedicated dGPU Vulkan VRAM
+x86_64 Shared iGPU plus Dedicated dGPU Vulkan Compute
+x86_64 RAM plus Shared iGPU and Dedicated dGPU Memory
+x86_64 Full CPU RAM Shared iGPU and Dedicated dGPU Pressure
