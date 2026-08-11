@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_opencl_compute_worker import opencl_compute_fixed_commitment_bytes
 
 
 def build_python_opencl_compute_worker(
@@ -45,6 +46,16 @@ def build_python_opencl_compute_worker(
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
     normalized_compute_variant = runner._normalize_opencl_compute_variant(compute_variant)
+    device_class = str(capability.get("device_class", "") or "")
+    fixed_commitment = opencl_compute_fixed_commitment_bytes(
+        surface_size=int(params["surface_size"]),
+        compute_units=int(capability.get("compute_units", 0) or 0),
+        max_work_group_size=int(capability.get("max_work_group_size", 0) or 0),
+        parallelism_hint=int(capability.get("parallelism_hint", 1) or 1),
+        max_single_allocation_bytes=int((matched_device or {}).get("max_alloc_bytes", 0) or 0),
+        device_class=device_class,
+        safe_mode_enabled=runner._gpu_safe_mode_enabled(),
+    )
     command = runner._wrap_gpu_command(
         [
             runtime,
@@ -65,7 +76,7 @@ def build_python_opencl_compute_worker(
                     "compute_units": int(capability.get("compute_units", 0) or 0),
                     "max_work_group_size": int(capability.get("max_work_group_size", 0) or 0),
                     "max_clock_mhz": int(capability.get("max_clock_mhz", 0) or 0),
-                    "device_class": str(capability.get("device_class", "") or ""),
+                    "device_class": device_class,
                     "parallelism_hint": int(capability.get("parallelism_hint", 1) or 1),
                     "ramp_step_seconds": ramp_params["ramp_step_seconds"],
                     "start_load_fraction": ramp_params["start_load_fraction"],
@@ -95,10 +106,11 @@ def build_python_opencl_compute_worker(
         backend_api_family="OpenCL",
         suite_scaling_mode="parametric",
         suite_verification="compute_readback",
-        device_class=str(capability.get("device_class", "") or ""),
+        device_class=device_class,
         profile_mode=str(profile_mode or ""),
         profile_intensity=runner._normalize_gpu_3d_intensity(profile_intensity),
         compute_variant=normalized_compute_variant,
+        system_memory_fixed_commitment_bytes=fixed_commitment,
     )
 
 

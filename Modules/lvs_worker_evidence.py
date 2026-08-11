@@ -158,6 +158,31 @@ def worker_result_events_from_payload(
             )
         )
         return events
+    assigned_allocation = int(
+        payload.get("assigned_target_bytes")
+        or payload.get("target_vram_bytes")
+        or payload.get("target_buffer_bytes")
+        or 0
+    )
+    achieved_allocation = int(
+        payload.get("successfully_allocated_bytes")
+        or payload.get("allocated_vram_bytes")
+        or payload.get("buffer_bytes")
+        or payload.get("buffer_allocation_bytes")
+        or 0
+    )
+    if assigned_allocation > 0 and payload.get("allocation_valid") is False:
+        events.append(
+            create_stability_event(
+                "allocation_insufficient",
+                "error",
+                display_name,
+                kind,
+                f"{payload.get('backend', kind)} achieved {achieved_allocation} of {assigned_allocation} bytes, below the minimum meaningful allocation",
+                payload,
+            )
+        )
+        return events
     error_count = int(payload.get("error_count") or 0)
     status = str(payload.get("status") or "").lower()
     if status == "error" or error_count > 0:
@@ -189,13 +214,31 @@ def worker_result_events_from_payload(
             )
         )
         return events
+    if payload.get("runtime_memory_guard_triggered"):
+        events.append(
+            create_stability_event(
+                "runtime_memory_guard_cap",
+                "warning",
+                display_name,
+                kind,
+                f"{payload.get('backend', kind)} stopped allocation growth to preserve system-memory headroom",
+                payload,
+            )
+        )
     shortfall_bytes = int(payload.get("allocation_shortfall_bytes") or 0)
     target_vram_bytes = int(
-        payload.get("active_target_vram_bytes")
+        payload.get("assigned_target_bytes")
+        or payload.get("active_target_vram_bytes")
         or payload.get("target_vram_bytes")
         or 0
     )
-    allocated_vram_bytes = int(payload.get("allocated_vram_bytes") or payload.get("buffer_allocation_bytes") or 0)
+    allocated_vram_bytes = int(
+        payload.get("successfully_allocated_bytes")
+        or payload.get("allocated_vram_bytes")
+        or payload.get("buffer_bytes")
+        or payload.get("buffer_allocation_bytes")
+        or 0
+    )
     if target_vram_bytes > 0:
         shortfall_bytes = max(0, target_vram_bytes - allocated_vram_bytes)
     if shortfall_bytes > 0 and target_vram_bytes > 0 and shortfall_bytes >= int(target_vram_bytes * 0.05):
@@ -205,7 +248,11 @@ def worker_result_events_from_payload(
                 "warning",
                 display_name,
                 kind,
-                f"{payload.get('backend', kind)} allocated less VRAM than requested",
+                (
+                    f"{payload.get('backend', kind)} allocated less system RAM than assigned"
+                    if str(kind or "").lower() == "memory"
+                    else f"{payload.get('backend', kind)} allocated less VRAM than requested"
+                ),
                 payload,
             )
         )

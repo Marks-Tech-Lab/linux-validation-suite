@@ -24,6 +24,7 @@ def build_egl_gles_workload_script(
     target_name = str(params.get("target_name", "") or "")
     target_slot = str(params.get("target_slot", "") or "")
     target_id = str(params.get("target_id", "") or "")
+    device_class = str(params.get("device_class", "") or "")
     result_file = json.dumps(str(params.get("result_file", "") or ""))
     return textwrap.dedent(
         f"""
@@ -36,6 +37,8 @@ def build_egl_gles_workload_script(
         import signal
         import sys
         import time
+
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
 
         MODE = {mode_value}
         TARGET_VRAM_BYTES = {target_value}
@@ -50,6 +53,7 @@ def build_egl_gles_workload_script(
         TARGET_NAME = {json.dumps(target_name)}
         TARGET_SLOT = {json.dumps(target_slot)}
         TARGET_ID = {json.dumps(target_id)}
+        DEVICE_CLASS = {json.dumps(device_class)}
         RESULT_FILE = {result_file}
         EGL = ctypes.CDLL(ctypes.util.find_library("EGL"))
         GLES = ctypes.CDLL(ctypes.util.find_library("GLESv2"))
@@ -252,6 +256,7 @@ def build_egl_gles_workload_script(
         GLES.glDisable.argtypes = [ctypes.c_uint]
         GLES.glScissor.argtypes = [GLint, GLint, GLsizei, GLsizei]
         GLES.glGenTextures.argtypes = [GLsizei, ctypes.POINTER(GLuint)]
+        GLES.glDeleteTextures.argtypes = [GLsizei, ctypes.POINTER(GLuint)]
         GLES.glBindTexture.argtypes = [ctypes.c_uint, GLuint]
         GLES.glTexParameteri.argtypes = [ctypes.c_uint, ctypes.c_uint, GLint]
         GLES.glTexImage2D.argtypes = [ctypes.c_uint, GLint, GLint, GLsizei, GLsizei, GLint, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
@@ -333,7 +338,23 @@ def build_egl_gles_workload_script(
             "allocated_textures": 0,
             "target_texture_count": 0,
             "allocated_vram_bytes": 0,
+            "nominal_allocated_texture_bytes": 0,
+            "physical_commitment_known": False,
+            "runtime_memory_guard_triggered": False,
+            "allocation_growth_stopped": False,
+            "runtime_memory_guard_details": {{}},
+            "actual_allocated_bytes": None,
             "bytes_per_texture": 0,
+            "max_buffer_or_object_bytes": 0,
+            "max_allocation_count": 512,
+            "allocation_granularity_bytes": 4,
+            "allocation_outcome": "not_started",
+            "allocation_ratio": 0.0,
+            "allocation_valid": False,
+            "allocation_attempts": 0,
+            "allocation_failures": 0,
+            "allocation_backoff_attempts": [],
+            "allocation_exhausted": False,
             "allocation_shortfall_bytes": 0,
             "target_vendor": TARGET_VENDOR,
             "target_name": TARGET_NAME,
@@ -381,6 +402,14 @@ def build_egl_gles_workload_script(
                     return
                 state["gl_error_count"] += 1
                 record_error(f"OpenGL error 0x{{code:04x}} during {{context}}")
+
+        def drain_gl_errors():
+            codes = []
+            while True:
+                code = int(GLES.glGetError())
+                if code == GL_NO_ERROR:
+                    return codes
+                codes.append(code)
 
         def clamp_byte(value):
             scaled = int(round(max(0.0, min(1.0, float(value))) * 255.0))
@@ -530,8 +559,21 @@ def build_egl_gles_workload_script(
                 "allocated_textures": state["allocated_textures"],
                 "target_texture_count": state["target_texture_count"],
                 "allocated_vram_bytes": state["allocated_vram_bytes"],
+                "nominal_allocated_texture_bytes": state["nominal_allocated_texture_bytes"],
+                "physical_commitment_known": state["physical_commitment_known"],
+                "actual_allocated_bytes": state["actual_allocated_bytes"],
                 "bytes_per_texture": state["bytes_per_texture"],
+                "max_buffer_or_object_bytes": state["max_buffer_or_object_bytes"],
+                "max_allocation_count": state["max_allocation_count"],
+                "allocation_granularity_bytes": state["allocation_granularity_bytes"],
+                "allocation_outcome": state["allocation_outcome"],
+                "allocation_ratio": state["allocation_ratio"],
+                "allocation_valid": state["allocation_valid"],
                 "allocation_shortfall_bytes": state["allocation_shortfall_bytes"],
+                "runtime_memory_guard_triggered": state["runtime_memory_guard_triggered"],
+                "allocation_growth_stopped": state["allocation_growth_stopped"],
+                "runtime_memory_guard_details": state["runtime_memory_guard_details"],
+                "target_cap_reason": state.get("target_cap_reason", ""),
                 "active_load_fraction": state.get("active_load_fraction"),
                 "active_draw_count": state.get("active_draw_count"),
                 "active_clear_passes": state.get("active_clear_passes"),
@@ -614,8 +656,11 @@ def build_egl_gles_workload_script(
             tex_side = 4096 if tex_side >= 4096 else max(1024, tex_side or 2048)
             bytes_per_texture = tex_side * tex_side * 4
             target = max(64 * 1024 * 1024, TARGET_VRAM_BYTES)
-            texture_count = max(1, min(512, (target + bytes_per_texture - 1) // bytes_per_texture))
+            # Use only whole legal texture objects and never let their nominal
+            # aggregate exceed the assigned worker target.
+            texture_count = max(1, min(512, target // bytes_per_texture))
             state["bytes_per_texture"] = bytes_per_texture
+            state["max_buffer_or_object_bytes"] = max(0, int(max_texture_size.value)) ** 2 * 4
             state["target_texture_count"] = texture_count
             GLES.glBindFramebuffer(GL_FRAMEBUFFER, main_framebuffer)
             GLES.glViewport(0, 0, SURFACE_SIZE, SURFACE_SIZE)
@@ -663,6 +708,17 @@ def build_egl_gles_workload_script(
                 state["active_target_texture_count"] = desired_texture_count
                 state["active_target_vram_bytes"] = desired_texture_count * state["bytes_per_texture"]
                 while len(textures) < desired_texture_count:
+                    guard_claim = claim_runtime_allocation_growth(
+                        state["bytes_per_texture"],
+                        shared_system_memory=DEVICE_CLASS != "discrete",
+                    )
+                    if not guard_claim.get("allowed"):
+                        state["runtime_memory_guard_triggered"] = True
+                        state["allocation_growth_stopped"] = True
+                        state["runtime_memory_guard_details"] = guard_claim
+                        state["target_cap_reason"] = "runtime_memory_guard"
+                        break
+                    state["allocation_attempts"] += 1
                     texture = GLuint()
                     GLES.glGenTextures(1, ctypes.byref(texture))
                     GLES.glBindFramebuffer(GL_FRAMEBUFFER, vram_framebuffer)
@@ -672,9 +728,33 @@ def build_egl_gles_workload_script(
                     GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
                     GLES.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
                     GLES.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tex_side, tex_side, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+                    allocation_errors = drain_gl_errors()
                     GLES.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
-                    if GLES.glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-                        record_error("framebuffer became incomplete during VRAM allocation")
+                    framebuffer_complete = GLES.glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE
+                    if allocation_errors or not framebuffer_complete:
+                        release_runtime_allocation_claim(
+                            state["bytes_per_texture"],
+                            shared_system_memory=DEVICE_CLASS != "discrete",
+                        )
+                        state["allocation_failures"] += 1
+                        history = list(state.get("allocation_backoff_attempts") or [])
+                        history.append({{
+                            "texture_side": int(tex_side),
+                            "nominal_bytes": int(bytes_per_texture),
+                            "gl_errors": allocation_errors,
+                            "framebuffer_complete": bool(framebuffer_complete),
+                        }})
+                        state["allocation_backoff_attempts"] = history[-32:]
+                        GLES.glDeleteTextures(1, ctypes.byref(texture))
+                        if not textures and tex_side > 256:
+                            tex_side = max(256, tex_side // 2)
+                            bytes_per_texture = tex_side * tex_side * 4
+                            texture_count = max(1, min(512, target // bytes_per_texture))
+                            desired_texture_count = max(1, min(texture_count, int(round(texture_count * load_fraction))))
+                            state["bytes_per_texture"] = bytes_per_texture
+                            state["target_texture_count"] = texture_count
+                            continue
+                        state["allocation_exhausted"] = True
                         break
                     GLES.glViewport(0, 0, tex_side, tex_side)
                     GLES.glClearColor(0.25, 0.5, 0.75, 1.0)
@@ -682,7 +762,17 @@ def build_egl_gles_workload_script(
                     textures.append(texture)
                     state["allocated_textures"] = len(textures)
                     state["allocated_vram_bytes"] = len(textures) * state["bytes_per_texture"]
+                    state["nominal_allocated_texture_bytes"] = state["allocated_vram_bytes"]
                     state["allocation_shortfall_bytes"] = max(0, TARGET_VRAM_BYTES - state["allocated_vram_bytes"])
+                    allocation_ratio = state["allocated_vram_bytes"] / float(max(1, TARGET_VRAM_BYTES))
+                    state["allocation_ratio"] = round(allocation_ratio, 6)
+                    state["allocation_outcome"] = (
+                        "full_target_achieved" if state["allocated_vram_bytes"] >= TARGET_VRAM_BYTES
+                        else "substantial_partial_allocation" if allocation_ratio >= 0.85
+                        else "partial_allocation" if allocation_ratio >= 0.60
+                        else "insufficient_partial_allocation"
+                    )
+                    state["allocation_valid"] = allocation_ratio >= 0.60
                     record_gl_errors("vram allocation")
                 GLES.glBindFramebuffer(GL_FRAMEBUFFER, main_framebuffer)
                 GLES.glViewport(0, 0, SURFACE_SIZE, SURFACE_SIZE)
@@ -698,4 +788,3 @@ def build_egl_gles_workload_script(
             time.sleep(0.001)
         """
     ).strip()
-

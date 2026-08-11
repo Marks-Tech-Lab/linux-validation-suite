@@ -50,7 +50,12 @@ def vram_target_attainment_events(
             or payload.get("target_vram_bytes")
             or 0
         )
-        allocated_bytes = int(payload.get("allocated_vram_bytes") or 0)
+        allocated_bytes = int(
+            payload.get("allocated_vram_bytes")
+            or payload.get("buffer_bytes")
+            or payload.get("buffer_allocation_bytes")
+            or 0
+        )
         shortfall_bytes = (
             max(0, target_bytes - allocated_bytes)
             if target_bytes > 0

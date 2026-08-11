@@ -14,6 +14,24 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from .lvs_backend_readiness import build_vulkan_native_backend_payload
 
 
+def vulkan_memory_limits_from_properties_bytes(raw: bytes) -> Dict[str, int]:
+    """Read the fixed Vulkan 1.x core limits relevant to LVS allocations.
+
+    VkPhysicalDeviceProperties has a 292-byte fixed prefix before
+    VkPhysicalDeviceLimits. Within limits, maxStorageBufferRange and
+    maxMemoryAllocationCount are uint32 members at offsets 28 and 36.
+    Vulkan core exposes no maximum size for one VkDeviceMemory allocation.
+    """
+
+    if len(raw) < 332:
+        return {"max_storage_buffer_range_bytes": 0, "max_memory_allocation_count": 0}
+    limits_offset = 292
+    return {
+        "max_storage_buffer_range_bytes": int.from_bytes(raw[limits_offset + 28 : limits_offset + 32], "little"),
+        "max_memory_allocation_count": int.from_bytes(raw[limits_offset + 36 : limits_offset + 40], "little"),
+    }
+
+
 def parse_vulkaninfo_summary(
     stdout: str,
     stderr: str = "",
@@ -175,12 +193,31 @@ def collect_vulkan_native_physical_devices(
                 ("ppEnabledExtensionNames", ctypes.c_void_p),
             ]
 
+        class VkMemoryType(ctypes.Structure):
+            _fields_ = [("propertyFlags", ctypes.c_uint32), ("heapIndex", ctypes.c_uint32)]
+
+        class VkMemoryHeap(ctypes.Structure):
+            _fields_ = [("size", ctypes.c_uint64), ("flags", ctypes.c_uint32)]
+
+        class VkPhysicalDeviceMemoryProperties(ctypes.Structure):
+            _fields_ = [
+                ("memoryTypeCount", ctypes.c_uint32),
+                ("memoryTypes", VkMemoryType * 32),
+                ("memoryHeapCount", ctypes.c_uint32),
+                ("memoryHeaps", VkMemoryHeap * 16),
+            ]
+
         vk.vkCreateInstance.argtypes = [ctypes.POINTER(VkInstanceCreateInfo), ctypes.c_void_p, ctypes.POINTER(VkInstance)]
         vk.vkCreateInstance.restype = ctypes.c_int32
         vk.vkEnumeratePhysicalDevices.argtypes = [VkInstance, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(VkPhysicalDevice)]
         vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int32
         vk.vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
         vk.vkGetPhysicalDeviceProperties.restype = None
+        vk.vkGetPhysicalDeviceMemoryProperties.argtypes = [
+            VkPhysicalDevice,
+            ctypes.POINTER(VkPhysicalDeviceMemoryProperties),
+        ]
+        vk.vkGetPhysicalDeviceMemoryProperties.restype = None
         vk.vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
         vk.vkDestroyInstance.restype = None
 
@@ -213,8 +250,16 @@ def collect_vulkan_native_physical_devices(
                 props = ctypes.create_string_buffer(8192)
                 vk.vkGetPhysicalDeviceProperties(device, ctypes.byref(props))
                 raw = props.raw
+                memory_limits = vulkan_memory_limits_from_properties_bytes(raw)
                 api_version = int.from_bytes(raw[0:4], "little")
                 device_type = int.from_bytes(raw[16:20], "little")
+                memory_props = VkPhysicalDeviceMemoryProperties()
+                vk.vkGetPhysicalDeviceMemoryProperties(device, ctypes.byref(memory_props))
+                device_local_heap_bytes = sum(
+                    int(memory_props.memoryHeaps[heap_index].size)
+                    for heap_index in range(int(memory_props.memoryHeapCount))
+                    if int(memory_props.memoryHeaps[heap_index].flags) & 0x1
+                )
                 devices.append(
                     {
                         "index": index,
@@ -224,6 +269,8 @@ def collect_vulkan_native_physical_devices(
                         "deviceID": f"0x{int.from_bytes(raw[12:16], 'little'):04x}",
                         "deviceType": type_names.get(device_type, str(device_type)),
                         "deviceName": raw[20:276].split(b"\0", 1)[0].decode("utf-8", "ignore"),
+                        "device_local_heap_bytes": device_local_heap_bytes,
+                        **memory_limits,
                         "source": "libvulkan",
                     }
                 )

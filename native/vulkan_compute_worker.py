@@ -6,9 +6,12 @@ import atexit
 import ctypes
 import json
 import math
+import os
 import signal
 import struct
 import time
+
+from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
 
 from vulkan_transfer_worker import (
     VK_ACCESS_HOST_READ_BIT,
@@ -353,6 +356,7 @@ def main() -> int:
     parser.add_argument("--target-gpu-index", type=int, default=0)
     parser.add_argument("--target-vram-total", type=int, default=0)
     parser.add_argument("--buffer-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--system-memory-fixed-commitment-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--ramp-step-seconds", type=float, default=15.0)
     parser.add_argument("--start-load-fraction", type=float, default=0.35)
     parser.add_argument("--result-file", default="")
@@ -403,6 +407,21 @@ def main() -> int:
         "buffer_size_avg_bytes": 0,
         "buffer_allocation_bytes": 0,
         "allocation_shortfall_bytes": 0,
+        "allocation_attempts": 0,
+        "allocation_failures": 0,
+        "allocation_backoff_attempts": [],
+        "actual_allocated_bytes": 0,
+        "staging_allocation_bytes": 0,
+        "system_memory_fixed_commitment_bytes": max(0, int(args.system_memory_fixed_commitment_bytes)),
+        "allocation_ratio": 0.0,
+        "allocation_outcome": "not_started",
+        "allocation_valid": False,
+        "runtime_memory_guard_triggered": False,
+        "allocation_growth_stopped": False,
+        "runtime_memory_guard_details": {},
+        "max_single_allocation_bytes": 0,
+        "max_buffer_or_object_bytes": 0,
+        "max_memory_allocation_count": 0,
         "allocation_strategy": "",
         "requested_device_local_heap_percent": 0.0,
         "target_device_local_heap_percent": 0.0,
@@ -502,6 +521,10 @@ def main() -> int:
                 "selected_vulkan_index": selected_info["index"],
             }
         )
+        max_storage_buffer_range = max(0, int(selected_info.get("max_storage_buffer_range_bytes") or 0))
+        max_memory_allocation_count = max(0, int(selected_info.get("max_memory_allocation_count") or 0))
+        state["max_buffer_or_object_bytes"] = max_storage_buffer_range
+        state["max_memory_allocation_count"] = max_memory_allocation_count
         queue_family = choose_compute_queue_family(vk, physical_device)
         state["queue_family_index"] = queue_family
         priority = ctypes.c_float(1.0)
@@ -534,12 +557,19 @@ def main() -> int:
         else:
             per_buffer_cap_bytes = 256 * 1024 * 1024
             total_cap_bytes = per_buffer_cap_bytes
+        if max_storage_buffer_range > 0:
+            per_buffer_cap_bytes = min(per_buffer_cap_bytes, max_storage_buffer_range)
+        per_buffer_cap_bytes -= per_buffer_cap_bytes % 1024
         requested_total_size = max(8 * 1024 * 1024, min(total_cap_bytes, int(args.buffer_bytes)))
         requested_total_size -= requested_total_size % 1024
         state["requested_buffer_bytes"] = int(args.buffer_bytes)
         state["worker_total_cap_bytes"] = int(total_cap_bytes)
         state["per_buffer_cap_bytes"] = int(per_buffer_cap_bytes)
-        state["buffer_count_limit"] = 32
+        buffer_count_limit = 32
+        if max_memory_allocation_count > 0:
+            # Keep room for staging and other worker-owned allocations.
+            buffer_count_limit = max(1, min(buffer_count_limit, max_memory_allocation_count - 4))
+        state["buffer_count_limit"] = buffer_count_limit
         state["allocation_strategy"] = (
             "stateful_memory_multi_buffer_device_local"
             if kernel_variant == "stateful_memory"
@@ -562,11 +592,23 @@ def main() -> int:
         staging_buffer = ctypes.c_void_p()
         staging_memory = ctypes.c_void_p()
         remaining_size = requested_total_size
-        while remaining_size >= 8 * 1024 * 1024 and len(buffer_records) < 32:
+        while remaining_size >= 8 * 1024 * 1024 and len(buffer_records) < buffer_count_limit:
             request_size = min(per_buffer_cap_bytes, remaining_size)
             request_size -= request_size % 1024
             allocated = False
             while request_size >= 8 * 1024 * 1024:
+                shared_memory_device = str(args.device_class or "").strip().lower() != "discrete"
+                guard_claim = claim_runtime_allocation_growth(
+                    request_size,
+                    shared_system_memory=shared_memory_device,
+                )
+                if not guard_claim.get("allowed"):
+                    state["runtime_memory_guard_triggered"] = True
+                    state["allocation_growth_stopped"] = True
+                    state["runtime_memory_guard_details"] = guard_claim
+                    state["target_cap_reason"] = "runtime_memory_guard"
+                    break
+                state["allocation_attempts"] += 1
                 buffer_handle = ctypes.c_void_p()
                 buffer_memory = ctypes.c_void_p()
                 try:
@@ -579,6 +621,28 @@ def main() -> int:
                         0,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     )
+                    existing_allocation_bytes = sum(int(record["allocation_bytes"]) for record in buffer_records)
+                    if shared_memory_device and existing_allocation_bytes + int(buffer_allocation_bytes) > int(args.buffer_bytes):
+                        release_runtime_allocation_claim(
+                            request_size,
+                            shared_system_memory=shared_memory_device,
+                        )
+                        vk.vkDestroyBuffer(device, buffer_handle, None)
+                        vk.vkFreeMemory(device, buffer_memory, None)
+                        buffer_handle = ctypes.c_void_p()
+                        buffer_memory = ctypes.c_void_p()
+                        overage = existing_allocation_bytes + int(buffer_allocation_bytes) - int(args.buffer_bytes)
+                        request_size = max(0, request_size - overage)
+                        request_size -= request_size % 1024
+                        state["allocation_failures"] += 1
+                        state["allocation_backoff_attempts"].append(
+                            {
+                                "requested_bytes": int(request_size + overage),
+                                "allocation_requirement_bytes": int(buffer_allocation_bytes),
+                                "reason": "shared_system_memory_target_guard",
+                            }
+                        )
+                        continue
                     buffer_records.append(
                         {
                             "buffer": buffer_handle,
@@ -591,7 +655,15 @@ def main() -> int:
                     remaining_size -= request_size
                     allocated = True
                     break
-                except Exception:
+                except Exception as exc:
+                    release_runtime_allocation_claim(
+                        request_size,
+                        shared_system_memory=shared_memory_device,
+                    )
+                    state["allocation_failures"] += 1
+                    state["allocation_backoff_attempts"].append(
+                        {"requested_bytes": int(request_size), "error": str(exc)}
+                    )
                     for handle in (buffer_handle,):
                         if handle:
                             try:
@@ -615,7 +687,17 @@ def main() -> int:
         buffer_handle = first_record["buffer"]
         handles["buffers"] = [record["buffer"] for record in buffer_records]
         handles["memories"] = [record["memory"] for record in buffer_records]
-        staging_buffer, staging_memory, _, staging_memory_type = create_buffer(
+        staging_claim = claim_runtime_allocation_growth(
+            4096,
+            shared_system_memory=shared_memory_device,
+        )
+        if not staging_claim.get("allowed"):
+            state["runtime_memory_guard_triggered"] = True
+            state["allocation_growth_stopped"] = True
+            state["runtime_memory_guard_details"] = staging_claim
+            state["target_cap_reason"] = "runtime_memory_guard"
+            raise RuntimeError("runtime memory guard denied Vulkan staging allocation")
+        staging_buffer, staging_memory, staging_allocation_bytes, staging_memory_type = create_buffer(
             vk,
             device,
             memory_props,
@@ -625,17 +707,32 @@ def main() -> int:
         )
         handles["staging_buffer"] = staging_buffer
         handles["staging_memory"] = staging_memory
+        if shared_memory_device and int(staging_allocation_bytes) > int(args.system_memory_fixed_commitment_bytes):
+            raise RuntimeError(
+                "Vulkan staging allocation exceeds the stage-planned fixed system-memory commitment"
+            )
         total_buffer_bytes = sum(int(record["size"]) for record in buffer_records)
         total_allocation_bytes = sum(int(record["allocation_bytes"]) for record in buffer_records)
         buffer_sizes = [int(record["size"]) for record in buffer_records]
-        state["target_buffer_bytes"] = int(requested_total_size)
+        state["target_buffer_bytes"] = int(args.buffer_bytes)
         state["buffer_bytes"] = int(total_buffer_bytes)
         state["buffer_count"] = len(buffer_records)
         state["buffer_size_min_bytes"] = int(min(buffer_sizes)) if buffer_sizes else 0
         state["buffer_size_max_bytes"] = int(max(buffer_sizes)) if buffer_sizes else 0
         state["buffer_size_avg_bytes"] = int(sum(buffer_sizes) / len(buffer_sizes)) if buffer_sizes else 0
         state["buffer_allocation_bytes"] = int(total_allocation_bytes)
-        state["allocation_shortfall_bytes"] = max(0, int(requested_total_size) - int(total_buffer_bytes))
+        state["allocation_shortfall_bytes"] = max(0, int(args.buffer_bytes) - int(total_buffer_bytes))
+        state["actual_allocated_bytes"] = int(total_allocation_bytes) + int(staging_allocation_bytes)
+        state["staging_allocation_bytes"] = int(staging_allocation_bytes)
+        allocation_ratio = total_buffer_bytes / float(max(1, int(args.buffer_bytes)))
+        state["allocation_ratio"] = round(allocation_ratio, 6)
+        state["allocation_outcome"] = (
+            "full_target_achieved" if total_buffer_bytes >= int(args.buffer_bytes)
+            else "substantial_partial_allocation" if allocation_ratio >= 0.85
+            else "partial_allocation" if allocation_ratio >= 0.60
+            else "insufficient_partial_allocation"
+        )
+        state["allocation_valid"] = allocation_ratio >= 0.60
         state["buffer_memory_type_index"] = int(first_record["memory_type"])
         state["staging_memory_type_index"] = int(staging_memory_type)
         if 0 <= int(first_record["memory_type"]) < int(memory_props.memoryTypeCount):
@@ -909,6 +1006,11 @@ def main() -> int:
             time.sleep(0.0005)
         return 0
     except Exception as exc:
+        if int(state.get("actual_allocated_bytes") or 0) > 0:
+            state["allocation_outcome"] = "runtime_failure_after_partial_allocation"
+        else:
+            state["allocation_outcome"] = "allocation_failed"
+        state["allocation_valid"] = False
         record_error(exc)
         return 12
     finally:

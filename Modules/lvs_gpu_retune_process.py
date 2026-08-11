@@ -74,6 +74,7 @@ def replace_gpu_process_for_retune(
             process=new_process,
             gpu_spec=new_spec,
             result_path=entry.result_path,
+            system_memory_plan=entry.system_memory_plan,
         ),
         event,
     )

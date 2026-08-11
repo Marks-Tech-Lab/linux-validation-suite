@@ -135,6 +135,16 @@ def write_final_run_artifacts(
                 "profile": asdict(profile),
                 "run_metadata": asdict(metadata),
                 "stage_windows": [asdict(w) for w in stage_windows],
+                "memory_allocation_plans": [
+                    {
+                        "stage_id": stage.get("stage_id"),
+                        "label": stage.get("label"),
+                        "dry_run": stage.get("system_memory_plan"),
+                        "launch": stage.get("system_memory_plan_launch"),
+                    }
+                    for stage in executed_plan
+                    if stage.get("system_memory_plan") or stage.get("system_memory_plan_launch")
+                ],
                 "system_info": system_info,
                 "gpu_recovery": recovery_report,
                 "telemetry_metrics": telemetry_metric_summaries(

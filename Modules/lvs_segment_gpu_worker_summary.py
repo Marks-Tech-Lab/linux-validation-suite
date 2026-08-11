@@ -44,7 +44,11 @@ class GpuWorkerStateSummaryBuilder:
                 active_buffer_bytes = int(active_buffer_bytes) if active_buffer_bytes is not None else None
             except Exception:
                 active_buffer_bytes = None
-            allocated_vram_bytes = payload.get("allocated_vram_bytes") or payload.get("buffer_allocation_bytes")
+            allocated_vram_bytes = (
+                payload.get("allocated_vram_bytes")
+                or payload.get("buffer_bytes")
+                or payload.get("buffer_allocation_bytes")
+            )
             try:
                 allocated_vram_bytes = int(allocated_vram_bytes) if allocated_vram_bytes is not None else None
             except Exception:

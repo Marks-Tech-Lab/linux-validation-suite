@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from Modules.lvs_runtime_memory_guard import refresh_runtime_memory_guard
+
 
 @dataclass(frozen=True)
 class StageCompletionRecord:
@@ -128,6 +130,17 @@ def complete_stage_record(
     stage_plan["worker_results"] = stage_worker_results
     stage_plan["error_events"] = stage_error_events
     stage_plan["verdict"] = stage_verdict
+    launch_memory_plan = next(
+        (
+            getattr(entry, "system_memory_plan", None)
+            for entry in stage_processes
+            if getattr(entry, "system_memory_plan", None)
+        ),
+        None,
+    )
+    if launch_memory_plan:
+        refresh_runtime_memory_guard(launch_memory_plan)
+        stage_plan["system_memory_plan_launch"] = launch_memory_plan
 
     stage_window = build_stage_check_window(
         stage_window_cls=stage_window_cls,

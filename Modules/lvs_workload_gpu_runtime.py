@@ -110,10 +110,23 @@ class WorkloadGpuRuntimeMixin:
     def _vulkan_runtime_details(self) -> Dict[str, Any]:
         if self._vulkan_runtime_cache is not None:
             return self._vulkan_runtime_cache
-        self._vulkan_runtime_cache = collect_vulkan_runtime_details(
+        details = collect_vulkan_runtime_details(
             command_exists=self._command_exists,
             command_env=self._command_env,
         )
+        if not details.get("devices"):
+            library = self._resolve_vulkan_library()
+            native = self._vulkan_native_physical_devices(library) if library else {}
+            if native.get("devices"):
+                details = {
+                    **details,
+                    "available": True,
+                    "path": library,
+                    "devices": list(native.get("devices") or []),
+                    "reason": "",
+                    "inventory_source": "libvulkan",
+                }
+        self._vulkan_runtime_cache = details
         return self._vulkan_runtime_cache
 
     def _resolve_vulkan_library(self) -> str:
@@ -354,6 +367,9 @@ class WorkloadGpuRuntimeMixin:
             explicit_device_class=self._gpu_card_class(target or {}),
             vulkan_device_class=self._vulkan_device_class(target),
             opencl_device=self._opencl_device_for_target(target),
+            vulkan_device=dict(self._vulkan_device_for_target(target).get("device") or {}),
+            egl_device=dict(self._egl_gpu_backend_for_target(target) or {}),
+            system_total_bytes=self._system_memory_total_bytes(),
         )
         self._gpu_capability_cache[cache_key] = dict(profile)
         return dict(profile)

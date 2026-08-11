@@ -134,12 +134,16 @@ def maybe_retune_gpu_processes(
             latest_used_gb = latest_sample_metric_value(telemetry, f"gpu_{spec.gpu_index}_vram_used_gb")
             used_text = "unknown" if latest_used_gb is None else str(round(float(latest_used_gb), 2))
             metric_summary = f"vram={used_text}GB/{round(spec.target_vram_bytes / (1024 ** 3), 2)}GB"
+        runtime_guard = (entry.system_memory_plan or {}).get("runtime_memory_guard") or {}
+        guard_path = str(runtime_guard.get("control_path") or "")
         replacement, event = replace_gpu_process_for_retune(
             entry=entry,
             new_spec=new_spec,
             display_name=display_name,
             metric_summary=metric_summary,
-            command_env=orchestrator.workload_runner._command_env(),
+            command_env=orchestrator.workload_runner._command_env(
+                {"LVS_RUNTIME_MEMORY_GUARD_PATH": guard_path} if guard_path else None
+            ),
             serialize_worker=orchestrator.workload_runner.serialize_gpu_worker,
         )
         if replacement is None or event is None:
@@ -148,4 +152,3 @@ def maybe_retune_gpu_processes(
             retune_events.append(event)
         updated[index] = replacement
     return updated
-

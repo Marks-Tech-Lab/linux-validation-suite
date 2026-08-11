@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -112,6 +113,7 @@ from Modules.lvs_gpu_worker_materializer import materialize_gpu_worker
 from Modules.lvs_gpu_worker_planner import (
     build_gpu_3d_worker_specs,
     build_stage_gpu_worker_specs,
+    gpu_backend_minimum_viable_allocation,
 )
 from Modules.lvs_gpu_worker_retune import retune_gpu_worker
 from Modules.lvs_gpu_backend_resolution import (
@@ -169,6 +171,7 @@ from Modules.lvs_vulkan_targeting import (
     vulkan_device_for_target,
     vulkan_device_pci_slot,
     vulkan_device_score_for_target,
+    vulkan_device_is_hardware_gpu,
 )
 from Modules.lvs_vulkan_runtime import (
     build_vulkan_native_runtime_backend,
@@ -176,7 +179,9 @@ from Modules.lvs_vulkan_runtime import (
     collect_vulkan_runtime_details,
     parse_vulkaninfo_summary,
     resolve_vulkan_library,
+    vulkan_memory_limits_from_properties_bytes,
 )
+from Modules.lvs_gpu_allocation_plan import allocation_attainment, plan_gpu_allocation_chunks
 from Modules.lvs_gpu_worker_params import (
     gpu_worker_baseline_params,
     gpu_worker_tuned_params,
@@ -199,6 +204,27 @@ from Modules.lvs_vram_policy import (
     target_vram_allocation_bytes,
     use_vulkan_vram_worker_for_target,
 )
+from Modules.lvs_gpu_memory_model import classify_gpu_memory
+from Modules.lvs_system_memory_budget import (
+    GIB,
+    SystemMemoryConsumer,
+    allocate_system_memory_consumers,
+    apply_stage_system_memory_plan,
+    build_stage_system_memory_plan,
+    cap_shared_gpu_device_requests,
+    gpu_worker_system_memory_consumer,
+    requested_ram_target_bytes,
+    system_memory_budget_bytes,
+    system_memory_safety_reserve_bytes,
+)
+from Modules.lvs_linux_memory import parse_meminfo_bytes
+from Modules.lvs_runtime_memory_guard import (
+    claim_runtime_allocation_growth,
+    initialize_runtime_memory_guard,
+    runtime_memory_thresholds,
+    update_runtime_memory_guard,
+)
+from Modules.lvs_opencl_compute_worker import opencl_compute_fixed_commitment_bytes
 from Modules.lvs_telemetry_nvidia import (
     NVIDIA_CLOCK_EVENT_REASON_FIELDS,
     discover_nvidia_smi_gpus,
@@ -391,6 +417,8 @@ from Modules.lvs_gpu_capability import (
     likely_discrete_target_ids,
 )
 from Modules.lvs_gpu_targets import (
+    discover_gpu_cards,
+    discover_platform_gpu_devices,
     dri_prime_selector,
     gpu_card_class,
     gpu_target_by_id,
@@ -415,6 +443,12 @@ from Modules.lvs_memory_execution import (
     build_memory_fallback_script,
     memory_target_bytes,
     memory_worker_count,
+)
+from Modules.lvs_python_memory_worker import (
+    allocate_python_memory_chunks,
+    apply_runtime_guard_precedence,
+    initial_python_memory_state,
+    write_python_memory_result,
 )
 from Modules.lvs_memory_architecture import native_memory_helper_binary_name
 from Modules.lvs_native_helpers import (
@@ -516,6 +550,7 @@ from Modules.lvs_profile_reports import (
     profile_execution_cpu_line,
     profile_execution_gpu_3d_line,
     profile_execution_gpu_detail_lines,
+    profile_execution_system_memory_lines,
     profile_execution_stage_header_line,
     profile_execution_stage_status,
     profile_execution_memory_line,
@@ -5168,7 +5203,16 @@ def test_final_run_artifact_writer_helpers() -> None:
         trim_end_seconds=0,
         verdict="pass",
     )
-    plan = [{"stage": "segment_1"}]
+    allocation_plan = {
+        "system_memory_total_bytes": 16 * GIB,
+        "system_memory_available_bytes": 14 * GIB,
+        "system_memory_safety_reserve_bytes": GIB,
+        "system_memory_budget_bytes": 13 * GIB,
+        "consumers": [],
+        "total_planned_system_memory_bytes": 0,
+        "remaining_system_memory_headroom_bytes": 13 * GIB,
+    }
+    plan = [{"stage": "segment_1", "stage_id": "segment_1", "system_memory_plan": allocation_plan}]
     captured = []
     warning_event = {
         "category": "thermal",
@@ -5222,6 +5266,12 @@ def test_final_run_artifact_writer_helpers() -> None:
         assert_equal(plan[0]["verdict"], "warning", "artifact writer mirrors final plan verdict")
         assert_equal(parsed["ParserOutput"]["GpuCount"], 1, "artifact writer parsed export")
         assert_true("telemetry_metrics" not in parsed, "legacy compatibility output excludes telemetry summaries")
+        assert_true("memory_allocation_plans" not in parsed, "legacy compatibility output excludes allocation metadata")
+        assert_equal(
+            extended["memory_allocation_plans"][0]["dry_run"],
+            allocation_plan,
+            "extended output carries additive stage memory plan",
+        )
         assert_equal(
             extended["telemetry_metrics"]["cpu_utilization_percent"],
             {"sample_count": 2, "minimum": 25.0, "average": 50.0, "maximum": 75.0},
@@ -15890,6 +15940,27 @@ def test_gpu_target_helpers() -> None:
         "GB202 [GeForce RTX 5090]",
         "PCI device name lookup",
     )
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        drm = root / "drm"
+        platform = root / "platform"
+        (drm / "card1" / "device").mkdir(parents=True)
+        (drm / "card1" / "device" / "uevent").write_text(
+            "DRIVER=msm_dpu\nOF_NAME=display-controller\n",
+            encoding="utf-8",
+        )
+        platform_gpu = platform / "3d00000.gpu"
+        platform_gpu.mkdir(parents=True)
+        (platform_gpu / "uevent").write_text(
+            "DRIVER=adreno\nOF_NAME=gpu\nOF_COMPATIBLE_0=qcom,adreno-43030c00\nOF_COMPATIBLE_1=qcom,adreno\nOF_COMPATIBLE_N=2\n",
+            encoding="utf-8",
+        )
+        platform_devices = discover_platform_gpu_devices(platform)
+        assert_equal(platform_devices[0]["driver"], "adreno", "generic platform GPU identity discovery")
+        platform_cards = discover_gpu_cards(sys_drm=drm, sys_platform=platform)
+        assert_equal(platform_cards[0]["platform_gpu_driver"], "adreno", "unique platform GPU associates with non-PCI DRM target")
+        assert_equal(platform_cards[0]["vendor"], "Qualcomm", "platform compatible supplies truthful vendor")
+        assert_equal(platform_cards[0]["name"], "Adreno platform GPU", "platform driver supplies non-fictitious GPU name")
 
 
 def test_gpu_capability_profile_helpers() -> None:
@@ -15922,8 +15993,8 @@ def test_gpu_capability_profile_helpers() -> None:
         vulkan_device_class="",
         opencl_device=None,
     )
-    assert_equal(selection["device_class"], "discrete", "GPU capability selection class")
-    assert_equal(selection["device_class_source"], "selection", "GPU capability selection class source")
+    assert_equal(selection["device_class"], "unknown", "GPU capability ambiguous selection class")
+    assert_equal(selection["device_class_source"], "unknown", "GPU capability ambiguous selection source")
 
     driver = build_gpu_capability_profile(
         target=target,
@@ -15998,6 +16069,27 @@ def test_gpu_capability_profile_helpers() -> None:
     assert_equal(capped["vram_gib"], 4.0, "GPU capability target VRAM precedence")
     assert_equal(capped["compute_scale"], 3.0, "GPU capability compute cap")
     assert_equal(capped["load_scale"], 3.5, "GPU capability load cap")
+
+    shared_multi_api = build_gpu_capability_profile(
+        target={"vendor": "Intel", "driver": "i915", "vram_total": 0},
+        likely_discrete_ids=[],
+        explicit_device_class="integrated",
+        vulkan_device_class="integrated",
+        opencl_device={"global_mem_bytes": 8 * GIB, "max_alloc_bytes": 2 * GIB},
+        vulkan_device={
+            "device_local_heap_bytes": 16 * GIB,
+            "max_storage_buffer_range_bytes": 4 * GIB - 1,
+            "max_memory_allocation_count": 4096,
+        },
+        egl_device={"max_texture_size": 16384},
+        system_total_bytes=16 * GIB,
+    )
+    assert_equal(shared_multi_api["opencl_global_memory_bytes"], 8 * GIB, "OpenCL addressable capacity retained independently")
+    assert_equal(shared_multi_api["vulkan_device_local_heap_bytes"], 16 * GIB, "Vulkan heap retained independently")
+    assert_equal(shared_multi_api["opencl_max_single_allocation_bytes"], 2 * GIB, "OpenCL single allocation is not total capacity")
+    assert_equal(shared_multi_api["vulkan_max_storage_buffer_range_bytes"], 4 * GIB - 1, "Vulkan object limit retained separately")
+    assert_equal(shared_multi_api["vulkan_max_memory_allocation_count"], 4096, "Vulkan allocation count retained separately")
+    assert_equal(shared_multi_api["gles_max_texture_size"], 16384, "GLES object geometry retained separately")
 
     runner = WorkloadRunner()
     opencl_calls = []
@@ -17781,6 +17873,36 @@ def test_worker_evidence_helpers() -> None:
         ["allocation_shortfall", "device_selection"],
         "worker allocation and selection events",
     )
+    guard_cap_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl",
+            "runtime_memory_guard_triggered": True,
+            "allocation_valid": True,
+            "target_vram_bytes": 1000,
+            "allocated_vram_bytes": 700,
+        },
+        "UMA",
+        entry_kind="gpu",
+        backend_name="python_opencl",
+        backend_load_class="high_load",
+    )
+    assert_equal(guard_cap_events[0]["category"], "runtime_memory_guard_cap", "meaningful guard-capped allocation is explicit")
+    insufficient_guard_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl",
+            "runtime_memory_guard_triggered": True,
+            "allocation_valid": False,
+            "target_vram_bytes": 1000,
+            "allocated_vram_bytes": 100,
+        },
+        "UMA",
+        entry_kind="gpu",
+        backend_name="python_opencl",
+        backend_load_class="high_load",
+    )
+    assert_equal(insufficient_guard_events[0]["severity"], "error", "tiny guard-capped allocation is not treated as valid stress")
 
 
 def test_gpu_worker_state_helpers() -> None:
@@ -19402,6 +19524,11 @@ def test_gpu_worker_materializer_helpers() -> None:
         profile_mode="steady",
         profile_intensity="extreme",
         compute_variant="baseline",
+        gpu_memory_kind="shared",
+        shared_addressable_capacity_bytes=16 * GIB,
+        planned_gpu_memory_target_bytes=2 * GIB,
+        system_memory_budget_participation=True,
+        memory_budget_consumer_id="gpu:1:gpu_3d:python_opencl_compute:0000:01:00.0",
     )
     materialized = materialize_gpu_worker(FakeRunner(), planned, "/tmp/result.json")
     assert_equal(
@@ -19409,6 +19536,8 @@ def test_gpu_worker_materializer_helpers() -> None:
         ["opencl", "2", "/tmp/result.json", "steady", "extreme", "baseline"],
         "OpenCL compute materialization",
     )
+    assert_equal(materialized.gpu_memory_kind, "shared", "materializer preserves GPU memory classification")
+    assert_equal(materialized.planned_gpu_memory_target_bytes, 2 * GIB, "materializer preserves stage target")
     external = materialize_gpu_worker(
         FakeRunner(),
         GpuWorkerSpec("gpu_3d", "vkmark", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["vkmark"], process_count=3),
@@ -19485,6 +19614,23 @@ def test_gpu_worker_retune_helpers() -> None:
     )
     tuned_vram = retune_gpu_worker(FakeRunner(), vram_spec)
     assert_equal(tuned_vram.target_vram_bytes, 2048, "VRAM retune target cap")
+    shared_vram_spec = replace(
+        vram_spec,
+        gpu_memory_kind="shared",
+        target_vram_bytes=1800,
+        requested_gpu_memory_target_bytes=2200,
+        planned_gpu_memory_target_bytes=1800,
+        system_memory_budget_participation=True,
+        memory_budget_consumer_id="gpu:1:vram:python_opencl:igpu",
+        target_cap_reason="stage_system_memory_budget_rebalance",
+    )
+    tuned_shared_vram = retune_gpu_worker(FakeRunner(), shared_vram_spec)
+    assert_equal(tuned_shared_vram.target_vram_bytes, 1800, "shared VRAM retune cannot exceed assigned stage target")
+    assert_equal(tuned_shared_vram.planned_gpu_memory_target_bytes, 1800, "shared retune preserves allocation plan")
+    legacy_worker = preserve_legacy_worker_evidence_contract(serialize_gpu_worker_spec(tuned_shared_vram))
+    assert_true("gpu_memory_kind" not in legacy_worker, "legacy output excludes additive GPU memory classification")
+    assert_true("planned_gpu_memory_target_bytes" not in legacy_worker, "legacy output excludes additive GPU target plan")
+    assert_equal(legacy_worker["target_vram_bytes"], 1800, "legacy VRAM target field remains unchanged")
     maxed_spec = GpuWorkerSpec("gpu_3d", "python_egl_gles2", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["planned"], tuning_step=2)
     assert_equal(retune_gpu_worker(FakeRunner(), maxed_spec), None, "retune max step blocks")
     unsupported_spec = GpuWorkerSpec("gpu_3d", "python_vulkan_compute", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["planned"])
@@ -20876,7 +21022,7 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
     assert_equal(memory_worker_count("4", 16), 4, "memory explicit worker count")
     assert_equal(memory_worker_count("bad", 16), 16, "memory invalid worker count fallback")
     assert_equal(memory_target_bytes(50, 1024 * 1024, 1024 * 1024), 512 * 1024 * 1024, "memory target total cap")
-    assert_equal(memory_target_bytes(95, 0, 0), 512 * 1024 * 1024, "memory target missing meminfo fallback")
+    assert_equal(memory_target_bytes(95, 0, 0), 0, "memory target fails closed without Linux memory accounting")
 
     helper_cmd = build_memory_command(
         helper_available=True,
@@ -20903,7 +21049,7 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         stress_ng_available=True,
         python_runtime="/usr/bin/python3",
     )
-    assert_equal(stress_cmd, ["stress-ng", "--vm", "1", "--vm-bytes", "80%", "--vm-keep"], "memory stress-ng command")
+    assert_equal(stress_cmd, ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--vm-keep"], "memory stress-ng resolved-byte command")
 
     fallback_cmd = build_memory_command(
         helper_available=False,
@@ -20915,8 +21061,11 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         python_runtime="/usr/bin/python3",
     )
     assert_equal(fallback_cmd[:2] if fallback_cmd else [], ["/usr/bin/python3", "-c"], "memory Python fallback command")
-    assert_true("95 / 100.0" in fallback_cmd[2], "memory fallback clamps allocation percent")
-    assert_true("target_kb = int" in build_memory_fallback_script(80), "memory fallback script target")
+    assert_true("run_python_memory_worker(1024" in fallback_cmd[2], "memory fallback receives resolved target bytes")
+    fallback_script = build_memory_fallback_script(80, "/tmp/memory-result.json")
+    assert_true("run_python_memory_worker(80" in fallback_script, "memory fallback script receives resolved bytes")
+    assert_true("/tmp/memory-result.json" in fallback_script, "memory fallback script receives result path")
+    compile(fallback_script, "<python-memory-fallback>", "exec")
 
     source_text = Path("native/memory_stress_helper.c").read_text(encoding="utf-8")
     assert_true("immintrin.h" not in source_text and "arm_neon.h" not in source_text, "native memory helper has no ISA intrinsic dependency")
@@ -20963,6 +21112,12 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         "MemTotal": 16 * 1024 * 1024,
         "MemAvailable": 12 * 1024 * 1024,
     }.get(key, 0)
+    runner._linux_memory_snapshot = lambda: {
+        "mem_total_bytes": 16 * GIB,
+        "mem_available_bytes": 12 * GIB,
+        "mem_available_source": "synthetic",
+        "mem_available_fallback": False,
+    }
     runner._command_exists = lambda name: name == "build/memory_stress_helper_arm64"
     assert_equal(runner._memory_backend_name(memory), "memory_native_helper", "ARM memory dry-run backend is native")
     assert_equal(
@@ -20970,12 +21125,820 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         [
             "build/memory_stress_helper_arm64",
             "--bytes",
-            str(int(16 * 1024 * 1024 * 0.60) * 1024),
+            str(int(16 * 1024 ** 3 * 0.60)),
             "--threads",
             str(os.cpu_count() or 1),
         ],
         "ARM memory dry-run command has portable helper, bounded bytes, and no x86 ISA flag",
     )
+
+
+def test_unified_system_memory_reserve_and_allocation_policy() -> None:
+    expected_reserves_mib = {
+        32: 8,
+        64: 16,
+        128: 32,
+        256: 64,
+        512: 128,
+        1024: 256,
+        2048: 256,
+        4096: 512,
+        8192: 1024,
+        16384: 1024,
+        32768: 1024,
+        65536: 1024,
+        131072: 1024,
+        262144: 1024,
+    }
+    for total_mib, expected_mib in expected_reserves_mib.items():
+        reserve = system_memory_safety_reserve_bytes(total_mib * 1024 ** 2)
+        assert_equal(reserve, expected_mib * 1024 ** 2, f"{total_mib} MiB reserve")
+    assert_equal(requested_ram_target_bytes(90, 16 * GIB), int(16 * GIB * 0.90), "RAM percent is based on MemTotal")
+    bounds = system_memory_budget_bytes(16 * GIB, 14 * GIB)
+    assert_equal(bounds["system_memory_budget_bytes"], 13 * GIB, "16 GiB fixture safe pool")
+    low_bounds = system_memory_budget_bytes(16 * GIB, 2 * GIB)
+    assert_equal(low_bounds["system_memory_budget_bytes"], 1 * GIB, "low MemAvailable retains hard reserve")
+
+    consumers = [
+        SystemMemoryConsumer("ram", "system_ram", 12 * GIB, 128 * 1024 ** 2),
+        SystemMemoryConsumer("gpu", "shared_gpu_vram", 6 * GIB, 64 * 1024 ** 2),
+    ]
+    first = allocate_system_memory_consumers(consumers, 10 * GIB)
+    second = allocate_system_memory_consumers(reversed(consumers), 10 * GIB)
+    assert_equal(first["allocations"], second["allocations"], "rebalance is deterministic independent of planner order")
+    assert_equal(sum(first["allocations"].values()), 10 * GIB, "rebalance exactly fits pool")
+    unsafe_minimum = allocate_system_memory_consumers(consumers, 100 * 1024 ** 2)
+    assert_equal(unsafe_minimum["valid"], False, "minimum floors never override system reserve")
+    assert_equal(sum(unsafe_minimum["allocations"].values()), 0, "unsafe minimum plan allocates nothing")
+
+
+def test_python_memory_fallback_exact_allocation_evidence() -> None:
+    full_state = initial_python_memory_state(10)
+    full_chunks: list[bytearray] = []
+    progress: list[int] = []
+    allocate_python_memory_chunks(
+        full_state,
+        full_chunks,
+        allocator=bytearray,
+        chunk_bytes=4,
+        touch_pages=False,
+        progress_callback=lambda state: progress.append(int(state["successfully_allocated_bytes"])),
+    )
+    assert_equal(full_state["assigned_target_bytes"], 10, "Python assigned target evidence")
+    assert_equal(full_state["planned_target_bytes"], 10, "Python planned target evidence")
+    assert_equal(full_state["successfully_allocated_bytes"], 10, "Python full achieved bytes")
+    assert_equal(full_state["successful_chunk_count"], 3, "Python full successful chunk count")
+    assert_equal(full_state["attempted_chunk_count"], 3, "Python full attempted chunk count")
+    assert_equal(full_state["final_attempted_chunk_bytes"], 2, "Python exact final chunk")
+    assert_equal(progress, [4, 8, 10], "achieved bytes are updated after every retained success")
+    assert_equal(full_state["allocation_outcome"], "full_target_achieved", "Python full allocation outcome")
+
+    def always_fail(_size: int) -> bytearray:
+        raise MemoryError("synthetic")
+
+    zero_state = initial_python_memory_state(100)
+    allocate_python_memory_chunks(zero_state, [], allocator=always_fail, chunk_bytes=40, touch_pages=False)
+    assert_equal(zero_state["successfully_allocated_bytes"], 0, "MemoryError before first chunk records zero")
+    assert_equal(zero_state["allocation_failure_count"], 1, "zero allocation failure count")
+    assert_equal(zero_state["memory_error_occurred"], True, "zero allocation MemoryError evidence")
+    assert_equal(zero_state["allocation_outcome"], "allocation_failed", "zero allocation is failure")
+    assert_equal(zero_state["status"], "error", "zero allocation cannot pass")
+
+    calls = [0]
+
+    def one_then_fail(size: int) -> bytearray:
+        calls[0] += 1
+        if calls[0] > 1:
+            raise MemoryError("synthetic")
+        return bytearray(size)
+
+    partial_state = initial_python_memory_state(100)
+    allocate_python_memory_chunks(partial_state, [], allocator=one_then_fail, chunk_bytes=40, touch_pages=False)
+    assert_equal(partial_state["successfully_allocated_bytes"], 40, "one retained chunk survives later MemoryError")
+    assert_equal(partial_state["successful_chunk_count"], 1, "one successful chunk evidence")
+    assert_equal(partial_state["attempted_chunk_count"], 2, "failed attempt remains counted")
+    assert_equal(partial_state["allocation_outcome"], "insufficient_partial_allocation", "below 60% is insufficient")
+    insufficient_events = worker_result_events_from_payload(partial_state, "Python RAM", entry_kind="memory")
+    assert_true(any(event["severity"] == "error" for event in insufficient_events), "insufficient Python RAM cannot be verified clean")
+
+    substantial_calls = [0]
+
+    def substantial_then_fail(size: int) -> bytearray:
+        substantial_calls[0] += 1
+        if substantial_calls[0] > 3:
+            raise MemoryError("synthetic")
+        return bytearray(size)
+
+    substantial_state = initial_python_memory_state(100)
+    allocate_python_memory_chunks(
+        substantial_state,
+        [],
+        allocator=substantial_then_fail,
+        chunk_bytes=30,
+        touch_pages=False,
+    )
+    assert_equal(substantial_state["successfully_allocated_bytes"], 90, "substantial partial exact achieved bytes")
+    assert_equal(substantial_state["allocation_outcome"], "substantial_partial_allocation", "85% band is substantial")
+    assert_equal(substantial_state["allocation_valid"], True, "substantial partial remains meaningful")
+    substantial_events = worker_result_events_from_payload(substantial_state, "Python RAM", entry_kind="memory")
+    assert_true(any(event["category"] == "allocation_shortfall" for event in substantial_events), "meaningful partial remains a truthful warning")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        result_path = Path(tmp) / "memory.json"
+        write_python_memory_result(str(result_path), substantial_state)
+
+        class CompleteProcess:
+            def poll(self) -> int:
+                return 0
+
+        entry = StageProcess(
+            kind="memory",
+            command=["python3", "-c", "fallback"],
+            process=CompleteProcess(),
+            result_path=str(result_path),
+        )
+        serialized = read_worker_result(entry)
+        assert_equal(serialized["successfully_allocated_bytes"], 90, "exact achieved bytes survive worker serialization")
+        assert_equal(serialized["final_attempted_chunk_bytes"], 10, "final attempted size survives serialization")
+
+        guard_path = Path(tmp) / "guard.json"
+        guard_path.write_text(
+            json.dumps(
+                {
+                    "runtime_memory_guard_triggered": True,
+                    "guard_trigger_timestamp": "2026-08-11T12:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        previous_guard = os.environ.get("LVS_RUNTIME_MEMORY_GUARD_PATH")
+        os.environ["LVS_RUNTIME_MEMORY_GUARD_PATH"] = str(guard_path)
+        try:
+            apply_runtime_guard_precedence(substantial_state)
+        finally:
+            if previous_guard is None:
+                os.environ.pop("LVS_RUNTIME_MEMORY_GUARD_PATH", None)
+            else:
+                os.environ["LVS_RUNTIME_MEMORY_GUARD_PATH"] = previous_guard
+        assert_equal(substantial_state["memory_error_occurred"], True, "MemoryError evidence remains after guard stop")
+        assert_equal(substantial_state["target_cap_reason"], "runtime_memory_guard", "runtime guard takes cap-reason precedence")
+        assert_equal(substantial_state["runtime_memory_guard_triggered"], True, "guard and MemoryError remain distinguishable")
+
+    legacy = preserve_legacy_worker_evidence_contract([substantial_state])
+    assert_equal(legacy, [], "Python memory evidence remains additive and absent from legacy output")
+
+
+def test_linux_memory_accounting_semantics() -> None:
+    gib_kb = 1024 * 1024
+    reported = parse_meminfo_bytes(
+        "\n".join(
+            [
+                f"MemTotal: {16 * gib_kb} kB",
+                f"MemFree: {128 * 1024} kB",
+                f"MemAvailable: {14 * gib_kb} kB",
+                f"Cached: {10 * gib_kb} kB",
+                f"Buffers: {512 * 1024} kB",
+                f"SReclaimable: {2 * gib_kb} kB",
+                f"Shmem: {3 * gib_kb} kB",
+                "SwapTotal: 0 kB",
+                "SwapFree: 0 kB",
+            ]
+        )
+    )
+    assert_equal(reported["mem_available_bytes"], 14 * GIB, "kernel MemAvailable is authoritative despite low MemFree")
+    assert_equal(reported["mem_available_source"], "kernel_reported_memavailable", "kernel availability provenance")
+    assert_equal(reported["mem_available_fallback"], False, "kernel-reported availability is not fallback-derived")
+    changed_cache = parse_meminfo_bytes(
+        f"MemTotal: {16 * gib_kb} kB\nMemFree: {64 * 1024} kB\nMemAvailable: {14 * gib_kb} kB\nCached: {1 * gib_kb} kB\n"
+    )
+    assert_equal(changed_cache["mem_available_bytes"], reported["mem_available_bytes"], "falling cache cannot override stable MemAvailable")
+
+    fallback = parse_meminfo_bytes(
+        f"MemTotal: {4 * gib_kb} kB\nMemFree: {512 * 1024} kB\nCached: {1024 * 1024} kB\nBuffers: {128 * 1024} kB\nSReclaimable: {256 * 1024} kB\nShmem: {64 * 1024} kB\n"
+    )
+    assert_equal(fallback["mem_available_bytes"], int(1.8125 * GIB), "legacy availability approximation is internally consistent")
+    assert_equal(fallback["mem_available_fallback"], True, "legacy approximation is explicitly qualified")
+
+    # Firmware carveouts already absent from MemTotal and present residency
+    # already reflected by MemAvailable are never independent subtractions.
+    stage = SimpleNamespace(modules=SimpleNamespace(memory=SimpleNamespace(enabled=True, allocation_percent=90)))
+    plan = build_stage_system_memory_plan(stage=stage, gpu_workers=[], total_bytes=14 * GIB, available_bytes=12 * GIB)
+    assert_equal(plan["ram_requested_bytes"], int(14 * GIB * 0.90), "percentages use Linux MemTotal, not installed-memory folklore")
+    assert_equal(plan["system_memory_available_bytes"], 12 * GIB, "MemAvailable is not adjusted by ambiguous firmware values")
+
+
+def test_runtime_memory_guard_state_and_claims() -> None:
+    assert_equal(runtime_memory_thresholds(GIB)["emergency_mem_available_bytes"], 512 * 1024 ** 2, "emergency threshold is half reserve")
+    plan = {
+        "system_memory_total_bytes": 16 * GIB,
+        "system_memory_available_bytes": 14 * GIB,
+        "system_memory_safety_reserve_bytes": GIB,
+        "system_memory_budget_bytes": 13 * GIB,
+        "consumers": [{"consumer_id": "system_ram"}],
+        "unbudgeted_shared_gpu_workers": [],
+    }
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        path = Path(tmp) / "guard.json"
+        initialized = initialize_runtime_memory_guard(plan, path)
+        assert_equal(initialized["launch_system_memory_pool_bytes"], 13 * GIB, "runtime guard preserves launch pool evidence")
+        stable = update_runtime_memory_guard(plan, runtime_mem_available_bytes=2 * GIB, timestamp="stable")
+        assert_equal(stable["runtime_memory_warning_triggered"], False, "healthy MemAvailable remains normal")
+        transient = update_runtime_memory_guard(plan, runtime_mem_available_bytes=900 * 1024 ** 2, timestamp="transient")
+        assert_equal(transient["runtime_memory_warning_triggered"], False, "one warning-range sample is debounced")
+        recovered = update_runtime_memory_guard(plan, runtime_mem_available_bytes=2 * GIB, timestamp="recovered")
+        assert_equal(recovered["warning_consecutive_count"], 0, "warning debounce resets after recovery")
+        update_runtime_memory_guard(plan, runtime_mem_available_bytes=900 * 1024 ** 2, timestamp="warning-1")
+        warning = update_runtime_memory_guard(plan, runtime_mem_available_bytes=900 * 1024 ** 2, timestamp="warning-2")
+        assert_equal(warning["runtime_memory_warning_triggered"], True, "sustained warning pressure is recorded")
+        update_runtime_memory_guard(plan, runtime_mem_available_bytes=400 * 1024 ** 2, timestamp="emergency-1")
+        update_runtime_memory_guard(plan, runtime_mem_available_bytes=400 * 1024 ** 2, timestamp="emergency-2")
+        emergency = update_runtime_memory_guard(
+            plan,
+            runtime_mem_available_bytes=400 * 1024 ** 2,
+            timestamp="emergency-3",
+            affected_workers=["system_ram", "gpu:0"],
+        )
+        assert_equal(emergency["runtime_memory_guard_triggered"], True, "sustained emergency pressure triggers guard")
+        assert_equal(emergency["stage_termination_required"], True, "non-shrinkable emergency requires stage termination")
+        assert_equal(emergency["guard_trigger_timestamp"], "emergency-3", "trigger timestamp is retained")
+        denied = claim_runtime_allocation_growth(4 * 1024 ** 2, shared_system_memory=True, control_path=str(path))
+        assert_equal(denied["allowed"], False, "worker growth is denied after emergency")
+
+        plan2 = dict(plan)
+        plan2.pop("runtime_memory_guard", None)
+        path2 = Path(tmp) / "claims.json"
+        initialize_runtime_memory_guard(plan2, path2)
+        update_runtime_memory_guard(plan2, runtime_mem_available_bytes=1200 * 1024 ** 2, timestamp="claims")
+        first = claim_runtime_allocation_growth(150 * 1024 ** 2, shared_system_memory=True, control_path=str(path2))
+        second = claim_runtime_allocation_growth(100 * 1024 ** 2, shared_system_memory=True, control_path=str(path2))
+        assert_equal(first["allowed"], True, "first worker can claim stage-published growth allowance")
+        assert_equal(second["allowed"], False, "second worker cannot independently reuse the same allowance")
+
+        external_plan = {
+            "system_memory_total_bytes": 16 * GIB,
+            "system_memory_available_bytes": 14 * GIB,
+            "system_memory_safety_reserve_bytes": GIB,
+            "system_memory_budget_bytes": 13 * GIB,
+            "consumers": [],
+            "unbudgeted_shared_gpu_workers": [{"target_id": "external", "backend": "vkmark"}],
+        }
+        external_state = initialize_runtime_memory_guard(external_plan, Path(tmp) / "external.json")
+        assert_equal(external_state["enabled"], True, "unbounded shared external GPU stages retain emergency protection")
+
+
+def test_backend_minimum_viability_is_declared_per_worker() -> None:
+    sizes = [1, 2, 4, 8, 16, 32, 64, 128]
+    expected_mib = {
+        ("python_opencl", "vram"): 64,
+        ("python_egl_gles2", "vram"): 64,
+        ("python_vulkan_compute", "vram"): 8,
+        ("python_vulkan_compute", "gpu_3d"): 8,
+        ("python_vulkan_transfer", "gpu_3d"): 16,
+    }
+    for (backend, workload), minimum_mib in expected_mib.items():
+        declared_bytes, _source = gpu_backend_minimum_viable_allocation(backend, workload)
+        assert_equal(declared_bytes, minimum_mib * 1024 ** 2, f"{backend}/{workload} declared floor")
+        supported = [size for size in sizes if size >= minimum_mib]
+        assert_equal(min(supported), minimum_mib, f"{backend}/{workload} current synthetic floor")
+        worker = GpuWorkerSpec(
+            workload=workload,
+            backend=backend,
+            gpu_index=0,
+            card="card0",
+            slot="",
+            target_id="gpu0",
+            command=[backend],
+            target_vram_bytes=128 * 1024 ** 2,
+            gpu_memory_kind="shared",
+            system_memory_budget_participation=True,
+            memory_budget_consumer_id=f"{backend}:{workload}",
+            minimum_viable_allocation_bytes=minimum_mib * 1024 ** 2,
+        )
+        consumer = gpu_worker_system_memory_consumer(worker, system_pool_bytes=GIB)
+        assert_equal(consumer.minimum_viable_bytes, minimum_mib * 1024 ** 2, "common budgeter honors backend declaration")
+
+    future = GpuWorkerSpec(
+        workload="vram", backend="future_legacy_gl", gpu_index=0, card="card0", slot="", target_id="retro",
+        command=["future"], target_vram_bytes=4 * 1024 ** 2, gpu_memory_kind="shared",
+        system_memory_budget_participation=True, memory_budget_consumer_id="future",
+        minimum_viable_allocation_bytes=1 * 1024 ** 2,
+    )
+    assert_equal(
+        gpu_worker_system_memory_consumer(future, system_pool_bytes=32 * 1024 ** 2).minimum_viable_bytes,
+        1 * 1024 ** 2,
+        "common architecture permits future small-capacity backend declarations",
+    )
+    assert_true(
+        opencl_compute_fixed_commitment_bytes(
+            surface_size=1024,
+            compute_units=8,
+            max_work_group_size=256,
+            parallelism_hint=1,
+            max_single_allocation_bytes=0,
+            device_class="integrated",
+            safe_mode_enabled=True,
+        ) >= 4 * 1024 ** 2,
+        "controlled OpenCL compute publishes a fixed shared-memory commitment",
+    )
+
+
+def test_gpu_memory_semantics_and_backend_independent_uma_classification() -> None:
+    total = 16 * GIB
+    intel = classify_gpu_memory(
+        target={"vendor": "Intel", "driver": "i915", "slot": "0000:00:02.0", "vram_total": 0},
+        device_class="unknown",
+        system_total_bytes=total,
+    )
+    assert_equal(intel["memory_kind"], "shared", "Intel iGPU classifies shared without OpenCL")
+    amd_apu = classify_gpu_memory(
+        target={"vendor": "AMD", "name": "AMD Radeon Graphics", "driver": "amdgpu", "vram_total": 2 * GIB},
+        device_class="integrated",
+        system_total_bytes=total,
+        opencl_global_mem_bytes=6 * GIB,
+    )
+    assert_equal(amd_apu["memory_kind"], "shared", "positive DRM total does not bypass AMD APU shared classification")
+    assert_equal(amd_apu["dedicated_vram_capacity_bytes"], 0, "APU DRM total is not treated as dedicated")
+    assert_equal(amd_apu["shared_addressable_capacity_bytes"], 6 * GIB, "OpenCL capacity supplements shared addressable bound")
+    assert_equal(amd_apu["ambiguous_integrated_vram_report_bytes"], 2 * GIB, "positive integrated DRM total remains qualified")
+    vulkan_only = classify_gpu_memory(
+        target={"vendor": "AMD", "name": "Integrated GPU", "vram_total": 0},
+        device_class="integrated",
+        system_total_bytes=total,
+        vulkan_device_local_heap_bytes=12 * GIB,
+    )
+    assert_equal(vulkan_only["memory_kind"], "shared", "Vulkan integrated class works without OpenCL")
+    assert_equal(vulkan_only["shared_addressable_capacity_bytes"], 12 * GIB, "Vulkan-only UMA uses addressable heap, not fictitious 2 GiB")
+    assert_equal(vulkan_only["shared_addressable_capacity_source"], "vulkan_device_local_heap", "Vulkan heap provenance")
+    full_system_heap = classify_gpu_memory(
+        target={"vendor": "Intel", "driver": "i915", "vram_total": 0},
+        device_class="integrated",
+        system_total_bytes=total,
+        vulkan_device_local_heap_bytes=24 * GIB,
+    )
+    assert_equal(full_system_heap["shared_addressable_capacity_bytes"], 24 * GIB, "Vulkan UMA heap remains an API upper bound")
+    assert_equal(full_system_heap["shared_addressable_capacity_status"], "api_addressable_upper_bound", "Vulkan heap trust is qualified")
+    adreno = classify_gpu_memory(
+        target={"vendor": "Qualcomm", "name": "Adreno X1-45", "driver": "msm", "slot": "", "vram_total": 0},
+        device_class="unknown",
+        system_total_bytes=total,
+    )
+    assert_equal(adreno["memory_kind"], "shared", "AArch64 platform UMA classification is architecture neutral")
+    assert_equal(adreno["shared_addressable_capacity_bytes"], 0, "Adreno without an API total has no invented GPU capacity")
+    assert_equal(adreno["shared_addressable_capacity_status"], "unknown_bounded_by_system_pool", "Adreno unknown total uses system pool only as safety bound")
+    amd_discrete = classify_gpu_memory(
+        target={"vendor": "AMD", "name": "Radeon RX 7900", "vram_total": 24 * GIB},
+        device_class="discrete",
+        system_total_bytes=total,
+    )
+    assert_equal(amd_discrete["dedicated_vram_capacity_bytes"], 24 * GIB, "AMD dGPU dedicated capacity")
+    nvidia = classify_gpu_memory(
+        target={"vendor": "NVIDIA", "vram_total": 16 * GIB},
+        device_class="discrete",
+        system_total_bytes=total,
+    )
+    assert_equal(nvidia["memory_kind"], "dedicated", "NVIDIA remains dedicated")
+    unknown = classify_gpu_memory(target={}, device_class="unknown", system_total_bytes=total)
+    assert_equal(unknown["memory_kind"], "unknown", "unknown GPU remains unknown without invented capacity")
+    assert_equal(unknown["shared_addressable_capacity_bytes"], 0, "unknown GPU has no invented shared capacity")
+
+
+def test_combined_uma_stage_budget_and_dgpu_invariants() -> None:
+    total = 16 * GIB
+    available = 14 * GIB
+    memory_module = SimpleNamespace(enabled=True, allocation_percent=90)
+    stage = SimpleNamespace(modules=SimpleNamespace(memory=memory_module))
+    shared_worker = GpuWorkerSpec(
+        workload="vram",
+        backend="python_vulkan_compute",
+        gpu_index=0,
+        card="card0",
+        slot="0000:00:02.0",
+        target_id="igpu0",
+        command=["vulkan"],
+        target_vram_bytes=int(6 * GIB * 0.90),
+        gpu_memory_kind="shared",
+        shared_addressable_capacity_bytes=6 * GIB,
+        requested_gpu_memory_target_bytes=int(6 * GIB * 0.90),
+        planned_gpu_memory_target_bytes=int(6 * GIB * 0.90),
+        system_memory_budget_participation=True,
+        memory_budget_consumer_id="gpu:1:vram:python_vulkan_compute:igpu0",
+        memory_budgetability="enforceable_byte_target",
+    )
+    plan = build_stage_system_memory_plan(
+        stage=stage,
+        gpu_workers=[shared_worker],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_equal(plan["system_memory_budget_bytes"], 13 * GIB, "exact UMA scenario pool")
+    assert_equal(plan["ram_requested_bytes"], int(total * 0.90), "exact UMA RAM request")
+    assert_equal(plan["resolution_reason"], "proportional_rebalance_after_minimums", "exact UMA deterministic rebalance")
+    assert_equal(plan["total_planned_system_memory_bytes"], 13 * GIB, "RAM plus shared GPU fits one pool")
+    assert_equal(plan["remaining_system_memory_headroom_bytes"], 0, "pool reserve remains outside commitments")
+    resolved = apply_stage_system_memory_plan([shared_worker], plan)[0]
+    assert_true(resolved.target_vram_bytes < shared_worker.target_vram_bytes, "shared GPU cannot grow beyond assigned stage target")
+    assert_equal(resolved.target_cap_reason, "stage_system_memory_budget_rebalance", "shared GPU cap provenance")
+    assert_true(plan["ram_target_bytes"] + resolved.target_vram_bytes <= 13 * GIB, "no shared-memory double allocation")
+    resident_worker = replace(shared_worker, current_gpu_memory_used_bytes=2 * GIB, current_gpu_memory_used_source="drm_vram_used")
+    resident_plan = build_stage_system_memory_plan(
+        stage=stage, gpu_workers=[resident_worker], total_bytes=total, available_bytes=available
+    )
+    assert_equal(
+        resident_plan["allocations"],
+        plan["allocations"],
+        "current GPU residency is not subtracted twice when MemAvailable already reflects it",
+    )
+
+    changed = build_stage_system_memory_plan(
+        stage=stage,
+        gpu_workers=[shared_worker],
+        total_bytes=total,
+        available_bytes=10 * GIB,
+    )
+    assert_true(changed["total_planned_system_memory_bytes"] < plan["total_planned_system_memory_bytes"], "launch-time MemAvailable change recalculates targets")
+
+    dedicated_worker = GpuWorkerSpec(
+        workload="vram",
+        backend="python_opencl",
+        gpu_index=1,
+        card="card1",
+        slot="0000:01:00.0",
+        target_id="dgpu0",
+        command=["opencl"],
+        target_vram_bytes=int(8 * GIB * 0.80),
+        gpu_memory_kind="dedicated",
+        dedicated_vram_capacity_bytes=8 * GIB,
+        requested_gpu_memory_target_bytes=int(8 * GIB * 0.80),
+        planned_gpu_memory_target_bytes=int(8 * GIB * 0.80),
+        system_memory_budget_participation=False,
+        memory_budgetability="dedicated_vram_outside_system_pool",
+    )
+    dgpu_plan = build_stage_system_memory_plan(
+        stage=stage,
+        gpu_workers=[dedicated_worker],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_equal(len(dgpu_plan["consumers"]), 1, "dGPU excluded from system-memory consumers")
+    assert_equal(apply_stage_system_memory_plan([dedicated_worker], dgpu_plan)[0].target_vram_bytes, dedicated_worker.target_vram_bytes, "dGPU target unchanged")
+
+
+def test_stage_budget_consumer_combinations_and_unknown_gpu_safety() -> None:
+    total = 32 * GIB
+    available = 24 * GIB
+    memory_stage = SimpleNamespace(
+        modules=SimpleNamespace(memory=SimpleNamespace(enabled=True, allocation_percent=90))
+    )
+    gpu_only_stage = SimpleNamespace(
+        modules=SimpleNamespace(memory=SimpleNamespace(enabled=False, allocation_percent=0))
+    )
+
+    def worker(
+        consumer_id: str,
+        *,
+        workload: str = "vram",
+        memory_kind: str = "shared",
+        requested: int = 6 * GIB,
+        backend: str = "python_opencl",
+        participates: bool = True,
+    ) -> GpuWorkerSpec:
+        return GpuWorkerSpec(
+            workload=workload,
+            backend=backend,
+            gpu_index=0,
+            card="card0",
+            slot="",
+            target_id=consumer_id,
+            command=[backend],
+            target_vram_bytes=requested,
+            gpu_memory_kind=memory_kind,
+            requested_gpu_memory_target_bytes=requested,
+            planned_gpu_memory_target_bytes=requested,
+            system_memory_budget_participation=participates,
+            memory_budget_consumer_id=consumer_id,
+            memory_budgetability="enforceable_byte_target" if participates else "dedicated_vram_outside_system_pool",
+        )
+
+    shared_vram = worker("igpu-vram", requested=7 * GIB)
+    shared_gpu3d = worker(
+        "igpu-stateful",
+        workload="gpu_3d",
+        requested=5 * GIB,
+        backend="python_vulkan_compute",
+    )
+    second_shared = worker("igpu-second", requested=3 * GIB, backend="python_egl_gles2")
+    dedicated = worker("dgpu", memory_kind="dedicated", requested=8 * GIB, participates=False)
+    unknown = worker("unknown-gpu", memory_kind="unknown", requested=512 * 1024 ** 2)
+
+    ram_only = build_stage_system_memory_plan(
+        stage=memory_stage,
+        gpu_workers=[],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_equal(len(ram_only["consumers"]), 1, "RAM-only stage has one system-memory consumer")
+    assert_true(ram_only["ram_target_bytes"] <= ram_only["system_memory_budget_bytes"], "RAM-only target is safe")
+
+    shared_only = build_stage_system_memory_plan(
+        stage=gpu_only_stage,
+        gpu_workers=[shared_vram],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_equal(shared_only["total_planned_system_memory_bytes"], 7 * GIB, "shared-GPU-only target keeps requested bytes")
+
+    combined = build_stage_system_memory_plan(
+        stage=memory_stage,
+        gpu_workers=[shared_vram, shared_gpu3d, second_shared, dedicated],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_equal(len(combined["consumers"]), 4, "RAM plus three shared commitments share one pool")
+    assert_true(
+        combined["total_planned_system_memory_bytes"] <= combined["system_memory_budget_bytes"],
+        "RAM + VRAM + GPU3D + second shared GPU fit pool",
+    )
+    resolved = apply_stage_system_memory_plan([shared_vram, shared_gpu3d, second_shared, dedicated], combined)
+    assert_equal(resolved[-1].target_vram_bytes, 8 * GIB, "mixed dGPU remains outside the system pool")
+
+    unknown_plan = build_stage_system_memory_plan(
+        stage=memory_stage,
+        gpu_workers=[unknown],
+        total_bytes=total,
+        available_bytes=available,
+    )
+    assert_true(
+        any(row["kind"] == "unknown_gpu_memory_conservative" for row in unknown_plan["consumers"]),
+        "unknown enforceable GPU allocation is conservatively budgeted",
+    )
+
+    insufficient = build_stage_system_memory_plan(
+        stage=memory_stage,
+        gpu_workers=[shared_vram],
+        total_bytes=total,
+        available_bytes=256 * 1024 ** 2,
+    )
+    assert_equal(insufficient["valid"], False, "insufficient MemAvailable blocks a combined plan")
+    assert_equal(insufficient["total_planned_system_memory_bytes"], 0, "unsafe floors cannot create overcommit")
+
+
+def test_gpu_capability_limits_chunking_and_device_ownership() -> None:
+    target = int(8 * GIB * 0.90)
+    chunked = plan_gpu_allocation_chunks(
+        target_bytes=target,
+        max_single_allocation_bytes=2 * GIB,
+        max_buffer_or_object_bytes=2 * GIB,
+        allocation_granularity_bytes=4096,
+    )
+    aligned_target = target - (target % 4096)
+    assert_equal(chunked["planned_bytes"], aligned_target, "7.2 GiB target is not truncated to a 2 GiB single-allocation limit")
+    assert_equal(chunked["chunks"], [2 * GIB, 2 * GIB, 2 * GIB, aligned_target - 6 * GIB], "known-total chunk layout")
+    assert_true(chunked["shortfall_bytes"] < 4096, "only unavoidable API granularity remains")
+    many_chunks = plan_gpu_allocation_chunks(
+        target_bytes=target,
+        max_single_allocation_bytes=512 * 1024 ** 2,
+        max_allocation_count=8,
+        allocation_granularity_bytes=4096,
+    )
+    assert_equal(many_chunks["cap_reason"], "allocation_count_limit", "allocation-count exhaustion is explicit")
+    assert_true(many_chunks["planned_bytes"] < target, "count cap cannot silently claim the full target")
+    assert_equal(allocation_attainment(assigned_target_bytes=100, achieved_bytes=59)["allocation_valid"], False, "existing 60% minimum band")
+    assert_equal(allocation_attainment(assigned_target_bytes=100, achieved_bytes=84)["allocation_outcome"], "partial_allocation", "existing 85% substantial band")
+    assert_equal(allocation_attainment(assigned_target_bytes=100, achieved_bytes=0)["allocation_outcome"], "allocation_failed", "zero successful allocation is a failure")
+    assert_equal(
+        allocation_attainment(assigned_target_bytes=100, achieved_bytes=75, runtime_failed=True)["allocation_outcome"],
+        "runtime_failure_after_partial_allocation",
+        "runtime failure remains distinct from graceful partial attainment",
+    )
+
+    raw = bytearray(400)
+    raw[320:324] = (2 * GIB - 1).to_bytes(4, "little")
+    raw[328:332] = (4096).to_bytes(4, "little")
+    limits = vulkan_memory_limits_from_properties_bytes(bytes(raw))
+    assert_equal(limits["max_storage_buffer_range_bytes"], 2 * GIB - 1, "Vulkan storage-buffer object limit")
+    assert_equal(limits["max_memory_allocation_count"], 4096, "Vulkan allocation-count limit")
+    assert_equal(
+        vulkan_device_is_hardware_gpu({"deviceType": "VK_PHYSICAL_DEVICE_TYPE_CPU", "deviceName": "llvmpipe"}),
+        False,
+        "software Vulkan devices can never supply GPU capacity metadata",
+    )
+
+    capped = cap_shared_gpu_device_requests(
+        [
+            SystemMemoryConsumer("worker-a", "shared_gpu_vram", 6 * GIB, 64 * 1024 ** 2, "igpu0", "vulkan", 8 * GIB, 6 * GIB),
+            SystemMemoryConsumer("worker-b", "shared_gpu_3d", 6 * GIB, 16 * 1024 ** 2, "igpu0", "vulkan", 8 * GIB, 6 * GIB),
+        ]
+    )
+    assert_equal(sum(item.requested_bytes for item in capped), 8 * GIB, "multiple workers share one device-level capacity")
+
+    gpu_only_stage = SimpleNamespace(modules=SimpleNamespace(memory=SimpleNamespace(enabled=False, allocation_percent=0)))
+    known = GpuWorkerSpec(
+        workload="vram", backend="python_opencl", gpu_index=0, card="card0", slot="", target_id="igpu0",
+        command=["opencl"], target_vram_bytes=target, gpu_memory_kind="shared",
+        shared_addressable_capacity_bytes=8 * GIB, shared_addressable_capacity_status="api_addressable_upper_bound",
+        max_single_allocation_bytes=2 * GIB, max_buffer_or_object_bytes=2 * GIB,
+        allocation_granularity_bytes=4096, requested_gpu_memory_target_bytes=target,
+        requested_gpu_memory_percent=90, planned_gpu_memory_target_bytes=target,
+        system_memory_budget_participation=True, memory_budget_consumer_id="known",
+    )
+    known_plan = build_stage_system_memory_plan(stage=gpu_only_stage, gpu_workers=[known], total_bytes=16 * GIB, available_bytes=14 * GIB)
+    known_resolved = apply_stage_system_memory_plan([known], known_plan)[0]
+    assert_equal(known_resolved.target_vram_bytes, target, "known 8 GiB GPU resolves 90% independently of 13 GiB pool")
+    assert_true(known_resolved.planned_allocation_chunk_count >= 4, "known target is split into multiple legal allocations")
+    assert_true(max(known_resolved.planned_allocation_chunks) <= 2 * GIB, "every planned allocation obeys the 2 GiB API limit")
+    assert_true(sum(known_resolved.planned_allocation_chunks) <= target, "planned aggregate never exceeds the assigned target")
+
+    unknown = replace(
+        known,
+        target_id="adreno0",
+        target_vram_bytes=512 * 1024 ** 2,
+        shared_addressable_capacity_bytes=0,
+        shared_addressable_capacity_status="unknown_bounded_by_system_pool",
+        max_single_allocation_bytes=0,
+        max_buffer_or_object_bytes=0,
+        requested_gpu_memory_target_bytes=512 * 1024 ** 2,
+        memory_budget_consumer_id="unknown",
+    )
+    unknown_plan = build_stage_system_memory_plan(stage=gpu_only_stage, gpu_workers=[unknown], total_bytes=16 * GIB, available_bytes=14 * GIB)
+    unknown_resolved = apply_stage_system_memory_plan([unknown], unknown_plan)[0]
+    assert_equal(unknown_resolved.requested_gpu_memory_target_bytes, int(13 * GIB * 0.90), "unknown capability request is explicitly based on safe-pool intent")
+    assert_equal(unknown_resolved.total_capacity_trust, "unknown", "worker metadata never promotes system pool to GPU capacity")
+    assert_true(unknown_resolved.target_vram_bytes <= 13 * GIB, "unknown UMA target remains inside system pool")
+
+    opencl_source = (ROOT / "Modules" / "lvs_opencl_vram_worker.py").read_text(encoding="utf-8")
+    assert_true("max(64 * 1024 * 1024, int(selected[\"max_alloc_bytes\"])" not in opencl_source, "OpenCL never inflates the API single-allocation limit")
+    assert_true("allocation_backoff_attempts" in opencl_source and "request_bytes // 2" in opencl_source, "OpenCL records progressive allocation backoff")
+    egl_source = (ROOT / "Modules" / "lvs_egl_gles_worker.py").read_text(encoding="utf-8")
+    assert_true("target // bytes_per_texture" in egl_source, "GLES texture aggregate does not round past assigned target")
+    assert_true("tex_side // 2" in egl_source and "physical_commitment_known" in egl_source, "GLES first-allocation backoff and nominal-byte qualification")
+    vulkan_source = (ROOT / "native" / "vulkan_compute_worker.py").read_text(encoding="utf-8")
+    assert_true("shared_system_memory_target_guard" in vulkan_source, "Vulkan UMA requirements cannot exceed the assigned target")
+    assert_true("allocation_backoff_attempts" in vulkan_source and "request_size //= 2" in vulkan_source, "Vulkan records progressive allocation backoff")
+
+
+def test_synthetic_gpu_system_memory_dry_run_matrix() -> None:
+    total, available = 16 * GIB, 14 * GIB
+
+    def stage(ram: bool) -> SimpleNamespace:
+        return SimpleNamespace(modules=SimpleNamespace(memory=SimpleNamespace(enabled=ram, allocation_percent=90)))
+
+    def shared(
+        target_id: str,
+        *,
+        known: bool,
+        workload: str = "vram",
+        backend: str = "python_vulkan_compute",
+        requested: int = int(8 * GIB * 0.90),
+    ) -> GpuWorkerSpec:
+        return GpuWorkerSpec(
+            workload=workload, backend=backend, gpu_index=0, card="card0", slot="", target_id=target_id,
+            command=[backend], target_vram_bytes=requested, gpu_memory_kind="shared",
+            shared_addressable_capacity_bytes=8 * GIB if known else 0,
+            shared_addressable_capacity_status="api_addressable_upper_bound" if known else "unknown_bounded_by_system_pool",
+            requested_gpu_memory_target_bytes=requested, requested_gpu_memory_percent=90,
+            planned_gpu_memory_target_bytes=requested, system_memory_budget_participation=True,
+            memory_budget_consumer_id=f"{target_id}:{workload}:{backend}",
+            compute_variant="stateful_memory" if workload == "gpu_3d" else "",
+            max_buffer_or_object_bytes=2 * GIB if known else 0,
+            allocation_granularity_bytes=1024,
+        )
+
+    def dedicated(target_id: str = "dgpu0") -> GpuWorkerSpec:
+        return GpuWorkerSpec(
+            workload="vram", backend="python_opencl", gpu_index=1, card="card1", slot="0000:01:00.0",
+            target_id=target_id, command=["opencl"], target_vram_bytes=int(8 * GIB * 0.90),
+            gpu_memory_kind="dedicated", dedicated_vram_capacity_bytes=8 * GIB,
+            requested_gpu_memory_target_bytes=int(8 * GIB * 0.90), planned_gpu_memory_target_bytes=int(8 * GIB * 0.90),
+            system_memory_budget_participation=False,
+        )
+
+    fixtures = {
+        "ram_only_normal": (stage(True), []),
+        "igpu_known": (stage(False), [shared("igpu-known", known=True)]),
+        "igpu_unknown": (stage(False), [shared("igpu-unknown", known=False)]),
+        "ram_igpu": (stage(True), [shared("igpu-known", known=True)]),
+        "ram_igpu_unknown": (stage(True), [shared("igpu-unknown", known=False)]),
+        "ram_igpu_gpu3d": (
+            stage(True),
+            [shared("igpu-known", known=True), shared("igpu-known", known=True, workload="gpu_3d", requested=2 * GIB)],
+        ),
+        "dgpu_only": (stage(False), [dedicated()]),
+        "ram_dgpu": (stage(True), [dedicated()]),
+        "mixed_dgpu_igpu_ram": (stage(True), [dedicated(), shared("igpu-known", known=True)]),
+        "adreno_unknown": (stage(False), [shared("adreno-platform", known=False)]),
+        "intel_igpu": (stage(False), [shared("intel-i915", known=True)]),
+        "amd_apu": (stage(False), [shared("amd-apu", known=True)]),
+    }
+    plans = {}
+    for name, (fixture_stage, workers) in fixtures.items():
+        plan = build_stage_system_memory_plan(
+            stage=fixture_stage, gpu_workers=workers, total_bytes=total, available_bytes=available
+        )
+        plans[name] = plan
+        assert_true(plan["valid"], f"{name} synthetic Dry Run is launchable")
+        assert_true(
+            plan["total_planned_system_memory_bytes"] <= plan["system_memory_budget_bytes"],
+            f"{name} commitments fit one pool",
+        )
+    assert_equal(plans["dgpu_only"]["total_planned_system_memory_bytes"], 0, "dGPU-only does not charge system pool")
+    assert_equal(len(plans["ram_dgpu"]["consumers"]), 1, "RAM+dGPU charges RAM only")
+    assert_equal(len(plans["ram_igpu_gpu3d"]["shared_gpu_device_aggregates"]), 1, "same-device VRAM and GPU3D have one aggregate")
+    assert_true(
+        plans["ram_igpu_gpu3d"]["shared_gpu_device_aggregates"][0]["resolved_bytes"] <= 8 * GIB,
+        "same-device controlled workers cannot exceed known capability",
+    )
+    ram_low = build_stage_system_memory_plan(
+        stage=stage(True), gpu_workers=[], total_bytes=2 * GIB, available_bytes=768 * 1024 ** 2
+    )
+    assert_true(ram_low["valid"] and ram_low["ram_target_bytes"] <= 512 * 1024 ** 2, "RAM-only low-memory Dry Run preserves reserve")
+    low_free_snapshot = {
+        "mem_available_source": "kernel_reported_memavailable",
+        "mem_available_fallback": False,
+        "mem_free_bytes": 64 * 1024 ** 2,
+        "cached_bytes": 10 * GIB,
+    }
+    low_free = build_stage_system_memory_plan(
+        stage=stage(True), gpu_workers=[], total_bytes=total, available_bytes=available, memory_snapshot=low_free_snapshot
+    )
+    assert_equal(low_free["system_memory_budget_bytes"], 13 * GIB, "low MemFree/high MemAvailable Dry Run uses MemAvailable")
+    firmware_carveout = build_stage_system_memory_plan(
+        stage=stage(True), gpu_workers=[], total_bytes=14 * GIB, available_bytes=12 * GIB
+    )
+    assert_equal(firmware_carveout["ram_requested_bytes"], int(14 * GIB * 0.90), "firmware carveout fixture uses Linux MemTotal")
+    resident = replace(shared("resident-igpu", known=True), current_gpu_memory_used_bytes=2 * GIB)
+    resident_plan = build_stage_system_memory_plan(
+        stage=stage(True), gpu_workers=[resident], total_bytes=total, available_bytes=available
+    )
+    baseline_resident = build_stage_system_memory_plan(
+        stage=stage(True), gpu_workers=[replace(resident, current_gpu_memory_used_bytes=None)], total_bytes=total, available_bytes=available
+    )
+    assert_equal(resident_plan["allocations"], baseline_resident["allocations"], "current GPU residency fixture is not double-counted")
+    lines = profile_execution_system_memory_lines({"system_memory_plan": plans["ram_igpu"]})
+    rendered = "\n".join(lines)
+    assert_true("requested_commitment=" in rendered and "resolved_target=" in rendered, "Dry Run distinguishes target from system commitment")
+    assert_true("runtime memory guard:" in rendered, "Dry Run publishes runtime guard thresholds")
+
+
+def test_memory_backend_resolved_byte_parity() -> None:
+    target = 7 * GIB + 123456
+    native = build_memory_command(
+        helper_available=True,
+        helper_path="memory-helper",
+        target_bytes=target,
+        worker_count=8,
+        allocation_percent=90,
+        stress_ng_available=True,
+        python_runtime="python3",
+    )
+    stress = build_memory_command(
+        helper_available=False,
+        helper_path="",
+        target_bytes=target,
+        worker_count=8,
+        allocation_percent=90,
+        stress_ng_available=True,
+        python_runtime="python3",
+    )
+    python = build_memory_command(
+        helper_available=False,
+        helper_path="",
+        target_bytes=target,
+        worker_count=8,
+        allocation_percent=90,
+        stress_ng_available=False,
+        python_runtime="python3",
+    )
+    assert_equal(native[native.index("--bytes") + 1], str(target), "native resolved bytes")
+    assert_equal(stress[stress.index("--vm-bytes") + 1], str(target), "stress-ng resolved bytes")
+    assert_true(f"run_python_memory_worker({target}" in python[2], "Python resolved bytes")
+    assert_true("MemAvailable" not in python[2] and "MemTotal" not in python[2], "Python has no duplicate allocation policy")
+
+
+def test_dgpu_vram_target_regression_fixtures() -> None:
+    fixtures = [
+        (8 * GIB, 80, int(8 * GIB * 0.80)),
+        (24 * GIB, 90, int(24 * GIB * 0.90)),
+        (2 * GIB, 90, 2 * GIB - int(2 * GIB * 0.15)),
+    ]
+    for capacity, percent, expected in fixtures:
+        target = {"target_id": "dgpu", "vendor": "AMD", "vram_total": capacity}
+        resolved = resolve_target_vram_allocation_bytes(
+            allocation_percent=percent,
+            target=target,
+            memory_allocation_percent=90,
+            concurrent_gpu_3d=False,
+            stage_duration_seconds=600,
+            opencl_device_for_target=lambda _target: {"global_mem_bytes": capacity},
+            capability_for_target=lambda _target, value=capacity: {
+                "device_class": "discrete",
+                "memory_kind": "dedicated",
+                "dedicated_vram_capacity_bytes": value,
+            },
+            system_memory_total=lambda: 256 * GIB,
+            system_memory_available=lambda: 128 * GIB,
+            sysfs_vram_totals=lambda: [],
+        )
+        assert_equal(resolved, expected, f"dGPU {capacity // GIB} GiB target unchanged")
 
 
 def test_llcc_edac_telemetry_helpers() -> None:
@@ -22287,6 +23250,54 @@ def test_stage_live_loop_helpers() -> None:
     assert_equal(failure_reasons, ["synthetic sensor error"], "live loop records sensor failure reason")
     assert_equal(sensor_events[0]["severity"], "error", "live loop appends sensor event")
 
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        memory_plan = {
+            "system_memory_total_bytes": 16 * GIB,
+            "system_memory_available_bytes": 14 * GIB,
+            "system_memory_safety_reserve_bytes": GIB,
+            "system_memory_budget_bytes": 13 * GIB,
+            "consumers": [{"consumer_id": "system_ram"}],
+            "unbudgeted_shared_gpu_workers": [],
+        }
+        initialize_runtime_memory_guard(memory_plan, Path(tmp) / "guard.json")
+        memory_entry = SimpleNamespace(kind="memory", gpu_spec=None, system_memory_plan=memory_plan)
+        guard_events: list[dict] = []
+        guard_reasons: list[str] = []
+        current_time[0] = 0.0
+        guard_result = run_stage_live_loop(
+            stage_window_cls=StageWindow,
+            stage=SimpleNamespace(**{**vars(stage), "duration_seconds": 30.0}),
+            display_name="RAM Safety",
+            stage_started_iso="2026-06-11T00:00:00",
+            stage_start=0.0,
+            stage_processes=[memory_entry],
+            telemetry_collect_once=lambda: None,
+            telemetry_interval_seconds=1.0,
+            stage_error_events=guard_events,
+            stage_failure_reasons=guard_reasons,
+            stage_verdict="pass",
+            stage_aborted=False,
+            stage_abort_reason="",
+            abort_on_worker_error=False,
+            abort_on_fail_threshold=False,
+            gpu_retune_events=[],
+            progress_interval_seconds=30.0,
+            poll_stage_process_failures=lambda processes, name: [],
+            stage_sensor_events=lambda window: [],
+            maybe_retune_gpu_processes=lambda processes, elapsed, duration: processes,
+            stage_target_gpu_progress_summary=lambda processes, elapsed: "",
+            effective_gpu_retune_cooldown_seconds=lambda duration: 12.0,
+            now_local_iso=lambda: f"2026-06-11T00:00:{int(current_time[0]):02d}",
+            monotonic=lambda: current_time[0],
+            sleep=sleep,
+            format_duration_hms=lambda seconds: f"{int(seconds)}s",
+            print_progress=lambda line: None,
+            memory_snapshot_reader=lambda: {"mem_available_bytes": 400 * 1024 ** 2},
+        )
+        assert_equal(guard_result.stage_verdict, "aborted", "runtime guard cannot yield verified-clean/pass semantics")
+        assert_true(guard_result.stage_aborted, "sustained emergency pressure aborts the stage")
+        assert_true(any(event["category"] == "runtime_memory_guard" for event in guard_events), "guard event is saved")
+
 
 def test_stage_postprocess_helpers() -> None:
     stage_window = SimpleNamespace(
@@ -22859,6 +23870,62 @@ def test_stage_launch_plan_helpers() -> None:
     assert_true(planned[2].gpu_spec is not None, "GPU launch plan carries materialized worker")
     stage.enabled = False
     assert_equal(build_stage_launch_commands(FakeRunner(), stage), [], "disabled stage launch plan")
+
+
+def test_stage_launch_plan_materializes_one_authoritative_memory_snapshot() -> None:
+    worker = GpuWorkerSpec(
+        workload="vram",
+        backend="python_opencl",
+        gpu_index=0,
+        card="card0",
+        slot="",
+        target_id="igpu",
+        command=["preliminary"],
+        target_vram_bytes=6 * GIB,
+        gpu_memory_kind="shared",
+        requested_gpu_memory_target_bytes=6 * GIB,
+        planned_gpu_memory_target_bytes=6 * GIB,
+        system_memory_budget_participation=True,
+        memory_budget_consumer_id="gpu:1:vram:python_opencl:igpu",
+    )
+    plan = {
+        "valid": True,
+        "resolution_reason": "proportional_rebalance_after_minimums",
+        "ram_target_bytes": 5 * GIB,
+        "allocations": {
+            "system_ram": 5 * GIB,
+            "gpu:1:vram:python_opencl:igpu": 3 * GIB,
+        },
+    }
+
+    class PlannedRunner:
+        def _gpu_worker_specs(self, _stage: object) -> list[GpuWorkerSpec]:
+            return [worker]
+
+        def _stage_system_memory_plan(self, _stage: object, workers: list[GpuWorkerSpec]) -> dict:
+            assert_equal(workers[0].target_vram_bytes, 6 * GIB, "planner receives requested GPU target")
+            return plan
+
+        def _memory_command(self, _memory: object, result_file: str = "", resolved_target_bytes: int = 0) -> list[str]:
+            return ["memory", "--bytes", str(resolved_target_bytes), result_file]
+
+        def _materialize_gpu_worker(self, resolved: GpuWorkerSpec, result_file: str = "") -> GpuWorkerSpec:
+            return replace(resolved, command=["gpu", "--bytes", str(resolved.target_vram_bytes), result_file])
+
+    stage = SimpleNamespace(
+        id="combined",
+        enabled=True,
+        modules=SimpleNamespace(
+            cpu=SimpleNamespace(enabled=False),
+            memory=SimpleNamespace(enabled=True),
+            gpu_3d=SimpleNamespace(enabled=False),
+            vram=SimpleNamespace(enabled=True),
+        ),
+    )
+    launches = build_stage_launch_commands(PlannedRunner(), stage)
+    assert_equal(launches[0].command[2], str(5 * GIB), "RAM command receives resolved stage bytes")
+    assert_equal(launches[1].command[2], str(3 * GIB), "GPU command receives resolved stage bytes")
+    assert_true(all(item.system_memory_plan is plan for item in launches), "all workers carry one authoritative plan")
 
 
 def test_external_cpu_process_evidence_helpers() -> None:
@@ -23865,6 +24932,18 @@ def main() -> int:
         test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
         test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
+        test_python_memory_fallback_exact_allocation_evidence,
+        test_unified_system_memory_reserve_and_allocation_policy,
+        test_linux_memory_accounting_semantics,
+        test_runtime_memory_guard_state_and_claims,
+        test_backend_minimum_viability_is_declared_per_worker,
+        test_gpu_memory_semantics_and_backend_independent_uma_classification,
+        test_combined_uma_stage_budget_and_dgpu_invariants,
+        test_stage_budget_consumer_combinations_and_unknown_gpu_safety,
+        test_gpu_capability_limits_chunking_and_device_ownership,
+        test_synthetic_gpu_system_memory_dry_run_matrix,
+        test_memory_backend_resolved_byte_parity,
+        test_dgpu_vram_target_regression_fixtures,
         test_llcc_edac_telemetry_helpers,
         test_native_helper_status_helpers_resolve_build_states,
         test_native_helper_runtime_service,
@@ -23882,6 +24961,7 @@ def main() -> int:
         test_stage_adapter_helpers,
         test_run_stage_loop_helpers,
         test_stage_launch_plan_helpers,
+        test_stage_launch_plan_materializes_one_authoritative_memory_snapshot,
         test_external_cpu_process_evidence_helpers,
         test_stage_process_control_helpers,
         test_stage_worker_evidence_helpers,

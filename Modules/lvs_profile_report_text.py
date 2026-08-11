@@ -126,6 +126,49 @@ def profile_execution_memory_line(stage: Dict[str, Any]) -> str:
     return f"  memory: backend={memory_backend}"
 
 
+def profile_execution_system_memory_lines(stage: Dict[str, Any]) -> List[str]:
+    plan = stage.get("system_memory_plan") if isinstance(stage.get("system_memory_plan"), dict) else {}
+    if not plan:
+        return []
+
+    def gib(value: Any) -> str:
+        return f"{float(value or 0) / (1024 ** 3):.2f}GiB"
+
+    lines = [
+        "  system memory: "
+        + f"total={gib(plan.get('system_memory_total_bytes'))}, "
+        + f"available={gib(plan.get('system_memory_available_bytes'))}, "
+        + f"available_source={plan.get('mem_available_source') or '-'}, "
+        + f"reserve={gib(plan.get('system_memory_safety_reserve_bytes'))}, "
+        + f"pool={gib(plan.get('system_memory_budget_bytes'))}",
+    ]
+    for consumer in plan.get("consumers") or []:
+        lines.append(
+            "  system memory commitment: "
+            + f"{consumer.get('consumer_id')} target={gib(consumer.get('requested_target_bytes'))}"
+            + (f" x{consumer.get('target_multiplier')}" if int(consumer.get('target_multiplier') or 1) > 1 else "")
+            + f", requested_commitment={gib(consumer.get('requested_bytes'))}, "
+            + f"resolved_target={gib(consumer.get('resolved_target_bytes'))}, "
+            + f"resolved_commitment={gib(consumer.get('resolved_bytes'))}"
+        )
+    lines.append(
+        "  system memory total: "
+        + f"planned={gib(plan.get('total_planned_system_memory_bytes'))}, "
+        + f"remaining={gib(plan.get('remaining_system_memory_headroom_bytes'))}, "
+        + f"resolution={plan.get('resolution_reason') or '-'}"
+    )
+    guard = plan.get("runtime_memory_guard_policy") or {}
+    if guard.get("enabled"):
+        lines.append(
+            "  runtime memory guard: "
+            + f"warning_below={gib(guard.get('warning_mem_available_bytes'))} for "
+            + f"{guard.get('warning_consecutive_samples')} samples, "
+            + f"emergency_below={gib(guard.get('emergency_mem_available_bytes'))} for "
+            + f"{guard.get('emergency_consecutive_samples')} samples"
+        )
+    return lines
+
+
 def profile_execution_gpu_3d_line(stage: Dict[str, Any]) -> str:
     gpu_backend_preferences = stage.get("gpu_backend_preferences") or {}
     backend_usage = stage.get("backend_usage") or {}
@@ -182,6 +225,36 @@ def profile_execution_gpu_detail_lines(stage: Dict[str, Any]) -> List[str]:
     if fallback_parts:
         lines.append(f"  backend fallback: {'; '.join(fallback_parts)}")
     workers = stage.get("gpu_workers") or []
+    dedicated_workers = [
+        worker
+        for worker in workers
+        if worker.get("gpu_memory_kind") == "dedicated" and int(worker.get("planned_gpu_memory_target_bytes") or 0) > 0
+    ]
+    for worker in dedicated_workers[:8]:
+        lines.append(
+            "  dedicated GPU memory: "
+            + f"target={worker.get('target_id') or worker.get('card') or '-'}, "
+            + f"capacity={float(worker.get('dedicated_vram_capacity_bytes') or 0) / (1024 ** 3):.2f}GiB, "
+            + f"planned={float(worker.get('planned_gpu_memory_target_bytes') or 0) / (1024 ** 3):.2f}GiB "
+            + "(outside system-memory pool)"
+        )
+    shared_or_unknown_workers = [
+        worker for worker in workers if worker.get("gpu_memory_kind") in {"shared", "unknown"}
+    ]
+    for worker in shared_or_unknown_workers[:8]:
+        lines.append(
+            "  GPU memory: "
+            + f"target={worker.get('target_id') or worker.get('card') or '-'}, "
+            + f"kind={worker.get('gpu_memory_kind')}, "
+            + f"capacity={float(worker.get('backend_addressable_capacity_bytes') or 0) / (1024 ** 3):.2f}GiB "
+            + f"({worker.get('backend_addressable_capacity_status') or 'unknown'}; {worker.get('backend_addressable_capacity_source') or '-'}), "
+            + f"requested={float(worker.get('requested_gpu_memory_target_bytes') or 0) / (1024 ** 3):.2f}GiB, "
+            + f"planned={float(worker.get('planned_gpu_memory_target_bytes') or 0) / (1024 ** 3):.2f}GiB, "
+            + f"single/object_limit={float(worker.get('max_single_allocation_bytes') or worker.get('max_buffer_or_object_bytes') or 0) / (1024 ** 3):.2f}GiB, "
+            + f"chunks={int(worker.get('planned_allocation_chunk_count') or 0)}, "
+            + f"cap={worker.get('target_cap_reason') or '-'}, "
+            + f"budgetability={worker.get('memory_budgetability') or '-'}"
+        )
     if workers:
         rendered_workers = []
         for worker in workers[:8]:
@@ -207,6 +280,7 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
         lines.append(profile_execution_stage_header_line(stage))
         if stage.get("trim_start_seconds") or stage.get("trim_end_seconds"):
             lines.append(profile_execution_trim_line(stage))
+        lines.extend(profile_execution_system_memory_lines(stage))
         if "cpu" in (stage.get("workloads") or []):
             lines.append(profile_execution_cpu_line(stage))
         if "memory" in (stage.get("workloads") or []):

@@ -9,6 +9,15 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from .lvs_gpu_identity import normalize_pci_id, normalize_pci_slot
 
 
+def vulkan_device_is_hardware_gpu(device: Dict[str, Any]) -> bool:
+    device_type = str(device.get("deviceType", "") or "").strip().lower()
+    name = str(device.get("deviceName", "") or "").strip().lower()
+    return not (
+        "cpu" in device_type
+        or any(token in name for token in ("llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer"))
+    )
+
+
 def slot_from_mesa_style_vulkan_uuid(uuid_text: Any, gpu_cards: Iterable[Dict[str, Any]]) -> str:
     match = re.match(r"^00000000-([0-9a-fA-F]{2})00-", str(uuid_text or ""))
     if match is None:
@@ -98,7 +107,7 @@ def vulkan_device_for_target(
     gpu_cards: Iterable[Dict[str, Any]],
     likely_discrete_ids: Set[str],
 ) -> Dict[str, Any]:
-    device_list = list(devices)
+    device_list = [device for device in devices if vulkan_device_is_hardware_gpu(device)]
     card_list = list(gpu_cards)
     if not target or not device_list:
         return {

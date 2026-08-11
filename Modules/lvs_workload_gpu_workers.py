@@ -374,6 +374,7 @@ class WorkloadGpuWorkerMixin:
         result_file: str = "",
         profile_mode: str = "steady",
         profile_intensity: str = "extreme",
+        buffer_bytes_override: int = 0,
     ) -> GpuWorkerSpec:
         return build_vulkan_transfer_worker_spec(
             self,
@@ -382,6 +383,7 @@ class WorkloadGpuWorkerMixin:
             result_file=result_file,
             profile_mode=profile_mode,
             profile_intensity=profile_intensity,
+            buffer_bytes_override=buffer_bytes_override,
         )
 
     def _build_python_vulkan_compute_worker(
@@ -394,6 +396,7 @@ class WorkloadGpuWorkerMixin:
         compute_variant: str = "hash",
         allocation_percent: int = 0,
         buffer_bytes_override: int = 0,
+        system_memory_fixed_commitment_bytes: int = 1024 * 1024,
     ) -> GpuWorkerSpec:
         return build_vulkan_compute_worker_spec(
             self,
@@ -405,6 +408,7 @@ class WorkloadGpuWorkerMixin:
             compute_variant=compute_variant,
             allocation_percent=allocation_percent,
             buffer_bytes_override=buffer_bytes_override,
+            system_memory_fixed_commitment_bytes=system_memory_fixed_commitment_bytes,
         )
 
     def _build_python_vulkan_vram_worker(
@@ -413,6 +417,7 @@ class WorkloadGpuWorkerMixin:
         target_vram_bytes: int,
         tuning_step: int = 0,
         result_file: str = "",
+        system_memory_fixed_commitment_bytes: int = 1024 * 1024,
     ) -> GpuWorkerSpec:
         return build_vulkan_vram_worker_spec(
             self,
@@ -420,6 +425,7 @@ class WorkloadGpuWorkerMixin:
             target_vram_bytes,
             tuning_step=tuning_step,
             result_file=result_file,
+            system_memory_fixed_commitment_bytes=system_memory_fixed_commitment_bytes,
         )
 
     def _build_python_opencl_vram_worker(

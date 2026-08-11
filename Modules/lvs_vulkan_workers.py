@@ -19,6 +19,7 @@ def build_python_vulkan_transfer_worker(
     result_file: str = "",
     profile_mode: str = "steady",
     profile_intensity: str = "extreme",
+    buffer_bytes_override: int = 0,
 ) -> GpuWorkerSpec:
     runtime = runner._python_runtime() or "python3"
     worker_path = DEFAULT_NATIVE_DIR / "vulkan_transfer_worker.py"
@@ -40,7 +41,7 @@ def build_python_vulkan_transfer_worker(
     target_id = str(target.get("target_id", "") if target else "")
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
-    buffer_bytes = runner._vulkan_transfer_buffer_bytes(target, params)
+    buffer_bytes = int(buffer_bytes_override or 0) or runner._vulkan_transfer_buffer_bytes(target, params)
     target_env = runner._vulkan_target_env(target)
     command = runner._wrap_gpu_command(
         [
@@ -115,6 +116,7 @@ def build_python_vulkan_compute_worker(
     compute_variant: str = "hash",
     allocation_percent: int = 0,
     buffer_bytes_override: int = 0,
+    system_memory_fixed_commitment_bytes: int = 1024 * 1024,
 ) -> GpuWorkerSpec:
     runtime = runner._python_runtime() or "python3"
     worker_path = DEFAULT_NATIVE_DIR / "vulkan_compute_worker.py"
@@ -170,6 +172,8 @@ def build_python_vulkan_compute_worker(
             str(target_vram_total),
             "--buffer-bytes",
             str(buffer_bytes),
+            "--system-memory-fixed-commitment-bytes",
+            str(max(0, int(system_memory_fixed_commitment_bytes or 0))),
             "--ramp-step-seconds",
             str(ramp_params["ramp_step_seconds"]),
             "--start-load-fraction",
@@ -222,6 +226,7 @@ def build_python_vulkan_vram_worker(
     target_vram_bytes: int,
     tuning_step: int = 0,
     result_file: str = "",
+    system_memory_fixed_commitment_bytes: int = 1024 * 1024,
 ) -> GpuWorkerSpec:
     spec = build_python_vulkan_compute_worker(
         runner,
@@ -232,6 +237,7 @@ def build_python_vulkan_vram_worker(
         profile_intensity="extreme",
         compute_variant="stateful_memory",
         buffer_bytes_override=target_vram_bytes,
+        system_memory_fixed_commitment_bytes=system_memory_fixed_commitment_bytes,
     )
     return GpuWorkerSpec(
         **{

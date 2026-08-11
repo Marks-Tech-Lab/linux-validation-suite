@@ -212,6 +212,7 @@ def run_egl_target_probe(
         "available": available and matched_target,
         "renderer": renderer,
         "vendor": vendor,
+        "max_texture_size": max(0, int(probe.get("max_texture_size", 0) or 0)),
         "reason": reason,
         "target_id": str(target.get("target_id", "") or ""),
         "target_dri_prime": str(target.get("dri_prime", "") or ""),

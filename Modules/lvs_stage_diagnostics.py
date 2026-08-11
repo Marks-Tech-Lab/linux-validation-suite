@@ -193,8 +193,17 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     gpu_3d_resolution = gpu_backend_diagnostics["gpu_3d_resolution"]
     vram_resolution = gpu_backend_diagnostics["vram_resolution"]
     backend_usage = gpu_backend_diagnostics["backend_usage"]
-    cmds = runner._build_commands(stage)
-    gpu_workers = runner._gpu_worker_specs(stage)
+    stage_memory_plan, gpu_workers = runner._resolved_stage_gpu_workers(stage)
+    try:
+        cmds = runner._build_commands(
+            stage,
+            stage_memory_plan=stage_memory_plan,
+            resolved_gpu_workers=gpu_workers,
+        )
+    except TypeError:
+        # Test/integration adapters predating the unified planner may expose the
+        # legacy callable shape; production WorkloadRunner accepts the plan.
+        cmds = runner._build_commands(stage)
     missing_tools = runner._missing_tools(cmds)
     cpu_mode_requested = runner._cpu_helper_mode(stage.modules.cpu) if stage.modules.cpu.enabled else ""
     cpu_preference_resolver = getattr(runner, "_cpu_backend_preference", None)
@@ -218,6 +227,20 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
 
     if stage.enabled and not workloads:
         issues.append("enabled stage has no enabled workloads")
+    if stage.enabled and not stage_memory_plan.get("valid", True):
+        issues.append(
+            "stage system-memory budget cannot satisfy minimum viable enabled allocations: "
+            + str(stage_memory_plan.get("resolution_reason") or "insufficient safe memory")
+        )
+    if stage.modules.memory.enabled and stage_memory_plan.get("unbudgeted_shared_gpu_workers"):
+        workers_text = ", ".join(
+            f"{item.get('backend')}@{item.get('target_id') or 'GPU'}"
+            for item in stage_memory_plan["unbudgeted_shared_gpu_workers"]
+        )
+        warnings.append(
+            "Combined RAM + shared-GPU stage includes GPU workers without an enforceable byte allocation bound: "
+            + workers_text
+        )
     if stage.modules.cpu.enabled and runner._cpu_command(stage.modules.cpu) is None:
         unavailable_reason = getattr(runner, "_cpu_unavailable_reason", None)
         cpu_unavailable_reason = unavailable_reason(stage.modules.cpu) if unavailable_reason else ""
@@ -518,6 +541,62 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             )
         )
 
+    def gpu_target_detail(target: Dict[str, Any]) -> Dict[str, Any]:
+        capability = runner._gpu_capability_profile(target)
+        return {
+            "card": target["card"],
+            "slot": target["slot"],
+            "target_id": target["target_id"],
+            "vendor": target.get("vendor", ""),
+            "name": target.get("name", ""),
+            "vendor_id": target.get("vendor_id", ""),
+            "device_id": target.get("device", ""),
+            "driver": target.get("driver", ""),
+            "platform_gpu_driver": target.get("platform_gpu_driver", ""),
+            "platform_gpu_compatible": target.get("platform_gpu_compatible", []),
+            "gpu_memory_kind": capability.get("memory_kind", "unknown"),
+            "gpu_memory_classification_source": capability.get("classification_source", ""),
+            "dedicated_vram_capacity_bytes": int(capability.get("dedicated_vram_capacity_bytes") or 0),
+            "shared_addressable_capacity_bytes": int(capability.get("shared_addressable_capacity_bytes") or 0),
+            "shared_addressable_capacity_status": capability.get("shared_addressable_capacity_status", "unknown"),
+            "api_addressable_capacity_bytes": int(capability.get("api_addressable_capacity_bytes") or 0),
+            "api_addressable_capacity_source": capability.get("api_addressable_capacity_source", ""),
+            "total_capacity_trust": capability.get("total_capacity_trust", "unknown"),
+            "system_memory_pool_ceiling_bytes": int(capability.get("system_memory_pool_ceiling_bytes") or 0),
+            "opencl_max_single_allocation_bytes": int(capability.get("opencl_max_single_allocation_bytes") or 0),
+            "vulkan_max_storage_buffer_range_bytes": int(capability.get("vulkan_max_storage_buffer_range_bytes") or 0),
+            "vulkan_max_memory_allocation_count": int(capability.get("vulkan_max_memory_allocation_count") or 0),
+            "gles_max_texture_size": int(capability.get("gles_max_texture_size") or 0),
+            "memory_capacity_source": (
+                capability.get("shared_addressable_capacity_source")
+                if capability.get("memory_kind") == "shared"
+                else capability.get("dedicated_vram_capacity_source")
+                or ""
+            ),
+            "reported_vram_total_bytes": int(capability.get("reported_vram_total_bytes") or 0),
+            "reported_vram_total_semantics": capability.get("reported_vram_total_semantics", "unknown"),
+            "ambiguous_integrated_vram_report_bytes": int(capability.get("ambiguous_integrated_vram_report_bytes") or 0),
+            "current_gpu_memory_used_bytes": capability.get("current_gpu_memory_used_bytes"),
+            "current_gpu_memory_used_source": capability.get("current_gpu_memory_used_source", ""),
+            "current_gpu_memory_available_bytes": capability.get("current_gpu_memory_available_bytes"),
+            "current_gpu_memory_available_source": capability.get("current_gpu_memory_available_source", ""),
+            "firmware_preallocated_or_stolen_bytes": capability.get("firmware_preallocated_or_stolen_bytes"),
+            "firmware_preallocated_or_stolen_source": capability.get("firmware_preallocated_or_stolen_source", ""),
+            "vram_total_gb": round((int(target.get("vram_total") or 0) / (1024 ** 3)), 2)
+            if target.get("vram_total")
+            else 0,
+            "vulkan_device_name": (
+                str((runner._vulkan_device_for_target(target).get("device") or {}).get("deviceName", "") or "")
+                if runner._vulkan_runtime_details().get("available")
+                else ""
+            ),
+            "vulkan_selection_ambiguous": (
+                bool(runner._vulkan_device_for_target(target).get("ambiguous"))
+                if runner._vulkan_runtime_details().get("available")
+                else False
+            ),
+        }
+
     return {
         "stage_id": stage.id,
         "label": label,
@@ -570,32 +649,9 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             gpu_3d_resolution=gpu_3d_resolution,
             vram_resolution=vram_resolution,
         ),
-        "gpu_target_details": [
-            {
-                "card": target["card"],
-                "slot": target["slot"],
-                "target_id": target["target_id"],
-                "vendor": target.get("vendor", ""),
-                "vendor_id": target.get("vendor_id", ""),
-                "device_id": target.get("device", ""),
-                "driver": target.get("driver", ""),
-                "vram_total_gb": round((int(target.get("vram_total") or 0) / (1024 ** 3)), 2)
-                if target.get("vram_total")
-                else 0,
-                "vulkan_device_name": (
-                    str((runner._vulkan_device_for_target(target).get("device") or {}).get("deviceName", "") or "")
-                    if runner._vulkan_runtime_details().get("available")
-                    else ""
-                ),
-                "vulkan_selection_ambiguous": (
-                    bool(runner._vulkan_device_for_target(target).get("ambiguous"))
-                    if runner._vulkan_runtime_details().get("available")
-                    else False
-                ),
-            }
-            for target in gpu_targets
-        ],
+        "gpu_target_details": [gpu_target_detail(target) for target in gpu_targets],
         "gpu_workers": [runner.serialize_gpu_worker(worker) for worker in gpu_workers],
+        "system_memory_plan": stage_memory_plan,
         "backend_usage": backend_usage,
         "cpu_backend_preference": cpu_backend_preference,
         "cpu_mode_requested": cpu_mode_requested,

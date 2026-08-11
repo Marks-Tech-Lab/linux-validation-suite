@@ -45,6 +45,7 @@ def build_egl_probe_script() -> str:
         EGL_DRM_RENDER_NODE_FILE_EXT = 0x3377
         GL_VENDOR = 0x1F00
         GL_RENDERER = 0x1F01
+        GL_MAX_TEXTURE_SIZE = 0x0D33
 
         def as_text(value):
             if not value:
@@ -106,7 +107,7 @@ def build_egl_probe_script() -> str:
                     }
             return EGLDisplay(0), {}
 
-        result = {"available": False, "vendor": "", "renderer": "", "reason": "", "egl_device_exact_match": False, "egl_selected_device": {}}
+        result = {"available": False, "vendor": "", "renderer": "", "max_texture_size": 0, "reason": "", "egl_device_exact_match": False, "egl_selected_device": {}}
         try:
             PFN = ctypes.CFUNCTYPE(EGLDisplay, EGLenum, ctypes.c_void_p, ctypes.POINTER(EGLint))
             EGL.eglGetProcAddress.restype = ctypes.c_void_p
@@ -127,6 +128,8 @@ def build_egl_probe_script() -> str:
             EGL.eglMakeCurrent.restype = EGLBoolean
             GLES.glGetString.argtypes = [ctypes.c_uint]
             GLES.glGetString.restype = ctypes.c_char_p
+            GLES.glGetIntegerv.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]
+            GLES.glGetIntegerv.restype = None
 
             display, selected_device = query_egl_device_display(get_platform_display)
             if not display:
@@ -167,6 +170,9 @@ def build_egl_probe_script() -> str:
                 raise RuntimeError("eglMakeCurrent failed")
             result["vendor"] = as_text(GLES.glGetString(GL_VENDOR))
             result["renderer"] = as_text(GLES.glGetString(GL_RENDERER))
+            max_texture_size = ctypes.c_int()
+            GLES.glGetIntegerv(GL_MAX_TEXTURE_SIZE, ctypes.byref(max_texture_size))
+            result["max_texture_size"] = max(0, int(max_texture_size.value))
             result["egl_selected_device"] = selected_device
             result["egl_device_exact_match"] = selected_device.get("selection") == "egl_device"
             result["available"] = True

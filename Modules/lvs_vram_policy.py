@@ -211,11 +211,18 @@ def resolve_target_vram_allocation_bytes(
 ) -> int:
     percent = max(1, min(int(allocation_percent or 0), 95))
     target_total = int(target.get("vram_total") or 0) if target else 0
-    if target is not None and target_total <= 0:
+    capability = capability_for_target(target) if target is not None else {}
+    memory_kind = str(capability.get("memory_kind") or "unknown").strip().lower()
+    if memory_kind == "shared":
+        target_total = int(capability.get("shared_addressable_capacity_bytes") or 0)
+        if target_total <= 0:
+            # The stage system-memory pool will translate profile intent into
+            # a safe assignment. MemTotal is not a proven GPU capacity.
+            return 0
+    elif target is not None and target_total <= 0:
         opencl_device = opencl_device_for_target(target)
         if opencl_device:
             opencl_global = int(opencl_device.get("global_mem_bytes", 0) or 0)
-            capability = capability_for_target(target)
             device_class = str(capability.get("device_class", "") or "").strip().lower()
             if opencl_device_looks_like_shared_memory(
                 device_class=device_class,
@@ -241,7 +248,6 @@ def resolve_target_vram_allocation_bytes(
         target_total = max(totals) if totals else 0
     if target_total <= 0:
         return 512 * 1024 * 1024
-    capability = capability_for_target(target) if target is not None else {}
     return target_vram_allocation_bytes(
         allocation_percent=percent,
         target=target,

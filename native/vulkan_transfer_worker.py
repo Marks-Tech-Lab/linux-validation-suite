@@ -12,6 +12,8 @@ import struct
 import sys
 import time
 
+from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+
 
 VK_SUCCESS = 0
 VK_TRUE = 1
@@ -558,6 +560,9 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
     device_id = int.from_bytes(raw[12:16], "little")
     device_type = int.from_bytes(raw[16:20], "little")
     name = raw[20:276].split(b"\0", 1)[0].decode("utf-8", "ignore")
+    limits_offset = 292
+    max_storage_buffer_range = int.from_bytes(raw[limits_offset + 28:limits_offset + 32], "little")
+    max_memory_allocation_count = int.from_bytes(raw[limits_offset + 36:limits_offset + 40], "little")
     type_names = {
         0: "other",
         1: "integrated",
@@ -573,6 +578,8 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
         "device_id": f"{device_id:04x}",
         "device_type": type_names.get(device_type, str(device_type)),
         "device_name": name,
+        "max_storage_buffer_range_bytes": max_storage_buffer_range,
+        "max_memory_allocation_count": max_memory_allocation_count,
         "pci_slot": read_pci_slot(vk, physical_device),
     }
 
@@ -774,6 +781,17 @@ def main() -> int:
         "buffer_size_avg_bytes": 0,
         "buffer_allocation_bytes": 0,
         "allocation_shortfall_bytes": 0,
+        "allocation_attempts": 0,
+        "allocation_failures": 0,
+        "allocation_backoff_attempts": [],
+        "actual_allocated_bytes": 0,
+        "staging_allocation_bytes": 0,
+        "allocation_ratio": 0.0,
+        "allocation_outcome": "not_started",
+        "allocation_valid": False,
+        "runtime_memory_guard_triggered": False,
+        "allocation_growth_stopped": False,
+        "runtime_memory_guard_details": {},
         "allocation_strategy": "transfer_fill_copy_single_buffer_device_local",
         "requested_device_local_heap_percent": 0.0,
         "target_device_local_heap_percent": 0.0,
@@ -910,8 +928,8 @@ def main() -> int:
                 device_local_heap_bytes += int(heap.size)
         state["device_local_heap_bytes"] = int(device_local_heap_bytes)
         state["device_local_heap_gb"] = round(device_local_heap_bytes / (1024 ** 3), 3) if device_local_heap_bytes else 0.0
-        requested_size = max(16 * 1024 * 1024, int(args.buffer_bytes))
-        requested_size = min(requested_size, 512 * 1024 * 1024)
+        assigned_target_size = max(16 * 1024 * 1024, int(args.buffer_bytes))
+        requested_size = min(assigned_target_size, 512 * 1024 * 1024)
         requested_size -= requested_size % 4
         state["requested_buffer_bytes"] = int(args.buffer_bytes)
         if device_local_heap_bytes:
@@ -919,6 +937,20 @@ def main() -> int:
             state["target_device_local_heap_percent"] = round((int(requested_size) / float(device_local_heap_bytes)) * 100.0, 4)
 
         while requested_size >= 16 * 1024 * 1024:
+            shared_memory_device = str(args.device_class or "").strip().lower() != "discrete"
+            guard_claim_bytes = 2 * int(requested_size)
+            guard_claim = claim_runtime_allocation_growth(
+                guard_claim_bytes,
+                shared_system_memory=shared_memory_device,
+            )
+            if not guard_claim.get("allowed"):
+                state["runtime_memory_guard_triggered"] = True
+                state["allocation_growth_stopped"] = True
+                state["runtime_memory_guard_details"] = guard_claim
+                state["target_cap_reason"] = "runtime_memory_guard"
+                break
+            state["allocation_attempts"] += 1
+            guard_overage = 0
             try:
                 device_buffer, device_memory, device_allocation_bytes, device_memory_type = create_buffer(
                     vk,
@@ -929,7 +961,7 @@ def main() -> int:
                     0,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 )
-                staging_buffer, staging_memory, _, staging_memory_type = create_buffer(
+                staging_buffer, staging_memory, staging_allocation_bytes, staging_memory_type = create_buffer(
                     vk,
                     device,
                     memory_props,
@@ -937,8 +969,23 @@ def main() -> int:
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 )
+                if shared_memory_device:
+                    guard_overage = max(
+                        0,
+                        int(device_allocation_bytes) + int(staging_allocation_bytes) - 2 * int(assigned_target_size),
+                    )
+                    if guard_overage > 0:
+                        raise RuntimeError("shared system-memory target guard")
                 break
-            except Exception:
+            except Exception as exc:
+                release_runtime_allocation_claim(
+                    guard_claim_bytes,
+                    shared_system_memory=shared_memory_device,
+                )
+                state["allocation_failures"] += 1
+                state["allocation_backoff_attempts"].append(
+                    {"requested_bytes": int(requested_size), "error": str(exc)}
+                )
                 if device_buffer:
                     try:
                         vk.vkDestroyBuffer(device, device_buffer, None)
@@ -951,18 +998,41 @@ def main() -> int:
                     except Exception:
                         pass
                     device_memory = ctypes.c_void_p()
-                requested_size //= 2
+                if staging_buffer:
+                    try:
+                        vk.vkDestroyBuffer(device, staging_buffer, None)
+                    except Exception:
+                        pass
+                    staging_buffer = ctypes.c_void_p()
+                if staging_memory:
+                    try:
+                        vk.vkFreeMemory(device, staging_memory, None)
+                    except Exception:
+                        pass
+                    staging_memory = ctypes.c_void_p()
+                requested_size = requested_size - guard_overage if guard_overage > 0 else requested_size // 2
                 requested_size -= requested_size % 4
         if not device_buffer or not staging_buffer:
             raise RuntimeError("unable to allocate Vulkan transfer buffers")
         state["buffer_bytes"] = requested_size
-        state["target_buffer_bytes"] = requested_size
+        state["target_buffer_bytes"] = int(assigned_target_size)
         state["buffer_count"] = 1
         state["buffer_size_min_bytes"] = int(requested_size)
         state["buffer_size_max_bytes"] = int(requested_size)
         state["buffer_size_avg_bytes"] = int(requested_size)
         state["buffer_allocation_bytes"] = int(device_allocation_bytes)
-        state["allocation_shortfall_bytes"] = 0
+        state["allocation_shortfall_bytes"] = max(0, int(assigned_target_size) - int(requested_size))
+        state["actual_allocated_bytes"] = int(device_allocation_bytes) + int(staging_allocation_bytes)
+        state["staging_allocation_bytes"] = int(staging_allocation_bytes)
+        allocation_ratio = requested_size / float(max(1, assigned_target_size))
+        state["allocation_ratio"] = round(allocation_ratio, 6)
+        state["allocation_outcome"] = (
+            "full_target_achieved" if requested_size >= assigned_target_size
+            else "substantial_partial_allocation" if allocation_ratio >= 0.85
+            else "partial_allocation" if allocation_ratio >= 0.60
+            else "insufficient_partial_allocation"
+        )
+        state["allocation_valid"] = allocation_ratio >= 0.60
         state["buffer_memory_type_index"] = int(device_memory_type)
         state["staging_memory_type_index"] = int(staging_memory_type)
         if 0 <= int(device_memory_type) < int(memory_props.memoryTypeCount):
@@ -1123,6 +1193,11 @@ def main() -> int:
             time.sleep(0.001)
         return 0
     except Exception as exc:
+        if int(state.get("actual_allocated_bytes") or 0) > 0:
+            state["allocation_outcome"] = "runtime_failure_after_partial_allocation"
+        else:
+            state["allocation_outcome"] = "allocation_failed"
+        state["allocation_valid"] = False
         record_error(exc)
         return 12
     finally:

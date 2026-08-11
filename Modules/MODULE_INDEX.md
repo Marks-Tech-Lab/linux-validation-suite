@@ -169,6 +169,9 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_workload_cpu_memory.py` | Internal adapter | Connects CPU and memory execution helpers to the workload runner. |
 | `lvs_workload_gpu_runtime.py`, `lvs_workload_gpu_workers.py` | Internal adapter | Connect GPU runtime resolution and worker policy to the runner. |
 | `lvs_cpu_execution.py`, `lvs_memory_execution.py` | Internal | Build and evaluate CPU and memory workload commands. |
+| `lvs_system_memory_budget.py` | Internal policy | Resolve one launch-time system-memory pool across RAM and shared-GPU consumers. |
+| `lvs_linux_memory.py`, `lvs_runtime_memory_guard.py` | Internal policy | Read Linux memory accounting without double counting and enforce one stage-wide runtime MemAvailable safety boundary. |
+| `lvs_python_memory_worker.py` | Internal worker | Execute the Python RAM fallback while durably recording exact incremental allocation attainment. |
 | `lvs_native_helpers.py` | Internal | Resolves native helper build and runtime availability. |
 
 ### GPU and backend implementation
@@ -176,6 +179,8 @@ Every other TUI helper must remain importable without Textual installed.
 | Module or family | Surface | One-line ownership |
 | --- | --- | --- |
 | `lvs_gpu_identity.py`, `lvs_gpu_targets.py`, `lvs_gpu_capability.py` | Internal contract | Normalize GPU identity, selectable targets, and capability policy. |
+| `lvs_gpu_memory_model.py` | Internal contract | Classify dedicated, shared, and ambiguous GPU memory capacities without conflating usage or firmware reservations. |
+| `lvs_gpu_allocation_plan.py` | Internal policy | Split worker targets into API-legal chunks and normalize achieved-allocation outcomes. |
 | `lvs_gpu_backend_catalog.py`, `lvs_gpu_backend_support.py` | Internal policy | Define available backends and per-target support. |
 | `lvs_gpu_backend_resolver.py`, `lvs_gpu_backend_resolution.py`, `lvs_gpu_backend_runner.py` | Internal | Resolve backend choices, messages, and runner integration. |
 | `lvs_gpu_target_resolution.py` | Internal | Resolves runtime OpenCL and Vulkan targets. |

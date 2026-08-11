@@ -4,6 +4,30 @@ import textwrap
 from typing import Any, Dict, Optional
 
 
+def opencl_compute_fixed_commitment_bytes(
+    *,
+    surface_size: int,
+    compute_units: int,
+    max_work_group_size: int,
+    parallelism_hint: int,
+    max_single_allocation_bytes: int,
+    device_class: str,
+    safe_mode_enabled: bool,
+) -> int:
+    work_group_hint = max(64, int(max_work_group_size or 0) or 256)
+    compute_multiplier = max(1, min(3, int(compute_units or 0) // 16 if int(compute_units or 0) > 0 else 1))
+    work_items = max(1 << 20, min(1 << 25, int(surface_size) * int(surface_size) * compute_multiplier))
+    buffer_words = max(1 << 20, min(1 << 24, max(work_items, work_group_hint * max(8, int(compute_units or 0)) * 32)))
+    buffer_bytes = buffer_words * 4
+    if int(max_single_allocation_bytes or 0) > 0:
+        buffer_bytes = min(buffer_bytes, int(max_single_allocation_bytes))
+    base_count = 2 if str(device_class or "").strip().lower() != "discrete" else 4
+    buffer_count = min(6, max(base_count, base_count + min(1, int(parallelism_hint or 1) - 1) + min(1, int(compute_units or 0) // 40)))
+    if safe_mode_enabled and str(device_class or "").strip().lower() != "discrete":
+        buffer_count = 1
+    return max(0, int(buffer_bytes) * max(1, int(buffer_count)))
+
+
 def build_opencl_compute_workload_script(
     *,
     target_vendor: str,
@@ -42,6 +66,8 @@ def build_opencl_compute_workload_script(
         import re
         import signal
         import time
+
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
 
         TARGET_VENDOR = {target_vendor!r}
         TARGET_VENDOR_ID = {target_vendor_id!r}
@@ -192,6 +218,13 @@ def build_opencl_compute_workload_script(
             "selection_candidates": [],
             "device_global_mem_bytes": 0,
             "device_max_alloc_bytes": 0,
+            "max_single_allocation_bytes": 0,
+            "max_buffer_or_object_bytes": 0,
+            "actual_allocated_bytes": 0,
+            "allocation_outcome": "not_started",
+            "runtime_memory_guard_triggered": False,
+            "allocation_growth_stopped": False,
+            "runtime_memory_guard_details": {{}},
             "platform_name": "",
             "platform_vendor": "",
             "platform_version": "",
@@ -806,6 +839,8 @@ def build_opencl_compute_workload_script(
             compute_rounds = max(48, min(768, SHADER_ITERATIONS * 8 + min(96, compute_units * 3) + min(48, clock_hint // 100)))
             buffer_words = max(1 << 20, min(1 << 24, max(work_items, work_group_hint * max(8, compute_units) * 32)))
             max_alloc = int(selected["max_alloc_bytes"]) or 0
+            state["max_single_allocation_bytes"] = max(0, max_alloc)
+            state["max_buffer_or_object_bytes"] = max(0, max_alloc)
             if max_alloc > 0:
                 buffer_bytes = min(buffer_words * ctypes.sizeof(ctypes.c_uint32), max_alloc)
             else:
@@ -832,9 +867,30 @@ def build_opencl_compute_workload_script(
             state["runtime_buffer_count"] = int(runtime_buffer_count)
 
             for _ in range(runtime_buffer_count):
+                guard_claim = claim_runtime_allocation_growth(
+                    buffer_bytes,
+                    shared_system_memory=DEVICE_CLASS != "discrete",
+                )
+                if not guard_claim.get("allowed"):
+                    state["runtime_memory_guard_triggered"] = True
+                    state["allocation_growth_stopped"] = True
+                    state["runtime_memory_guard_details"] = guard_claim
+                    state["target_cap_reason"] = "runtime_memory_guard"
+                    break
                 buffer_handle = cl_mem(CL.clCreateBuffer(context, CL_MEM_READ_WRITE, buffer_bytes, None, ctypes.byref(error_code)))
-                check(error_code.value, "clCreateBuffer")
+                if int(error_code.value) != CL_SUCCESS or not buffer_handle:
+                    release_runtime_allocation_claim(
+                        buffer_bytes,
+                        shared_system_memory=DEVICE_CLASS != "discrete",
+                    )
+                    check(error_code.value, "clCreateBuffer")
                 buffers.append(buffer_handle)
+
+            if not buffers:
+                raise RuntimeError("unable to allocate a meaningful OpenCL compute buffer")
+
+            state["actual_allocated_bytes"] = int(buffer_bytes) * len(buffers)
+            state["allocation_outcome"] = "fixed_compute_buffers_achieved"
 
             write_result()
             running = True

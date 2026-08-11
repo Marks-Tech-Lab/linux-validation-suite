@@ -29,6 +29,7 @@ class StageProcess:
     ended_iso: str = ""
     ended_monotonic: Optional[float] = None
     expected_termination: bool = False
+    system_memory_plan: Optional[Dict[str, Any]] = None
 
 
 def launch_stage_processes_from_plan(
@@ -95,6 +96,7 @@ def launch_stage_processes_from_plan(
                     executable_version=version,
                     started_iso=started_iso,
                     started_monotonic=started_monotonic,
+                    system_memory_plan=getattr(planned, "system_memory_plan", None),
                 )
             )
         except FileNotFoundError:

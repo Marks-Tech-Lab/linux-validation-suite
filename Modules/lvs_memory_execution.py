@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from Modules.lvs_system_memory_budget import system_memory_budget_bytes
+from Modules.lvs_python_memory_worker import python_memory_fallback_script
+
 
 def memory_worker_count(threads: str, total_cpu_count: int) -> int:
     total = max(1, total_cpu_count or 1)
@@ -17,53 +20,15 @@ def memory_worker_count(threads: str, total_cpu_count: int) -> int:
 
 def memory_target_bytes(allocation_percent: int, total_kb: int, available_kb: int) -> int:
     percent = max(1, min(allocation_percent, 95))
-    effective_available_kb = available_kb or total_kb
     if total_kb <= 0:
-        return 512 * 1024 * 1024
-    target_kb = int(min(total_kb * (percent / 100.0), effective_available_kb * 0.85))
-    return max(128 * 1024 * 1024, target_kb * 1024)
+        return 0
+    requested_bytes = int(total_kb * 1024 * (percent / 100.0))
+    budget = system_memory_budget_bytes(total_kb * 1024, max(0, int(available_kb or 0)) * 1024)["system_memory_budget_bytes"]
+    return max(0, min(requested_bytes, budget))
 
 
-def build_memory_fallback_script(allocation_percent: int) -> str:
-    percent = max(1, min(allocation_percent, 95))
-    return "\n".join(
-        [
-            "import signal",
-            "import time",
-            "buffers = []",
-            "def read_meminfo_kb(key):",
-            "    try:",
-            "        with open('/proc/meminfo', 'r', encoding='utf-8', errors='ignore') as handle:",
-            "            for line in handle:",
-            "                if line.startswith(key + ':'):",
-            "                    return int(line.split(':', 1)[1].strip().split()[0])",
-            "    except Exception:",
-            "        return 0",
-            "    return 0",
-            "def stop(*_):",
-            "    raise SystemExit(0)",
-            "signal.signal(signal.SIGTERM, stop)",
-            "signal.signal(signal.SIGINT, stop)",
-            "total_kb = read_meminfo_kb('MemTotal')",
-            "available_kb = read_meminfo_kb('MemAvailable') or total_kb",
-            f"target_kb = int(min(total_kb * ({percent} / 100.0), available_kb * 0.85))",
-            "chunk_kb = 256 * 1024",
-            "page_size = 4096",
-            "remaining_kb = max(0, target_kb)",
-            "while remaining_kb > 0:",
-            "    size_kb = min(chunk_kb, remaining_kb)",
-            "    try:",
-            "        block = bytearray(size_kb * 1024)",
-            "    except MemoryError:",
-            "        break",
-            "    for idx in range(0, len(block), page_size):",
-            "        block[idx] = 1",
-            "    buffers.append(block)",
-            "    remaining_kb -= size_kb",
-            "while True:",
-            "    time.sleep(1)",
-        ]
-    )
+def build_memory_fallback_script(target_bytes: int, result_file: str = "") -> str:
+    return python_memory_fallback_script(target_bytes, result_file)
 
 
 def build_memory_command(
@@ -89,7 +54,7 @@ def build_memory_command(
             cmd.extend(["--result-file", result_file])
         return cmd
     if stress_ng_available:
-        return ["stress-ng", "--vm", "1", "--vm-bytes", f"{allocation_percent}%", "--vm-keep"]
+        return ["stress-ng", "--vm", "1", "--vm-bytes", str(max(0, int(target_bytes or 0))), "--vm-keep"]
     if not python_runtime:
         return None
-    return [python_runtime, "-c", build_memory_fallback_script(allocation_percent)]
+    return [python_runtime, "-c", build_memory_fallback_script(target_bytes, result_file)]

@@ -20,6 +20,7 @@ from .lvs_profile_report_text import (
     profile_execution_cpu_line,
     profile_execution_gpu_3d_line,
     profile_execution_gpu_detail_lines,
+    profile_execution_system_memory_lines,
     profile_execution_memory_line,
     profile_execution_stage_header_line,
     profile_execution_stage_status,

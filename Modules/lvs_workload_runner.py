@@ -28,6 +28,11 @@ from Modules.lvs_settings import (
     GlobalSettings,
 )
 from Modules.lvs_stage_launch_plan import build_stage_launch_commands
+from Modules.lvs_runtime_memory_guard import initialize_runtime_memory_guard
+from Modules.lvs_system_memory_budget import (
+    apply_stage_system_memory_plan,
+    build_stage_system_memory_plan,
+)
 from Modules.lvs_dry_run import (
     build_dry_run_plan,
     build_stage_diagnostics,
@@ -87,7 +92,11 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
         return max(0, int(self._settings.gpu_safe_max_tuning_step or 0))
 
     def _cap_gpu_vram_target_bytes(self, target: Optional[Dict[str, Any]], requested_bytes: int) -> int:
-        target_total = int(target.get("vram_total") or 0) if target else 0
+        capability = self._gpu_capability_profile(target) if target else {}
+        if str(capability.get("memory_kind") or "") == "shared":
+            target_total = int(capability.get("shared_addressable_capacity_bytes") or 0)
+        else:
+            target_total = int(target.get("vram_total") or 0) if target else 0
         return vram_policy_cap_gpu_vram_target_bytes(
             requested_bytes=requested_bytes,
             target_total=target_total,
@@ -178,12 +187,32 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
             worker_results_dir.mkdir(parents=True, exist_ok=True)
         if worker_logs_dir is not None:
             worker_logs_dir.mkdir(parents=True, exist_ok=True)
-        commands = build_stage_launch_commands(self, stage, cpu_kernel_flavor, worker_results_dir)
+        workers = self._gpu_worker_specs(stage)
+        stage_memory_plan = self._stage_system_memory_plan(stage, workers)
+        if not stage_memory_plan.get("valid", True):
+            raise RuntimeError(
+                "stage system-memory budget is not launchable: "
+                + str(stage_memory_plan.get("resolution_reason") or "insufficient safe memory")
+            )
+        guard_base = worker_results_dir if worker_results_dir is not None else Path(tempfile.gettempdir())
+        guard_path = guard_base / f"{stage.id}_runtime_memory_guard.json"
+        stage_memory_plan["runtime_memory_guard_temporary"] = worker_results_dir is None
+        initialize_runtime_memory_guard(stage_memory_plan, guard_path)
+        resolved_workers = apply_stage_system_memory_plan(workers, stage_memory_plan)
+        commands = build_stage_launch_commands(
+            self,
+            stage,
+            cpu_kernel_flavor,
+            worker_results_dir,
+            stage_memory_plan=stage_memory_plan,
+            resolved_gpu_workers=resolved_workers,
+        )
+        command_env = self._command_env({"LVS_RUNTIME_MEMORY_GUARD_PATH": str(guard_path)})
         return launch_stage_processes_from_plan(
             commands,
             stage_id=stage.id,
             worker_logs_dir=worker_logs_dir,
-            command_env=self._command_env(),
+            command_env=command_env,
         )
 
     def launch_commands(self, stage: StageConfig, cpu_kernel_flavor: str = "") -> List[subprocess.Popen]:
@@ -191,6 +220,15 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
 
     def stop_stage_processes(self, processes: List[StageProcess]) -> None:
         stop_stage_process_list(processes)
+        plan = next(
+            (entry.system_memory_plan for entry in processes if getattr(entry, "system_memory_plan", None)),
+            None,
+        )
+        if plan and plan.get("runtime_memory_guard_temporary"):
+            guard_path = str((plan.get("runtime_memory_guard") or {}).get("control_path") or "")
+            if guard_path:
+                Path(guard_path).unlink(missing_ok=True)
+                Path(guard_path + ".lock").unlink(missing_ok=True)
 
     def stop_processes(self, processes: List[subprocess.Popen]) -> None:
         stop_process_list(processes)
@@ -216,17 +254,40 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
                 missing.append(cmd[0])
         return missing
 
-    def _build_commands(self, stage: StageConfig, cpu_kernel_flavor: str = "") -> List[List[str]]:
-        cmds: List[List[str]] = []
-        if not stage.enabled:
-            return cmds
-        if stage.modules.cpu.enabled:
-            cpu_cmd = self._cpu_command(stage.modules.cpu, cpu_kernel_flavor)
-            if cpu_cmd:
-                cmds.append(cpu_cmd)
-        if stage.modules.memory.enabled:
-            mem_cmd = self._memory_command(stage.modules.memory)
-            if mem_cmd:
-                cmds.append(mem_cmd)
-        cmds.extend(worker.command for worker in self._gpu_worker_specs(stage))
-        return cmds
+    def _build_commands(
+        self,
+        stage: StageConfig,
+        cpu_kernel_flavor: str = "",
+        stage_memory_plan: Optional[Dict[str, Any]] = None,
+        resolved_gpu_workers: Optional[List[Any]] = None,
+    ) -> List[List[str]]:
+        return [
+            entry.command
+            for entry in build_stage_launch_commands(
+                self,
+                stage,
+                cpu_kernel_flavor,
+                stage_memory_plan=stage_memory_plan,
+                resolved_gpu_workers=resolved_gpu_workers,
+            )
+        ]
+
+    def _stage_system_memory_plan(
+        self,
+        stage: StageConfig,
+        gpu_workers: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        workers = list(gpu_workers) if gpu_workers is not None else self._gpu_worker_specs(stage)
+        snapshot = self._linux_memory_snapshot()
+        return build_stage_system_memory_plan(
+            stage=stage,
+            gpu_workers=workers,
+            total_bytes=int(snapshot.get("mem_total_bytes") or 0),
+            available_bytes=int(snapshot.get("mem_available_bytes") or 0),
+            memory_snapshot=snapshot,
+        )
+
+    def _resolved_stage_gpu_workers(self, stage: StageConfig) -> tuple[Dict[str, Any], List[Any]]:
+        workers = self._gpu_worker_specs(stage)
+        plan = self._stage_system_memory_plan(stage, workers)
+        return plan, apply_stage_system_memory_plan(workers, plan)

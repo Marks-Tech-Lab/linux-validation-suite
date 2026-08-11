@@ -40,6 +40,7 @@ from Modules.lvs_memory_execution import (
     memory_worker_count,
 )
 from Modules.lvs_memory_architecture import native_memory_helper_binary_name
+from Modules.lvs_linux_memory import read_linux_memory_snapshot
 from Modules.lvs_native_helpers import find_c_compiler
 from Modules.lvs_telemetry_collector import TelemetryCollector
 
@@ -305,12 +306,24 @@ class WorkloadCpuMemoryMixin:
             return str(self._cpu_python_fallback_policy(cpu).get("resolved_mode") or "")
         return ""
 
-    def _memory_command(self, mem: Any, result_file: str = "") -> Optional[List[str]]:
+    def _memory_command(
+        self,
+        mem: Any,
+        result_file: str = "",
+        resolved_target_bytes: Optional[int] = None,
+    ) -> Optional[List[str]]:
         helper = self._memory_helper_status()
+        target_bytes = (
+            self._memory_target_bytes(mem.allocation_percent)
+            if resolved_target_bytes is None
+            else max(0, int(resolved_target_bytes))
+        )
+        if target_bytes <= 0:
+            return None
         return build_memory_command(
             helper_available=bool(helper.get("available")),
             helper_path=str(helper.get("path") or ""),
-            target_bytes=self._memory_target_bytes(mem.allocation_percent),
+            target_bytes=target_bytes,
             worker_count=self._memory_worker_count(mem),
             allocation_percent=mem.allocation_percent,
             stress_ng_available=self._command_exists("stress-ng"),
@@ -330,19 +343,13 @@ class WorkloadCpuMemoryMixin:
     def _memory_worker_count(self, mem: Any) -> int:
         return memory_worker_count(mem.threads, os.cpu_count() or 1)
 
-    def _read_meminfo_kb(self, key: str) -> int:
-        try:
-            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
-                if line.startswith(key + ":"):
-                    return int(line.split(":", 1)[1].strip().split()[0])
-        except Exception:
-            return 0
-        return 0
-
     def _memory_target_bytes(self, allocation_percent: int) -> int:
-        total_kb = self._read_meminfo_kb("MemTotal")
-        available_kb = self._read_meminfo_kb("MemAvailable")
-        return memory_target_bytes(allocation_percent, total_kb, available_kb)
+        snapshot = self._linux_memory_snapshot()
+        return memory_target_bytes(
+            allocation_percent,
+            int(snapshot.get("mem_total_bytes") or 0) // 1024,
+            int(snapshot.get("mem_available_bytes") or 0) // 1024,
+        )
 
     def _cpu_worker_count(self, cpu: Any) -> int:
         total = max(1, os.cpu_count() or 1)
@@ -361,13 +368,14 @@ class WorkloadCpuMemoryMixin:
     def _cpu_fallback_script(self, cpu: Any, worker_count: int) -> str:
         return build_cpu_fallback_script(cpu.instruction_set, cpu.mode, worker_count)
 
-    def _memory_fallback_script(self, allocation_percent: int) -> str:
-        return build_memory_fallback_script(allocation_percent)
+    def _memory_fallback_script(self, target_bytes: int, result_file: str = "") -> str:
+        return build_memory_fallback_script(target_bytes, result_file)
 
     def _system_memory_total_bytes(self) -> int:
-        total_kb = self._read_meminfo_kb("MemTotal")
-        return max(0, int(total_kb) * 1024)
+        return int(self._linux_memory_snapshot().get("mem_total_bytes") or 0)
 
     def _system_memory_available_bytes(self) -> int:
-        available_kb = self._read_meminfo_kb("MemAvailable")
-        return max(0, int(available_kb) * 1024)
+        return int(self._linux_memory_snapshot().get("mem_available_bytes") or 0)
+
+    def _linux_memory_snapshot(self) -> Dict[str, Any]:
+        return read_linux_memory_snapshot()

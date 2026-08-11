@@ -39,6 +39,8 @@ def build_opencl_vram_workload_script(
         import sys
         import time
 
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+
         TARGET_VRAM_BYTES = {int(target_vram_bytes)}
         TARGET_VENDOR = {json.dumps(target_vendor)}
         TARGET_VENDOR_ID = {json.dumps(target_vendor_id)}
@@ -93,11 +95,23 @@ def build_opencl_vram_workload_script(
             "last_successful_bytes": 0,
             "allocation_attempts": 0,
             "allocation_failures": 0,
+            "allocation_backoff_attempts": [],
             "allocation_exhausted": False,
             "allocation_touch_count": 0,
             "max_buffer_count": 0,
+            "max_single_allocation_bytes": 0,
+            "max_buffer_or_object_bytes": 0,
+            "allocation_granularity_bytes": 4096,
+            "actual_allocated_bytes": 0,
+            "allocation_ratio": 0.0,
+            "allocation_outcome": "not_started",
+            "allocation_valid": False,
+            "allocation_runtime_failed": False,
             "active_fill_buffer_count": 0,
             "safe_mode_enabled": SAFE_MODE_ENABLED,
+            "runtime_memory_guard_triggered": False,
+            "allocation_growth_stopped": False,
+            "runtime_memory_guard_details": {{}},
         }}
 
         running = True
@@ -442,6 +456,23 @@ def build_opencl_vram_workload_script(
                 caps.append(max(256 * 1024 * 1024, int(device_global_mem_bytes * safety_fraction)))
             return max(256 * 1024 * 1024, min(caps))
 
+        def update_allocation_outcome():
+            achieved = max(0, int(state.get("allocated_vram_bytes") or 0))
+            target = max(0, int(state.get("target_vram_bytes") or 0))
+            ratio = achieved / float(target) if target else 0.0
+            state["actual_allocated_bytes"] = achieved
+            state["allocation_ratio"] = round(ratio, 6)
+            state["allocation_outcome"] = (
+                "runtime_failure_after_partial_allocation" if state.get("allocation_runtime_failed") and achieved > 0
+                else "allocation_failed" if state.get("allocation_runtime_failed")
+                else "full_target_achieved" if achieved >= target and target > 0
+                else "substantial_partial_allocation" if ratio >= 0.85
+                else "partial_allocation" if ratio >= 0.60
+                else "insufficient_partial_allocation" if achieved > 0
+                else "allocation_failed"
+            )
+            state["allocation_valid"] = bool(ratio >= 0.60 and not state.get("allocation_runtime_failed"))
+
         def phase_target_limit_bytes(runtime_target_bytes, load_fraction, phase_name):
             limit = max(64 * 1024 * 1024, min(runtime_target_bytes, int(round(runtime_target_bytes * load_fraction))))
             if phase_name == "allocation_only":
@@ -634,16 +665,19 @@ def build_opencl_vram_workload_script(
             compute_units = max(1, int(CAP_COMPUTE_UNITS) or 16)
             clock_hint = max(1000, int(CAP_MAX_CLOCK_MHZ) or 1800)
             parallelism_hint = max(1, int(PARALLELISM_HINT) or 1)
-            max_alloc = max(64 * 1024 * 1024, int(selected["max_alloc_bytes"]) or 0)
+            reported_max_alloc = max(0, int(selected["max_alloc_bytes"]) or 0)
+            max_alloc = reported_max_alloc or target_bytes
+            state["max_single_allocation_bytes"] = reported_max_alloc
+            state["max_buffer_or_object_bytes"] = reported_max_alloc
             runtime_target_bytes = min(target_bytes, discrete_runtime_target_cap(int(selected["global_mem_bytes"]), max_alloc, target_bytes))
             state["runtime_target_cap_bytes"] = runtime_target_bytes
             chunk_cap = 128 * 1024 * 1024 if DEVICE_CLASS == "discrete" and SAFE_MODE_ENABLED else 512 * 1024 * 1024
             if DEVICE_CLASS != "discrete":
                 chunk_cap = 64 * 1024 * 1024 if SAFE_MODE_ENABLED else 128 * 1024 * 1024
-            chunk_bytes = min(max_alloc, chunk_cap, max(64 * 1024 * 1024, target_bytes))
+            chunk_bytes = min(max_alloc, chunk_cap, target_bytes)
             chunk_bytes -= chunk_bytes % 4096
             if chunk_bytes <= 0:
-                chunk_bytes = 64 * 1024 * 1024
+                chunk_bytes = min(max_alloc, max(4096, target_bytes))
             max_buffer_count = max(32, ((runtime_target_bytes + chunk_bytes - 1) // max(4096, chunk_bytes)) + 8)
             if SAFE_MODE_ENABLED and DEVICE_CLASS == "discrete":
                 max_buffer_count = min(2048, max(512, max_buffer_count))
@@ -717,12 +751,31 @@ def build_opencl_vram_workload_script(
                     request_bytes -= request_bytes % 4096
                     if request_bytes < 4096:
                         break
+                    guard_claim = claim_runtime_allocation_growth(
+                        request_bytes,
+                        shared_system_memory=DEVICE_CLASS != "discrete",
+                    )
+                    if not guard_claim.get("allowed"):
+                        state["runtime_memory_guard_triggered"] = True
+                        state["allocation_growth_stopped"] = True
+                        state["runtime_memory_guard_details"] = guard_claim
+                        state["target_cap_reason"] = "runtime_memory_guard"
+                        state["allocation_exhausted"] = True
+                        break
                     state["allocation_attempts"] += 1
                     buffer_handle = cl_mem(cl.clCreateBuffer(context, CL_MEM_READ_WRITE, request_bytes, None, ctypes.byref(err)))
                     if int(err.value) != CL_SUCCESS or not buffer_handle:
+                        release_runtime_allocation_claim(
+                            request_bytes,
+                            shared_system_memory=DEVICE_CLASS != "discrete",
+                        )
                         state["allocation_failures"] += 1
-                        if request_bytes > 64 * 1024 * 1024:
-                            chunk_bytes = max(64 * 1024 * 1024, request_bytes // 2)
+                        history = list(state.get("allocation_backoff_attempts") or [])
+                        history.append({{"requested_bytes": int(request_bytes), "api_error": int(err.value)}})
+                        state["allocation_backoff_attempts"] = history[-64:]
+                        if request_bytes > 4096:
+                            chunk_bytes = max(4096, request_bytes // 2)
+                            chunk_bytes -= chunk_bytes % 4096
                             write_result()
                             continue
                         state["allocation_exhausted"] = True
@@ -742,6 +795,7 @@ def build_opencl_vram_workload_script(
                     state["allocation_touch_count"] += 1
                     write_result()
                 state["allocation_shortfall_bytes"] = max(0, target_bytes - state["allocated_vram_bytes"])
+                update_allocation_outcome()
                 now_monotonic = time.monotonic()
                 fill_count = fill_buffer_count(len(buffers), load_fraction, phase_name)
                 if (
@@ -815,9 +869,12 @@ def build_opencl_vram_workload_script(
                 else:
                     time.sleep(0.002)
         except Exception as exc:
+            state["allocation_runtime_failed"] = True
             record_error(str(exc))
             raise SystemExit(12)
         finally:
+            update_allocation_outcome()
+            write_result()
             for buffer_handle, _ in buffers:
                 try:
                     cl.clReleaseMemObject(buffer_handle)

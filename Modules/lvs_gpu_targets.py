@@ -16,6 +16,40 @@ PciNameLookup = Callable[[str, str], Optional[str]]
 SafeReadInt = Callable[[Path], Optional[int]]
 
 
+def discover_platform_gpu_devices(
+    sys_platform: Path = Path("/sys/bus/platform/devices"),
+) -> List[Dict[str, Any]]:
+    devices: List[Dict[str, Any]] = []
+    for device in sorted(sys_platform.iterdir() if sys_platform.exists() else []):
+        values: Dict[str, str] = {}
+        try:
+            for line in (device / "uevent").read_text(encoding="utf-8", errors="ignore").splitlines():
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+        except Exception:
+            continue
+        driver = values.get("DRIVER", "")
+        of_name = values.get("OF_NAME", "")
+        compatibles = [
+            value
+            for key, value in sorted(values.items())
+            if key.startswith("OF_COMPATIBLE_") and key != "OF_COMPATIBLE_N" and value
+        ]
+        if of_name.lower() != "gpu" and driver.lower() not in {"adreno", "panfrost", "panthor", "lima"}:
+            continue
+        devices.append(
+            {
+                "path": str(device.resolve()),
+                "driver": driver,
+                "of_name": of_name,
+                "compatible": compatibles,
+            }
+        )
+    return devices
+
+
 def dri_prime_selector(slot: Any) -> str:
     text = str(slot or "").strip()
     if not text:
@@ -120,6 +154,7 @@ def discover_gpu_cards(
     pci_name_lookup: Optional[PciNameLookup] = None,
     safe_read_int: Optional[SafeReadInt] = None,
     nvidia_smi_gpus: Optional[List[Dict[str, Any]]] = None,
+    sys_platform: Path = Path("/sys/bus/platform/devices"),
 ) -> List[Dict[str, Any]]:
     cards: List[Dict[str, Any]] = []
     gpu_index = 0
@@ -151,11 +186,16 @@ def discover_gpu_cards(
         if vendor_id == "1a03" or driver.strip().lower() == "ast":
             continue
         resolved_name = lookup_name(vendor_id, device_code)
+        vram_total_value = read_int(device_dir / "mem_info_vram_total")
+        vram_used_value = read_int(device_dir / "mem_info_vram_used")
         cards.append(
             {
                 "card": card.name,
                 "slot": slot,
-                "vram_total": read_int(device_dir / "mem_info_vram_total") or 0,
+                "vram_total": vram_total_value or 0,
+                "vram_total_source": "drm_mem_info_vram_total" if vram_total_value is not None else "",
+                "vram_used": vram_used_value,
+                "vram_used_source": "drm_mem_info_vram_used" if vram_used_value is not None else "",
                 "dri_prime": dri_prime_selector(slot),
                 "driver": driver,
                 "vendor": vendor_name,
@@ -167,6 +207,27 @@ def discover_gpu_cards(
             }
         )
         gpu_index += 1
+    platform_gpus = discover_platform_gpu_devices(sys_platform)
+    non_pci_cards = [card for card in cards if not str(card.get("slot") or "").strip()]
+    if len(platform_gpus) == 1 and len(non_pci_cards) == 1:
+        platform_gpu = platform_gpus[0]
+        card = non_pci_cards[0]
+        platform_driver = str(platform_gpu.get("driver") or "")
+        compatible = list(platform_gpu.get("compatible") or [])
+        card.update(
+            {
+                "platform_gpu_driver": platform_driver,
+                "platform_gpu_compatible": compatible,
+                "platform_gpu_path": str(platform_gpu.get("path") or ""),
+                "platform_gpu_identity_source": "unique_platform_gpu_device",
+            }
+        )
+        if str(card.get("name") or "").strip().lower() in {"", "unknown gpu"} and platform_driver:
+            card["name"] = f"{platform_driver.title()} platform GPU"
+        if str(card.get("vendor") or "").strip().lower() in {"", "unknown"} and any(
+            value.lower().startswith("qcom,") for value in compatible
+        ):
+            card["vendor"] = "Qualcomm"
     nvidia_by_slot = {
         str(gpu.get("slot", "") or "").lower(): gpu
         for gpu in nvidia_smi_gpus or []
@@ -183,6 +244,7 @@ def discover_gpu_cards(
             memory_mb = float(nvidia_gpu.get("memory_mb", 0.0) or 0.0)
             if memory_mb > 0:
                 card["vram_total"] = int(memory_mb * 1024 * 1024)
+                card["vram_total_source"] = "nvidia_smi_memory_total"
         if str(card.get("vendor", "") or "").strip().lower() == "nvidia":
             card["name"] = str(nvidia_gpu.get("name", "") or card.get("name", ""))
             card["nvidia_index"] = str(nvidia_gpu.get("index", "") or "")

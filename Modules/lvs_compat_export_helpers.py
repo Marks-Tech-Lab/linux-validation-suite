@@ -42,11 +42,97 @@ _ADDITIVE_NATIVE_AFFINITY_FIELDS = {
     "observed_cpu",
 }
 
+_ADDITIVE_PYTHON_MEMORY_FIELDS = {
+    "assigned_target_bytes",
+    "planned_target_bytes",
+    "successfully_allocated_bytes",
+    "successful_chunk_count",
+    "attempted_chunk_count",
+    "allocation_failure_count",
+    "final_attempted_chunk_bytes",
+    "memory_error_occurred",
+    "allocation_shortfall_bytes",
+    "allocation_ratio",
+    "allocation_outcome",
+    "allocation_valid",
+    "allocation_verified",
+    "actual_allocated_bytes",
+    "target_cap_reason",
+    "runtime_memory_guard_triggered",
+    "runtime_memory_guard_details",
+    "allocation_growth_stopped",
+}
+
+_ADDITIVE_GPU_MEMORY_PLAN_FIELDS = {
+    "gpu_memory_kind",
+    "memory_classification_source",
+    "memory_capacity_source",
+    "dedicated_vram_capacity_bytes",
+    "shared_addressable_capacity_bytes",
+    "shared_addressable_capacity_status",
+    "api_addressable_capacity_bytes",
+    "api_addressable_capacity_source",
+    "backend_addressable_capacity_bytes",
+    "backend_addressable_capacity_source",
+    "backend_addressable_capacity_status",
+    "total_capacity_trust",
+    "system_memory_pool_ceiling_bytes",
+    "max_single_allocation_bytes",
+    "max_single_allocation_source",
+    "max_buffer_or_object_bytes",
+    "max_buffer_or_object_source",
+    "max_allocation_count",
+    "max_allocation_count_source",
+    "allocation_granularity_bytes",
+    "planned_allocation_chunks",
+    "planned_allocation_chunk_count",
+    "reported_vram_total_bytes",
+    "reported_vram_total_semantics",
+    "ambiguous_integrated_vram_report_bytes",
+    "current_gpu_memory_used_bytes",
+    "current_gpu_memory_used_source",
+    "current_gpu_memory_available_bytes",
+    "current_gpu_memory_available_source",
+    "firmware_preallocated_or_stolen_bytes",
+    "firmware_preallocated_or_stolen_source",
+    "requested_gpu_memory_target_bytes",
+    "requested_gpu_memory_percent",
+    "planned_gpu_memory_target_bytes",
+    "system_memory_budget_participation",
+    "system_memory_commitment_multiplier",
+    "system_memory_fixed_commitment_bytes",
+    "memory_budget_consumer_id",
+    "memory_budgetability",
+    "target_cap_reason",
+    "allocation_backoff_attempts",
+    "actual_allocated_bytes",
+    "allocation_ratio",
+    "allocation_outcome",
+    "allocation_valid",
+    "allocation_runtime_failed",
+    "nominal_allocated_texture_bytes",
+    "physical_commitment_known",
+    "staging_allocation_bytes",
+    "minimum_viable_allocation_bytes",
+    "minimum_viable_allocation_source",
+    "runtime_memory_guard_triggered",
+    "runtime_memory_guard_details",
+    "allocation_growth_stopped",
+}
+
 
 def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
-    """Remove additive CPU evidence from the legacy compatibility document only."""
+    """Remove additive worker/planning evidence from the legacy document only."""
     if isinstance(value, list):
-        return [preserve_legacy_worker_evidence_contract(item) for item in value]
+        return [
+            preserve_legacy_worker_evidence_contract(item)
+            for item in value
+            if not (
+                isinstance(item, dict)
+                and str(item.get("kind") or "").lower() == "memory"
+                and str(item.get("backend") or "").lower() == "python_fallback"
+            )
+        ]
     if not isinstance(value, dict):
         return value
     is_stress_ng_evidence = (
@@ -64,7 +150,11 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
             "affinity_error_code",
         )
     )
-    blocked = set(_ADDITIVE_NATIVE_AFFINITY_FIELDS) if has_native_affinity_evidence else set()
+    blocked = set(_ADDITIVE_GPU_MEMORY_PLAN_FIELDS)
+    if str(value.get("kind") or "").lower() == "memory" and str(value.get("backend") or "").lower() == "python_fallback":
+        blocked.update(_ADDITIVE_PYTHON_MEMORY_FIELDS)
+    if has_native_affinity_evidence:
+        blocked.update(_ADDITIVE_NATIVE_AFFINITY_FIELDS)
     if is_stress_ng_evidence:
         blocked.update(_ADDITIVE_STRESS_NG_EVIDENCE_FIELDS)
     return {
