@@ -33,13 +33,16 @@ def build_python_vulkan_transfer_worker(
     )
     ramp_params = runner._gpu_internal_ramp_params()
     capability = dict(params.get("capability") or {})
+    resolved_vulkan = dict(runner._vulkan_device_for_target(target).get("device") or {})
     target_vendor = str(target.get("vendor", "") if target else "")
-    target_vendor_id = str(target.get("vendor_id", "") if target else "")
-    target_device_id = str(target.get("device", "") if target else "")
+    target_vendor_id = str(resolved_vulkan.get("vendorID") or (target.get("vendor_id", "") if target else ""))
+    target_device_id = str(resolved_vulkan.get("deviceID") or (target.get("device", "") if target else ""))
+    target_device_name = str(resolved_vulkan.get("deviceName") or "")
     target_card = str(target.get("card", "") if target else "")
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
-    target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
+    physical_gpu_id = str(target.get("physical_gpu_id", "") if target else "")
+    target_gpu_index = int(resolved_vulkan.get("index", target.get("gpu_index", 0) if target else 0))
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
     buffer_bytes = int(buffer_bytes_override or 0) or runner._vulkan_transfer_buffer_bytes(target, params)
     target_env = runner._vulkan_target_env(target)
@@ -53,12 +56,16 @@ def build_python_vulkan_transfer_worker(
             target_vendor_id,
             "--target-device-id",
             target_device_id,
+            "--target-device-name",
+            target_device_name,
             "--target-card",
             target_card,
             "--target-slot",
             target_slot,
             "--target-id",
             target_id,
+            "--physical-gpu-id",
+            physical_gpu_id,
             "--target-gpu-index",
             str(target_gpu_index),
             "--target-vram-total",
@@ -130,13 +137,16 @@ def build_python_vulkan_compute_worker(
     )
     ramp_params = runner._gpu_internal_ramp_params()
     capability = dict(params.get("capability") or {})
+    resolved_vulkan = dict(runner._vulkan_device_for_target(target).get("device") or {})
     target_vendor = str(target.get("vendor", "") if target else "")
-    target_vendor_id = str(target.get("vendor_id", "") if target else "")
-    target_device_id = str(target.get("device", "") if target else "")
+    target_vendor_id = str(resolved_vulkan.get("vendorID") or (target.get("vendor_id", "") if target else ""))
+    target_device_id = str(resolved_vulkan.get("deviceID") or (target.get("device", "") if target else ""))
+    target_device_name = str(resolved_vulkan.get("deviceName") or "")
     target_card = str(target.get("card", "") if target else "")
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
-    target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
+    physical_gpu_id = str(target.get("physical_gpu_id", "") if target else "")
+    target_gpu_index = int(resolved_vulkan.get("index", target.get("gpu_index", 0) if target else 0))
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
     normalized_compute_variant = runner._normalize_vulkan_compute_variant(compute_variant)
     buffer_bytes = int(buffer_bytes_override or 0)
@@ -160,12 +170,16 @@ def build_python_vulkan_compute_worker(
             target_vendor_id,
             "--target-device-id",
             target_device_id,
+            "--target-device-name",
+            target_device_name,
             "--target-card",
             target_card,
             "--target-slot",
             target_slot,
             "--target-id",
             target_id,
+            "--physical-gpu-id",
+            physical_gpu_id,
             "--target-gpu-index",
             str(target_gpu_index),
             "--target-vram-total",

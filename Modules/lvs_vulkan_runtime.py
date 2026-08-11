@@ -14,18 +14,68 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 from .lvs_backend_readiness import build_vulkan_native_backend_payload
 
 
+def merge_vulkan_device_inventories(
+    runtime_devices: List[Dict[str, Any]],
+    native_devices: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Combine vulkaninfo identity with native core allocation capabilities."""
+    merged: List[Dict[str, Any]] = []
+    unused_native = list(native_devices)
+    for runtime_device in runtime_devices:
+        runtime_key = (
+            int(runtime_device.get("index", -1) or 0),
+            str(runtime_device.get("vendorID", "") or "").lower(),
+            str(runtime_device.get("deviceID", "") or "").lower(),
+            str(runtime_device.get("deviceName", "") or "").lower(),
+        )
+        match_index = next(
+            (
+                index
+                for index, native_device in enumerate(unused_native)
+                if (
+                    int(native_device.get("index", -1) or 0),
+                    str(native_device.get("vendorID", "") or "").lower(),
+                    str(native_device.get("deviceID", "") or "").lower(),
+                    str(native_device.get("deviceName", "") or "").lower(),
+                )
+                == runtime_key
+            ),
+            None,
+        )
+        if match_index is None:
+            merged.append(dict(runtime_device))
+            continue
+        native_device = unused_native.pop(match_index)
+        combined = dict(runtime_device)
+        for key in (
+            "device_local_heap_bytes",
+            "max_storage_buffer_range_bytes",
+            "max_memory_allocation_count",
+            "driverVersionRaw",
+        ):
+            value = native_device.get(key)
+            if value not in (None, ""):
+                combined[key] = value
+        combined["identity_inventory_source"] = str(runtime_device.get("source") or "vulkaninfo")
+        combined["allocation_capability_source"] = str(native_device.get("source") or "libvulkan")
+        merged.append(combined)
+    merged.extend(dict(device) for device in unused_native)
+    return merged
+
+
 def vulkan_memory_limits_from_properties_bytes(raw: bytes) -> Dict[str, int]:
     """Read the fixed Vulkan 1.x core limits relevant to LVS allocations.
 
-    VkPhysicalDeviceProperties has a 292-byte fixed prefix before
-    VkPhysicalDeviceLimits. Within limits, maxStorageBufferRange and
+    VkPhysicalDeviceProperties has a 292-byte field prefix followed by four
+    bytes of ABI padding before the 8-byte-aligned VkPhysicalDeviceLimits.
+    Within limits, maxStorageBufferRange and
     maxMemoryAllocationCount are uint32 members at offsets 28 and 36.
     Vulkan core exposes no maximum size for one VkDeviceMemory allocation.
     """
 
-    if len(raw) < 332:
+    if len(raw) < 336:
         return {"max_storage_buffer_range_bytes": 0, "max_memory_allocation_count": 0}
-    limits_offset = 292
+    limits_offset = 296
     return {
         "max_storage_buffer_range_bytes": int.from_bytes(raw[limits_offset + 28 : limits_offset + 32], "little"),
         "max_memory_allocation_count": int.from_bytes(raw[limits_offset + 36 : limits_offset + 40], "little"),
@@ -141,6 +191,10 @@ def resolve_vulkan_library(
             "/usr/lib/libvulkan.so",
             "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
             "/usr/lib/x86_64-linux-gnu/libvulkan.so",
+            "/usr/lib/aarch64-linux-gnu/libvulkan.so.1",
+            "/usr/lib/aarch64-linux-gnu/libvulkan.so",
+            "/lib/aarch64-linux-gnu/libvulkan.so.1",
+            "/lib/aarch64-linux-gnu/libvulkan.so",
             "/lib64/libvulkan.so.1",
             "/lib64/libvulkan.so",
         ]
@@ -317,8 +371,13 @@ def build_vulkan_native_runtime_backend(
         loader_reason = "Vulkan loader library not found"
 
     native_inventory = native_inventory_collector(library)
+    merged_runtime = dict(runtime)
+    merged_runtime["devices"] = merge_vulkan_device_inventories(
+        list(runtime.get("devices") or []),
+        list(native_inventory.get("devices") or []),
+    )
     return build_vulkan_native_backend_payload(
-        runtime=runtime,
+        runtime=merged_runtime,
         library=library,
         loader_version=loader_version,
         loader_reason=loader_reason,

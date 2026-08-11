@@ -177,10 +177,16 @@ from Modules.lvs_vulkan_runtime import (
     build_vulkan_native_runtime_backend,
     collect_vulkan_native_physical_devices,
     collect_vulkan_runtime_details,
+    merge_vulkan_device_inventories,
     parse_vulkaninfo_summary,
     resolve_vulkan_library,
     vulkan_memory_limits_from_properties_bytes,
 )
+from Modules.lvs_vulkan_workers import (
+    build_python_vulkan_compute_worker,
+    build_python_vulkan_transfer_worker,
+)
+from native.vulkan_transfer_worker import vulkan_failure_reason
 from Modules.lvs_gpu_allocation_plan import allocation_attainment, plan_gpu_allocation_chunks
 from Modules.lvs_gpu_worker_params import (
     gpu_worker_baseline_params,
@@ -521,7 +527,7 @@ from Modules.lvs_backend_readiness import (
 )
 from Modules.lvs_google_drive_uploader import GoogleDriveUploader as ModuleGoogleDriveUploader
 from Modules.lvs_egl_gles_worker import build_egl_gles_workload_script
-from Modules.lvs_egl_target_probe import is_software_renderer, probe_egl_runtime_backend
+from Modules.lvs_egl_target_probe import is_software_renderer, probe_egl_runtime_backend, renderer_matches_gpu_target
 from Modules.lvs_external_gpu_supervisor import build_external_gpu_supervisor_script
 from Modules.lvs_opencl_compute_worker import build_opencl_compute_workload_script
 from Modules.lvs_opencl_probe_script import build_opencl_probe_script
@@ -875,7 +881,9 @@ from Modules.lvs_telemetry_gpu import (
     gpu_hwmon_dirs,
     gpu_temp_metric,
     gpu_voltage_metric,
+    is_gpu_thermal_zone_type,
     parse_voltage_text_v,
+    read_devfreq_clock_mhz,
     read_gpu_clock,
     read_gpu_values,
 )
@@ -5456,6 +5464,7 @@ def test_egl_gles_worker_script_builder() -> None:
     compile(script, "<egl_gles_worker>", "exec")
     assert_true("verify_dynamic_marker" in script, "EGL/GLES worker dynamic marker verification")
     assert_true("draw_checksum_stall_count" in script, "EGL/GLES worker checksum stall evidence")
+    assert_true('"qualcomm": ["qualcomm", "adreno", "freedreno", "turnip"]' in script, "EGL/GLES worker accepts hardware Adreno identity")
 
 
 def test_workload_runner_egl_probe_script_available() -> None:
@@ -15032,6 +15041,168 @@ def test_telemetry_gpu_helpers() -> None:
         assert_equal(nvidia_values["gpu_0_temp_memory_c"], 72.0, "GPU read values NVIDIA memory temp")
 
 
+def test_platform_gpu_identity_devfreq_and_thermal_telemetry() -> None:
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        drm = root / "drm"
+        platform = root / "platform"
+        devfreq = root / "devfreq"
+        thermal = root / "thermal"
+        display = drm / "card1" / "device"
+        display.mkdir(parents=True)
+        (display / "uevent").write_text(
+            "DRIVER=msm_dpu\nOF_NAME=display-controller\nOF_FULLNAME=/soc@0/display-controller@ae01000\n",
+            encoding="utf-8",
+        )
+        physical_gpu = platform / "3d00000.gpu"
+        physical_gpu.mkdir(parents=True)
+        (physical_gpu / "uevent").write_text(
+            "DRIVER=adreno\nOF_NAME=gpu\nOF_FULLNAME=/soc@0/gpu@3d00000\n"
+            "OF_COMPATIBLE_0=qcom,adreno-43030c00\nOF_COMPATIBLE_1=qcom,adreno\nOF_COMPATIBLE_N=2\n",
+            encoding="utf-8",
+        )
+        devfreq_gpu = devfreq / "3d00000.gpu"
+        devfreq_gpu.mkdir(parents=True)
+        (devfreq_gpu / "device").symlink_to(physical_gpu, target_is_directory=True)
+        (devfreq_gpu / "cur_freq").write_text("280000000\n", encoding="utf-8")
+        (devfreq_gpu / "min_freq").write_text("280000000\n", encoding="utf-8")
+        (devfreq_gpu / "max_freq").write_text("1107000000\n", encoding="utf-8")
+        (devfreq_gpu / "available_frequencies").write_text(
+            "280000000 550000000 1107000000\n", encoding="utf-8"
+        )
+        temperatures = [42000, 42400, 42100, 42800]
+        for index, temperature in enumerate(temperatures):
+            zone = thermal / f"thermal_zone{index}"
+            zone.mkdir(parents=True)
+            (zone / "type").write_text(f"gpuss-{index}-thermal\n", encoding="utf-8")
+            (zone / "temp").write_text(f"{temperature}\n", encoding="utf-8")
+        unrelated = thermal / "thermal_zone9"
+        unrelated.mkdir()
+        (unrelated / "type").write_text("display-thermal\n", encoding="utf-8")
+        (unrelated / "temp").write_text("99000\n", encoding="utf-8")
+
+        def read_fixture(path: Path) -> str | None:
+            try:
+                return path.read_text(encoding="utf-8", errors="ignore").strip()
+            except Exception:
+                return None
+
+        targets = discover_gpu_cards(sys_drm=drm, sys_platform=platform)
+        assert_equal(len(targets), 1, "display DRM node and platform GPU form one physical target")
+        target = targets[0]
+        assert_equal(target["driver"], "adreno", "physical GPU driver is authoritative")
+        assert_equal(target["drm_driver"], "msm_dpu", "DRM access driver remains observable")
+        assert_equal(target["drm_device_role"], "display_controller", "DRM node is classified as display")
+        assert_equal(target["platform_gpu_driver"], "adreno", "physical platform GPU driver is preserved")
+        assert_equal(target["gpu_device_role"], "3d_gpu", "physical target role is 3D GPU")
+        assert_equal(target["gpu_identity_source"], "platform_device_tree", "platform identity is authoritative")
+        assert_equal(target["physical_gpu_id"], "platform:3d00000.gpu", "physical platform identity is stable")
+        assert_equal(target["platform_gpu_of_fullname"], "/soc@0/gpu@3d00000", "device-tree identity preserved")
+        assert_equal(target["vram_total"], 0, "Adreno has no fabricated dedicated VRAM")
+        assert_equal(gpu_card_class(target), "integrated", "platform Adreno classification is backend-independent")
+        assert_equal(likely_discrete_gpu_cards(targets), [], "platform Adreno is excluded from discrete routing")
+
+        sources = discover_gpu_sources_helper(
+            read_fixture,
+            lambda _path: "",
+            lambda _path: (None, None, "suite_default"),
+            command_exists=lambda _command: False,
+            discover_nvidia_smi_gpus=lambda: [],
+            intel_gpu_top_json_sample_metrics=lambda: {},
+            drm_root=drm,
+            hwmon_root=root / "hwmon",
+            platform_root=platform,
+            devfreq_root=devfreq,
+            thermal_root=thermal,
+            thermal_zone_thresholds=lambda _zone: (95.0, 110.0, "fixture-zone"),
+        )
+        temp_source = next(source for source in sources if source["metric"] == "temp_core_c")
+        clock_source = next(source for source in sources if source["metric"] == "clock_mhz")
+        assert_equal(temp_source["kind"], "aggregate_temperature", "platform GPU temperature is aggregated")
+        assert_equal(temp_source["component_count"], 4, "all validated GPU zones participate")
+        assert_equal(clock_source["kind"], "platform_devfreq", "platform GPU clock uses devfreq")
+        assert_equal(clock_source["minimum_frequency_hz"], 280000000, "devfreq minimum metadata")
+        assert_equal(clock_source["maximum_frequency_hz"], 1107000000, "devfreq maximum metadata")
+        values = read_gpu_values(sources, read_fixture, read_fixture, {}, {}, {}, 1.0)
+        assert_equal(values["gpu_0_temp_core_c"], 42.8, "GPU aggregate reports hottest credible sensor")
+        assert_equal(values["gpu_0_clock_mhz"], 280.0, "GPU devfreq Hz normalizes to MHz")
+        assert_true("gpu_0_power_w" not in values, "platform fixture does not fabricate GPU power")
+        assert_true("gpu_0_busy_percent" not in values, "platform fixture does not fabricate GPU utilization")
+        assert_true("gpu_0_memory_clock_mhz" not in values, "platform fixture does not fabricate VRAM clock")
+        matrix = build_gpu_telemetry_matrix(discover_gpu_cards_helper(drm, platform), sources)
+        assert_equal(matrix[0]["metrics"]["temperature"]["kind"], "aggregate_temperature", "matrix prefers aggregate GPU temperature")
+        assert_equal(matrix[0]["metrics"]["clock"]["kind"], "platform_devfreq", "matrix records devfreq clock provenance")
+        assert_equal(matrix[0]["metrics"]["power"]["available"], False, "matrix reports GPU power unavailable")
+        assert_equal(matrix[0]["metrics"]["busy"]["available"], False, "matrix reports GPU utilization unavailable")
+        assert_equal(matrix[0]["metrics"]["memory_clock"]["available"], False, "matrix reports VRAM clock unavailable")
+        assert_true(not is_gpu_thermal_zone_type("display-thermal"), "display thermal zone is excluded")
+        assert_true(renderer_matches_gpu_target("Adreno X1-45", target), "EGL Adreno renderer matches Qualcomm target")
+        vulkan_match = vulkan_device_for_target(
+            [
+                {
+                    "index": 0,
+                    "vendorID": "0x5143",
+                    "deviceID": "0x43030c00",
+                    "deviceType": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+                    "deviceName": "Adreno X1-45",
+                },
+                {
+                    "index": 1,
+                    "deviceType": "VK_PHYSICAL_DEVICE_TYPE_CPU",
+                    "deviceName": "llvmpipe",
+                },
+            ],
+            target,
+            gpu_cards=targets,
+            likely_discrete_ids=set(),
+        )
+        assert_equal(vulkan_match["device"]["deviceName"], "Adreno X1-45", "hardware Adreno beats software Vulkan")
+
+        clock_only_sources = discover_gpu_sources_helper(
+            read_fixture,
+            lambda _path: "",
+            lambda _path: (None, None, "suite_default"),
+            command_exists=lambda _command: False,
+            discover_nvidia_smi_gpus=lambda: [],
+            intel_gpu_top_json_sample_metrics=lambda: {},
+            drm_root=drm,
+            hwmon_root=root / "hwmon",
+            platform_root=platform,
+            devfreq_root=devfreq,
+            thermal_root=root / "empty-thermal",
+        )
+        assert_true(any(source["metric"] == "clock_mhz" for source in clock_only_sources), "platform devfreq works without thermal")
+        assert_true(not any(source["metric"] == "temp_core_c" for source in clock_only_sources), "missing GPU thermal remains unavailable")
+        thermal_only_sources = discover_gpu_sources_helper(
+            read_fixture,
+            lambda _path: "",
+            lambda _path: (None, None, "suite_default"),
+            command_exists=lambda _command: False,
+            discover_nvidia_smi_gpus=lambda: [],
+            intel_gpu_top_json_sample_metrics=lambda: {},
+            drm_root=drm,
+            hwmon_root=root / "hwmon",
+            platform_root=platform,
+            devfreq_root=root / "empty-devfreq",
+            thermal_root=thermal,
+        )
+        assert_true(any(source["metric"] == "temp_core_c" for source in thermal_only_sources), "platform thermal works without devfreq")
+        assert_true(not any(source["metric"] == "clock_mhz" for source in thermal_only_sources), "missing GPU devfreq remains unavailable")
+        software_only = vulkan_device_for_target(
+            [{"index": 0, "deviceType": "VK_PHYSICAL_DEVICE_TYPE_CPU", "deviceName": "llvmpipe"}],
+            target,
+            gpu_cards=targets,
+            likely_discrete_ids=set(),
+        )
+        assert_equal(software_only["available"], False, "software-only Vulkan exposes no hardware GPU capability")
+
+        no_gpu_targets = discover_gpu_cards(sys_drm=drm, sys_platform=root / "empty-platform")
+        assert_equal(no_gpu_targets, [], "display controller alone is not exposed as a physical GPU")
+        standalone_targets = discover_gpu_cards(sys_drm=root / "empty-drm", sys_platform=platform)
+        assert_equal(len(standalone_targets), 1, "platform GPU can be discovered without a DRM card")
+        assert_true(standalone_targets[0]["target_id"].startswith("platform:"), "standalone platform target is stable")
+
+
 def test_telemetry_sampling_helpers() -> None:
     assert_equal(parse_temperature_text("65000"), 65.0, "millidegree temperature parsing")
     assert_equal(parse_temperature_text("65.5"), 65.5, "degree temperature parsing")
@@ -21995,8 +22166,8 @@ def test_gpu_capability_limits_chunking_and_device_ownership() -> None:
     )
 
     raw = bytearray(400)
-    raw[320:324] = (2 * GIB - 1).to_bytes(4, "little")
-    raw[328:332] = (4096).to_bytes(4, "little")
+    raw[324:328] = (2 * GIB - 1).to_bytes(4, "little")
+    raw[332:336] = (4096).to_bytes(4, "little")
     limits = vulkan_memory_limits_from_properties_bytes(bytes(raw))
     assert_equal(limits["max_storage_buffer_range_bytes"], 2 * GIB - 1, "Vulkan storage-buffer object limit")
     assert_equal(limits["max_memory_allocation_count"], 4096, "Vulkan allocation-count limit")
@@ -22842,6 +23013,33 @@ GPU1:
     assert_equal(parsed["instance_version"], "1.3.280", "Vulkan runtime instance version")
     assert_equal(len(parsed["devices"]), 2, "Vulkan runtime summary device count")
     assert_equal(parsed["devices"][0]["deviceName"], "NVIDIA RTX", "Vulkan runtime summary device name")
+    merged = merge_vulkan_device_inventories(
+        [
+            {
+                "index": 0,
+                "vendorID": "0x5143",
+                "deviceID": "0x43030c00",
+                "deviceName": "Adreno X1-45",
+                "deviceUUID": "adreno-uuid",
+            }
+        ],
+        [
+            {
+                "index": 0,
+                "vendorID": "0x5143",
+                "deviceID": "0x43030c00",
+                "deviceName": "Adreno X1-45",
+                "device_local_heap_bytes": 12 * GIB,
+                "max_storage_buffer_range_bytes": 2 * GIB,
+                "max_memory_allocation_count": 4096,
+                "source": "libvulkan",
+            }
+        ],
+    )
+    assert_equal(merged[0]["deviceUUID"], "adreno-uuid", "Vulkan merge preserves rich runtime identity")
+    assert_equal(merged[0]["device_local_heap_bytes"], 12 * GIB, "Vulkan merge adds native heap capability")
+    assert_equal(merged[0]["max_storage_buffer_range_bytes"], 2 * GIB, "Vulkan merge adds buffer limit")
+    assert_equal(merged[0]["max_memory_allocation_count"], 4096, "Vulkan merge adds allocation-count limit")
 
     missing = collect_vulkan_runtime_details(
         command_exists=lambda _name: False,
@@ -22917,6 +23115,85 @@ GPU1:
     assert_equal(backend["available"], True, "Vulkan runtime native backend available")
     assert_equal(backend["loader_version"], "1.0-compatible loader", "Vulkan runtime loader compatibility")
     assert_equal(backend["runtime_gpu_device_count"], 1, "Vulkan runtime backend GPU count")
+
+
+def test_vulkan_worker_resolved_device_binding() -> None:
+    target = {
+        "target_id": "card1",
+        "physical_gpu_id": "platform:3d00000.gpu",
+        "card": "card1",
+        "slot": "",
+        "gpu_index": 0,
+        "vendor": "Qualcomm",
+        "vendor_id": "",
+        "device": "",
+        "vram_total": 0,
+    }
+    resolved = {
+        "index": 3,
+        "vendorID": "0x5143",
+        "deviceID": "0x43030c00",
+        "deviceName": "Adreno X1-45",
+    }
+
+    class FakeRunner:
+        def _python_runtime(self) -> str:
+            return "python3"
+
+        def _gpu_worker_tuned_params(self, *_args: Any, **_kwargs: Any) -> dict:
+            return {"capability": {"device_class": "integrated"}}
+
+        def _gpu_internal_ramp_params(self) -> dict:
+            return {"ramp_step_seconds": 15.0, "start_load_fraction": 0.35}
+
+        def _vulkan_device_for_target(self, _target: dict) -> dict:
+            return {"available": True, "device": dict(resolved), "ambiguous": False}
+
+        def _vulkan_transfer_buffer_bytes(self, _target: dict, _params: dict) -> int:
+            return 64 * 1024 ** 2
+
+        def _vulkan_compute_buffer_bytes(self, *_args: Any, **_kwargs: Any) -> int:
+            return 32 * 1024 ** 2
+
+        def _vulkan_compute_rounds(self, *_args: Any, **_kwargs: Any) -> int:
+            return 8
+
+        def _vulkan_compute_dispatch_repeats(self, *_args: Any, **_kwargs: Any) -> int:
+            return 4
+
+        def _normalize_vulkan_compute_variant(self, value: str) -> str:
+            return value
+
+        def _normalize_gpu_3d_intensity(self, value: str) -> str:
+            return value
+
+        def _vulkan_target_env(self, _target: dict) -> dict:
+            return {}
+
+        def _wrap_gpu_command(self, command: list[str], _target: dict, _env: dict) -> list[str]:
+            return command
+
+    runner = FakeRunner()
+    transfer = build_python_vulkan_transfer_worker(runner, target)
+    compute = build_python_vulkan_compute_worker(runner, target, compute_variant="hash")
+    for spec in (transfer, compute):
+        command = spec.command
+        assert_equal(command[command.index("--target-vendor-id") + 1], "0x5143", "worker gets resolved Vulkan vendor")
+        assert_equal(command[command.index("--target-device-id") + 1], "0x43030c00", "worker gets resolved Vulkan device")
+        assert_equal(command[command.index("--target-device-name") + 1], "Adreno X1-45", "worker gets resolved Vulkan name")
+        assert_equal(command[command.index("--target-gpu-index") + 1], "3", "worker gets resolved Vulkan runtime index")
+        assert_equal(command[command.index("--physical-gpu-id") + 1], "platform:3d00000.gpu", "worker preserves physical platform identity")
+    transfer_source = (ROOT / "native" / "vulkan_transfer_worker.py").read_text(encoding="utf-8")
+    compute_source = (ROOT / "native" / "vulkan_compute_worker.py").read_text(encoding="utf-8")
+    for source in (transfer_source, compute_source):
+        assert_true("hardware_device_verified" in source, "Vulkan worker records hardware identity evidence")
+        assert_true("ambiguous Vulkan physical-device match" in source, "Vulkan worker rejects ambiguous targeting")
+        assert_true("selected Vulkan device is not a hardware GPU" in source, "Vulkan worker rejects software devices")
+    assert_equal(vulkan_failure_reason("Vulkan transfer mismatch at byte 4"), "verification_mismatch", "Vulkan mismatch classification")
+    assert_equal(vulkan_failure_reason("vkQueueSubmit failed with code -4"), "device_loss", "Vulkan device-loss classification")
+    assert_equal(vulkan_failure_reason("vkWaitForFences failed with code 2"), "timeout", "Vulkan timeout classification")
+    assert_equal(vulkan_failure_reason("vkCreateComputePipelines failed with code -3"), "shader_or_pipeline_failure", "Vulkan pipeline classification")
+    assert_equal(vulkan_failure_reason("vkAllocateMemory failed with code -2"), "allocation_failure", "Vulkan allocation classification")
 
 
 def test_cpu_max_power_tuning_skips_invalid_candidates() -> None:
@@ -25174,6 +25451,7 @@ def main() -> int:
         test_telemetry_nvidia_event_reasons_absent_when_unsupported,
         test_telemetry_intel_helpers,
         test_telemetry_gpu_helpers,
+        test_platform_gpu_identity_devfreq_and_thermal_telemetry,
         test_telemetry_sampling_helpers,
         test_telemetry_sample_csv_helpers,
         test_telemetry_memory_helpers,
@@ -25248,6 +25526,7 @@ def main() -> int:
         test_native_helper_runtime_service,
         test_backend_readiness_helpers_build_payloads,
         test_vulkan_runtime_discovery_helpers,
+        test_vulkan_worker_resolved_device_binding,
         test_cpu_max_power_tuning_skips_invalid_candidates,
         test_stage_event_state_helpers,
         test_stage_completion_helpers,

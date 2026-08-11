@@ -84,6 +84,12 @@ _ADDITIVE_PYTHON_MEMORY_FIELDS = {
 }
 
 _ADDITIVE_GPU_MEMORY_PLAN_FIELDS = {
+    "hardware_device_verified",
+    "device_match_score",
+    "device_match_ambiguous",
+    "target_device_name",
+    "physical_gpu_id",
+    "failure_reason",
     "gpu_memory_kind",
     "memory_classification_source",
     "memory_capacity_source",

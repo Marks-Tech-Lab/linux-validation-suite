@@ -192,6 +192,7 @@ def build_egl_gles_workload_script(
                 "amd": ["amd", "radeon", "radeonsi", "radv"],
                 "nvidia": ["nvidia", "geforce", "quadro", "rtx", "tesla"],
                 "intel": ["intel", "arc", "iris"],
+                "qualcomm": ["qualcomm", "adreno", "freedreno", "turnip"],
             }}
             aliases = vendor_aliases.get(target_vendor, [target_vendor])
             vendor_match = any(alias in renderer_text for alias in aliases)

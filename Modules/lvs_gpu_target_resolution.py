@@ -158,9 +158,9 @@ def slot_from_mesa_style_vulkan_uuid(runner: Any, uuid_text: str) -> str:
 
 
 def vulkan_device_for_target(runner: Any, target: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    devices = list((runner._vulkan_runtime_details().get("devices") or []))
+    devices = list((runner._vulkan_native_backend().get("devices") or []))
     if not devices:
-        devices = list((runner._vulkan_native_backend().get("devices") or []))
+        devices = list((runner._vulkan_runtime_details().get("devices") or []))
     cards = runner._discover_gpu_cards()
     likely_discrete_ids = {
         str(card.get("target_id", "") or "").strip().lower()

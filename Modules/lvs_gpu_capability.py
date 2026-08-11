@@ -32,6 +32,14 @@ def build_gpu_capability_profile(
     system_total_bytes: int = 0,
 ) -> Dict[str, Any]:
     target_data = target or {}
+    vulkan_identity_text = " ".join(
+        str((vulkan_device or {}).get(key, "") or "").lower()
+        for key in ("deviceType", "deviceName")
+    )
+    vulkan_hardware_verified = bool(vulkan_device) and not any(
+        token in vulkan_identity_text
+        for token in ("cpu", "llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")
+    )
     vram_total = int(target_data.get("vram_total") or 0)
     target_id = str(target_data.get("target_id", "") or "").strip().lower()
     discrete_ids = {str(value or "").strip().lower() for value in likely_discrete_ids}
@@ -135,6 +143,20 @@ def build_gpu_capability_profile(
     egl_max_object = egl_max_texture * egl_max_texture * 4 if egl_max_texture else 0
     profile.update(
         {
+            "selected_vulkan_device": {
+                "index": int((vulkan_device or {}).get("index", -1) or 0),
+                "name": str((vulkan_device or {}).get("deviceName", "") or ""),
+                "vendor_id": str((vulkan_device or {}).get("vendorID", "") or ""),
+                "device_id": str((vulkan_device or {}).get("deviceID", "") or ""),
+                "device_uuid": str((vulkan_device or {}).get("deviceUUID", "") or ""),
+                "device_type": str((vulkan_device or {}).get("deviceType", "") or ""),
+                "driver_name": str((vulkan_device or {}).get("driverName", "") or ""),
+                "identity_inventory_source": str((vulkan_device or {}).get("identity_inventory_source", "") or ""),
+                "allocation_capability_source": str((vulkan_device or {}).get("allocation_capability_source", "") or ""),
+            }
+            if vulkan_device
+            else {},
+            "hardware_device_verified": vulkan_hardware_verified,
             "opencl_max_single_allocation_bytes": opencl_max_alloc,
             "vulkan_max_storage_buffer_range_bytes": vulkan_max_buffer,
             "vulkan_max_memory_allocation_count": vulkan_max_count,

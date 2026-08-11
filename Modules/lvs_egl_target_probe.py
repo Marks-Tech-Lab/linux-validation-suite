@@ -85,6 +85,7 @@ def renderer_matches_gpu_target(
         "amd": ["amd", "radeon", "radeonsi", "radv"],
         "nvidia": ["nvidia", "geforce", "quadro", "rtx", "tesla"],
         "intel": ["intel", "arc", "iris"],
+        "qualcomm": ["qualcomm", "adreno", "freedreno", "turnip"],
     }
     aliases = vendor_aliases.get(target_vendor, [target_vendor])
     if not any(alias in renderer_text for alias in aliases):

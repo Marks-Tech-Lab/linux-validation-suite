@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from .lvs_gpu_identity import gpu_vendor_name
+from .lvs_gpu_targets import (
+    discover_gpu_cards as discover_gpu_target_cards,
+    discover_platform_gpu_devices,
+)
 from .lvs_pcie_link import read_pcie_link_info
 from .lvs_telemetry_cpu import read_energy_power_source, read_temperature_path
 from .lvs_telemetry_sampling import (
@@ -23,6 +27,51 @@ HwmonTempThresholds = Callable[[Path], tuple[Optional[float], Optional[float], s
 CommandExists = Callable[[str], bool]
 NvidiaGpuDiscovery = Callable[[], List[Dict[str, Any]]]
 IntelGpuTopMetrics = Callable[[], Dict[str, Optional[float]]]
+ThermalZoneThresholds = Callable[[Path], tuple[Optional[float], Optional[float], str]]
+
+
+_GPU_THERMAL_ZONE_PATTERNS = (
+    re.compile(r"^gpu-thermal$"),
+    re.compile(r"^gpu\d+-thermal$"),
+    re.compile(r"^gpuss(?:[-_]\d+)?-thermal$"),
+    re.compile(r"^gpu(?:[-_].+)?-thermal$"),
+)
+
+
+def is_gpu_thermal_zone_type(zone_type: str) -> bool:
+    normalized = str(zone_type or "").strip().lower()
+    if not normalized:
+        return False
+    excluded = ("display", "dpu", "cpu", "mem", "battery", "pmic", "skin", "video", "camera")
+    if any(token in normalized for token in excluded):
+        return False
+    return any(pattern.fullmatch(normalized) for pattern in _GPU_THERMAL_ZONE_PATTERNS)
+
+
+def read_devfreq_clock_mhz(path: Path, read_text: ReadText) -> Optional[float]:
+    raw = read_text(path)
+    if raw is None:
+        return None
+    try:
+        hz = int(str(raw).strip())
+    except Exception:
+        return None
+    return round(hz / 1_000_000.0, 2) if hz > 0 else None
+
+
+def _read_devfreq_frequency_list(path: Path, read_text: ReadText) -> List[int]:
+    raw = read_text(path)
+    if raw is None:
+        return []
+    values: List[int] = []
+    for token in str(raw).split():
+        try:
+            value = int(token)
+        except Exception:
+            continue
+        if value > 0:
+            values.append(value)
+    return sorted(set(values))
 
 
 def gpu_temp_metric(label: str, hwmon_name: str = "", path: Optional[Path] = None) -> Optional[str]:
@@ -139,6 +188,7 @@ def parse_voltage_text_v(raw: Any) -> Optional[float]:
 
 def discover_gpu_cards(
     drm_root: Path = Path("/sys/class/drm"),
+    platform_root: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     def _read_sysfs(path: Path) -> Optional[str]:
         try:
@@ -146,42 +196,159 @@ def discover_gpu_cards(
         except Exception:
             return None
 
-    cards: List[Dict[str, Any]] = []
-    gpu_index = 0
-    for card in sorted(drm_root.glob("card[0-9]*")):
-        if "-" in card.name:
-            continue
-        device_dir = card / "device"
-        slot = ""
-        vendor = ""
-        driver = ""
+    def _read_sysfs_int(path: Path) -> Optional[int]:
+        value = _read_sysfs(path)
+        if value is None:
+            return None
         try:
-            for line in (device_dir / "uevent").read_text(encoding="utf-8", errors="ignore").splitlines():
-                if line.startswith("PCI_SLOT_NAME="):
-                    slot = line.split("=", 1)[1].strip()
-                elif line.startswith("PCI_ID="):
-                    pci_id = line.split("=", 1)[1].strip()
-                    if ":" in pci_id:
-                        vendor = pci_id.split(":", 1)[0].strip()
-                elif line.startswith("DRIVER="):
-                    driver = line.split("=", 1)[1].strip()
+            return int(value)
         except Exception:
-            pass
-        vendor_id = vendor.lower().removeprefix("0x")
-        if vendor_id == "1a03" or driver.strip().lower() == "ast":
+            return None
+
+    resolved_platform_root = platform_root
+    if resolved_platform_root is None:
+        resolved_platform_root = Path("/sys/bus/platform/devices") if drm_root == Path("/sys/class/drm") else drm_root / ".platform-none"
+    cards = discover_gpu_target_cards(
+        sys_drm=drm_root,
+        sys_platform=resolved_platform_root,
+        safe_read_int=_read_sysfs_int,
+    )
+    for card in cards:
+        card_name = str(card.get("card") or "")
+        if not card_name:
+            card["pcie_link"] = {}
             continue
-        cards.append(
+        card["pcie_link"] = read_pcie_link_info(drm_root / card_name / "device", _read_sysfs)
+    return cards
+
+
+def discover_platform_gpu_sources(
+    *,
+    read_text: ReadText,
+    thermal_zone_thresholds: Optional[ThermalZoneThresholds],
+    platform_gpus: List[Dict[str, Any]],
+    platform_gpu_indices: Dict[str, int],
+    devfreq_root: Path,
+    thermal_root: Path,
+) -> List[Dict[str, Any]]:
+    """Discover standard Linux telemetry attached to physical platform GPUs."""
+    sources: List[Dict[str, Any]] = []
+    if not platform_gpus:
+        return sources
+
+    for platform_gpu in platform_gpus:
+        platform_path = str(platform_gpu.get("path") or "")
+        gpu_index = platform_gpu_indices.get(platform_path)
+        if gpu_index is None:
+            continue
+        platform_name = str(platform_gpu.get("platform_name") or Path(platform_path).name)
+        for devfreq in sorted(devfreq_root.glob("*")) if devfreq_root.exists() else []:
+            try:
+                devfreq_device = (devfreq / "device").resolve()
+            except Exception:
+                devfreq_device = Path("")
+            if str(devfreq_device) != platform_path and devfreq.name != platform_name:
+                continue
+            current_path = devfreq / "cur_freq"
+            if read_devfreq_clock_mhz(current_path, read_text) is None:
+                continue
+            min_hz = _safe_positive_int(read_text(devfreq / "min_freq"))
+            max_hz = _safe_positive_int(read_text(devfreq / "max_freq"))
+            available_hz = _read_devfreq_frequency_list(devfreq / "available_frequencies", read_text)
+            sources.append(
+                {
+                    "kind": "platform_devfreq",
+                    "path": str(current_path),
+                    "label": f"{platform_name} current frequency",
+                    "gpu_index": gpu_index,
+                    "card": "",
+                    "slot": "",
+                    "metric": "clock_mhz",
+                    "key": f"gpu_{gpu_index}_clock_mhz",
+                    "gpu_identity_source": "platform_device_tree",
+                    "gpu_platform_path": platform_path,
+                    "driver": str(platform_gpu.get("driver") or ""),
+                    "frequency_unit": "hz",
+                    "minimum_frequency_hz": min_hz,
+                    "maximum_frequency_hz": max_hz,
+                    "available_frequencies_hz": available_hz,
+                    "clock_capability": "available",
+                    "source_quality": 90,
+                }
+            )
+            break
+
+    # Thermal zones do not expose a device link on this class of platform. Only
+    # associate named GPU subsystem zones when there is exactly one physical
+    # platform GPU; otherwise ownership would be guesswork.
+    if len(platform_gpus) != 1:
+        return sources
+    platform_gpu = platform_gpus[0]
+    platform_path = str(platform_gpu.get("path") or "")
+    gpu_index = platform_gpu_indices.get(platform_path)
+    if gpu_index is None:
+        return sources
+    components: List[Dict[str, Any]] = []
+    for zone in sorted(thermal_root.glob("thermal_zone*")) if thermal_root.exists() else []:
+        zone_type = read_text(zone / "type") or ""
+        if not is_gpu_thermal_zone_type(zone_type):
+            continue
+        temp_path = zone / "temp"
+        if read_temperature_path(temp_path, read_text) is None:
+            continue
+        warn_c, fail_c, threshold_source = (
+            thermal_zone_thresholds(zone)
+            if thermal_zone_thresholds is not None
+            else (None, None, "suite_default")
+        )
+        components.append(
             {
-                "card": card.name,
-                "slot": slot,
-                "vendor": gpu_vendor_name(vendor),
-                "driver": driver,
+                "kind": "thermal_zone_gpu",
+                "path": str(temp_path),
+                "label": str(zone_type),
                 "gpu_index": gpu_index,
-                "pcie_link": read_pcie_link_info(device_dir, _read_sysfs),
+                "metric": "temp_core_c",
+                "warn_threshold_c": warn_c,
+                "fail_threshold_c": fail_c,
+                "threshold_source": threshold_source,
+                "gpu_identity_source": "platform_device_tree",
+                "gpu_platform_path": platform_path,
             }
         )
-        gpu_index += 1
-    return cards
+    if components:
+        warn_values = [float(item["warn_threshold_c"]) for item in components if item.get("warn_threshold_c") is not None]
+        fail_values = [float(item["fail_threshold_c"]) for item in components if item.get("fail_threshold_c") is not None]
+        sources.append(
+            {
+                "kind": "aggregate_temperature",
+                "path": "thermal_zone:max",
+                "label": "maximum platform GPU thermal-zone temperature",
+                "gpu_index": gpu_index,
+                "card": "",
+                "slot": "",
+                "metric": "temp_core_c",
+                "key": f"gpu_{gpu_index}_temp_core_c",
+                "sources": components,
+                "component_count": len(components),
+                "aggregation": "maximum",
+                "warn_threshold_c": min(warn_values) if warn_values else None,
+                "fail_threshold_c": min(fail_values) if fail_values else None,
+                "threshold_source": "aggregate_thermal_zone_trips" if warn_values or fail_values else "suite_default",
+                "gpu_identity_source": "platform_device_tree",
+                "gpu_platform_path": platform_path,
+                "temperature_capability": "available",
+                "source_quality": 100,
+            }
+        )
+    return sources
+
+
+def _safe_positive_int(raw: Any) -> Optional[int]:
+    try:
+        value = int(str(raw or "").strip())
+    except Exception:
+        return None
+    return value if value > 0 else None
 
 
 def discover_gpu_sources(
@@ -193,14 +360,40 @@ def discover_gpu_sources(
     intel_gpu_top_json_sample_metrics: IntelGpuTopMetrics,
     drm_root: Path = Path("/sys/class/drm"),
     hwmon_root: Path = Path("/sys/class/hwmon"),
+    platform_root: Optional[Path] = None,
+    devfreq_root: Path = Path("/sys/class/devfreq"),
+    thermal_root: Path = Path("/sys/class/thermal"),
+    thermal_zone_thresholds: Optional[ThermalZoneThresholds] = None,
 ) -> List[Dict[str, Any]]:
     sources: List[Dict[str, Any]] = []
-    gpu_index = 0
+    resolved_platform_root = platform_root
+    if resolved_platform_root is None:
+        resolved_platform_root = Path("/sys/bus/platform/devices") if drm_root == Path("/sys/class/drm") else drm_root / ".platform-none"
+    cards = discover_gpu_cards(drm_root, resolved_platform_root)
+    card_index_map = {
+        str(card.get("card") or ""): int(card.get("gpu_index", 0) or 0)
+        for card in cards
+        if card.get("card")
+    }
     for card in sorted(drm_root.glob("card[0-9]*")):
         if "-" in card.name:
             continue
+        if card.name not in card_index_map:
+            continue
+        gpu_index = card_index_map[card.name]
         device_dir = card / "device"
         slot = pci_slot_from_device_dir(device_dir)
+        drm_uevent = read_text(device_dir / "uevent") or ""
+        drm_of_name = next(
+            (
+                line.split("=", 1)[1].strip().lower()
+                for line in drm_uevent.splitlines()
+                if line.startswith("OF_NAME=") and "=" in line
+            ),
+            "",
+        )
+        if "display" in drm_of_name:
+            continue
         hwmons = gpu_hwmon_dirs(card, read_text, hwmon_root)
         for hwmon in hwmons:
             hwmon_name = read_text(hwmon / "name") or ""
@@ -300,9 +493,22 @@ def discover_gpu_sources(
             if read_text(metric_path) is None:
                 continue
             sources.append(_gpu_path_source(card.name, gpu_index, slot, metric_path, metric_key, metric_name, kind="gpu_value"))
-        gpu_index += 1
-
-    cards = discover_gpu_cards(drm_root)
+    platform_gpus = discover_platform_gpu_devices(resolved_platform_root)
+    platform_gpu_indices: Dict[str, int] = {
+        str(card.get("platform_gpu_path") or ""): int(card.get("gpu_index", 0) or 0)
+        for card in cards
+        if card.get("platform_gpu_path")
+    }
+    sources.extend(
+        discover_platform_gpu_sources(
+            read_text=read_text,
+            thermal_zone_thresholds=thermal_zone_thresholds,
+            platform_gpus=platform_gpus,
+            platform_gpu_indices=platform_gpu_indices,
+            devfreq_root=devfreq_root,
+            thermal_root=thermal_root,
+        )
+    )
     slot_index_map = {
         (source.get("slot") or "").lower(): source.get("gpu_index")
         for source in cards
@@ -455,6 +661,14 @@ def read_gpu_values(
                 read_text_sudo,
                 max_watts=2000.0,
             )
+        elif source["kind"] == "aggregate_temperature":
+            component_values = [
+                read_temperature_path(Path(str(component.get("path") or "")), read_text)
+                for component in source.get("sources", [])
+                if isinstance(component, dict)
+            ]
+            valid_values = [item for item in component_values if item is not None]
+            value = max(valid_values) if valid_values else None
         elif source["metric"] in {"temp_core_c", "temp_hotspot_c", "temp_memory_c"}:
             value = read_temperature_path(Path(str(source.get("path") or "")), read_text)
         elif source["metric"] == "power_w":
@@ -462,7 +676,10 @@ def read_gpu_values(
             if raw is not None:
                 value = parse_power_text_w(raw, max_watts=2000.0)
         elif source["metric"] in {"clock_mhz", "memory_clock_mhz"}:
-            value = read_gpu_clock(Path(str(source.get("path") or "")), read_text)
+            if source.get("kind") == "platform_devfreq":
+                value = read_devfreq_clock_mhz(Path(str(source.get("path") or "")), read_text)
+            else:
+                value = read_gpu_clock(Path(str(source.get("path") or "")), read_text)
         elif source["metric"] in {"busy_percent", "memory_busy_percent"}:
             raw = read_text(Path(str(source.get("path") or "")))
             if raw is not None:

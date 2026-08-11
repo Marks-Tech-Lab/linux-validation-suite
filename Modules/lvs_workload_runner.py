@@ -66,6 +66,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
         self._egl_target_probe_cache: Dict[str, Dict[str, Any]] = {}
         self._opencl_probe_cache: Optional[Dict[str, Any]] = None
         self._vulkan_runtime_cache: Optional[Dict[str, Any]] = None
+        self._vulkan_native_backend_cache: Optional[Dict[str, Any]] = None
         self._cpu_tuning_cache: Dict[Any, Dict[str, Any]] = {}
         self._cpu_power_tuning_available_cache: Optional[bool] = None
         self._gpu_capability_cache: Dict[str, Dict[str, Any]] = {}

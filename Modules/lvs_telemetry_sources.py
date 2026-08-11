@@ -55,7 +55,7 @@ def preferred_metric_source(
         derived = 1 if threshold_source and threshold_source != "suite_default" else 0
         has_fail = 1 if source.get("fail_threshold_c") is not None else 0
         has_warn = 1 if source.get("warn_threshold_c") is not None else 0
-        base = derived * 100 + has_fail * 10 + has_warn
+        base = int(source.get("source_quality", 0) or 0) * 10000 + derived * 100 + has_fail * 10 + has_warn
         if prefer_hardware_thresholds:
             base += derived * 1000
         return (base, -int(source.get("gpu_index", 0) or 0), -len(str(source.get("label", ""))))
@@ -182,6 +182,15 @@ def telemetry_source_record(
         "bank_count",
         "error_scope",
         "pcie_link",
+        "gpu_identity_source",
+        "gpu_platform_path",
+        "frequency_unit",
+        "minimum_frequency_hz",
+        "maximum_frequency_hz",
+        "available_frequencies_hz",
+        "clock_capability",
+        "temperature_capability",
+        "source_quality",
     ):
         if source.get(key) not in (None, ""):
             record[key] = source.get(key)
@@ -356,6 +365,12 @@ def build_telemetry_source_map(
             "slot": card.get("slot", ""),
             "vendor": card.get("vendor", ""),
             "driver": card.get("driver", ""),
+            "gpu_identity_source": card.get("gpu_identity_source", ""),
+            "gpu_platform_path": card.get("platform_gpu_path", ""),
+            "gpu_device_role": card.get("gpu_device_role", ""),
+            "physical_gpu_id": card.get("physical_gpu_id", ""),
+            "drm_driver": card.get("drm_driver", ""),
+            "drm_device_role": card.get("drm_device_role", ""),
         }
         pcie_link = trusted_pcie_link_for_slot(card.get("pcie_link", {}), card.get("slot", ""))
         if pcie_link:
@@ -494,13 +509,14 @@ def build_gpu_telemetry_matrix(
         if not label:
             continue
         existing = info["metrics"].get(label, {})
-        if existing.get("available"):
+        if existing.get("available") and int(existing.get("source_quality", 0) or 0) >= int(source.get("source_quality", 0) or 0):
             continue
         info["metrics"][label] = {
             "available": True,
             "source": telemetry_source_description(source),
             "kind": source.get("kind", ""),
             "metric": metric,
+            "source_quality": int(source.get("source_quality", 0) or 0),
         }
 
     return [per_gpu[index] for index in sorted(per_gpu)]

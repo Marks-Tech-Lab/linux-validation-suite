@@ -136,12 +136,17 @@ class WorkloadGpuRuntimeMixin:
         return collect_vulkan_native_physical_devices(library)
 
     def _vulkan_native_backend(self) -> Dict[str, Any]:
-        return build_vulkan_native_runtime_backend(
+        cached = getattr(self, "_vulkan_native_backend_cache", None)
+        if cached is not None:
+            return dict(cached)
+        details = build_vulkan_native_runtime_backend(
             runtime=self._vulkan_runtime_details(),
             worker_path=DEFAULT_NATIVE_DIR / "vulkan_compute_worker.py",
             library_resolver=self._resolve_vulkan_library,
             native_inventory_collector=self._vulkan_native_physical_devices,
         )
+        self._vulkan_native_backend_cache = dict(details)
+        return dict(details)
 
     def _vulkan_transfer_backend(self) -> Dict[str, Any]:
         return build_vulkan_transfer_backend_payload(

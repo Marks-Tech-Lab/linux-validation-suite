@@ -82,6 +82,7 @@ from vulkan_transfer_worker import (
     parse_properties,
     resolve_vulkan_library,
     score_device,
+    vulkan_failure_reason,
 )
 
 VK_ACCESS_SHADER_READ_BIT = 0x00000020
@@ -350,9 +351,11 @@ def main() -> int:
     parser.add_argument("--target-vendor", default="")
     parser.add_argument("--target-vendor-id", default="")
     parser.add_argument("--target-device-id", default="")
+    parser.add_argument("--target-device-name", default="")
     parser.add_argument("--target-card", default="")
     parser.add_argument("--target-slot", default="")
     parser.add_argument("--target-id", default="")
+    parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
     parser.add_argument("--target-vram-total", type=int, default=0)
     parser.add_argument("--buffer-bytes", type=int, default=64 * 1024 * 1024)
@@ -457,19 +460,25 @@ def main() -> int:
         "selected_device_type": "",
         "selected_device_pci_slot": "",
         "selected_vulkan_index": -1,
+        "hardware_device_verified": False,
+        "device_match_score": 0.0,
+        "device_match_ambiguous": False,
         "queue_family_index": -1,
         "target_vendor": args.target_vendor,
         "target_vendor_id": args.target_vendor_id,
         "target_device_id": args.target_device_id,
+        "target_device_name": args.target_device_name,
         "target_card": args.target_card,
         "target_slot": args.target_slot,
         "target_id": args.target_id,
+        "physical_gpu_id": args.physical_gpu_id,
         "target_gpu_index": args.target_gpu_index,
         "target_vram_total": args.target_vram_total,
         "profile_mode": args.profile_mode,
         "profile_intensity": args.profile_intensity,
         "tuning_step": args.tuning_step,
         "last_error": "",
+        "failure_reason": "",
     }
     running = True
 
@@ -477,6 +486,7 @@ def main() -> int:
         state["status"] = "error"
         state["error_count"] += 1
         state["last_error"] = str(message)
+        state["failure_reason"] = vulkan_failure_reason(message)
 
     def write_result():
         if not args.result_file:
@@ -511,6 +521,15 @@ def main() -> int:
         score, selected_info, physical_device = ranked[0]
         if score < -1000:
             raise RuntimeError("no non-CPU Vulkan GPU device matched target")
+        ambiguous = len(ranked) > 1 and abs(float(score) - float(ranked[1][0])) < 1.0
+        if ambiguous:
+            raise RuntimeError("ambiguous Vulkan physical-device match")
+        selected_name = str(selected_info.get("device_name") or "").lower()
+        hardware_verified = selected_info.get("device_type") != "cpu" and not any(
+            token in selected_name for token in ("llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")
+        )
+        if not hardware_verified:
+            raise RuntimeError("selected Vulkan device is not a hardware GPU")
         state.update(
             {
                 "selected_device_name": selected_info["device_name"],
@@ -519,6 +538,9 @@ def main() -> int:
                 "selected_device_type": selected_info["device_type"],
                 "selected_device_pci_slot": selected_info.get("pci_slot", ""),
                 "selected_vulkan_index": selected_info["index"],
+                "hardware_device_verified": True,
+                "device_match_score": float(score),
+                "device_match_ambiguous": False,
             }
         )
         max_storage_buffer_range = max(0, int(selected_info.get("max_storage_buffer_range_bytes") or 0))

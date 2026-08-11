@@ -158,7 +158,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_telemetry_sampling.py`, `lvs_telemetry_samples.py` | Internal | Parse raw samples and serialize sample records. |
 | `lvs_telemetry_sources.py`, `lvs_telemetry_sensor_io.py`, `lvs_telemetry_device.py` | Internal | Select sources, perform sensor I/O, and discover optional devices. |
 | `lvs_telemetry_cpu.py`, `lvs_telemetry_memory.py` | Internal | Own CPU/package and memory telemetry rules. |
-| `lvs_telemetry_gpu.py`, `lvs_telemetry_intel.py`, `lvs_telemetry_nvidia.py` | Internal | Discover and sample generic, Intel, and NVIDIA GPU telemetry. |
+| `lvs_telemetry_gpu.py`, `lvs_telemetry_intel.py`, `lvs_telemetry_nvidia.py` | Internal | Discover and sample DRM/hwmon plus platform devfreq/thermal, Intel, and NVIDIA GPU telemetry. |
 | `lvs_telemetry_storage_sources.py` | Internal | Discovers and reads storage temperature sources. |
 | `lvs_intel_gpu_sidecar.py` | Internal | Manages Intel GPU sidecar sampling and summaries. |
 | `lvs_system_info.py` | Internal composition | Collects the complete system hardware inventory. |
@@ -179,7 +179,7 @@ Every other TUI helper must remain importable without Textual installed.
 
 | Module or family | Surface | One-line ownership |
 | --- | --- | --- |
-| `lvs_gpu_identity.py`, `lvs_gpu_targets.py`, `lvs_gpu_capability.py` | Internal contract | Normalize GPU identity, selectable targets, and capability policy. |
+| `lvs_gpu_identity.py`, `lvs_gpu_targets.py`, `lvs_gpu_capability.py` | Internal contract | Normalize PCI/DRM/platform physical-GPU identity, selectable targets, and capability policy. |
 | `lvs_gpu_memory_model.py` | Internal contract | Classify dedicated, shared, and ambiguous GPU memory capacities without conflating usage or firmware reservations. |
 | `lvs_gpu_allocation_plan.py` | Internal policy | Split worker targets into API-legal chunks and normalize achieved-allocation outcomes. |
 | `lvs_gpu_backend_catalog.py`, `lvs_gpu_backend_support.py` | Internal policy | Define available backends and per-target support. |
@@ -193,7 +193,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_gpu_export_helpers.py` | Internal | Normalizes GPU naming and ordering for exports. |
 | `lvs_opencl_runtime.py`, `lvs_opencl_targeting.py`, `lvs_opencl_probe_script.py` | Internal | Discover, target, and probe OpenCL runtimes. |
 | `lvs_opencl_workers.py`, `lvs_opencl_compute_worker.py`, `lvs_opencl_vram_worker.py` | Internal worker | Build OpenCL worker specs and scripts. |
-| `lvs_vulkan_runtime.py`, `lvs_vulkan_targeting.py`, `lvs_vulkan_workers.py` | Internal worker | Discover and target Vulkan runtimes and build workers. |
+| `lvs_vulkan_runtime.py`, `lvs_vulkan_targeting.py`, `lvs_vulkan_workers.py` | Internal worker | Merge Vulkan identity/allocation capabilities, target hardware devices, and build verified workers. |
 | `lvs_egl_target_probe.py`, `lvs_egl_probe_script.py` | Internal | Probe EGL/GLES renderer identity and targeting. |
 | `lvs_egl_gles_workers.py`, `lvs_egl_gles_worker.py` | Internal worker | Build EGL/GLES worker specs and scripts. |
 | `lvs_external_gpu_workers.py`, `lvs_external_gpu_supervisor.py` | Internal worker | Construct and supervise external GPU workloads. |

@@ -41,9 +41,12 @@ def discover_platform_gpu_devices(
             continue
         devices.append(
             {
+                "platform_name": device.name,
                 "path": str(device.resolve()),
                 "driver": driver,
                 "of_name": of_name,
+                "of_fullname": values.get("OF_FULLNAME", ""),
+                "modalias": values.get("MODALIAS", ""),
                 "compatible": compatibles,
             }
         )
@@ -168,6 +171,9 @@ def discover_gpu_cards(
         device = ""
         slot = ""
         driver = ""
+        of_name = ""
+        of_fullname = ""
+        drm_compatible: List[str] = []
         try:
             for line in (device_dir / "uevent").read_text(encoding="utf-8", errors="ignore").splitlines():
                 if line.startswith("PCI_ID="):
@@ -178,6 +184,12 @@ def discover_gpu_cards(
                     slot = line.split("=", 1)[1].strip()
                 if line.startswith("DRIVER="):
                     driver = line.split("=", 1)[1].strip()
+                if line.startswith("OF_NAME="):
+                    of_name = line.split("=", 1)[1].strip()
+                if line.startswith("OF_FULLNAME="):
+                    of_fullname = line.split("=", 1)[1].strip()
+                if line.startswith("OF_COMPATIBLE_") and not line.startswith("OF_COMPATIBLE_N="):
+                    drm_compatible.append(line.split("=", 1)[1].strip())
         except Exception:
             pass
         vendor_name = gpu_vendor_name(vendor)
@@ -198,6 +210,11 @@ def discover_gpu_cards(
                 "vram_used_source": "drm_mem_info_vram_used" if vram_used_value is not None else "",
                 "dri_prime": dri_prime_selector(slot),
                 "driver": driver,
+                "drm_driver": driver,
+                "drm_device_role": "display_controller" if "display" in of_name.lower() else "gpu",
+                "drm_of_name": of_name,
+                "drm_of_fullname": of_fullname,
+                "drm_compatible": drm_compatible,
                 "vendor": vendor_name,
                 "vendor_id": vendor_id,
                 "device": device_code,
@@ -216,10 +233,18 @@ def discover_gpu_cards(
         compatible = list(platform_gpu.get("compatible") or [])
         card.update(
             {
+                "driver": platform_driver or str(card.get("driver") or ""),
                 "platform_gpu_driver": platform_driver,
                 "platform_gpu_compatible": compatible,
                 "platform_gpu_path": str(platform_gpu.get("path") or ""),
+                "platform_gpu_name": str(platform_gpu.get("platform_name") or ""),
+                "platform_gpu_of_name": str(platform_gpu.get("of_name") or ""),
+                "platform_gpu_of_fullname": str(platform_gpu.get("of_fullname") or ""),
+                "platform_gpu_modalias": str(platform_gpu.get("modalias") or ""),
                 "platform_gpu_identity_source": "unique_platform_gpu_device",
+                "gpu_identity_source": "platform_device_tree",
+                "gpu_device_role": "3d_gpu",
+                "physical_gpu_id": f"platform:{platform_gpu.get('platform_name') or Path(str(platform_gpu.get('path') or '')).name}",
             }
         )
         if str(card.get("name") or "").strip().lower() in {"", "unknown gpu"} and platform_driver:
@@ -228,6 +253,56 @@ def discover_gpu_cards(
             value.lower().startswith("qcom,") for value in compatible
         ):
             card["vendor"] = "Qualcomm"
+    associated_platform_paths = {
+        str(card.get("platform_gpu_path") or "") for card in cards if card.get("platform_gpu_path")
+    }
+    for platform_gpu in platform_gpus:
+        platform_path = str(platform_gpu.get("path") or "")
+        if platform_path in associated_platform_paths:
+            continue
+        compatible = list(platform_gpu.get("compatible") or [])
+        platform_driver = str(platform_gpu.get("driver") or "")
+        vendor_name = "Qualcomm" if any(value.lower().startswith("qcom,") for value in compatible) else "Unknown"
+        cards.append(
+            {
+                "card": "",
+                "slot": "",
+                "vram_total": 0,
+                "vram_total_source": "",
+                "vram_used": None,
+                "vram_used_source": "",
+                "dri_prime": "",
+                "driver": platform_driver,
+                "drm_driver": "",
+                "drm_device_role": "",
+                "vendor": vendor_name,
+                "vendor_id": "",
+                "device": "",
+                "name": f"{platform_driver.title()} platform GPU" if platform_driver else "Platform GPU",
+                "target_id": f"platform:{platform_gpu.get('platform_name') or Path(platform_path).name}",
+                "gpu_index": gpu_index,
+                "platform_gpu_driver": platform_driver,
+                "platform_gpu_compatible": compatible,
+                "platform_gpu_path": platform_path,
+                "platform_gpu_name": str(platform_gpu.get("platform_name") or ""),
+                "platform_gpu_of_name": str(platform_gpu.get("of_name") or ""),
+                "platform_gpu_of_fullname": str(platform_gpu.get("of_fullname") or ""),
+                "platform_gpu_modalias": str(platform_gpu.get("modalias") or ""),
+                "platform_gpu_identity_source": "platform_gpu_device",
+                "gpu_identity_source": "platform_device_tree",
+                "gpu_device_role": "3d_gpu",
+                "physical_gpu_id": f"platform:{platform_gpu.get('platform_name') or Path(platform_path).name}",
+            }
+        )
+        gpu_index += 1
+    cards = [
+        card
+        for card in cards
+        if card.get("gpu_device_role") == "3d_gpu"
+        or card.get("drm_device_role") != "display_controller"
+    ]
+    for index, card in enumerate(cards):
+        card["gpu_index"] = index
     nvidia_by_slot = {
         str(gpu.get("slot", "") or "").lower(): gpu
         for gpu in nvidia_smi_gpus or []
@@ -256,7 +331,7 @@ def discover_gpu_cards(
 
 def likely_discrete_gpu_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if len(cards) <= 1:
-        return cards[:]
+        return [] if cards and gpu_card_class(cards[0]) == "integrated" else cards[:]
     explicit_discrete = [card for card in cards if gpu_card_class(card) == "discrete"]
     if explicit_discrete:
         return explicit_discrete
@@ -270,8 +345,19 @@ def likely_discrete_gpu_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
 def gpu_card_class(card: Dict[str, Any]) -> str:
     vendor = str(card.get("vendor", "") or "").strip().lower()
     driver = str(card.get("driver", "") or "").strip().lower()
+    platform_driver = str(card.get("platform_gpu_driver", "") or "").strip().lower()
+    identity = " ".join(
+        str(card.get(key, "") or "").strip().lower()
+        for key in ("vendor", "name", "driver", "platform_gpu_driver")
+    )
     if vendor == "nvidia" or driver == "nvidia":
         return "discrete"
+    if driver in {"i915", "xe", "adreno", "panfrost", "panthor", "lima"}:
+        return "integrated"
+    if platform_driver in {"adreno", "panfrost", "panthor", "lima"}:
+        return "integrated"
+    if any(token in identity for token in ("amd apu", "radeon graphics")):
+        return "integrated"
     return ""
 
 

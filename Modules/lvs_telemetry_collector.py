@@ -571,6 +571,7 @@ class TelemetryCollector:
             self._command_exists,
             self._discover_nvidia_smi_gpus,
             self._intel_gpu_top_json_sample_metrics,
+            thermal_zone_thresholds=self._thermal_zone_thresholds,
         )
 
     def _gpu_hwmon_dirs(self, card: Path) -> List[Path]:

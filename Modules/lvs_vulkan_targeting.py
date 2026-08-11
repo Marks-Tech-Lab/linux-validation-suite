@@ -81,7 +81,13 @@ def vulkan_device_score_for_target(
         score += 300.0
     if target_device_id and target_device_id == device_device_id:
         score += 500.0
-    if target_vendor and target_vendor in device_name:
+    vendor_aliases = {
+        "amd": ("amd", "radeon", "radv", "radeonsi"),
+        "intel": ("intel", "iris", "anv"),
+        "nvidia": ("nvidia", "geforce", "quadro", "rtx", "tesla"),
+        "qualcomm": ("qualcomm", "adreno", "freedreno", "turnip"),
+    }
+    if target_vendor and any(alias in device_name for alias in vendor_aliases.get(target_vendor, (target_vendor,))):
         score += 40.0
     if target_id in likely_discrete_ids and "discrete" in device_type:
         score += 140.0
