@@ -193,7 +193,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_gpu_export_helpers.py` | Internal | Normalizes GPU naming and ordering for exports. |
 | `lvs_opencl_runtime.py`, `lvs_opencl_targeting.py`, `lvs_opencl_probe_script.py` | Internal | Discover, target, and probe OpenCL runtimes. |
 | `lvs_opencl_workers.py`, `lvs_opencl_compute_worker.py`, `lvs_opencl_vram_worker.py` | Internal worker | Build OpenCL worker specs and scripts. |
-| `lvs_vulkan_runtime.py`, `lvs_vulkan_targeting.py`, `lvs_vulkan_workers.py` | Internal worker | Merge Vulkan identity/allocation capabilities, target hardware devices, and build verified workers. |
+| `lvs_vulkan_runtime.py`, `lvs_vulkan_targeting.py`, `lvs_vulkan_memory_policy.py`, `lvs_vulkan_workers.py` | Internal worker | Merge Vulkan identity/allocation capabilities, apply shared/dedicated stateful-memory policy, target hardware devices, and build verified workers. |
 | `lvs_egl_target_probe.py`, `lvs_egl_probe_script.py` | Internal | Probe EGL/GLES renderer identity and targeting. |
 | `lvs_egl_gles_workers.py`, `lvs_egl_gles_worker.py` | Internal worker | Build EGL/GLES worker specs and scripts. |
 | `lvs_external_gpu_workers.py`, `lvs_external_gpu_supervisor.py` | Internal worker | Construct and supervise external GPU workloads. |

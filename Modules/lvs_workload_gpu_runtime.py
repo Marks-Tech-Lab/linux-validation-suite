@@ -62,6 +62,7 @@ from Modules.lvs_gpu_targets import (
     discover_gpu_cards as discover_gpu_target_cards,
     discover_nvidia_smi_gpus as discover_nvidia_smi_target_gpus,
     dri_prime_selector,
+    enrich_gpu_cards_with_vulkan_device_classes,
     gpu_card_class,
     gpu_target_by_id,
     gpu_target_display_label,
@@ -295,10 +296,14 @@ class WorkloadGpuRuntimeMixin:
         return gpu_targets(selection, self._discover_gpu_cards())
 
     def _discover_gpu_cards(self) -> List[Dict[str, Any]]:
-        return discover_gpu_target_cards(
+        cards = discover_gpu_target_cards(
             pci_name_lookup=self._lookup_pci_device_name,
             safe_read_int=self._safe_read_int,
             nvidia_smi_gpus=self._discover_nvidia_smi_gpus(),
+        )
+        return enrich_gpu_cards_with_vulkan_device_classes(
+            cards,
+            list(self._vulkan_runtime_details().get("devices") or []),
         )
 
     def _gpu_vendor_name(self, vendor_id: str) -> str:

@@ -1,0 +1,14 @@
+{
+  "profile_name": "x86_64 RAM and Full Mixed Confirmation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 RAM and Full Mixed Confirmation_info.txt",
+  "menu_description": "Unattended x86_64 RAM-evidence remediation plus one full integrated/discrete mixed-load confirmation",
+  "menu_group": "advanced",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "x86_ram_full_stress_ng", "name": "RAM stress-ng Verification Metrics", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "stress_ng", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "x86_ram_full_python", "name": "RAM Python Continuous Integrity", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "python_fallback", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "x86_ram_full_mixed", "name": "Full CPU RAM Integrated and Discrete GPU Confirmation", "duration_seconds": 600, "modules": {"cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "high", "dataset": "large"}, "memory": {"enabled": true, "backend_preference": "native", "allocation_percent": 70, "instruction_set": "auto", "priority": "high", "threads": "all"}, "gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"}, "vram": {"enabled": true, "allocation_percent": 70, "gpus": "all", "priority": "high", "backend_preference": "vulkan"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

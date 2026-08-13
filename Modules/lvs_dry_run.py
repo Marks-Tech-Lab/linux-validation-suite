@@ -23,6 +23,19 @@ def build_dry_run_plan(runner: Any, profile: Any, labels: List[str]) -> List[Dic
     return plan
 
 
+def required_stage_completeness_error(profile: Any, enabled_count: int, runnable_count: int) -> str:
+    if (
+        bool(getattr(profile, "require_all_stages_runnable", False))
+        and int(enabled_count) > 0
+        and int(runnable_count) != int(enabled_count)
+    ):
+        return (
+            "profile requires every enabled stage to be runnable "
+            f"({int(runnable_count)}/{int(enabled_count)} runnable)"
+        )
+    return ""
+
+
 def build_dry_run_report(
     orchestrator: Any,
     profile_path: Path,
@@ -68,6 +81,14 @@ def build_dry_run_report(
         no_runnable_message = "no enabled stages are runnable in the current environment"
         profile_errors.append(no_runnable_message)
         errors.append(no_runnable_message)
+    completeness_message = required_stage_completeness_error(
+        profile,
+        enabled_stage_count,
+        runnable_stage_count,
+    )
+    if completeness_message:
+        profile_errors.append(completeness_message)
+        errors.append(completeness_message)
 
     if "cpu" in enabled_workloads and not telemetry_capabilities["cpu_temp_c"]["available"]:
         warnings.append("CPU temperature telemetry unavailable; thermal metrics will be blank")
@@ -176,6 +197,7 @@ def build_dry_run_report(
         "profile_file": profile_path.name,
         "menu_description": profile.menu_description,
         "menu_group": profile.menu_group,
+        "require_all_stages_runnable": bool(getattr(profile, "require_all_stages_runnable", False)),
         "runnable": not profile_errors,
         "strict_threshold_recommendation_warnings": {
             "enabled_for_any_stage": strict_threshold_enabled,

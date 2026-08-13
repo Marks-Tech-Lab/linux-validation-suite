@@ -49,10 +49,10 @@ def launch_stage_processes_from_plan(
         cmd = planned.command
         try:
             executable_requested = str(cmd[0]) if cmd else ""
-            is_stress_ng_cpu = kind == "cpu" and Path(executable_requested).name == "stress-ng"
+            is_stress_ng = kind in {"cpu", "memory"} and Path(executable_requested).name == "stress-ng"
             executable_resolved_path = (
                 resolve_executable_path(executable_requested, command_env=command_env)
-                if is_stress_ng_cpu
+                if is_stress_ng
                 else ""
             )
             version = (
@@ -61,7 +61,7 @@ def launch_stage_processes_from_plan(
                     command_env=command_env,
                     run_command=version_runner,
                 )
-                if is_stress_ng_cpu
+                if is_stress_ng
                 else ""
             )
             stdout_path = str(worker_logs_dir / f"{stage_id}_{kind}_{launch_index}.stdout.log") if worker_logs_dir else None
@@ -91,7 +91,7 @@ def launch_stage_processes_from_plan(
                     result_path=planned.result_path,
                     stdout_path=stdout_path,
                     stderr_path=stderr_path,
-                    executable_requested=executable_requested if is_stress_ng_cpu else "",
+                    executable_requested=executable_requested if is_stress_ng else "",
                     executable_resolved_path=executable_resolved_path,
                     executable_version=version,
                     started_iso=started_iso,
@@ -141,10 +141,21 @@ def stop_stage_processes(
             pass
     for entry in entries:
         try:
-            entry.process.wait(timeout=timeout_seconds)
+            command = list(getattr(entry, "command", []) or [])
+            is_stress_ng_memory = (
+                getattr(entry, "kind", "") == "memory"
+                and bool(command)
+                and Path(str(command[0])).name == "stress-ng"
+            )
+            # Large VM workers can need more than five seconds to unmap memory
+            # and print their final --metrics-brief verification record.
+            wait_timeout = max(float(timeout_seconds), 30.0) if is_stress_ng_memory else timeout_seconds
+            entry.process.wait(timeout=wait_timeout)
         except Exception:
             try:
                 entry.process.kill()
+                # Reap the child so evidence ingestion sees a durable status.
+                entry.process.wait(timeout=max(1.0, float(timeout_seconds)))
             except Exception:
                 pass
         finally:

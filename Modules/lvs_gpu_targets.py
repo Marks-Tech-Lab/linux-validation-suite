@@ -343,6 +343,16 @@ def likely_discrete_gpu_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def gpu_card_class(card: Dict[str, Any]) -> str:
+    authoritative_class = str(
+        card.get("device_class")
+        or card.get("DeviceClass")
+        or card.get("vulkan_device_class")
+        or ""
+    ).strip().lower()
+    if authoritative_class in {"integrated", "apu", "uma"}:
+        return "integrated"
+    if authoritative_class == "discrete":
+        return "discrete"
     vendor = str(card.get("vendor", "") or "").strip().lower()
     driver = str(card.get("driver", "") or "").strip().lower()
     platform_driver = str(card.get("platform_gpu_driver", "") or "").strip().lower()
@@ -359,6 +369,43 @@ def gpu_card_class(card: Dict[str, Any]) -> str:
     if any(token in identity for token in ("amd apu", "radeon graphics")):
         return "integrated"
     return ""
+
+
+def enrich_gpu_cards_with_vulkan_device_classes(
+    cards: List[Dict[str, Any]],
+    devices: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Attach authoritative Vulkan physical-device class before selection."""
+    from Modules.lvs_vulkan_targeting import vulkan_device_is_hardware_gpu, vulkan_device_pci_slot
+
+    enriched = [dict(card) for card in cards]
+    by_slot = {
+        normalize_pci_slot(str(card.get("slot", "") or "")): card
+        for card in enriched
+        if normalize_pci_slot(str(card.get("slot", "") or ""))
+    }
+    for device in devices:
+        if not vulkan_device_is_hardware_gpu(device):
+            continue
+        device_type = str(device.get("deviceType", "") or "").strip().lower()
+        device_class = "integrated" if "integrated" in device_type else "discrete" if "discrete" in device_type else ""
+        if not device_class:
+            continue
+        slot = vulkan_device_pci_slot(device, enriched)
+        target = by_slot.get(normalize_pci_slot(slot)) if slot else None
+        if target is None:
+            vendor_id = normalize_pci_id(str(device.get("vendorID", "") or ""))
+            device_id = normalize_pci_id(str(device.get("deviceID", "") or ""))
+            candidates = [
+                card for card in enriched
+                if normalize_pci_id(str(card.get("vendor_id", "") or "")) == vendor_id
+                and normalize_pci_id(str(card.get("device", "") or "")) == device_id
+            ]
+            target = candidates[0] if len(candidates) == 1 else None
+        if target is not None:
+            target["device_class"] = device_class
+            target["device_class_source"] = "vulkan_physical_device_type"
+    return enriched
 
 
 def gpu_targets(selection: Any, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

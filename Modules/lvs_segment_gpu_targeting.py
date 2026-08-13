@@ -166,11 +166,29 @@ class GpuTargetingResolver:
             if str(gpu.get("Card") or "").strip()
         }
         all_workers = [*window.gpu_workers_initial, *window.gpu_workers_final]
-        for worker in all_workers:
+
+        def resolved_gpu_index(payload: Dict[str, Any], fallback_key: str) -> int:
+            for key in ("target_slot", "slot", "target_id"):
+                slot = self.normalize_interface(payload.get(key))
+                if slot in inventory_by_slot:
+                    inventory_index, _gpu = inventory_by_slot[slot]
+                    for source_index, order in gpu_order.items():
+                        if int(order) == int(inventory_index):
+                            return int(source_index)
+            for key in ("target_card", "card"):
+                card = str(payload.get(key) or "").strip().lower()
+                if card in inventory_by_card:
+                    inventory_index, _gpu = inventory_by_card[card]
+                    for source_index, order in gpu_order.items():
+                        if int(order) == int(inventory_index):
+                            return int(source_index)
             try:
-                gpu_index = int(worker.get("gpu_index", 0))
+                return int(payload.get(fallback_key, payload.get("gpu_index", 0)) or 0)
             except Exception:
-                gpu_index = 0
+                return 0
+
+        for worker in all_workers:
+            gpu_index = resolved_gpu_index(worker, "gpu_index")
             info = per_gpu.setdefault(gpu_index, new_info(gpu_index, True))
             info["Targeted"] = True
             info["ObservationRole"] = "targeted"
@@ -188,10 +206,7 @@ class GpuTargetingResolver:
         for payload in window.worker_results:
             if str(payload.get("kind") or "").lower() != "gpu":
                 continue
-            try:
-                gpu_index = int(payload.get("target_gpu_index", payload.get("gpu_index", 0)) or 0)
-            except Exception:
-                gpu_index = 0
+            gpu_index = resolved_gpu_index(payload, "target_gpu_index")
             info = per_gpu.setdefault(gpu_index, new_info(gpu_index, True))
             info["Targeted"] = True
             info["ObservationRole"] = "targeted"

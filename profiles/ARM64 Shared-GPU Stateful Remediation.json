@@ -1,0 +1,13 @@
+{
+  "profile_name": "ARM64 Shared-GPU Stateful Remediation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Shared-GPU Stateful Remediation_info.txt",
+  "menu_description": "Unattended ARM64 Python RAM integrity and shared-GPU stateful-allocation remediation",
+  "menu_group": "advanced",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "arm64_remediation_python_ram", "name": "RAM Python Continuous Integrity", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "python_fallback", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "arm64_remediation_shared_stateful", "name": "Integrated GPU Vulkan Stateful Shared Memory", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "allocation_percent": 80, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

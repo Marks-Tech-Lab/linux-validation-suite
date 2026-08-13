@@ -1,0 +1,2 @@
+RAM Python Continuous Integrity
+Integrated GPU Vulkan Stateful Shared Memory

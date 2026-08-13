@@ -18,6 +18,11 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+from Modules.lvs_vulkan_memory_policy import (
+    stateful_memory_buffer_cap,
+    stateful_memory_buffer_count_limit,
+    stateful_memory_total_cap,
+)
 
 from vulkan_transfer_worker import (
     VK_ACCESS_HOST_READ_BIT,
@@ -244,32 +249,6 @@ def expected_word(index: int, compute_rounds: int, previous_value: int = 0, kern
         value ^= value >> 16
         value = (value + original) & 0xFFFFFFFF
     return value
-
-
-def stateful_memory_buffer_cap(target_vram_total: int, device_local_heap_bytes: int, device_class: str) -> int:
-    memory_total = int(target_vram_total or 0) or int(device_local_heap_bytes or 0)
-    if memory_total >= 64 * 1024 ** 3:
-        return 3584 * 1024 * 1024
-    if memory_total >= 32 * 1024 ** 3:
-        return 3584 * 1024 * 1024
-    if memory_total >= 24 * 1024 ** 3:
-        return 3 * 1024 * 1024 * 1024
-    if memory_total >= 12 * 1024 ** 3:
-        return 1536 * 1024 * 1024
-    if memory_total >= 8 * 1024 ** 3:
-        return 1024 * 1024 * 1024
-    if memory_total >= 2 * 1024 ** 3:
-        return 512 * 1024 * 1024
-    if memory_total >= 1024 ** 3:
-        return 256 * 1024 * 1024
-    return 128 * 1024 * 1024
-
-
-def stateful_memory_total_cap(target_vram_total: int, device_local_heap_bytes: int, device_class: str) -> int:
-    memory_total = int(target_vram_total or 0) or int(device_local_heap_bytes or 0)
-    if memory_total > 0:
-        return max(64 * 1024 * 1024, int(memory_total * 0.9))
-    return 512 * 1024 * 1024
 
 
 def stress_hash_buffer_cap(target_vram_total: int, device_local_heap_bytes: int, device_class: str) -> int:
@@ -593,10 +572,11 @@ def main() -> int:
         state["requested_buffer_bytes"] = int(args.buffer_bytes)
         state["worker_total_cap_bytes"] = int(total_cap_bytes)
         state["per_buffer_cap_bytes"] = int(per_buffer_cap_bytes)
-        buffer_count_limit = 32
-        if max_memory_allocation_count > 0:
-            # Keep room for staging and other worker-owned allocations.
-            buffer_count_limit = max(1, min(buffer_count_limit, max_memory_allocation_count - 4))
+        buffer_count_limit = stateful_memory_buffer_count_limit(
+            requested_total_size,
+            per_buffer_cap_bytes,
+            max_memory_allocation_count,
+        )
         state["buffer_count_limit"] = buffer_count_limit
         state["allocation_strategy"] = (
             "stateful_memory_multi_buffer_device_local"
@@ -648,6 +628,7 @@ def main() -> int:
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                         0,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        prefer_largest_heap=shared_memory_device,
                     )
                     existing_allocation_bytes = sum(int(record["allocation_bytes"]) for record in buffer_records)
                     if shared_memory_device and existing_allocation_bytes + int(buffer_allocation_bytes) > int(args.buffer_bytes):

@@ -695,7 +695,14 @@ def choose_queue_family(vk: ctypes.CDLL, physical_device: ctypes.c_void_p) -> in
     return best_index
 
 
-def find_memory_type(memory_props: VkPhysicalDeviceMemoryProperties, bits: int, required: int, preferred: int = 0) -> int:
+def find_memory_type(
+    memory_props: VkPhysicalDeviceMemoryProperties,
+    bits: int,
+    required: int,
+    preferred: int = 0,
+    prefer_largest_heap: bool = False,
+) -> int:
+    candidates = []
     fallback = -1
     for index in range(int(memory_props.memoryTypeCount)):
         if not (bits & (1 << index)):
@@ -703,16 +710,32 @@ def find_memory_type(memory_props: VkPhysicalDeviceMemoryProperties, bits: int, 
         flags = int(memory_props.memoryTypes[index].propertyFlags)
         if (flags & required) != required:
             continue
+        if prefer_largest_heap:
+            heap_index = int(memory_props.memoryTypes[index].heapIndex)
+            heap_size = int(memory_props.memoryHeaps[heap_index].size)
+            candidates.append(((flags & preferred) == preferred if preferred else True, heap_size, index))
+            continue
         if preferred and (flags & preferred) == preferred:
             return index
         if fallback < 0:
             fallback = index
+    if candidates:
+        return int(max(candidates, key=lambda item: (item[0], item[1], -item[2]))[2])
     if fallback >= 0:
         return fallback
     raise RuntimeError(f"no Vulkan memory type matched required flags 0x{required:x}")
 
 
-def create_buffer(vk, device, memory_props, size, usage, required_flags, preferred_flags=0):
+def create_buffer(
+    vk,
+    device,
+    memory_props,
+    size,
+    usage,
+    required_flags,
+    preferred_flags=0,
+    prefer_largest_heap=False,
+):
     buffer_info = VkBufferCreateInfo(
         VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         VK_NULL_HANDLE,
@@ -727,7 +750,13 @@ def create_buffer(vk, device, memory_props, size, usage, required_flags, preferr
     check(vk.vkCreateBuffer(device, ctypes.byref(buffer_info), None, ctypes.byref(buffer_handle)), "vkCreateBuffer")
     req = VkMemoryRequirements()
     vk.vkGetBufferMemoryRequirements(device, buffer_handle, ctypes.byref(req))
-    memory_type = find_memory_type(memory_props, int(req.memoryTypeBits), required_flags, preferred_flags)
+    memory_type = find_memory_type(
+        memory_props,
+        int(req.memoryTypeBits),
+        required_flags,
+        preferred_flags,
+        prefer_largest_heap=prefer_largest_heap,
+    )
     alloc_info = VkMemoryAllocateInfo(
         VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         VK_NULL_HANDLE,

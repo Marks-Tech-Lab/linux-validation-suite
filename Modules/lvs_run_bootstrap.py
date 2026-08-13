@@ -65,6 +65,7 @@ def build_effective_profile_for_run(
         segment_label_source=profile.segment_label_source,
         menu_description=profile.menu_description,
         menu_group=profile.menu_group,
+        require_all_stages_runnable=profile.require_all_stages_runnable,
         defaults=profile.defaults,
         stages=effective_stages,
     )

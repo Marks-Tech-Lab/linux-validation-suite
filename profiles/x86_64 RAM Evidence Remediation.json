@@ -1,0 +1,13 @@
+{
+  "profile_name": "x86_64 RAM Evidence Remediation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 RAM Evidence Remediation_info.txt",
+  "menu_description": "Unattended x86_64 stress-ng final-metrics and Python continuous-integrity remediation",
+  "menu_group": "advanced",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "x86_ram_metrics_stress_ng", "name": "RAM stress-ng Verification Metrics", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "stress_ng", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "x86_ram_integrity_python", "name": "RAM Python Continuous Integrity", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "python_fallback", "allocation_percent": 80, "instruction_set": "auto", "priority": "high", "threads": "all"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

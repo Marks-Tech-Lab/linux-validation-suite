@@ -110,6 +110,7 @@ class ValidationProfile:
     segment_label_source: Optional[str] = None
     menu_description: str = ""
     menu_group: str = "custom"
+    require_all_stages_runnable: bool = False
     defaults: ProfileDefaults = field(default_factory=ProfileDefaults)
     stages: List[StageConfig] = field(default_factory=list)
 

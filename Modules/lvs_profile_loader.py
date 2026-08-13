@@ -131,6 +131,7 @@ class ProfileLoader:
             segment_label_source=raw.get("segment_label_source"),
             menu_description=self._normalize_menu_description(raw.get("menu_description") or ""),
             menu_group=self._normalize_menu_group(raw.get("menu_group") or ""),
+            require_all_stages_runnable=bool(raw.get("require_all_stages_runnable", False)),
             defaults=defaults,
             stages=stages,
         )
@@ -141,6 +142,7 @@ class ProfileLoader:
             "profile_type": profile.profile_type,
             "segment_label_source": profile.segment_label_source,
             "menu_group": self._normalize_menu_group(profile.menu_group),
+            "require_all_stages_runnable": bool(profile.require_all_stages_runnable),
             "defaults": asdict(profile.defaults),
             "stages": [asdict(stage) for stage in profile.stages],
         }

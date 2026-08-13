@@ -154,7 +154,10 @@ def verify_python_memory_chunks(
     *,
     progress_callback: Callable[[Dict[str, Any]], None] = lambda _state: None,
 ) -> None:
-    expected = int(state.get("current_pattern") or 1) & 0xFF
+    # Zero is a valid byte pattern in the rewrite sequence.  Truthiness would
+    # turn an expected 0 back into 1 and create a deterministic false mismatch.
+    current_pattern = state.get("current_pattern", 1)
+    expected = int(1 if current_pattern is None else current_pattern) & 0xFF
     next_pattern = (expected * 33 + 17) & 0xFF
     if next_pattern == expected:
         next_pattern ^= 0xFF

@@ -188,7 +188,13 @@ from Modules.lvs_vulkan_workers import (
     build_python_vulkan_compute_worker,
     build_python_vulkan_transfer_worker,
 )
-from native.vulkan_transfer_worker import vulkan_failure_reason
+from Modules.lvs_vulkan_memory_policy import (
+    stateful_memory_buffer_cap,
+    stateful_memory_buffer_count_limit,
+    stateful_memory_capacity_basis,
+    stateful_memory_total_cap,
+)
+from native.vulkan_transfer_worker import find_memory_type, vulkan_failure_reason
 from Modules.lvs_gpu_allocation_plan import allocation_attainment, plan_gpu_allocation_chunks
 from Modules.lvs_gpu_worker_params import (
     gpu_worker_baseline_params,
@@ -443,6 +449,7 @@ from Modules.lvs_gpu_targets import (
     discover_gpu_cards,
     discover_platform_gpu_devices,
     dri_prime_selector,
+    enrich_gpu_cards_with_vulkan_device_classes,
     gpu_card_class,
     gpu_target_by_id,
     gpu_target_display_label,
@@ -631,6 +638,7 @@ from Modules.lvs_cli_screen import clear_cli_screen, cli_screen_refresh_supporte
 from Modules.lvs_cli_heatsoak_compat import HeatsoakCompatibilityMixin
 from Modules.lvs_run_finalization import finalize_run_stage_windows
 from Modules.lvs_run_verdict import combine_run_verdict
+from Modules.lvs_segment_gpu_targeting import GpuTargetingResolver
 from Modules.lvs_sensor_events import stage_sensor_events
 from Modules.lvs_run_execution_context import CallbackStringIO, build_heatsoak_debug, build_profile_run_context
 from Modules.lvs_run_executor import RunExecutionError, RunExecutor
@@ -16216,6 +16224,20 @@ def test_gpu_target_helpers() -> None:
     integrated_only = [cards[2]]
     assert_equal(gpu_targets("discrete_all", integrated_only), [], "dGPU-only selection fails closed on iGPU-only systems")
     assert_equal(gpu_targets("discrete_max_vram", integrated_only), [], "maximum-dGPU selection fails closed without a dGPU")
+    ambiguous_amd_cards = [
+        {"card": "card3", "slot": "0000:07:00.0", "vendor": "AMD", "vendor_id": "1002", "device": "1638", "driver": "amdgpu", "vram_total": 512 * 1024 ** 2, "target_id": "0000:07:00.0"},
+        {"card": "card4", "slot": "0000:04:00.0", "vendor": "AMD", "vendor_id": "1002", "device": "699f", "driver": "amdgpu", "vram_total": 2 * 1024 ** 3, "target_id": "0000:04:00.0"},
+    ]
+    classified_amd = enrich_gpu_cards_with_vulkan_device_classes(
+        ambiguous_amd_cards,
+        [
+            {"deviceType": "integrated_gpu", "vendorID": "0x1002", "deviceID": "0x1638", "pci_slot": "0000:07:00.0", "deviceName": "AMD integrated"},
+            {"deviceType": "discrete_gpu", "vendorID": "0x1002", "deviceID": "0x699f", "pci_slot": "0000:04:00.0", "deviceName": "AMD discrete"},
+        ],
+    )
+    assert_equal([card["card"] for card in gpu_targets("integrated_all", classified_amd)], ["card3"], "Vulkan type selects AMD APU")
+    assert_equal([card["card"] for card in gpu_targets("discrete_all", classified_amd)], ["card4"], "Vulkan type retains small AMD dGPU")
+    assert_equal(classified_amd[0]["device_class_source"], "vulkan_physical_device_type", "selector class provenance")
     pci_names = {"10de": {"2684": "GB202 [GeForce RTX 5090]"}}
     assert_equal(
         lookup_pci_device_name(pci_names, "0x10de", "2684"),
@@ -18290,6 +18312,24 @@ def test_gpu_stage_target_helpers() -> None:
     )
     assert_equal(worker_targets[0]["workloads"], ["gpu_3d"], "worker target deduped workloads")
     assert_equal(worker_targets[0]["backends"], ["python_egl_gles2"], "worker target deduped backends")
+    resolver = GpuTargetingResolver(worker_integrity_error_count=lambda _payloads: 0)
+    inventory = [
+        {"Name": "Integrated", "Interface": "0000:00:02.0", "Card": "card0"},
+        {"Name": "Discrete", "Interface": "0000:01:00.0", "Card": "card1"},
+    ]
+    details = resolver.targeting_details(
+        SimpleNamespace(
+            gpu_workers_initial=[{"gpu_index": 0, "slot": "0000:01:00.0", "card": "card1", "target_id": "0000:01:00.0"}],
+            gpu_workers_final=[],
+            worker_results=[{"kind": "gpu", "target_gpu_index": 0, "target_slot": "0000:01:00.0", "target_card": "card1", "status": "ok"}],
+        ),
+        {0: "Integrated", 1: "Discrete"},
+        {0: 0, 1: 1},
+        [],
+        inventory,
+    )
+    assert_equal([item["GpuIndex"] for item in details], [1], "GPU evidence binds to telemetry by stable slot before runtime index")
+    assert_equal(details[0]["Name"], "Discrete", "stable-slot telemetry association preserves physical identity")
 
 
 def test_worker_evidence_helpers() -> None:
@@ -21756,9 +21796,11 @@ def test_final_hardware_validation_profile_pack() -> None:
         "x86_64 AMD dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 NVIDIA dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 Multi-GPU Combined Full Validation": (6, 3600),
-        "ARM64 Integrated Shared-GPU Acceptance Rerun": (11, 6600),
-        "x86_64 Integrated and Discrete GPU Acceptance Rerun": (15, 9000),
-        "x86_64 Discrete GPU Acceptance Rerun": (9, 5400),
+        "ARM64 Shared-GPU Stateful Remediation": (2, 1200),
+        "x86_64 RAM Evidence Remediation": (2, 1200),
+        "x86_64 RAM and Full Mixed Confirmation": (3, 1800),
+        "x86_64 APU Shared-GPU Remediation": (7, 4200),
+        "x86_64 APU Multi-dGPU Remediation": (9, 5400),
     }
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
@@ -21972,39 +22014,35 @@ def test_unattended_vulkan_rerun_profiles() -> None:
     loader = ProfileLoader(Path("profiles"))
     validator = ProfileValidator()
     contracts = {
-        "ARM64 Integrated Shared-GPU Acceptance Rerun": {
-            "stage_count": 11,
-            "runtime": 6600,
-            "gpu_stage_ids": [
-                "arm64_acceptance_vulkan_compute", "arm64_acceptance_vulkan_transfer",
-                "arm64_acceptance_vulkan_stateful", "arm64_acceptance_cpu_gpu",
-                "arm64_acceptance_ram_gpu", "arm64_acceptance_cpu_ram_gpu",
-                "arm64_acceptance_full_pressure",
-            ],
+        "ARM64 Shared-GPU Stateful Remediation": {
+            "stage_count": 2, "runtime": 1200,
+            "gpu_stage_ids": ["arm64_remediation_shared_stateful"],
             "selectors": {"integrated_all"},
         },
-        "x86_64 Integrated and Discrete GPU Acceptance Rerun": {
-            "stage_count": 15,
-            "runtime": 9000,
+        "x86_64 RAM Evidence Remediation": {
+            "stage_count": 2, "runtime": 1200, "gpu_stage_ids": [], "selectors": set(),
+        },
+        "x86_64 RAM and Full Mixed Confirmation": {
+            "stage_count": 3, "runtime": 1800,
+            "gpu_stage_ids": ["x86_ram_full_mixed"], "selectors": {"all"},
+        },
+        "x86_64 APU Shared-GPU Remediation": {
+            "stage_count": 7, "runtime": 4200,
             "gpu_stage_ids": [
-                "x86_id_acceptance_igpu_compute", "x86_id_acceptance_igpu_transfer",
-                "x86_id_acceptance_igpu_stateful", "x86_id_acceptance_dgpu_compute",
-                "x86_id_acceptance_dgpu_transfer", "x86_id_acceptance_dgpu_stateful",
-                "x86_id_acceptance_ram_igpu", "x86_id_acceptance_ram_dgpu",
-                "x86_id_acceptance_igpu_dgpu", "x86_id_acceptance_ram_all_gpu_memory",
-                "x86_id_acceptance_full",
+                "x86_apu_shared_transfer", "x86_apu_shared_stateful", "x86_apu_shared_ram_igpu",
+                "x86_apu_shared_ram_all", "x86_apu_shared_full",
+            ],
+            "selectors": {"integrated_all", "all"},
+        },
+        "x86_64 APU Multi-dGPU Remediation": {
+            "stage_count": 9, "runtime": 5400,
+            "gpu_stage_ids": [
+                "x86_apu_multi_igpu_transfer", "x86_apu_multi_igpu_stateful",
+                "x86_apu_multi_dgpu_transfer", "x86_apu_multi_dgpu_stateful",
+                "x86_apu_multi_ram_igpu", "x86_apu_multi_ram_dgpu",
+                "x86_apu_multi_ram_all", "x86_apu_multi_full",
             ],
             "selectors": {"integrated_all", "discrete_all", "all"},
-        },
-        "x86_64 Discrete GPU Acceptance Rerun": {
-            "stage_count": 9,
-            "runtime": 5400,
-            "gpu_stage_ids": [
-                "x86_d_acceptance_compute", "x86_d_acceptance_transfer",
-                "x86_d_acceptance_stateful", "x86_d_acceptance_ram_dgpu",
-                "x86_d_acceptance_full",
-            ],
-            "selectors": {"discrete_all"},
         },
     }
     synthetic_targets = {
@@ -22032,16 +22070,23 @@ def test_unattended_vulkan_rerun_profiles() -> None:
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         assert_equal(validator.validate(profile, labels)["errors"], [], f"{profile_name} validates")
+        assert_true(profile.require_all_stages_runnable, f"{profile_name} required-stage preflight is fail closed")
+        assert_true(
+            bool(dry_run_module.required_stage_completeness_error(profile, len(profile.stages), len(profile.stages) - 1)),
+            f"{profile_name} rejects partial required-stage readiness",
+        )
+        assert_equal(
+            dry_run_module.required_stage_completeness_error(profile, len(profile.stages), len(profile.stages)),
+            "",
+            f"{profile_name} accepts complete required-stage readiness",
+        )
         assert_equal(len(profile.stages), contract["stage_count"], f"{profile_name} exact stage count")
         assert_equal(len(labels), len(profile.stages), f"{profile_name} sidecar count")
         assert_true(all(stage.duration_seconds == 600 for stage in profile.stages), f"{profile_name} exact durations")
         assert_equal(sum(stage.duration_seconds for stage in profile.stages), contract["runtime"], f"{profile_name} runtime")
-        assert_equal(profile.stages[0].modules.cpu.backend_preference, "stress_ng", f"{profile_name} stress-ng CPU evidence backend")
-        assert_equal(profile.stages[1].modules.cpu.backend_preference, "python_fallback", f"{profile_name} Python CPU evidence backend")
-        assert_equal(profile.stages[2].modules.memory.backend_preference, "stress_ng", f"{profile_name} stress-ng RAM evidence backend")
-        assert_equal(profile.stages[3].modules.memory.backend_preference, "python_fallback", f"{profile_name} Python RAM evidence backend")
-        assert_equal(profile.stages[2].modules.memory.allocation_percent, 80, f"{profile_name} stress-ng allocation")
-        assert_equal(profile.stages[3].modules.memory.allocation_percent, 80, f"{profile_name} Python allocation")
+        for stage in profile.stages:
+            if stage.modules.memory.enabled and stage.modules.memory.backend_preference in {"stress_ng", "python_fallback"}:
+                assert_equal(stage.modules.memory.allocation_percent, 80, f"{profile_name} evidence RAM allocation")
         assert_equal(
             [stage.id for stage in profile.stages if stage.modules.gpu_3d.enabled or stage.modules.vram.enabled],
             contract["gpu_stage_ids"],
@@ -22097,9 +22142,18 @@ def test_unattended_vulkan_rerun_profiles() -> None:
         assert_true(archived_name not in visible_names, f"archived {archived_name} absent from normal discovery")
         assert_true((Path("profiles/Archived/2026 Hardware Validation") / archived_name).exists(), f"archived {archived_name} retained")
 
-    integrated_profile = loader.load_profile(Path("profiles/x86_64 Integrated and Discrete GPU Acceptance Rerun.json"))
+    campaign_archive = Path("profiles/Archived/2026 Hardware Validation/2026-08 New Campaign Initial")
+    for archived_name in (
+        "ARM64 Integrated Shared-GPU Acceptance Rerun.json",
+        "x86_64 Integrated and Discrete GPU Acceptance Rerun.json",
+        "x86_64 Discrete GPU Acceptance Rerun.json",
+    ):
+        assert_true(archived_name not in visible_names, f"completed broad runner {archived_name} hidden")
+        assert_true((campaign_archive / archived_name).exists(), f"completed broad runner {archived_name} archived")
+
+    integrated_profile = loader.load_profile(Path("profiles/x86_64 APU Shared-GPU Remediation.json"))
     missing_integrated = build_stage_gpu_backend_diagnostics(
-        stage=integrated_profile.stages[4],
+        stage=integrated_profile.stages[2],
         stage_gpu_target_mode=lambda current: current.modules.gpu_3d.gpus,
         gpu_targets=lambda _selector: [],
         normalize_gpu_3d_backend_preference=lambda value: str(value),
@@ -22142,6 +22196,10 @@ def test_python_memory_fallback_exact_allocation_evidence() -> None:
     assert_equal(verified_state["allocation_verified"], True, "Python fallback verifies retained allocation")
     assert_equal(verified_state["verification_passes"], 1, "Python fallback verification progress")
     assert_equal(verified_state["verified_bytes_per_pass"], 8192, "Python fallback verified working-set bytes")
+    for _ in range(16):
+        verify_python_memory_chunks(verified_state, verified_chunks)
+    assert_equal(verified_state["verification_failures"], 0, "Python fallback accepts zero in rewrite pattern cycle")
+    assert_true(verified_state["verification_passes"] > 16, "Python fallback sustains continuous integrity cycles")
     verified_chunks[1][0] ^= 0xFF
     verify_python_memory_chunks(verified_state, verified_chunks)
     assert_true(verified_state["verification_failures"] > 0, "Python fallback detects retained-memory corruption")
@@ -22637,6 +22695,47 @@ def test_stage_budget_consumer_combinations_and_unknown_gpu_safety() -> None:
 
 
 def test_gpu_capability_limits_chunking_and_device_ownership() -> None:
+    carved_out = 512 * 1024 ** 2
+    shared_heap = 12 * 1024 ** 3
+    assert_equal(
+        stateful_memory_capacity_basis(carved_out, shared_heap, "integrated"),
+        shared_heap,
+        "integrated Vulkan memory uses the shared device-local heap capacity",
+    )
+    assert_equal(
+        stateful_memory_capacity_basis(24 * 1024 ** 3, 64 * 1024 ** 3, "discrete"),
+        24 * 1024 ** 3,
+        "discrete Vulkan memory remains based on dedicated capacity",
+    )
+    assert_true(
+        stateful_memory_total_cap(carved_out, shared_heap, "integrated") > carved_out,
+        "integrated stateful total is not capped by carved-out VRAM",
+    )
+    assert_true(
+        stateful_memory_buffer_cap(0, 12 * 1024 ** 3, "integrated") >= 1024 ** 3,
+        "shared stateful buffers scale with the usable heap",
+    )
+    assert_true(
+        stateful_memory_buffer_count_limit(9 * 1024 ** 3, 128 * 1024 ** 2, 4096) >= 72,
+        "stateful allocation can exceed the former 32-buffer ceiling",
+    )
+    synthetic_memory = SimpleNamespace(
+        memoryTypeCount=2,
+        memoryTypes=[
+            SimpleNamespace(propertyFlags=1, heapIndex=0),
+            SimpleNamespace(propertyFlags=1, heapIndex=1),
+        ],
+        memoryHeaps=[
+            SimpleNamespace(size=carved_out),
+            SimpleNamespace(size=shared_heap),
+        ],
+    )
+    assert_equal(find_memory_type(synthetic_memory, 0b11, 0, 1), 0, "legacy memory-type order remains stable")
+    assert_equal(
+        find_memory_type(synthetic_memory, 0b11, 0, 1, prefer_largest_heap=True),
+        1,
+        "integrated allocation selects the largest compatible heap",
+    )
     target = int(8 * GIB * 0.90)
     chunked = plan_gpu_allocation_chunks(
         target_bytes=target,
@@ -25232,6 +25331,7 @@ def test_stage_process_control_helpers() -> None:
             self.terminated = False
             self.killed = False
             self.wait_calls = 0
+            self.wait_timeouts: list[float] = []
             self.fail_wait = False
 
         def terminate(self) -> None:
@@ -25239,6 +25339,7 @@ def test_stage_process_control_helpers() -> None:
 
         def wait(self, timeout: float = 0) -> None:
             self.wait_calls += 1
+            self.wait_timeouts.append(timeout)
             if self.fail_wait:
                 raise TimeoutError("timeout")
 
@@ -25286,6 +25387,16 @@ def test_stage_process_control_helpers() -> None:
     assert_true(proc_timeout.killed, "process kill after wait failure")
     stop_stage_processes(launched, timeout_seconds=0.01)
     assert_true(all(entry.process.terminated for entry in launched), "stage process stop delegates to process stop")
+    stress_vm_process = FakeProcess(["stress-ng"])
+    stress_vm_entry = StageProcess("memory", ["stress-ng", "--vm", "1", "--verify", "--metrics-brief"], stress_vm_process)
+    stop_stage_processes([stress_vm_entry], timeout_seconds=0.01)
+    assert_equal(stress_vm_process.wait_timeouts[0], 30.0, "stress-ng VM receives final-metrics cleanup grace")
+    timed_out_vm = FakeProcess(["stress-ng"])
+    timed_out_vm.fail_wait = True
+    timed_out_entry = StageProcess("memory", ["stress-ng", "--vm", "1"], timed_out_vm)
+    stop_stage_processes([timed_out_entry], timeout_seconds=0.01)
+    assert_true(timed_out_vm.killed, "timed-out stress-ng VM is killed")
+    assert_equal(timed_out_vm.wait_calls, 2, "killed stress-ng VM is reaped")
 
 
 def test_stage_worker_evidence_helpers() -> None:
