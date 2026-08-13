@@ -93,6 +93,20 @@ def build_cpu_capability_probe_command(helper_path: str, cpu_id: Optional[int] =
     return [helper_path, *_cpu_probe_target_args(cpu_id), "--print-supported-kernels"]
 
 
+def build_cpu_core_type_probe_command(helper_path: str, cpu_id: int) -> List[str]:
+    return [helper_path, "--probe-cpu", str(int(cpu_id)), "--print-core-type"]
+
+
+def parse_cpu_core_type_probe(return_code: int, stdout: str) -> Dict[str, Any]:
+    if return_code != 0:
+        return {}
+    try:
+        payload = json.loads(str(stdout or "").strip())
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def parse_cpu_capability_probe(return_code: int, stdout: str) -> List[str]:
     if return_code != 0:
         return []
@@ -387,7 +401,7 @@ def build_cpu_command(
         method = "matrixprod"
         if (instruction_set or "").strip().lower() == "sse":
             method = "int64"
-        command = ["stress-ng", "--cpu", str(worker_count), "--cpu-method", method, "--metrics-brief"]
+        command = ["stress-ng", "--cpu", str(worker_count), "--cpu-method", method, "--verify", "--metrics-brief"]
         if target_cpu_ids:
             command.extend(["--taskset", ",".join(str(int(cpu_id)) for cpu_id in target_cpu_ids)])
         return command

@@ -106,6 +106,7 @@ def enrich_cpu_helper_backend_details(
     resolved_modes: Dict[str, str],
     default_kernel_flavors: Dict[str, str],
     supported_kernel_flavors: list[str],
+    core_type_probe: Dict[str, Any],
 ) -> Dict[str, Any]:
     details = dict(helper_details)
     if not details.get("available"):
@@ -115,6 +116,7 @@ def enrich_cpu_helper_backend_details(
             "resolved_modes": dict(resolved_modes),
             "default_kernel_flavors": dict(default_kernel_flavors),
             "supported_kernel_flavors": list(supported_kernel_flavors),
+            "core_type_probe": dict(core_type_probe),
         }
     )
     return details
@@ -158,6 +160,7 @@ def build_backend_details_from_probe_results(
     cpu_mode_resolver: Callable[[str], str],
     cpu_default_kernel_flavor_resolver: Callable[[str], str],
     cpu_supported_kernel_flavors: Callable[[], list[str]],
+    cpu_core_type_probe: Callable[[], Dict[str, Any]],
     gpu_3d_catalog: Dict[str, Any],
     python_opencl: Dict[str, Any],
     opencl_safety_profile: Dict[str, Any],
@@ -176,6 +179,7 @@ def build_backend_details_from_probe_results(
         resolved_modes=probe_cpu_helper_modes(cpu_mode_resolver) if helper_available else {},
         default_kernel_flavors=probe_cpu_helper_modes(cpu_default_kernel_flavor_resolver) if helper_available else {},
         supported_kernel_flavors=cpu_supported_kernel_flavors() if helper_available else [],
+        core_type_probe=cpu_core_type_probe() if helper_available else {},
     )
     opencl_backend = dict(python_opencl)
     return build_backend_details_payload(
@@ -210,6 +214,7 @@ def collect_backend_details_from_runner(
         cpu_mode_resolver=runner._cpu_helper_resolved_mode,
         cpu_default_kernel_flavor_resolver=runner._cpu_helper_default_kernel_flavor,
         cpu_supported_kernel_flavors=runner._cpu_supported_kernel_flavors,
+        cpu_core_type_probe=runner._cpu_core_type_probe,
         gpu_3d_catalog={
             backend: runner._gpu_3d_backend_catalog_entry(backend)
             for backend in gpu_3d_backend_catalog

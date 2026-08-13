@@ -133,6 +133,7 @@ def collect_cpu_topology_info(
     cpuinfo_text: str = "",
     read_text: Optional[ReadText] = None,
     fallback_name: str = "",
+    core_type_probe: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a socket/package-aware topology summary from Linux sysfs."""
     reader = read_text or (lambda path: path.read_text(encoding="utf-8", errors="ignore").strip())
@@ -144,6 +145,11 @@ def collect_cpu_topology_info(
     packages: Dict[int, Dict[str, Any]] = {}
     all_physical_keys: set[str] = set()
     logical_count = 0
+    probe_by_cpu = {
+        int(item.get("cpu_id")): dict(item)
+        for item in list((core_type_probe or {}).get("logical_cpus") or [])
+        if isinstance(item, dict) and item.get("cpu_id") is not None
+    }
 
     for cpu_dir in cpu_dirs:
         cpu_index = _cpu_index_from_path(cpu_dir)
@@ -171,6 +177,22 @@ def collect_cpu_topology_info(
         if not record.get("Name") or record.get("Name") == "Unknown CPU":
             record["Name"] = model_name
         record["LogicalCpuIndexes"].append(cpu_index)
+        probe = probe_by_cpu.get(cpu_index, {})
+        interpreted = str(probe.get("interpreted_core_type") or "")
+        pin_valid = (
+            bool(probe.get("affinity_applied"))
+            and int(probe.get("cpu_id", -1)) == cpu_index
+            and int(probe.get("observed_cpu", -2)) == cpu_index
+        )
+        if not pin_valid:
+            interpreted = ""
+        if interpreted not in {"P", "E"}:
+            interpreted = "P" if pin_valid and str(probe.get("vendor") or "") == "GenuineIntel" and not bool(probe.get("hybrid_flag")) else "U"
+        classification_source = (
+            "intel_cpuid_1a_pinned"
+            if interpreted in {"P", "E"} and bool(probe.get("hybrid_flag"))
+            else ("intel_cpuid_non_hybrid" if interpreted == "P" and probe else "unclassified")
+        )
         record["LogicalCpus"].append(
             {
                 "CpuId": cpu_index,
@@ -178,6 +200,10 @@ def collect_cpu_topology_info(
                 "ClusterId": cluster_id,
                 "CoreId": core_id,
                 "ThreadSiblings": thread_siblings,
+                "CoreType": interpreted,
+                "CoreClass": "E-Core" if interpreted == "E" else ("P-Core" if interpreted == "P" else "Unknown Core Type"),
+                "CoreTypeClassificationSource": classification_source,
+                "CoreTypeEvidence": probe,
             }
         )
         if core_id is not None and cluster_id is not None:
@@ -192,6 +218,7 @@ def collect_cpu_topology_info(
         all_physical_keys.add(physical_key)
 
     package_records: List[Dict[str, Any]] = []
+    all_physical_types: Dict[str, str] = {}
     for package_id in sorted(packages):
         record = packages[package_id]
         logical_indexes = sorted(record.get("LogicalCpuIndexes", []))
@@ -208,9 +235,13 @@ def collect_cpu_topology_info(
             cluster["LogicalCpuIndexes"].append(int(logical_cpu["CpuId"]))
             core_id = logical_cpu.get("CoreId")
             if core_id is not None:
-                cluster["PhysicalCoreKeys"].add(f"package{package_id}:cluster{cluster_key}:core{core_id}")
+                physical_key = f"package{package_id}:cluster{cluster_key}:core{core_id}"
             else:
-                cluster["PhysicalCoreKeys"].add(f"package{package_id}:cluster{cluster_key}:cpu{logical_cpu['CpuId']}")
+                physical_key = f"package{package_id}:cluster{cluster_key}:cpu{logical_cpu['CpuId']}"
+            cluster["PhysicalCoreKeys"].add(physical_key)
+            current_type = str(logical_cpu.get("CoreType") or "U")
+            prior_type = all_physical_types.get(physical_key)
+            all_physical_types[physical_key] = current_type if prior_type in (None, current_type) else "U"
         cluster_records = [
             {
                 "ClusterId": item["ClusterId"],
@@ -242,6 +273,9 @@ def collect_cpu_topology_info(
         "PackageCount": package_count,
         "LogicalCpuCount": logical_count,
         "PhysicalCoreCount": len(all_physical_keys),
+        "PCoreCount": sum(1 for value in all_physical_types.values() if value == "P"),
+        "ECoreCount": sum(1 for value in all_physical_types.values() if value == "E"),
+        "UnknownCoreTypeCount": sum(1 for value in all_physical_types.values() if value not in {"P", "E"}),
     }
     return {
         "NameSummary": name_summary,
@@ -252,4 +286,10 @@ def collect_cpu_topology_info(
         "Packages": package_records,
         "PackageNames": package_names,
         "PackageDevices": package_devices,
+        "CoreTypeProbe": dict(core_type_probe or {}),
+        "CoreTypeSummary": {
+            "PhysicalPCoreCount": aggregate["PCoreCount"],
+            "PhysicalECoreCount": aggregate["ECoreCount"],
+            "PhysicalUnknownCoreTypeCount": aggregate["UnknownCoreTypeCount"],
+        },
     }

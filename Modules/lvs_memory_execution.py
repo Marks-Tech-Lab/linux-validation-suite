@@ -90,7 +90,16 @@ def build_memory_command(
             cmd.extend(["--result-file", result_file])
         return cmd
     if selected == "stress_ng":
-        return ["stress-ng", "--vm", "1", "--vm-bytes", str(max(0, int(target_bytes or 0))), "--vm-keep"]
+        return [
+            "stress-ng",
+            "--vm",
+            "1",
+            "--vm-bytes",
+            str(max(0, int(target_bytes or 0))),
+            "--vm-keep",
+            "--verify",
+            "--metrics-brief",
+        ]
     if selected != "python_fallback":
         return None
     return [python_runtime, "-c", build_memory_fallback_script(target_bytes, result_file)]

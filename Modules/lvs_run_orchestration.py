@@ -47,6 +47,7 @@ def execute_validation_run(
         interval_seconds=profile.defaults.telemetry_interval_seconds,
         runtime_environment=orchestrator.settings.runtime_environment,
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
+        cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
     )
     stage_windows: List[Any] = []
     executed_plan: List[Dict[str, Any]] = []
@@ -73,7 +74,8 @@ def execute_validation_run(
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
         recovery_report=recovery_report,
         collect_system_info=lambda profile_name, segment_labels, profile_file, run_metadata, privileged: SystemInfoCollector(
-            privileged_helper_enabled=privileged
+            privileged_helper_enabled=privileged,
+            cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
         ).collect(profile_name, segment_labels, profile_file, run_metadata),
         print_run_header=run_events.run_header,
         print_stage_skip=run_events.stage_skip,

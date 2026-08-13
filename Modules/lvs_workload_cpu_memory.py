@@ -330,6 +330,22 @@ class WorkloadCpuMemoryMixin:
         cpu = type("CpuRequest", (), {"threads": "all", "instruction_set": "auto"})()
         return list(self._cpu_capability_plan(cpu).get("common_kernel_flavors") or [])
 
+    def _cpu_core_type_probe(self) -> Dict[str, Any]:
+        if current_cpu_architecture() != "x86_64":
+            return {
+                "evidence_source": "unsupported_architecture",
+                "architecture": current_cpu_architecture(),
+                "logical_cpus": [],
+                "probe_failures": [],
+                "complete": False,
+                "hybrid_flag": False,
+            }
+        target_ids = sorted(int(cpu_id) for cpu_id in os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
+        return self._native_helper_runtime.cpu_core_type_probe(
+            target_ids,
+            helper_status=self._cpu_helper_status,
+        )
+
     def _cpu_mode_for_kernel_flavor(self, flavor: str) -> str:
         return cpu_mode_for_kernel_flavor(flavor)
 

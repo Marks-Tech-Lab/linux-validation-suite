@@ -30,10 +30,13 @@ def build_dry_run_report(
     labels: List[str],
 ) -> Dict[str, Any]:
     validation = orchestrator.validator.validate(profile, labels)
+    backend_details = orchestrator.workload_runner.backend_details()
+    cpu_core_type_probe = dict(backend_details.get("cpu_native_helper", {}).get("core_type_probe") or {})
     telemetry = TelemetryCollector(
         interval_seconds=profile.defaults.telemetry_interval_seconds,
         runtime_environment=orchestrator.settings.runtime_environment,
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
+        cpu_core_type_probe=cpu_core_type_probe,
     )
     telemetry_capabilities = telemetry.detect_capabilities()
     plan = build_dry_run_plan(orchestrator.workload_runner, profile, labels)
@@ -187,7 +190,7 @@ def build_dry_run_report(
         "runtime_environment": orchestrator.workload_runner.runtime_environment(),
         "telemetry_capabilities": telemetry_capabilities,
         "backends": orchestrator.workload_runner.detect_backends(),
-        "backend_details": orchestrator.workload_runner.backend_details(),
+        "backend_details": backend_details,
         "gpu_recovery": recovery_report,
         "plan": plan,
         "enabled_stage_count": enabled_stage_count,

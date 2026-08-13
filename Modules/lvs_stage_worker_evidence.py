@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Modules.lvs_compat_export_helpers import gpu_worker_backend_name
-from Modules.lvs_external_process_evidence import build_stress_ng_cpu_evidence
+from Modules.lvs_external_process_evidence import build_stress_ng_cpu_evidence, build_stress_ng_memory_evidence
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_stage_process_control import StageProcess
 from Modules.lvs_worker_evidence import (
@@ -35,12 +35,18 @@ def fallback_worker_payload_for_entry(
         and bool(command)
         and Path(str(command[0])).name == "stress-ng"
     )
-    if is_stress_ng_cpu:
+    is_stress_ng_memory = (
+        getattr(entry, "kind", "") == "memory"
+        and bool(command)
+        and Path(str(command[0])).name == "stress-ng"
+    )
+    if is_stress_ng_cpu or is_stress_ng_memory:
         stdout_text = read_log_tail(entry.stdout_path, max_chars=1_000_000)
         stderr_text = read_log_tail(entry.stderr_path, max_chars=1_000_000)
         stdout_tail = read_log_tail(entry.stdout_path)
         stderr_tail = read_log_tail(entry.stderr_path)
-        payload = build_stress_ng_cpu_evidence(command, "\n".join(value for value in (stdout_text, stderr_text) if value))
+        evidence_builder = build_stress_ng_cpu_evidence if is_stress_ng_cpu else build_stress_ng_memory_evidence
+        payload = evidence_builder(command, "\n".join(value for value in (stdout_text, stderr_text) if value))
         payload = apply_worker_entry_context(
             payload,
             entry,

@@ -1308,6 +1308,7 @@ int main(int argc, char **argv) {
     int print_resolved_mode = 0;
     int print_kernel_flavor = 0;
     int print_supported_kernels = 0;
+    int print_core_type = 0;
     int probe_cpu = -1;
     const char *cpu_ids_raw = NULL;
     if (threads <= 0) {
@@ -1354,6 +1355,10 @@ int main(int argc, char **argv) {
             print_supported_kernels = 1;
             continue;
         }
+        if (strcmp(argv[i], "--print-core-type") == 0) {
+            print_core_type = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--result-file") == 0 && i + 1 < argc) {
             result_file_path = argv[++i];
             continue;
@@ -1368,6 +1373,70 @@ int main(int argc, char **argv) {
             fprintf(stderr, "unable to pin capability probe to CPU %d: %s\n", probe_cpu, strerror(probe_affinity_result));
             return 5;
         }
+    }
+
+    if (print_core_type) {
+#if defined(__x86_64__) || defined(__i386__)
+        unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+        unsigned int max_basic_leaf = __get_cpuid_max(0, NULL);
+        char vendor[13] = {0};
+        __cpuid_count(0, 0, eax, ebx, ecx, edx);
+        memcpy(vendor + 0, &ebx, 4);
+        memcpy(vendor + 4, &edx, 4);
+        memcpy(vendor + 8, &ecx, 4);
+        unsigned int leaf7_edx = 0;
+        int leaf7_supported = max_basic_leaf >= 7;
+        if (leaf7_supported) {
+            __cpuid_count(7, 0, eax, ebx, ecx, edx);
+            leaf7_edx = edx;
+        }
+        int hybrid_flag = leaf7_supported && ((leaf7_edx & (1U << 15)) != 0U);
+        unsigned int leaf1a_eax = 0;
+        int leaf1a_supported = max_basic_leaf >= 0x1aU;
+        if (leaf1a_supported) {
+            __cpuid_count(0x1aU, 0, eax, ebx, ecx, edx);
+            leaf1a_eax = eax;
+        }
+        unsigned int raw_core_type = (leaf1a_eax >> 24) & 0xffU;
+        const char *interpreted = "";
+        if (strcmp(vendor, "GenuineIntel") == 0 && hybrid_flag) {
+            if (raw_core_type == 0x20U) {
+                interpreted = "E";
+            } else if (raw_core_type == 0x40U) {
+                interpreted = "P";
+            }
+        }
+        printf(
+            "{\"architecture\":\"x86\",\"cpu_id\":%d,\"affinity_applied\":%s,"
+            "\"observed_cpu\":%d,\"vendor\":\"%s\",\"max_basic_leaf\":%u,"
+            "\"leaf_7_supported\":%s,\"leaf_7_edx\":%u,\"hybrid_flag\":%s,"
+            "\"leaf_1a_supported\":%s,\"leaf_1a_eax\":%u,\"raw_core_type\":%u,"
+            "\"interpreted_core_type\":\"%s\",\"evidence_source\":\"pinned_cpuid\"}\n",
+            probe_cpu,
+            probe_cpu >= 0 ? "true" : "false",
+            sched_getcpu(),
+            vendor,
+            max_basic_leaf,
+            leaf7_supported ? "true" : "false",
+            leaf7_edx,
+            hybrid_flag ? "true" : "false",
+            leaf1a_supported ? "true" : "false",
+            leaf1a_eax,
+            raw_core_type,
+            interpreted
+        );
+        return 0;
+#else
+        printf(
+            "{\"architecture\":\"non_x86\",\"cpu_id\":%d,\"affinity_applied\":%s,"
+            "\"observed_cpu\":%d,\"interpreted_core_type\":\"\","
+            "\"evidence_source\":\"unsupported_architecture\"}\n",
+            probe_cpu,
+            probe_cpu >= 0 ? "true" : "false",
+            sched_getcpu()
+        );
+        return 0;
+#endif
     }
 
     if (!requested_mode_supported(mode)) {

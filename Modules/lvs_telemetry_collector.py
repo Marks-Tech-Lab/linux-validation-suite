@@ -125,11 +125,13 @@ class TelemetryCollector:
         interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
         runtime_environment: Optional[Dict[str, str]] = None,
         privileged_helper_enabled: bool = False,
+        cpu_core_type_probe: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.samples: List[Sample] = []
         self._env_overrides = {str(key): str(value) for key, value in (runtime_environment or {}).items()}
         self._privileged_helper_enabled = bool(privileged_helper_enabled)
+        self._cpu_core_type_probe = dict(cpu_core_type_probe or {})
         self._cpu_temp_sources = self._discover_cpu_temp_sources()
         self._cpu_power_unreadable_sources: List[Dict[str, Any]] = []
         self._cpu_power_source = self._discover_cpu_power_source()
@@ -485,7 +487,10 @@ class TelemetryCollector:
         return discover_cpu_utilization_source(read_text=self._safe_read_text)
 
     def _discover_cpu_core_topology(self) -> Dict[int, Dict[str, Any]]:
-        return discover_cpu_core_topology(read_text=self._safe_read_text)
+        return discover_cpu_core_topology(
+            read_text=self._safe_read_text,
+            core_type_probe=self._cpu_core_type_probe,
+        )
 
     def _classify_physical_cpu_cores(
         self,

@@ -68,10 +68,10 @@ def executable_version(
     return text.splitlines()[0].strip() if text else ""
 
 
-def stress_ng_requested_stressor_count(command: Sequence[str]) -> int:
+def stress_ng_requested_stressor_count(command: Sequence[str], stressor: str = "cpu") -> int:
     args = [str(value) for value in command]
     try:
-        index = args.index("--cpu")
+        index = args.index(f"--{str(stressor or 'cpu').strip().lower()}")
         return max(0, int(args[index + 1]))
     except (ValueError, IndexError, TypeError):
         return 0
@@ -88,7 +88,7 @@ def parse_stress_ng_metrics_brief(output: str) -> Dict[str, Any]:
     parsed: Dict[str, Any] = {
         "dispatched_stressor_count": _last_integer_match(
             text,
-            r"dispatching\s+hogs:\s*(\d+)\s+cpu\b",
+            r"dispatching\s+hogs:\s*(\d+)\s+(?:cpu|vm)\b",
         ),
         "passed_stressor_count": _last_integer_match(text, r"^.*?passed:\s*(\d+)\b"),
         "failed_stressor_count": _last_integer_match(text, r"^.*?failed:\s*(\d+)\b"),
@@ -100,7 +100,7 @@ def parse_stress_ng_metrics_brief(output: str) -> Dict[str, Any]:
         "stressor_metrics": [],
     }
     metric_pattern = re.compile(
-        r"^.*?\b(cpu)\s+(\d+)\s+"
+        r"^.*?\b(cpu|vm)\s+(\d+)\s+"
         r"([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)\s+"
         r"([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)\s+"
         r"([0-9]+(?:\.[0-9]+)?)\s*$",
@@ -128,6 +128,8 @@ def build_stress_ng_cpu_evidence(
     errors: List[str] = []
     if requested <= 0:
         errors.append("stress-ng CPU command did not contain a positive --cpu worker count")
+    if "--verify" not in [str(value) for value in command]:
+        errors.append("stress-ng CPU command did not enable verification")
     if dispatched is None or (requested > 0 and dispatched < requested):
         errors.append("stress-ng did not report dispatching every requested CPU stressor")
     if passed is None or failed is None or skipped is None:
@@ -149,5 +151,46 @@ def build_stress_ng_cpu_evidence(
         "last_error": errors[0] if errors else "",
         "errors": errors,
         "requested_stressor_count": requested,
+        "verification_enabled": "--verify" in [str(value) for value in command],
         **metrics,
+    }
+
+
+def build_stress_ng_memory_evidence(command: Sequence[str], output: str) -> Dict[str, Any]:
+    requested = stress_ng_requested_stressor_count(command, "vm")
+    metrics = parse_stress_ng_metrics_brief(output)
+    metric_rows = [row for row in list(metrics.get("stressor_metrics") or []) if row.get("stressor") == "vm"]
+    passed = metrics.get("passed_stressor_count")
+    failed = metrics.get("failed_stressor_count")
+    skipped = metrics.get("skipped_stressor_count")
+    dispatched = metrics.get("dispatched_stressor_count")
+    errors: List[str] = []
+    if requested <= 0:
+        errors.append("stress-ng memory command did not contain a positive --vm worker count")
+    if "--verify" not in [str(value) for value in command]:
+        errors.append("stress-ng memory command did not enable verification")
+    if dispatched is None or dispatched < requested:
+        errors.append("stress-ng did not report dispatching every requested VM stressor")
+    if passed is None or failed is None or skipped is None:
+        errors.append("stress-ng did not report complete passed/failed/skipped stressor counts")
+    else:
+        if failed > 0:
+            errors.append(f"stress-ng reported {failed} failed memory stressor(s)")
+        if skipped > 0:
+            errors.append(f"stress-ng reported {skipped} skipped memory stressor(s)")
+        if passed != requested:
+            errors.append(f"stress-ng passed {passed} of {requested} requested memory stressor(s)")
+    if not metric_rows or sum(int(row.get("bogo_ops") or 0) for row in metric_rows) <= 0:
+        errors.append("stress-ng did not report positive VM bogo operations")
+    return {
+        "kind": "memory",
+        "backend": "stress_ng",
+        "status": "error" if errors else "ok",
+        "error_count": len(errors),
+        "last_error": errors[0] if errors else "",
+        "errors": errors,
+        "requested_stressor_count": requested,
+        "verification_enabled": "--verify" in [str(value) for value in command],
+        **metrics,
+        "stressor_metrics": metric_rows,
     }

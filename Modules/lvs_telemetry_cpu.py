@@ -932,6 +932,80 @@ def classify_physical_cpu_cores(
             {key: None for key in physical},
         )
 
+    probe_entries = [
+        probe
+        for physical_entry in physical.values()
+        for entry in list(physical_entry.get("entries") or [physical_entry.get("entry", {})])
+        for probe in [entry.get("core_type_probe")]
+        if isinstance(probe, dict) and probe
+    ]
+    intel_probe_present = any(str(probe.get("vendor") or "") == "GenuineIntel" for probe in probe_entries)
+    intel_hybrid = any(bool(probe.get("hybrid_flag")) for probe in probe_entries if str(probe.get("vendor") or "") == "GenuineIntel")
+    if intel_probe_present and intel_hybrid:
+        classes: Dict[str, str] = {}
+        values: Dict[str, Optional[int]] = {}
+        sources: Dict[str, str] = {}
+        for key, physical_entry in physical.items():
+            sibling_probes = [
+                entry.get("core_type_probe")
+                for entry in list(physical_entry.get("entries") or [physical_entry.get("entry", {})])
+                if isinstance(entry.get("core_type_probe"), dict)
+            ]
+            interpreted = {
+                str(probe.get("interpreted_core_type") or "")
+                for probe in sibling_probes
+                if str(probe.get("interpreted_core_type") or "") in {"P", "E"}
+            }
+            complete = bool(sibling_probes) and len(sibling_probes) == len(list(physical_entry.get("entries") or []))
+            pin_valid = all(
+                bool(probe.get("affinity_applied"))
+                and probe.get("cpu_id") is not None
+                and int(probe.get("observed_cpu", -1)) == int(probe.get("cpu_id"))
+                for probe in sibling_probes
+            )
+            if complete and pin_valid and len(interpreted) == 1:
+                classes[key] = next(iter(interpreted))
+                sources[key] = "intel_cpuid_1a_pinned"
+            else:
+                classes[key] = "U"
+                sources[key] = "intel_cpuid_1a_incomplete"
+            raw_values = {int(probe.get("raw_core_type")) for probe in sibling_probes if probe.get("raw_core_type") is not None}
+            values[key] = next(iter(raw_values)) if len(raw_values) == 1 else None
+        return classes, sources, values
+    all_entries = [
+        entry
+        for physical_entry in physical.values()
+        for entry in list(physical_entry.get("entries") or [physical_entry.get("entry", {})])
+    ]
+    intel_non_hybrid_complete = bool(all_entries) and len(probe_entries) == len(all_entries) and all(
+        str(probe.get("vendor") or "") == "GenuineIntel"
+        and not bool(probe.get("hybrid_flag"))
+        and bool(probe.get("affinity_applied"))
+        and int(probe.get("observed_cpu", -1)) == int(probe.get("cpu_id", -2))
+        for probe in probe_entries
+    )
+    if intel_non_hybrid_complete:
+        return (
+            {key: "P" for key in physical},
+            {key: "intel_cpuid_non_hybrid" for key in physical},
+            {key: 0 for key in physical},
+        )
+    if intel_probe_present:
+        return (
+            {key: "U" for key in physical},
+            {key: "intel_cpuid_incomplete" for key in physical},
+            {key: None for key in physical},
+        )
+
+    # P/E labels are Intel architectural core types. Do not infer them from
+    # frequency tiers on non-Intel x86 processors.
+    if probe_entries:
+        return (
+            {key: "P" for key in physical},
+            {key: "homogeneous_fallback" for key in physical},
+            {key: None for key in physical},
+        )
+
     for field, source in (
         ("cpu_capacity", "cpu_capacity"),
         ("cppc_highest_perf", "acpi_cppc_highest_perf"),
@@ -974,6 +1048,7 @@ def classify_physical_cpu_cores(
 def discover_cpu_core_topology(
     cpu_root: Path = Path("/sys/devices/system/cpu"),
     read_text: ReadText = read_text_cpu_sysfs,
+    core_type_probe: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     cpu_dirs = sorted(
         [path for path in cpu_root.glob("cpu[0-9]*") if path.is_dir()],
@@ -981,6 +1056,11 @@ def discover_cpu_core_topology(
     )
     logical: Dict[int, Dict[str, Any]] = {}
     physical: Dict[str, Dict[str, Any]] = {}
+    probe_by_cpu = {
+        int(item.get("cpu_id")): dict(item)
+        for item in list((core_type_probe or {}).get("logical_cpus") or [])
+        if isinstance(item, dict) and item.get("cpu_id") is not None
+    }
     for cpu_dir in cpu_dirs:
         cpu_index = cpu_index_from_name(cpu_dir.name)
         if cpu_index < 0:
@@ -1020,11 +1100,17 @@ def discover_cpu_core_topology(
             "core_class": "P-Core",
             "classification_source": "homogeneous_fallback",
             "classification_value": None,
+            "core_type_probe": probe_by_cpu.get(cpu_index, {}),
         }
         logical[cpu_index] = entry
         current = physical.get(physical_key)
-        if current is None or cpu_index < int(current.get("representative_cpu", cpu_index)):
-            physical[physical_key] = {"representative_cpu": cpu_index, "entry": entry}
+        if current is None:
+            physical[physical_key] = {"representative_cpu": cpu_index, "entry": entry, "entries": [entry]}
+        else:
+            current.setdefault("entries", []).append(entry)
+            if cpu_index < int(current.get("representative_cpu", cpu_index)):
+                current["representative_cpu"] = cpu_index
+                current["entry"] = entry
 
     if not logical:
         return {}
@@ -1042,7 +1128,7 @@ def discover_cpu_core_topology(
         key = str(entry.get("physical_core_key", ""))
         core_type = class_by_physical.get(key, "P")
         entry["core_type"] = core_type
-        entry["core_class"] = "E-Core" if core_type == "E" else "P-Core"
+        entry["core_class"] = "E-Core" if core_type == "E" else ("P-Core" if core_type == "P" else "Unknown Core Type")
         entry["classification_source"] = source_by_physical.get(key, "homogeneous_fallback")
         entry["classification_value"] = value_by_physical.get(key)
     return logical
@@ -1065,13 +1151,16 @@ def cpu_core_classification_summary_from_topology(cpu_core_topology: Dict[int, D
         source_counts[source] = source_counts.get(source, 0) + 1
     p_physical = sum(1 for value in physical_type.values() if value == "P")
     e_physical = sum(1 for value in physical_type.values() if value == "E")
+    unknown_physical = sum(1 for value in physical_type.values() if value not in {"P", "E"})
     return {
         "logical_count": len(entries),
         "physical_count": len(physical_keys),
         "p_core_count": p_physical,
         "e_core_count": e_physical,
+        "unknown_core_count": unknown_physical,
         "has_p_cores": p_physical > 0,
         "has_e_cores": e_physical > 0,
+        "has_unknown_cores": unknown_physical > 0,
         "sources": source_counts,
     }
 
@@ -1105,6 +1194,7 @@ def discover_cpu_core_clock_sources(
                 "thread_siblings": topology.get("thread_siblings", []),
                 "classification_source": topology.get("classification_source", "homogeneous_fallback"),
                 "classification_value": topology.get("classification_value"),
+                "core_type_probe": topology.get("core_type_probe", {}),
             }
         )
     return sources

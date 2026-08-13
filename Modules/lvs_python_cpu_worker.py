@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import multiprocessing as mp
 import os
@@ -69,6 +70,8 @@ def python_cpu_workload(
     ready_event: Any,
     evidence_queue: Any,
     progress_counter: Any,
+    verification_counter: Any,
+    verification_error_counter: Any,
 ) -> None:
     """Run one CPU fallback workload; this top-level target is spawn/forkserver importable."""
     affinity = apply_python_cpu_affinity(worker_index, target_cpu_id)
@@ -87,11 +90,20 @@ def python_cpu_workload(
     salt_counter = worker_index + 1
     while True:
         salt = salt_counter.to_bytes(16, "little", signed=False)
-        digest = hashlib.pbkdf2_hmac(algorithm, seed, salt, iterations, dklen=64)
+        workload_input = bytes(seed)
+        digest = hashlib.pbkdf2_hmac(algorithm, workload_input, salt, iterations, dklen=64)
+        verification = hashlib.pbkdf2_hmac(algorithm, workload_input, salt, iterations, dklen=64)
+        if not hmac.compare_digest(digest, verification):
+            try:
+                verification_error_counter.value += 1
+            except Exception:
+                pass
+            raise RuntimeError("Python CPU fallback PBKDF2 verification mismatch")
         seed[:64] = digest
         salt_counter += 1
         try:
             progress_counter.value += 1
+            verification_counter.value += 1
         except Exception:
             pass
 
@@ -160,6 +172,8 @@ def supervise_python_cpu_workers(
     unexpected_exits: List[Dict[str, Any]] = []
     affinity_queue = queue_factory()
     progress_counters: List[Any] = []
+    verification_counters: List[Any] = []
+    verification_error_counters: List[Any] = []
 
     for worker_index in range(requested_count):
         if stop_requested():
@@ -167,6 +181,8 @@ def supervise_python_cpu_workers(
         try:
             ready_event = event_factory()
             progress_counter = value_factory("Q", 0, lock=False)
+            verification_counter = value_factory("Q", 0, lock=False)
+            verification_error_counter = value_factory("Q", 0, lock=False)
             process = process_factory(
                 target=python_cpu_workload,
                 args=(
@@ -178,6 +194,8 @@ def supervise_python_cpu_workers(
                     ready_event,
                     affinity_queue,
                     progress_counter,
+                    verification_counter,
+                    verification_error_counter,
                 ),
                 daemon=True,
             )
@@ -185,6 +203,8 @@ def supervise_python_cpu_workers(
             processes.append(process)
             ready_events.append(ready_event)
             progress_counters.append(progress_counter)
+            verification_counters.append(verification_counter)
+            verification_error_counters.append(verification_error_counter)
         except Exception as exc:
             startup_errors.append(f"worker {worker_index} failed to start: {exc}")
             break
@@ -269,6 +289,17 @@ def supervise_python_cpu_workers(
     )
     if status == "error" and not errors:
         errors.append("Python CPU fallback stopped without all requested workers remaining healthy")
+    verification_passes = sum(int(getattr(counter, "value", 0) or 0) for counter in verification_counters)
+    verification_errors = sum(int(getattr(counter, "value", 0) or 0) for counter in verification_error_counters)
+    if status == "ok" and (verification_passes <= 0 or verification_errors > 0):
+        status = "error"
+        error_count = max(1, verification_errors)
+        failed_worker_count = max(1, failed_worker_count)
+        errors.append(
+            "Python CPU fallback did not complete clean PBKDF2 verification"
+            if verification_errors <= 0
+            else f"Python CPU fallback reported {verification_errors} PBKDF2 verification mismatch(es)"
+        )
 
     payload: Dict[str, Any] = {
         "kind": "cpu",
@@ -305,9 +336,14 @@ def supervise_python_cpu_workers(
                 "worker_index": index,
                 "target_cpu_id": target_ids[index],
                 "completed_pbkdf2_iterations": int(getattr(counter, "value", 0) or 0),
+                "verification_passes": int(getattr(verification_counters[index], "value", 0) or 0),
+                "verification_errors": int(getattr(verification_error_counters[index], "value", 0) or 0),
             }
             for index, counter in enumerate(progress_counters)
         ],
+        "verification_passes": verification_passes,
+        "verification_error_count": verification_errors,
+        "verification_method": "duplicate_pbkdf2_compare_digest",
         "capability_scope": "generic_approximate_workload_no_isa_enforcement",
     }
     try:

@@ -315,6 +315,7 @@ from Modules.lvs_stage_process_control import (
 )
 from Modules.lvs_external_process_evidence import (
     build_stress_ng_cpu_evidence,
+    build_stress_ng_memory_evidence,
     executable_version,
     parse_stress_ng_metrics_brief,
     resolve_executable_path,
@@ -360,6 +361,7 @@ from Modules.lvs_cpu_execution import (
     best_valid_cpu_tuning_candidate,
     build_cpu_benchmark_result,
     build_cpu_capability_probe_command,
+    build_cpu_core_type_probe_command,
     build_cpu_command,
     build_cpu_default_kernel_probe_command,
     build_cpu_execution_base,
@@ -376,6 +378,7 @@ from Modules.lvs_cpu_execution import (
     normalize_cpu_probe_mode,
     parse_cpu_default_kernel_probe,
     parse_cpu_capability_probe,
+    parse_cpu_core_type_probe,
     parse_cpu_resolved_mode_probe,
     resolve_cpu_execution_policy,
 )
@@ -470,6 +473,7 @@ from Modules.lvs_python_memory_worker import (
     allocate_python_memory_chunks,
     apply_runtime_guard_precedence,
     initial_python_memory_state,
+    verify_python_memory_chunks,
     write_python_memory_result,
 )
 from Modules.lvs_memory_architecture import native_memory_helper_binary_name
@@ -15820,6 +15824,92 @@ def test_telemetry_cpu_helpers() -> None:
         assert_equal(collector._read_cpu_temp(package_temps), 62.5, "aggregate CPU temp uses hottest package")
 
 
+def test_authoritative_hybrid_core_type_topology_fixtures() -> None:
+    def make_topology(root: Path, cpus: list[tuple[int, int, str, int]]) -> None:
+        for cpu_id, core_id, siblings, max_freq in cpus:
+            cpu_dir = root / f"cpu{cpu_id}"
+            topology_dir = cpu_dir / "topology"
+            cpufreq_dir = cpu_dir / "cpufreq"
+            topology_dir.mkdir(parents=True)
+            cpufreq_dir.mkdir()
+            (topology_dir / "physical_package_id").write_text("0", encoding="utf-8")
+            (topology_dir / "core_id").write_text(str(core_id), encoding="utf-8")
+            (topology_dir / "thread_siblings_list").write_text(siblings, encoding="utf-8")
+            (cpufreq_dir / "cpuinfo_max_freq").write_text(str(max_freq), encoding="utf-8")
+            (cpufreq_dir / "scaling_cur_freq").write_text(str(max_freq), encoding="utf-8")
+
+    def probe(cpu_id: int, raw: int, kind: str, *, hybrid: bool = True, vendor: str = "GenuineIntel") -> dict:
+        return {
+            "cpu_id": cpu_id,
+            "affinity_applied": True,
+            "observed_cpu": cpu_id,
+            "vendor": vendor,
+            "hybrid_flag": hybrid,
+            "leaf_1a_supported": hybrid,
+            "raw_core_type": raw,
+            "interpreted_core_type": kind,
+            "evidence_source": "pinned_cpuid",
+        }
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "hybrid_smt"
+        make_topology(root, [(0, 0, "0,8", 6000000), (1, 1, "1,9", 6000000), (2, 2, "2", 6000000), (3, 3, "3", 6000000), (8, 0, "0,8", 6000000), (9, 1, "1,9", 6000000)])
+        evidence = {"logical_cpus": [probe(0, 0x40, "P"), probe(1, 0x40, "P"), probe(2, 0x20, "E"), probe(3, 0x20, "E"), probe(8, 0x40, "P"), probe(9, 0x40, "P")]}
+        topology = discover_cpu_core_topology(root, core_type_probe=evidence)
+        summary = cpu_core_classification_summary_from_topology(topology)
+        assert_equal(summary["logical_count"], 6, "hybrid SMT logical count")
+        assert_equal(summary["physical_count"], 4, "hybrid SMT physical count")
+        assert_equal(summary["p_core_count"], 2, "hybrid SMT physical P-core count")
+        assert_equal(summary["e_core_count"], 2, "hybrid SMT physical E-core count")
+        assert_equal(topology[8]["classification_source"], "intel_cpuid_1a_pinned", "hybrid sibling CPUID provenance")
+        assert_equal(topology[0]["core_type_probe"]["observed_cpu"], 0, "hybrid logical probe evidence preserved")
+        inventory_topology = collect_cpu_topology_info(
+            cpu_root=root,
+            core_type_probe=evidence,
+            read_text=lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None,
+        )
+        assert_equal(inventory_topology["CoreTypeSummary"]["PhysicalPCoreCount"], 2, "system inventory physical P-core count")
+        assert_equal(inventory_topology["CoreTypeSummary"]["PhysicalECoreCount"], 2, "system inventory physical E-core count")
+        assert_equal(inventory_topology["Packages"][0]["LogicalCpus"][0]["CoreTypeEvidence"]["raw_core_type"], 0x40, "system inventory preserves raw CPUID evidence")
+
+        incomplete = {"logical_cpus": [item for item in evidence["logical_cpus"] if item["cpu_id"] != 8]}
+        incomplete_topology = discover_cpu_core_topology(root, core_type_probe=incomplete)
+        assert_equal(incomplete_topology[0]["core_type"], "U", "incomplete hybrid physical core fails unknown")
+        assert_equal(incomplete_topology[0]["classification_source"], "intel_cpuid_1a_incomplete", "incomplete hybrid provenance")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "hybrid_no_smt"
+        make_topology(root, [(0, 0, "0", 5000000), (1, 1, "1", 3000000)])
+        evidence = {"logical_cpus": [probe(0, 0x40, "P"), probe(1, 0x20, "E")]}
+        summary = cpu_core_classification_summary_from_topology(discover_cpu_core_topology(root, core_type_probe=evidence))
+        assert_equal((summary["p_core_count"], summary["e_core_count"]), (1, 1), "hybrid non-SMT core counts")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "homogeneous_intel"
+        make_topology(root, [(0, 0, "0,1", 5000000), (1, 0, "0,1", 5000000)])
+        evidence = {"logical_cpus": [probe(0, 0, "", hybrid=False), probe(1, 0, "", hybrid=False)]}
+        topology = discover_cpu_core_topology(root, core_type_probe=evidence)
+        summary = cpu_core_classification_summary_from_topology(topology)
+        assert_equal((summary["p_core_count"], summary["e_core_count"]), (1, 0), "homogeneous Intel physical aggregation")
+        assert_equal(topology[1]["classification_source"], "intel_cpuid_non_hybrid", "homogeneous Intel CPUID negative control")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "amd"
+        make_topology(root, [(0, 0, "0", 6000000), (1, 1, "1", 3000000)])
+        evidence = {"logical_cpus": [probe(0, 0, "", hybrid=False, vendor="AuthenticAMD"), probe(1, 0, "", hybrid=False, vendor="AuthenticAMD")]}
+        topology = discover_cpu_core_topology(root, core_type_probe=evidence)
+        assert_equal({entry["core_type"] for entry in topology.values()}, {"P"}, "AMD frequency tiers do not invent Intel E-cores")
+        assert_equal({entry["classification_source"] for entry in topology.values()}, {"homogeneous_fallback"}, "AMD homogeneous provenance")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "arm64"
+        make_topology(root, [(0, 0, "0", 4000000), (1, 1, "1", 2000000)])
+        (root / "cpu0" / "cpu_capacity").write_text("1024", encoding="utf-8")
+        (root / "cpu1" / "cpu_capacity").write_text("512", encoding="utf-8")
+        topology = discover_cpu_core_topology(root)
+        assert_equal((topology[0]["core_type"], topology[1]["core_type"]), ("P", "E"), "AArch64 capacity topology remains supported")
+
+
 def test_cpu_utilization_telemetry_helpers() -> None:
     base = parse_proc_stat_cpu_counters("cpu 100 10 40 500 20 5 5 0\ncpu0 1 1 1 1\n")
     assert_equal(base, (100, 10, 40, 500, 20, 5, 5, 0), "proc stat aggregate parsing")
@@ -20398,6 +20488,17 @@ def test_cpu_execution_helpers_build_and_parse_helper_probes() -> None:
         ["avx2_fma", "avx2", "avx", "scalar"],
         "CPU capability probe parse",
     )
+    assert_equal(
+        build_cpu_core_type_probe_command("/tmp/cpu_helper", 8),
+        ["/tmp/cpu_helper", "--probe-cpu", "8", "--print-core-type"],
+        "CPU core-type probe command",
+    )
+    parsed_core_type = parse_cpu_core_type_probe(
+        0,
+        '{"cpu_id":8,"vendor":"GenuineIntel","hybrid_flag":true,"raw_core_type":64,"interpreted_core_type":"P"}\n',
+    )
+    assert_equal(parsed_core_type["raw_core_type"], 64, "CPU core-type probe raw value")
+    assert_equal(parse_cpu_core_type_probe(1, "{}"), {}, "CPU core-type probe rejects nonzero")
     assert_equal(parse_cpu_resolved_mode_probe(0, "AVX512\n"), "avx512", "CPU resolved-mode probe parse")
     assert_equal(parse_cpu_resolved_mode_probe(1, "avx2"), "", "CPU resolved-mode probe rejects nonzero")
     assert_equal(parse_cpu_resolved_mode_probe(0, "bad"), "", "CPU resolved-mode probe rejects unknown")
@@ -20452,7 +20553,7 @@ def test_cpu_execution_helpers_build_commands_and_benchmark_results() -> None:
     )
     assert_equal(
         stress_cmd,
-        ["stress-ng", "--cpu", "2", "--cpu-method", "int64", "--metrics-brief", "--taskset", "8,10"],
+        ["stress-ng", "--cpu", "2", "--cpu-method", "int64", "--verify", "--metrics-brief", "--taskset", "8,10"],
         "CPU stress-ng target-set command",
     )
 
@@ -20969,6 +21070,8 @@ def test_python_cpu_fallback_worker_supervision() -> None:
             self.started = True
             if self.mark_ready:
                 self.args[5].set()
+                self.args[7].value = 1
+                self.args[8].value = 1
 
         def is_alive(self) -> bool:
             return self.started and self.exitcode is None
@@ -21355,7 +21458,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     assert_equal(stress_diagnostic["cpu_mode_resolved"], "approximate", "stress-ng mode remains truthful")
     assert_equal(
         stress_diagnostic["commands"][0],
-        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief", "--taskset", "0,1,2,3,4,5,6,7"],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--verify", "--metrics-brief", "--taskset", "0,1,2,3,4,5,6,7"],
         "ARM stress-ng generic matrixprod command",
     )
 
@@ -21523,7 +21626,11 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         stress_ng_available=True,
         python_runtime="/usr/bin/python3",
     )
-    assert_equal(stress_cmd, ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--vm-keep"], "memory stress-ng resolved-byte command")
+    assert_equal(
+        stress_cmd,
+        ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--vm-keep", "--verify", "--metrics-brief"],
+        "memory stress-ng resolved-byte verification command",
+    )
     explicit_stress_cmd = build_memory_command(
         helper_available=True,
         helper_path="/tmp/memory_helper",
@@ -21649,10 +21756,9 @@ def test_final_hardware_validation_profile_pack() -> None:
         "x86_64 AMD dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 NVIDIA dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 Multi-GPU Combined Full Validation": (6, 3600),
-        "ARM64 Snapdragon Vulkan Rerun": (3, 1800),
-        "x86_64 285K Intel R9700 Vulkan Rerun": (7, 4200),
-        "x86_64 5700G RTX 5090 Vulkan Rerun": (3, 1800),
-        "x86_64 8600G RTX PRO 6000 Vulkan Rerun": (7, 4200),
+        "ARM64 Integrated Shared-GPU Acceptance Rerun": (11, 6600),
+        "x86_64 Integrated and Discrete GPU Acceptance Rerun": (15, 9000),
+        "x86_64 Discrete GPU Acceptance Rerun": (9, 5400),
     }
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
@@ -21701,7 +21807,7 @@ def test_final_hardware_validation_profile_pack() -> None:
     assert_equal(avx512.stages[0].modules.cpu.instruction_set, "avx512", "AVX512 is isolated as optional")
 
 
-def test_unattended_vulkan_rerun_profiles() -> None:
+def test_unattended_vulkan_rerun_profiles_legacy_contract() -> None:
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
     expected = {
@@ -21862,6 +21968,152 @@ def test_unified_system_memory_reserve_and_allocation_policy() -> None:
     assert_equal(sum(unsafe_minimum["allocations"].values()), 0, "unsafe minimum plan allocates nothing")
 
 
+def test_unattended_vulkan_rerun_profiles() -> None:
+    loader = ProfileLoader(Path("profiles"))
+    validator = ProfileValidator()
+    contracts = {
+        "ARM64 Integrated Shared-GPU Acceptance Rerun": {
+            "stage_count": 11,
+            "runtime": 6600,
+            "gpu_stage_ids": [
+                "arm64_acceptance_vulkan_compute", "arm64_acceptance_vulkan_transfer",
+                "arm64_acceptance_vulkan_stateful", "arm64_acceptance_cpu_gpu",
+                "arm64_acceptance_ram_gpu", "arm64_acceptance_cpu_ram_gpu",
+                "arm64_acceptance_full_pressure",
+            ],
+            "selectors": {"integrated_all"},
+        },
+        "x86_64 Integrated and Discrete GPU Acceptance Rerun": {
+            "stage_count": 15,
+            "runtime": 9000,
+            "gpu_stage_ids": [
+                "x86_id_acceptance_igpu_compute", "x86_id_acceptance_igpu_transfer",
+                "x86_id_acceptance_igpu_stateful", "x86_id_acceptance_dgpu_compute",
+                "x86_id_acceptance_dgpu_transfer", "x86_id_acceptance_dgpu_stateful",
+                "x86_id_acceptance_ram_igpu", "x86_id_acceptance_ram_dgpu",
+                "x86_id_acceptance_igpu_dgpu", "x86_id_acceptance_ram_all_gpu_memory",
+                "x86_id_acceptance_full",
+            ],
+            "selectors": {"integrated_all", "discrete_all", "all"},
+        },
+        "x86_64 Discrete GPU Acceptance Rerun": {
+            "stage_count": 9,
+            "runtime": 5400,
+            "gpu_stage_ids": [
+                "x86_d_acceptance_compute", "x86_d_acceptance_transfer",
+                "x86_d_acceptance_stateful", "x86_d_acceptance_ram_dgpu",
+                "x86_d_acceptance_full",
+            ],
+            "selectors": {"discrete_all"},
+        },
+    }
+    synthetic_targets = {
+        "integrated_all": [{"target_id": "synthetic-igpu", "vendor": "synthetic", "gpu_index": 0}],
+        "discrete_all": [{"target_id": "synthetic-dgpu", "vendor": "synthetic", "gpu_index": 1}],
+        "all": [
+            {"target_id": "synthetic-igpu", "vendor": "synthetic", "gpu_index": 0},
+            {"target_id": "synthetic-dgpu", "vendor": "synthetic", "gpu_index": 1},
+        ],
+    }
+
+    def resolve_backend(*, candidates: list[str], targets: list[dict], workload: str) -> dict:
+        return {
+            "backend": candidates[0] if candidates and targets else "none",
+            "candidate_reports": [],
+            "support": {
+                "supported": bool(targets),
+                "supported_targets": [{"target": target, "target_label": target["target_id"], "supported": True} for target in targets],
+                "unsupported_targets": [],
+            },
+            "workload": workload,
+        }
+    for profile_name, contract in contracts.items():
+        path = Path("profiles") / f"{profile_name}.json"
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        assert_equal(validator.validate(profile, labels)["errors"], [], f"{profile_name} validates")
+        assert_equal(len(profile.stages), contract["stage_count"], f"{profile_name} exact stage count")
+        assert_equal(len(labels), len(profile.stages), f"{profile_name} sidecar count")
+        assert_true(all(stage.duration_seconds == 600 for stage in profile.stages), f"{profile_name} exact durations")
+        assert_equal(sum(stage.duration_seconds for stage in profile.stages), contract["runtime"], f"{profile_name} runtime")
+        assert_equal(profile.stages[0].modules.cpu.backend_preference, "stress_ng", f"{profile_name} stress-ng CPU evidence backend")
+        assert_equal(profile.stages[1].modules.cpu.backend_preference, "python_fallback", f"{profile_name} Python CPU evidence backend")
+        assert_equal(profile.stages[2].modules.memory.backend_preference, "stress_ng", f"{profile_name} stress-ng RAM evidence backend")
+        assert_equal(profile.stages[3].modules.memory.backend_preference, "python_fallback", f"{profile_name} Python RAM evidence backend")
+        assert_equal(profile.stages[2].modules.memory.allocation_percent, 80, f"{profile_name} stress-ng allocation")
+        assert_equal(profile.stages[3].modules.memory.allocation_percent, 80, f"{profile_name} Python allocation")
+        assert_equal(
+            [stage.id for stage in profile.stages if stage.modules.gpu_3d.enabled or stage.modules.vram.enabled],
+            contract["gpu_stage_ids"],
+            f"{profile_name} preserves every required GPU interaction",
+        )
+        selectors = {
+            selector
+            for stage in profile.stages
+            for selector in (
+                stage.modules.gpu_3d.gpus if stage.modules.gpu_3d.enabled else "",
+                stage.modules.vram.gpus if stage.modules.vram.enabled else "",
+            )
+            if selector
+        }
+        assert_equal(selectors, contract["selectors"], f"{profile_name} generic selectors")
+        payload = path.read_text(encoding="utf-8").lower()
+        for forbidden in ("285k", "5700g", "8600g", "r9700", "5090", "pro 6000", "0000:", "device_id", "vendor_id"):
+            assert_true(forbidden not in payload, f"{profile_name} avoids machine-specific token {forbidden}")
+        for stage in profile.stages:
+            diagnostics = build_stage_gpu_backend_diagnostics(
+                stage=stage,
+                stage_gpu_target_mode=lambda current: (
+                    current.modules.gpu_3d.gpus if current.modules.gpu_3d.enabled else current.modules.vram.gpus
+                ),
+                gpu_targets=lambda selector: list(synthetic_targets.get(selector, [])),
+                normalize_gpu_3d_backend_preference=lambda value: str(value),
+                normalize_vram_backend_preference=lambda value: str(value),
+                gpu_3d_backend_candidates=lambda gpu, _stage: [
+                    "python_vulkan_transfer" if gpu.backend_preference == "vulkan" else "python_vulkan_compute"
+                ],
+                vram_backend_candidates=lambda _vram: ["python_vulkan_compute"],
+                resolve_gpu_backend_for_targets=resolve_backend,
+                cpu_backend_name=lambda _cpu: "cpu_native_helper",
+                memory_backend_name=lambda memory: {
+                    "stress_ng": "stress_ng",
+                    "python_fallback": "python_fallback",
+                }.get(memory.backend_preference, "memory_native_helper"),
+            )
+            if stage.modules.gpu_3d.enabled:
+                assert_true(bool(diagnostics["gpu_3d_targets"]), f"{profile_name} {stage.id} Dry Run resolves GPU targets")
+                assert_true(diagnostics["backend_usage"]["gpu_3d"].startswith("python_vulkan"), f"{profile_name} {stage.id} Dry Run Vulkan backend")
+            if stage.modules.vram.enabled:
+                assert_true(bool(diagnostics["vram_targets"]), f"{profile_name} {stage.id} Dry Run resolves memory targets")
+                assert_equal(diagnostics["backend_usage"]["vram"], "python_vulkan_compute", f"{profile_name} {stage.id} Dry Run stateful backend")
+
+    visible_names = {path.name for path in loader.list_profiles()}
+    for archived_name in (
+        "ARM64 Snapdragon Vulkan Rerun.json",
+        "x86_64 285K Intel R9700 Vulkan Rerun.json",
+        "x86_64 5700G RTX 5090 Vulkan Rerun.json",
+        "x86_64 8600G RTX PRO 6000 Vulkan Rerun.json",
+    ):
+        assert_true(archived_name not in visible_names, f"archived {archived_name} absent from normal discovery")
+        assert_true((Path("profiles/Archived/2026 Hardware Validation") / archived_name).exists(), f"archived {archived_name} retained")
+
+    integrated_profile = loader.load_profile(Path("profiles/x86_64 Integrated and Discrete GPU Acceptance Rerun.json"))
+    missing_integrated = build_stage_gpu_backend_diagnostics(
+        stage=integrated_profile.stages[4],
+        stage_gpu_target_mode=lambda current: current.modules.gpu_3d.gpus,
+        gpu_targets=lambda _selector: [],
+        normalize_gpu_3d_backend_preference=lambda value: str(value),
+        normalize_vram_backend_preference=lambda value: str(value),
+        gpu_3d_backend_candidates=lambda _gpu, _stage: ["python_vulkan_compute"],
+        vram_backend_candidates=lambda _vram: ["python_vulkan_compute"],
+        resolve_gpu_backend_for_targets=lambda **_kwargs: {"backend": "none", "candidate_reports": [], "support": {"supported": False, "supported_targets": [], "unsupported_targets": []}},
+        cpu_backend_name=lambda _cpu: "cpu_native_helper",
+        memory_backend_name=lambda _memory: "memory_native_helper",
+    )
+    assert_equal(missing_integrated["gpu_3d_targets"], [], "required integrated target remains unresolved when absent")
+    assert_equal(missing_integrated["backend_usage"]["gpu_3d"], "none", "missing integrated target cannot silently launch")
+
+
 def test_python_memory_fallback_exact_allocation_evidence() -> None:
     full_state = initial_python_memory_state(10)
     full_chunks: list[bytearray] = []
@@ -21882,6 +22134,18 @@ def test_python_memory_fallback_exact_allocation_evidence() -> None:
     assert_equal(full_state["final_attempted_chunk_bytes"], 2, "Python exact final chunk")
     assert_equal(progress, [4, 8, 10], "achieved bytes are updated after every retained success")
     assert_equal(full_state["allocation_outcome"], "full_target_achieved", "Python full allocation outcome")
+
+    verified_state = initial_python_memory_state(8192)
+    verified_chunks: list[bytearray] = []
+    allocate_python_memory_chunks(verified_state, verified_chunks, allocator=bytearray, chunk_bytes=4096, touch_pages=True)
+    verify_python_memory_chunks(verified_state, verified_chunks)
+    assert_equal(verified_state["allocation_verified"], True, "Python fallback verifies retained allocation")
+    assert_equal(verified_state["verification_passes"], 1, "Python fallback verification progress")
+    assert_equal(verified_state["verified_bytes_per_pass"], 8192, "Python fallback verified working-set bytes")
+    verified_chunks[1][0] ^= 0xFF
+    verify_python_memory_chunks(verified_state, verified_chunks)
+    assert_true(verified_state["verification_failures"] > 0, "Python fallback detects retained-memory corruption")
+    assert_equal(verified_state["status"], "error", "Python fallback corruption fails worker")
 
     def always_fail(_size: int) -> bytearray:
         raise MemoryError("synthetic")
@@ -22777,6 +23041,15 @@ def test_native_helper_runtime_service() -> None:
                 probe_index = command.index("--probe-cpu")
                 assert_equal(command[probe_index : probe_index + 2], ["--probe-cpu", "12"], "native per-CPU capability probe target")
                 return SimpleNamespace(returncode=0, stdout="avx2_fma,avx2,avx,scalar\n", stderr="")
+            if "--print-core-type" in command:
+                cpu_id = int(command[command.index("--probe-cpu") + 1])
+                kind = "P" if cpu_id == 12 else "E"
+                raw = 64 if kind == "P" else 32
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps({"cpu_id": cpu_id, "affinity_applied": True, "observed_cpu": cpu_id, "vendor": "GenuineIntel", "hybrid_flag": True, "raw_core_type": raw, "interpreted_core_type": kind}) + "\n",
+                    stderr="",
+                )
             if "--mode" in command and "--print-resolved-mode" in command:
                 return SimpleNamespace(returncode=0, stdout="avx2\n", stderr="")
             if "--mode" in command and "--print-kernel-flavor" in command:
@@ -22838,6 +23111,10 @@ def test_native_helper_runtime_service() -> None:
             ["avx2_fma", "avx2", "avx", "scalar"],
             "native runtime pinned capability inventory",
         )
+        core_type_probe = service.cpu_core_type_probe([12, 13], helper_status=helper_status)
+        assert_equal(core_type_probe["complete"], True, "native runtime complete core-type probe")
+        assert_equal([item["interpreted_core_type"] for item in core_type_probe["logical_cpus"]], ["P", "E"], "native runtime pinned core types")
+        assert_equal(service.cpu_core_type_probe([13, 12], helper_status=helper_status), core_type_probe, "native runtime core-type probe cache")
         assert_equal(
             service.cpu_supported_kernel_flavors(helper_status=helper_status, cpu_id=12),
             ["avx2_fma", "avx2", "avx", "scalar"],
@@ -22937,6 +23214,7 @@ def test_backend_readiness_helpers_build_payloads() -> None:
         resolved_modes={"auto": "avx2"},
         default_kernel_flavors={"auto": "avx2_fma"},
         supported_kernel_flavors=["avx2_fma"],
+        core_type_probe={},
     )
     assert_true("resolved_modes" not in unavailable, "backend readiness leaves unavailable helper un-enriched")
 
@@ -22945,9 +23223,11 @@ def test_backend_readiness_helpers_build_payloads() -> None:
         resolved_modes={"auto": "avx2"},
         default_kernel_flavors={"auto": "avx2_fma"},
         supported_kernel_flavors=["avx2_fma"],
+        core_type_probe={"complete": True, "hybrid_flag": True},
     )
     assert_equal(enriched["resolved_modes"]["auto"], "avx2", "backend readiness helper resolved modes")
     assert_equal(enriched["supported_kernel_flavors"], ["avx2_fma"], "backend readiness helper kernels")
+    assert_equal(enriched["core_type_probe"]["hybrid_flag"], True, "backend readiness core-type evidence")
 
     details = build_backend_details_payload(
         cpu_native_helper=enriched,
@@ -22972,6 +23252,7 @@ def test_backend_readiness_helpers_build_payloads() -> None:
         cpu_mode_resolver=lambda mode: f"{mode}-resolved",
         cpu_default_kernel_flavor_resolver=lambda mode: f"{mode}-kernel",
         cpu_supported_kernel_flavors=lambda: ["scalar", "avx2_fma"],
+        cpu_core_type_probe=lambda: {"complete": True, "hybrid_flag": False},
         gpu_3d_catalog={"python_opencl_compute": {"label": "OpenCL"}},
         python_opencl={"available": True, "platforms": 1},
         opencl_safety_profile={"safe_mode_enabled": True},
@@ -23007,6 +23288,9 @@ def test_backend_readiness_helpers_build_payloads() -> None:
 
         def _memory_helper_status(self) -> dict:
             return {"available": True, "path": "memory-helper"}
+
+        def _cpu_core_type_probe(self) -> dict:
+            return {"complete": True, "hybrid_flag": False}
 
         def _command_exists(self, name: str) -> bool:
             return bool(self.commands.get(name))
@@ -23069,6 +23353,7 @@ def test_backend_readiness_helpers_build_payloads() -> None:
         cpu_mode_resolver=lambda mode: f"{mode}-resolved",
         cpu_default_kernel_flavor_resolver=lambda mode: f"{mode}-kernel",
         cpu_supported_kernel_flavors=lambda: supported_calls.append("called") or ["avx2_fma"],
+        cpu_core_type_probe=lambda: supported_calls.append("core-type-called") or {},
         gpu_3d_catalog={},
         python_opencl={},
         opencl_safety_profile={},
@@ -24797,7 +25082,7 @@ stress-ng: info:  [88267] metrics untrustworthy: 0
     assert_equal(parsed["stressor_metrics"][0]["real_time_seconds"], 120.88, "stress-ng real time")
 
     good_evidence = build_stress_ng_cpu_evidence(
-        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--verify", "--metrics-brief"],
         good_output,
     )
     assert_equal(good_evidence["status"], "ok", "clean 8/8 stress-ng evidence")
@@ -24805,7 +25090,7 @@ stress-ng: info:  [88267] metrics untrustworthy: 0
 
     failed_output = good_output.replace("passed: 8", "passed: 7").replace("failed: 0", "failed: 1")
     failed_evidence = build_stress_ng_cpu_evidence(
-        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--verify", "--metrics-brief"],
         failed_output,
     )
     assert_equal(failed_evidence["status"], "error", "explicit stress-ng failure status")
@@ -24819,10 +25104,24 @@ stress-ng: info:  [88267] metrics untrustworthy: 0
     assert_true(any(event["severity"] == "error" for event in failure_events), "stress-ng failure prevents verified clean")
 
     no_start_evidence = build_stress_ng_cpu_evidence(
-        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"],
+        ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--verify", "--metrics-brief"],
         "stress-ng: info: passed: 0\nstress-ng: info: failed: 0\nstress-ng: info: skipped: 0\n",
     )
     assert_equal(no_start_evidence["status"], "error", "missing stress-ng startup evidence")
+
+    vm_output = good_output.replace("8 cpu", "1 vm").replace("stopping 8 stressors", "stopping 1 stressor").replace("cpu               88726", "vm                88726").replace("passed: 8: cpu (8)", "passed: 1: vm (1)")
+    vm_evidence = build_stress_ng_memory_evidence(
+        ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--vm-keep", "--verify", "--metrics-brief"],
+        vm_output,
+    )
+    assert_equal(vm_evidence["status"], "ok", "verified stress-ng VM evidence")
+    assert_equal(vm_evidence["stressor_metrics"][0]["stressor"], "vm", "stress-ng VM progress parsed")
+    assert_equal(preserve_legacy_worker_evidence_contract([vm_evidence]), [], "stress-ng RAM evidence stays additive to legacy results")
+    unverified_vm = build_stress_ng_memory_evidence(
+        ["stress-ng", "--vm", "1", "--vm-bytes", "1024", "--metrics-brief"],
+        vm_output,
+    )
+    assert_equal(unverified_vm["status"], "error", "stress-ng VM requires explicit verification")
 
     with TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
@@ -24879,7 +25178,7 @@ stress-ng: info:  [88267] metrics untrustworthy: 0
         result_path = tmp_path / "worker_results" / "cpu.json"
         logs_dir = tmp_path / "worker_logs"
         logs_dir.mkdir()
-        command = ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--metrics-brief"]
+        command = ["stress-ng", "--cpu", "8", "--cpu-method", "matrixprod", "--verify", "--metrics-brief"]
         launched = launch_stage_processes_from_plan(
             [SimpleNamespace(kind="cpu", command=command, gpu_spec=None, result_path=str(result_path))],
             stage_id="cpu_stage",
@@ -25731,6 +26030,7 @@ def main() -> int:
         test_telemetry_sample_csv_helpers,
         test_telemetry_memory_helpers,
         test_telemetry_cpu_helpers,
+        test_authoritative_hybrid_core_type_topology_fixtures,
         test_cpu_utilization_telemetry_helpers,
         test_gpu_identity_helpers,
         test_gpu_target_helpers,

@@ -41,6 +41,11 @@ def initial_python_memory_state(target_bytes: int) -> Dict[str, Any]:
         "allocation_ratio": 0.0,
         "allocation_outcome": "not_started",
         "allocation_valid": False,
+        "allocation_verified": False,
+        "verification_passes": 0,
+        "verification_failures": 0,
+        "verified_bytes_per_pass": 0,
+        "current_pattern": 1,
         "target_cap_reason": "",
         "runtime_memory_guard_triggered": False,
         "allocation_growth_stopped": False,
@@ -143,6 +148,46 @@ def apply_runtime_guard_precedence(state: Dict[str, Any]) -> None:
     state["target_cap_reason"] = "runtime_memory_guard"
 
 
+def verify_python_memory_chunks(
+    state: Dict[str, Any],
+    retained_chunks: List[Any],
+    *,
+    progress_callback: Callable[[Dict[str, Any]], None] = lambda _state: None,
+) -> None:
+    expected = int(state.get("current_pattern") or 1) & 0xFF
+    next_pattern = (expected * 33 + 17) & 0xFF
+    if next_pattern == expected:
+        next_pattern ^= 0xFF
+    verified_bytes = 0
+    for chunk_index, block in enumerate(retained_chunks):
+        for offset in range(0, len(block), 4096):
+            actual = int(block[offset])
+            if actual != expected:
+                state["verification_failures"] = int(state.get("verification_failures") or 0) + 1
+                state["error_count"] = int(state.get("error_count") or 0) + 1
+                state["status"] = "error"
+                state.setdefault(
+                    "first_verification_error",
+                    {
+                        "chunk_index": chunk_index,
+                        "offset": offset,
+                        "expected": expected,
+                        "actual": actual,
+                    },
+                )
+            block[offset] = next_pattern
+            verified_bytes += min(4096, len(block) - offset)
+        state["verification_chunks_completed"] = chunk_index + 1
+        progress_callback(state)
+    state["verified_bytes_per_pass"] = verified_bytes
+    state["current_pattern"] = next_pattern
+    state["verification_passes"] = int(state.get("verification_passes") or 0) + 1
+    state["allocation_verified"] = bool(state.get("allocation_valid")) and int(state.get("verification_failures") or 0) == 0
+    if state["allocation_verified"]:
+        state["status"] = "ok"
+    progress_callback(state)
+
+
 def run_python_memory_worker(target_bytes: int, result_file: str = "") -> int:
     state = initial_python_memory_state(target_bytes)
     retained_chunks: List[Any] = []
@@ -161,9 +206,20 @@ def run_python_memory_worker(target_bytes: int, result_file: str = "") -> int:
         if not state.get("allocation_valid"):
             return 12
         while True:
-            time.sleep(1)
+            verify_python_memory_chunks(state, retained_chunks, progress_callback=write_progress)
+            if int(state.get("verification_failures") or 0) > 0:
+                return 13
     except WorkerStop:
-        return 0 if state.get("allocation_valid") else 12
+        if not state.get("allocation_valid"):
+            return 12
+        if int(state.get("verification_failures") or 0) > 0:
+            return 13
+        if int(state.get("verification_passes") or 0) <= 0:
+            state["status"] = "error"
+            state["error_count"] = int(state.get("error_count") or 0) + 1
+            state["last_error"] = "Python memory fallback ended before completing a retained-memory verification pass"
+            return 14
+        return 0
     finally:
         apply_runtime_guard_precedence(state)
         write_progress(state)

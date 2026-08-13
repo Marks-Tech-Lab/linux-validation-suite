@@ -19,6 +19,7 @@ _ADDITIVE_STRESS_NG_EVIDENCE_FIELDS = {
     "skipped_stressor_count",
     "metrics_untrustworthy_count",
     "stressor_metrics",
+    "verification_enabled",
     "executed_command",
     "executable_requested",
     "executable_resolved_path",
@@ -55,6 +56,9 @@ _ADDITIVE_CPU_TARGETING_FIELDS = {
     "affinity_unavailable_count",
     "affinity_evidence",
     "worker_progress",
+    "verification_passes",
+    "verification_error_count",
+    "verification_method",
     "capability_scope",
     "common_safe_instruction_set",
     "per_cpu_capabilities",
@@ -76,6 +80,12 @@ _ADDITIVE_PYTHON_MEMORY_FIELDS = {
     "allocation_outcome",
     "allocation_valid",
     "allocation_verified",
+    "verification_passes",
+    "verification_failures",
+    "verified_bytes_per_pass",
+    "verification_chunks_completed",
+    "current_pattern",
+    "first_verification_error",
     "actual_allocated_bytes",
     "target_cap_reason",
     "runtime_memory_guard_triggered",
@@ -156,7 +166,7 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
             if not (
                 isinstance(item, dict)
                 and str(item.get("kind") or "").lower() == "memory"
-                and str(item.get("backend") or "").lower() == "python_fallback"
+                and str(item.get("backend") or "").lower() in {"python_fallback", "stress_ng"}
             )
         ]
     if not isinstance(value, dict):

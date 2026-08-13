@@ -76,9 +76,10 @@ from .lvs_system_identity import (
 
 
 class SystemInfoCollector:
-    def __init__(self, privileged_helper_enabled: bool = False) -> None:
+    def __init__(self, privileged_helper_enabled: bool = False, cpu_core_type_probe: Optional[Dict[str, Any]] = None) -> None:
         self._pci_device_names: Optional[Dict[str, Dict[str, str]]] = None
         self._privileged_helper_enabled = bool(privileged_helper_enabled)
+        self._cpu_core_type_probe = dict(cpu_core_type_probe or {})
 
     def collect(
         self,
@@ -181,6 +182,7 @@ class SystemInfoCollector:
             cpuinfo_text=self._proc_cpuinfo_text(),
             read_text=self._read_sysfs,
             fallback_name=base_name,
+            core_type_probe=self._cpu_core_type_probe,
         )
         name = str(topology.get("NameSummary") or base_name or "Unknown CPU")
         return {

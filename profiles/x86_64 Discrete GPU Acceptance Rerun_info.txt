@@ -1,0 +1,9 @@
+CPU stress-ng Verified Target Saturation
+CPU Python Verified Target Saturation
+RAM stress-ng Verified Pressure and Progress
+RAM Python Retained Allocation Integrity
+Discrete GPU Vulkan Compute and Readback
+Discrete GPU Vulkan Transfer and Readback
+Discrete GPU Vulkan Stateful Dedicated Memory
+Combined RAM and Discrete GPU Dedicated Memory
+Combined Full CPU RAM and Discrete GPU

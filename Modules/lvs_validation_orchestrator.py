@@ -68,7 +68,12 @@ class ValidationOrchestrator:
         self.settings = settings
         self.workload_runner = workload_runner_cls(settings.runtime_environment, settings=settings)
         self.system_info_collector = SystemInfoCollector(
-            privileged_helper_enabled=settings.privileged_helper_enabled
+            privileged_helper_enabled=settings.privileged_helper_enabled,
+            cpu_core_type_probe=(
+                self.workload_runner._cpu_core_type_probe()
+                if hasattr(self.workload_runner, "_cpu_core_type_probe")
+                else {}
+            ),
         )
         self.segment_parser = SegmentParser(
             strict_threshold_recommendation_warnings=settings.strict_threshold_recommendation_warnings

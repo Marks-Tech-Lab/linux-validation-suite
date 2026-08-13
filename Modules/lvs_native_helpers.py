@@ -9,12 +9,14 @@ from typing import Any, Callable, Dict, Optional
 from .lvs_cpu_execution import (
     build_cpu_default_kernel_probe_command,
     build_cpu_capability_probe_command,
+    build_cpu_core_type_probe_command,
     build_cpu_kernel_support_probe_command,
     build_cpu_resolved_mode_probe_command,
     cpu_kernel_support_probe_matches,
     normalize_cpu_probe_mode,
     parse_cpu_default_kernel_probe,
     parse_cpu_capability_probe,
+    parse_cpu_core_type_probe,
     parse_cpu_resolved_mode_probe,
 )
 
@@ -126,6 +128,7 @@ class NativeHelperRuntimeService:
         self._kernel_flavor_cache: Dict[str, str] = {}
         self._supported_kernel_cache: Dict[tuple[str, Optional[int]], bool] = {}
         self._cpu_capability_cache: Dict[Optional[int], list[str]] = {}
+        self._cpu_core_type_probe_cache: Dict[tuple[int, ...], Dict[str, Any]] = {}
 
     def helper_status(
         self,
@@ -301,3 +304,71 @@ class NativeHelperRuntimeService:
             for flavor in flavors:
                 self._supported_kernel_cache[(flavor, cache_key)] = True
         return flavors
+
+    def cpu_core_type_probe(
+        self,
+        cpu_ids: list[int],
+        *,
+        helper_status: Callable[[], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        targets = tuple(sorted({int(cpu_id) for cpu_id in cpu_ids}))
+        cached = self._cpu_core_type_probe_cache.get(targets)
+        if cached is not None:
+            return dict(cached)
+        helper = helper_status()
+        evidence: Dict[str, Any] = {
+            "evidence_source": "pinned_cpuid",
+            "target_cpu_ids": list(targets),
+            "logical_cpus": [],
+            "probe_failures": [],
+            "complete": False,
+            "hybrid_flag": False,
+        }
+        if not helper.get("available"):
+            evidence["unavailable_reason"] = str(helper.get("reason") or "native CPU helper unavailable")
+            self._cpu_core_type_probe_cache[targets] = evidence
+            return dict(evidence)
+        for cpu_id in targets:
+            command = build_cpu_core_type_probe_command(str(helper.get("path") or ""), cpu_id)
+            try:
+                completed = self._run_command(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=self._command_env(),
+                )
+            except Exception as exc:
+                evidence["probe_failures"].append({"cpu_id": cpu_id, "error": str(exc)})
+                continue
+            payload = parse_cpu_core_type_probe(completed.returncode, completed.stdout or "")
+            if not payload:
+                evidence["probe_failures"].append(
+                    {
+                        "cpu_id": cpu_id,
+                        "return_code": completed.returncode,
+                        "stderr": str(completed.stderr or "").strip(),
+                    }
+                )
+                continue
+            evidence["logical_cpus"].append(payload)
+            if (
+                int(payload.get("cpu_id", -1)) != cpu_id
+                or not bool(payload.get("affinity_applied"))
+                or int(payload.get("observed_cpu", -1)) != cpu_id
+            ):
+                evidence["probe_failures"].append(
+                    {
+                        "cpu_id": cpu_id,
+                        "error": "core-type probe did not prove execution on the requested logical CPU",
+                        "observed_cpu": payload.get("observed_cpu"),
+                        "affinity_applied": payload.get("affinity_applied"),
+                    }
+                )
+        logical = list(evidence["logical_cpus"])
+        evidence["complete"] = len(logical) == len(targets) and not evidence["probe_failures"]
+        evidence["hybrid_flag"] = any(bool(item.get("hybrid_flag")) for item in logical)
+        evidence["vendor"] = next((str(item.get("vendor") or "") for item in logical if item.get("vendor")), "")
+        self._cpu_core_type_probe_cache[targets] = evidence
+        return dict(evidence)
