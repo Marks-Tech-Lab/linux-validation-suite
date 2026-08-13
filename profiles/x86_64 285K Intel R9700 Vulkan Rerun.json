@@ -1,0 +1,17 @@
+{
+  "profile_name": "x86_64 285K Intel R9700 Vulkan Rerun",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 285K Intel R9700 Vulkan Rerun_info.txt",
+  "menu_description": "Unattended Intel ARL iGPU and Radeon R9700 Vulkan rerun with unified-memory validation",
+  "menu_group": "advanced",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "intel_arl_rerun_vulkan_compute", "name": "Intel ARL iGPU Vulkan Compute Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "intel_arl_rerun_vulkan_transfer", "name": "Intel ARL iGPU Vulkan Transfer Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "intel_arl_rerun_vulkan_stateful", "name": "Intel ARL iGPU Vulkan Stateful Shared Memory Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "allocation_percent": 80, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "r9700_rerun_vulkan_compute", "name": "Radeon R9700 Vulkan Compute Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "discrete_all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "r9700_rerun_vulkan_transfer", "name": "Radeon R9700 Vulkan Transfer Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "discrete_all", "backend_preference": "vulkan", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "r9700_rerun_vulkan_stateful", "name": "Radeon R9700 Vulkan Stateful Dedicated Memory Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "discrete_all", "allocation_percent": 90, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "intel_r9700_rerun_combined_memory", "name": "RAM Intel Shared and Radeon Dedicated Stateful Memory", "duration_seconds": 600, "modules": {"memory": {"enabled": true, "backend_preference": "native", "allocation_percent": 70, "instruction_set": "auto", "priority": "high", "threads": "all"}, "gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "allocation_percent": 70, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}, "vram": {"enabled": true, "allocation_percent": 70, "gpus": "discrete_all", "priority": "high", "backend_preference": "vulkan"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

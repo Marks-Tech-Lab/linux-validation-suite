@@ -1,0 +1,3 @@
+Snapdragon Adreno Vulkan Compute and Readback Rerun
+Snapdragon Adreno Vulkan Transfer and Readback Rerun
+Snapdragon Adreno Vulkan Stateful Shared Memory Rerun

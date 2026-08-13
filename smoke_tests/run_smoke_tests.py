@@ -21649,6 +21649,10 @@ def test_final_hardware_validation_profile_pack() -> None:
         "x86_64 AMD dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 NVIDIA dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 Multi-GPU Combined Full Validation": (6, 3600),
+        "ARM64 Snapdragon Vulkan Rerun": (3, 1800),
+        "x86_64 285K Intel R9700 Vulkan Rerun": (7, 4200),
+        "x86_64 5700G RTX 5090 Vulkan Rerun": (3, 1800),
+        "x86_64 8600G RTX PRO 6000 Vulkan Rerun": (7, 4200),
     }
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
@@ -21695,6 +21699,128 @@ def test_final_hardware_validation_profile_pack() -> None:
     )
     avx512 = loader.load_profile(Path("profiles/x86_64 CPU AVX512 Optional Validation.json"))
     assert_equal(avx512.stages[0].modules.cpu.instruction_set, "avx512", "AVX512 is isolated as optional")
+
+
+def test_unattended_vulkan_rerun_profiles() -> None:
+    loader = ProfileLoader(Path("profiles"))
+    validator = SharedProfileValidator()
+    expected = {
+        "ARM64 Snapdragon Vulkan Rerun": {
+            "selectors": ["integrated_all"] * 3,
+            "allocations": [0, 0, 80],
+            "memory_stages": [],
+        },
+        "x86_64 285K Intel R9700 Vulkan Rerun": {
+            "selectors": ["integrated_all"] * 3 + ["discrete_all"] * 3 + ["integrated_all"],
+            "allocations": [0, 0, 80, 0, 0, 90, 70],
+            "memory_stages": [6],
+        },
+        "x86_64 5700G RTX 5090 Vulkan Rerun": {
+            "selectors": ["discrete_all"] * 3,
+            "allocations": [0, 0, 90],
+            "memory_stages": [],
+        },
+        "x86_64 8600G RTX PRO 6000 Vulkan Rerun": {
+            "selectors": ["integrated_all"] * 3 + ["discrete_all"] * 3 + ["integrated_all"],
+            "allocations": [0, 0, 80, 0, 0, 90, 70],
+            "memory_stages": [6],
+        },
+    }
+    synthetic_targets = {
+        "integrated_all": [{"target_id": "synthetic-igpu", "vendor": "synthetic", "gpu_index": 0}],
+        "discrete_all": [{"target_id": "synthetic-dgpu", "vendor": "synthetic", "gpu_index": 1}],
+        "all": [
+            {"target_id": "synthetic-igpu", "vendor": "synthetic", "gpu_index": 0},
+            {"target_id": "synthetic-dgpu", "vendor": "synthetic", "gpu_index": 1},
+        ],
+    }
+
+    def resolve_backend(*, candidates: list[str], targets: list[dict], workload: str) -> dict:
+        backend = candidates[0] if candidates and targets else "none"
+        return {
+            "backend": backend,
+            "candidate_reports": [],
+            "support": {
+                "supported": bool(targets),
+                "supported_targets": [
+                    {"target": target, "target_label": target["target_id"], "supported": True}
+                    for target in targets
+                ],
+                "unsupported_targets": [],
+            },
+            "workload": workload,
+        }
+
+    for profile_name, contract in expected.items():
+        path = Path("profiles") / f"{profile_name}.json"
+        profile = loader.load_profile(path)
+        labels = loader.load_segment_labels(path, profile)
+        assert_equal(validator.validate(profile, labels)["errors"], [], f"{profile_name} validates")
+        assert_equal(len(labels), len(profile.stages), f"{profile_name} sidecar count")
+        assert_true(all(stage.duration_seconds == 600 for stage in profile.stages), f"{profile_name} 600-second stages")
+        assert_true(all(not stage.modules.cpu.enabled for stage in profile.stages), f"{profile_name} omits CPU")
+        assert_equal(
+            [index for index, stage in enumerate(profile.stages) if stage.modules.memory.enabled],
+            contract["memory_stages"],
+            f"{profile_name} contains only required combined RAM",
+        )
+        assert_equal(
+            [stage.modules.gpu_3d.gpus for stage in profile.stages],
+            contract["selectors"],
+            f"{profile_name} stable GPU selectors",
+        )
+        assert_equal(
+            [stage.modules.gpu_3d.allocation_percent for stage in profile.stages],
+            contract["allocations"],
+            f"{profile_name} GPU allocation intent",
+        )
+        for index, stage in enumerate(profile.stages):
+            diagnostics = build_stage_gpu_backend_diagnostics(
+                stage=stage,
+                stage_gpu_target_mode=lambda current: (
+                    current.modules.gpu_3d.gpus if current.modules.gpu_3d.enabled else current.modules.vram.gpus
+                ),
+                gpu_targets=lambda selector: list(synthetic_targets.get(selector, [])),
+                normalize_gpu_3d_backend_preference=lambda value: str(value),
+                normalize_vram_backend_preference=lambda value: str(value),
+                gpu_3d_backend_candidates=lambda gpu, _stage: [
+                    "python_vulkan_transfer" if gpu.backend_preference == "vulkan" else "python_vulkan_compute"
+                ],
+                vram_backend_candidates=lambda _vram: ["python_vulkan_compute"],
+                resolve_gpu_backend_for_targets=resolve_backend,
+                cpu_backend_name=lambda _cpu: "none",
+                memory_backend_name=lambda _memory: "memory_native_helper",
+            )
+            expected_gpu_backend = (
+                "python_vulkan_transfer"
+                if stage.modules.gpu_3d.backend_preference == "vulkan"
+                else "python_vulkan_compute"
+            )
+            assert_equal(
+                diagnostics["backend_usage"]["gpu_3d"],
+                expected_gpu_backend,
+                f"{profile_name} stage {index + 1} Dry Run GPU backend",
+            )
+            if stage.modules.vram.enabled:
+                assert_equal(
+                    diagnostics["backend_usage"]["vram"],
+                    "python_vulkan_compute",
+                    f"{profile_name} combined stage Dry Run dedicated backend",
+                )
+                assert_equal(stage.modules.vram.gpus, "discrete_all", f"{profile_name} combined dGPU selector")
+                assert_equal(stage.modules.vram.allocation_percent, 70, f"{profile_name} combined dGPU allocation")
+                assert_equal(stage.modules.memory.allocation_percent, 70, f"{profile_name} combined RAM allocation")
+
+    saved_5700 = loader.load_profile(Path("profiles/x86_64 5700G RTX 5090 Vulkan Rerun.json"))
+    assert_true(
+        all(stage.modules.gpu_3d.gpus == "discrete_all" for stage in saved_5700.stages),
+        "saved 5700G rerun never invents an unavailable integrated GPU",
+    )
+    intended_payload = Path("profiles/x86_64 8600G RTX PRO 6000 Vulkan Rerun.json").read_text(encoding="utf-8")
+    assert_true(
+        not any(token in intended_payload for token in ("vendor_id", "device_id", "pci_slot", "target_id")),
+        "intended 8600G profile contains no invented physical identifiers",
+    )
 
 
 def test_unified_system_memory_reserve_and_allocation_policy() -> None:
@@ -25659,6 +25785,7 @@ def main() -> int:
         test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
         test_final_hardware_validation_profile_pack,
+        test_unattended_vulkan_rerun_profiles,
         test_python_memory_fallback_exact_allocation_evidence,
         test_unified_system_memory_reserve_and_allocation_policy,
         test_linux_memory_accounting_semantics,

@@ -1,0 +1,13 @@
+{
+  "profile_name": "ARM64 Snapdragon Vulkan Rerun",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "ARM64 Snapdragon Vulkan Rerun_info.txt",
+  "menu_description": "Unattended Snapdragon Adreno Vulkan compute, transfer, and shared-memory rerun",
+  "menu_group": "gpu",
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {"id": "snapdragon_rerun_vulkan_compute", "name": "Snapdragon Vulkan Compute Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "snapdragon_rerun_vulkan_transfer", "name": "Snapdragon Vulkan Transfer Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan", "compute_variant": "baseline", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}},
+    {"id": "snapdragon_rerun_vulkan_stateful", "name": "Snapdragon Vulkan Stateful Shared Memory Rerun", "duration_seconds": 600, "modules": {"gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "allocation_percent": 80, "backend_preference": "vulkan_compute", "compute_variant": "stateful_memory", "priority": "high"}}, "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}}
+  ]
+}

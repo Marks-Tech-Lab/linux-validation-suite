@@ -1,0 +1,7 @@
+Intel ARL iGPU Vulkan Compute and Readback Rerun
+Intel ARL iGPU Vulkan Transfer and Readback Rerun
+Intel ARL iGPU Vulkan Stateful Shared Memory Rerun
+Radeon R9700 Vulkan Compute and Readback Rerun
+Radeon R9700 Vulkan Transfer and Readback Rerun
+Radeon R9700 Vulkan Stateful Dedicated Memory Rerun
+RAM plus Intel Shared and Radeon Dedicated Stateful Memory Rerun

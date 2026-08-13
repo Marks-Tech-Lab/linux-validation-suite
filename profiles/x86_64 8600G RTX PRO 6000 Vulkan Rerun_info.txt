@@ -1,0 +1,7 @@
+AMD APU Vulkan Compute and Readback Rerun
+AMD APU Vulkan Transfer and Readback Rerun
+AMD APU Vulkan Stateful Shared Memory Rerun
+NVIDIA dGPU Vulkan Compute and Readback Rerun
+NVIDIA dGPU Vulkan Transfer and Readback Rerun
+NVIDIA dGPU Vulkan Stateful Dedicated Memory Rerun
+RAM plus AMD Shared and NVIDIA Dedicated Stateful Memory Rerun
