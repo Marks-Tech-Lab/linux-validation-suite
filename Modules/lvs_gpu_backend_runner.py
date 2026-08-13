@@ -195,7 +195,7 @@ def effective_gpu_targets(
     resolution: Optional[Dict[str, Any]],
 ) -> List[Optional[Dict[str, Any]]]:
     if not targets:
-        return [None]
+        return []
     support = (resolution or {}).get("support") or {}
     supported_targets = support.get("supported_targets") or []
     if supported_targets:
@@ -211,4 +211,3 @@ def effective_gpu_targets(
     if backend and backend != "none":
         return list(targets)
     return []
-

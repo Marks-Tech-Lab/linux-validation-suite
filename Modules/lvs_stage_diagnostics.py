@@ -15,6 +15,7 @@ from .lvs_stage_gpu_diagnostics import (
     gpu_3d_intensity_warning,
     gpu_3d_preference_fallback_warning,
     gpu_safe_mode_worker_warnings,
+    missing_gpu_target_issues,
     mixed_stage_gpu_safety_warnings,
     opencl_high_headroom_safety_warning,
     per_target_backend_selection_warning,
@@ -185,6 +186,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     )
     gpu_target_mode = gpu_backend_diagnostics["gpu_target_mode"]
     gpu_targets = gpu_backend_diagnostics["gpu_targets"]
+    gpu_3d_targets = gpu_backend_diagnostics["gpu_3d_targets"]
     gpu_3d_preference = gpu_backend_diagnostics["gpu_3d_preference"]
     vram_preference = gpu_backend_diagnostics["vram_preference"]
     vram_targets = gpu_backend_diagnostics["vram_targets"]
@@ -228,6 +230,16 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
 
     if stage.enabled and not workloads:
         issues.append("enabled stage has no enabled workloads")
+    issues.extend(
+        missing_gpu_target_issues(
+            gpu_3d_enabled=stage.modules.gpu_3d.enabled,
+            gpu_3d_selector=stage.modules.gpu_3d.gpus,
+            gpu_3d_targets=gpu_3d_targets,
+            vram_enabled=stage.modules.vram.enabled,
+            vram_selector=stage.modules.vram.gpus,
+            vram_targets=vram_targets,
+        )
+    )
     if stage.enabled and not stage_memory_plan.get("valid", True):
         issues.append(
             "stage system-memory budget cannot satisfy minimum viable enabled allocations: "

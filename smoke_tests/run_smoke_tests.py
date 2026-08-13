@@ -128,12 +128,14 @@ from Modules.lvs_gpu_backend_resolver import (
     gpu_backend_support_summary,
     resolve_gpu_backend_for_targets,
 )
+from Modules.lvs_gpu_backend_runner import effective_gpu_targets
 from Modules.lvs_stage_gpu_diagnostics import (
     build_stage_gpu_backend_diagnostics,
     gpu_3d_backend_identity_warnings,
     gpu_3d_intensity_warning,
     gpu_3d_preference_fallback_warning,
     gpu_safe_mode_worker_warnings,
+    missing_gpu_target_issues,
     mixed_stage_gpu_safety_warnings,
     opencl_high_headroom_safety_warning,
     per_target_backend_selection_warning,
@@ -23304,6 +23306,45 @@ def test_vulkan_worker_resolved_device_binding() -> None:
     assert_equal(vulkan_failure_reason("vkAllocateMemory failed with code -2"), "allocation_failure", "Vulkan allocation classification")
 
 
+def test_vulkan_workers_bootstrap_repository_imports() -> None:
+    for worker_name in ("vulkan_compute_worker.py", "vulkan_transfer_worker.py"):
+        worker_path = ROOT / "native" / worker_name
+        completed = subprocess.run(
+            [sys.executable, str(worker_path), "--help"],
+            cwd="/tmp",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert_equal(completed.returncode, 0, f"{worker_name} imports from outside repository cwd")
+        assert_true("usage:" in completed.stdout.lower(), f"{worker_name} reaches argument parser")
+
+
+def test_gpu_execution_requires_a_physical_target() -> None:
+    resolution = {
+        "backend": "python_vulkan_compute",
+        "support": {"supported": True, "supported_targets": [], "unsupported_targets": []},
+    }
+    assert_equal(
+        effective_gpu_targets([], resolution),
+        [],
+        "GPU execution does not materialize an untargeted worker when discovery matches nothing",
+    )
+    assert_equal(
+        missing_gpu_target_issues(
+            gpu_3d_enabled=True,
+            gpu_3d_selector="integrated",
+            gpu_3d_targets=[],
+            vram_enabled=True,
+            vram_selector="discrete",
+            vram_targets=[{"target_id": "0000:01:00.0"}],
+        ),
+        ["3D workload selector 'integrated' matched no physical GPU targets"],
+        "GPU diagnostics fail readiness for only the unmatched physical selector",
+    )
+
+
 def test_cpu_max_power_tuning_skips_invalid_candidates() -> None:
     import linux_validation_suite as lvs
 
@@ -25636,6 +25677,8 @@ def main() -> int:
         test_backend_readiness_helpers_build_payloads,
         test_vulkan_runtime_discovery_helpers,
         test_vulkan_worker_resolved_device_binding,
+        test_vulkan_workers_bootstrap_repository_imports,
+        test_gpu_execution_requires_a_physical_target,
         test_cpu_max_power_tuning_skips_invalid_candidates,
         test_stage_event_state_helpers,
         test_stage_completion_helpers,

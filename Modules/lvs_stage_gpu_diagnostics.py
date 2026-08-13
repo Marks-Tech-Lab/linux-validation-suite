@@ -19,6 +19,23 @@ GPU_3D_PREFERENCE_BACKEND_MAP = {
 }
 
 
+def missing_gpu_target_issues(
+    *,
+    gpu_3d_enabled: bool,
+    gpu_3d_selector: str,
+    gpu_3d_targets: List[Dict[str, Any]],
+    vram_enabled: bool,
+    vram_selector: str,
+    vram_targets: List[Dict[str, Any]],
+) -> List[str]:
+    issues: List[str] = []
+    if gpu_3d_enabled and not gpu_3d_targets:
+        issues.append(f"3D workload selector '{gpu_3d_selector}' matched no physical GPU targets")
+    if vram_enabled and not vram_targets:
+        issues.append(f"VRAM workload selector '{vram_selector}' matched no physical GPU targets")
+    return issues
+
+
 def build_stage_gpu_backend_diagnostics(
     *,
     stage: Any,
