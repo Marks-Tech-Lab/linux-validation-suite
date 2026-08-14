@@ -21810,7 +21810,6 @@ def test_final_hardware_validation_profile_pack() -> None:
         "x86_64 AMD dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 NVIDIA dGPU OpenCL Optional Validation": (2, 1200),
         "x86_64 Multi-GPU Combined Full Validation": (6, 3600),
-        "x86_64 APU Full Mixed Stateful Confirmation": (1, 600),
     }
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
@@ -22023,8 +22022,10 @@ def test_unified_system_memory_reserve_and_allocation_policy() -> None:
 def test_unattended_vulkan_rerun_profiles() -> None:
     loader = ProfileLoader(Path("profiles"))
     validator = ProfileValidator()
+    remediation_archive = Path("profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed")
     contracts = {
         "x86_64 APU Full Mixed Stateful Confirmation": {
+            "path": remediation_archive / "x86_64 APU Full Mixed Stateful Confirmation.json",
             "stage_count": 1,
             "runtime": 600,
             "gpu_stage_ids": ["x86_apu_full_mixed_stateful_confirmation"],
@@ -22052,7 +22053,7 @@ def test_unattended_vulkan_rerun_profiles() -> None:
             "workload": workload,
         }
     for profile_name, contract in contracts.items():
-        path = Path("profiles") / f"{profile_name}.json"
+        path = contract["path"]
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         assert_equal(validator.validate(profile, labels)["errors"], [], f"{profile_name} validates")
@@ -22137,18 +22138,18 @@ def test_unattended_vulkan_rerun_profiles() -> None:
         assert_true(archived_name not in visible_names, f"completed broad runner {archived_name} hidden")
         assert_true((campaign_archive / archived_name).exists(), f"completed broad runner {archived_name} archived")
 
-    remediation_archive = Path("profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed")
     for archived_name in (
         "ARM64 Shared-GPU Stateful Remediation.json",
         "x86_64 RAM Evidence Remediation.json",
         "x86_64 RAM and Full Mixed Confirmation.json",
         "x86_64 APU Shared-GPU Remediation.json",
         "x86_64 APU Multi-dGPU Remediation.json",
+        "x86_64 APU Full Mixed Stateful Confirmation.json",
     ):
         assert_true(archived_name not in visible_names, f"completed remediation {archived_name} hidden")
         assert_true((remediation_archive / archived_name).exists(), f"completed remediation {archived_name} archived")
 
-    integrated_profile = loader.load_profile(Path("profiles/x86_64 APU Full Mixed Stateful Confirmation.json"))
+    integrated_profile = loader.load_profile(remediation_archive / "x86_64 APU Full Mixed Stateful Confirmation.json")
     missing_integrated = build_stage_gpu_backend_diagnostics(
         stage=integrated_profile.stages[0],
         stage_gpu_target_mode=lambda current: current.modules.gpu_3d.gpus,

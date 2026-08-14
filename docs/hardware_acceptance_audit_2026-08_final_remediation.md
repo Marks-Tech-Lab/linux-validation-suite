@@ -1,10 +1,12 @@
 # LVS final-remediation hardware acceptance audit (2026-08-14)
 
-Baseline audited: `38164844d797b29d05c370192e742f78967d3d5b` (`Fix hardware acceptance gaps and minimize reruns`). Raw PASS/WARN/FAIL values were treated as observations. This report and the companion `hardware_acceptance_matrix_2026-08_final_remediation.csv` are the final forensic record for the root-level campaign present in `results/` on 2026-08-14.
+Original remediation-round baseline: `38164844d797b29d05c370192e742f78967d3d5b` (`Fix hardware acceptance gaps and minimize reruns`). Final-confirmation baseline: `75d7d19a47dcf0a6c26008ed7b34c9f7d1f1293e` (`Fix APU full mixed stateful validation`). Raw PASS/WARN/FAIL values were treated as observations. This report and the companion `hardware_acceptance_matrix_2026-08_final_remediation.csv` preserve both rounds as the final forensic record.
 
 ## Decision
 
-The broad hardware campaign is complete, but it cannot yet be closed completely. Twenty-five of 27 new stages are independently accepted. Two AMD-APU full mixed stages are partial because LVS omitted integrated shared-stateful pressure while still reporting PASS/WARN. The defect is fixed in software. Only one 600-second stage on the 5700G and the same 600-second stage on the 8600G are required; no other hardware path should be repeated.
+**HARDWARE ACCEPTANCE CAMPAIGN COMPLETE — NO FURTHER HARDWARE RUNS REQUIRED FOR THIS DEVELOPMENT WAVE.**
+
+The original remediation round accepted 25 of 27 stages and left only two AMD-APU full-mixed stages partial because LVS omitted integrated shared-stateful pressure while still reporting PASS/WARN. The focused confirmation round at baseline `75d7d19a` executed exactly those two 600-second stages. Both now contain the required fused Vulkan compute/stateful APU worker, meaningful shared allocation, complete CPU/RAM/all-dGPU participation, real steady overlap, continuous verification, and zero correctness failures. The 5700G row is `VALIDATED`; the 8600G row is `VALIDATED WITH EXPLAINED WARNING` for a non-emergency memory-pressure warning and T1000 thermal warning.
 
 The previous Core i9-14900 native-RAM concern is closed: the confirmation completed 10,582 native pattern passes, including 2,653 `inverted_mix64` passes, with zero mismatches under concurrent CPU, RAM, Intel iGPU, and RTX 5090 load.
 
@@ -172,16 +174,75 @@ Two evaluator/preflight mismatches remain in the saved evidence: the 5700G full 
 
 `Modules/lvs_vram_policy.py` now retains an integrated/APU Vulkan stateful worker during concurrent GPU 3D+VRAM stages. The stateful worker is already the fused compute+verified-memory worker and replaces the same-target 3D worker, so this does not double GPU load. OpenCL safety behavior is unchanged. Regression coverage explicitly protects shared GPUs with small carved-out VRAM reports.
 
-The five completed one-off remediation profiles were moved to `profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed/`, outside normal nonrecursive discovery. They were not deleted. A single generic fail-closed `x86_64 APU Full Mixed Stateful Confirmation` profile now contains the only remaining 600-second stage. It requires `integrated_all` for compute and `all` for stateful memory, ensuring an APU without a resolvable integrated target is not considered runnable.
+The five original one-off remediation profiles were moved to `profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed/`, outside normal nonrecursive discovery. The generic fail-closed `x86_64 APU Full Mixed Stateful Confirmation` profile was retained in normal discovery only while its two 600-second confirmations remained outstanding. After both confirmations validated, its JSON and sidecar were moved into the same archive. Nothing was deleted, and the fail-closed `integrated_all`/`all` contract remains reproducible from the archived profile.
 
-## Minimal additional hardware evidence
+## Historical minimal hardware request — completed
 
 1. Ryzen 7 5700G: run only `x86_64 APU Full Mixed Stateful Confirmation` once, 600 seconds.
 2. Ryzen 5 8600G: run only the same profile once, 600 seconds.
 
 Each result must show CPU and native RAM verification, a fused 70%-intent integrated stateful worker, every installed dGPU stateful worker, correct shared/dedicated planning, overlap, and zero mismatches/errors. Estimated workload time is 20 minutes total across the two systems, plus launch/export overhead. No standalone RAM, transfer, stateful, broad 70/90-minute profile, i7, ARM, 285K, or 14900 rerun is justified.
 
-After those two rows pass independently, the hardware acceptance campaign can be closed without re-auditing this dataset.
+Both requested executions are now complete and independently accepted. No additional hardware evidence is required.
+
+## Final APU full-mixed confirmation addendum
+
+### Scope, baseline, and inventory
+
+The final round contains exactly two root-level executions and four immediately preceding Dry Run captures. Archived, Uploaded, Reparsed, Support_Exports, and Migration_Bundles content is not counted. Both executions used `x86_64 APU Full Mixed Stateful Confirmation`, required every stage to be runnable, enabled Advanced Debug, and contain one required 600-second stage.
+
+| Execution | Actual hardware | Stage / LVS result | Run / stage runtime |
+|---|---|---|---|
+| `2026-08-14_12-58-08_x86_64 APU Full Mixed Stateful Confirmation` | Ryzen 7 5700G, 8 physical / 16 logical; RTX 5090 `card0` `0000:01:00.0`; integrated RADV Renoir `card1` `0000:07:00.0` | Full CPU RAM and All-GPU Stateful Mixed Confirmation / PASS | 635.64 / 602.441 s |
+| `2026-08-14_12-59-50_x86_64 APU Full Mixed Stateful Confirmation` | Ryzen 5 8600G, 6 physical / 12 logical; RTX PRO 6000 `card0` `0000:01:00.0`; RX 550 `card1` `0000:04:00.0`; integrated RADV 760M `card2` `0000:08:00.0`; T1000 8GB `card3` `0000:05:00.0` | Full CPU RAM and All-GPU Stateful Mixed Confirmation / WARN | 648.20 / 602.036 s |
+
+Worker inventory is exact: 5700G has one native CPU worker process containing 16 pinned threads, one native RAM worker containing 16 threads, and two fused Vulkan stateful workers. The 8600G has one native CPU process containing 12 pinned threads, one native RAM process containing 12 threads, and four fused Vulkan stateful workers. All worker exit codes recorded by the manifest are zero. Worker stdout/stderr and all captured filtered kernel/journal logs are empty.
+
+The saved results do not embed a Git SHA, but their profile is the one introduced by, and their execution timestamps follow, baseline `75d7d19a47dcf0a6c26008ed7b34c9f7d1f1293e`. More importantly, their materialized integrated stateful workers directly prove execution of that baseline's policy correction.
+
+### Dry Run and selector accuracy
+
+The `12-58-01` and `12-58-05` diagnostics both reported the 5700G profile runnable 1/1. They resolved `integrated_all` to Renoir and `all` to Renoir plus RTX 5090, classified the 512 MiB DRM report as ambiguous carved-out memory, selected the 11,348,717,568-byte shared Vulkan heap, retained the fused stateful worker, and planned both GPU targets.
+
+The `12-59-40` and `12-59-45` diagnostics both reported the 8600G profile runnable 1/1. They resolved `integrated_all` only to the 760M and `all` to the 760M plus RTX PRO, RX 550, and T1000. The RX 550 was not omitted. They classified the 760M's 512 MiB DRM report as ambiguous, selected the 11,237,212,160-byte shared heap, and planned all four fused stateful workers.
+
+Runtime matches those predictions exactly. There is no `[None]` target, integrated/discrete leakage, required skip, missing worker, or preflight/execution disagreement. The diagnostics' allocation numbers vary slightly from execution because the authoritative launch snapshot uses launch-time MemAvailable; this is expected and explicitly preserved in `system_memory_plan_launch`.
+
+### Ryzen 7 5700G confirmation
+
+- CPU: native tuned `sse2_int`; CPUs 0-15 intended and actually targeted; 16/16 threads created; affinity attempted/applied 16/16 with observed CPU equal to target and no failure. In the 542.441-second trimmed steady window, aggregate utilization median/p10/min is 100/100/100%. Every logical-CPU median is 100%; none is materially underloaded and no CPU exists outside the target set. The helper completed 8,096,016 verify/canary passes, zero errors. CPU clock median 4516.6 MHz, power 84.735 W, temperature 53.88 C.
+- RAM: 70% requested 23,080,684,748 bytes; launch assignment 20,120,839,587; allocated/retained 20,120,842,240 (100.000% assigned, 87.176% requested). Sixteen threads completed 3,308 passes: mix64 831, inverted_mix64 830, walking_bit 825, address_xor 822; zero mismatches. Steady memory-used median/min/max is 29.16/29.07/29.40 GiB.
+- Renoir: physical target is RADV RENOIR, `card1`, `0000:07:00.0`, Vulkan integrated device, hardware match score 2760 and unambiguous. The fused `vulkan_compute_stateful_memory_v19` worker created its Vulkan device/queue/pipeline and ran `stateful_memory`; a software renderer was enumerated by system Vulkan diagnostics but was not selected. The 512 MiB carved-out report did not cap the worker. Requested 7,944,102,297 bytes; assigned 6,920,481,373 after the unified-pool rebalance; allocated 6,920,484,864 (100.000% assigned, 87.115% requested; 60.980% of the compatible heap). Seven legal buffers span 478,029,824 to 1,073,741,824 bytes, with no allocation failure/backoff. All seven buffers were retained and covered by readback; 948 frames, 316 verification passes, zero compute mismatch/error, 593.319 s. Steady busy median/p10 96.5/93%, clock median 1987 MHz, temperature median/max 39/40 C, power median 84 W.
+- RTX 5090: `card0`, `0000:01:00.0`, dedicated and excluded from the system pool. Requested/assigned 23,933,642,342; allocated 23,933,645,824 (100.000%), eight buffers, 6,514 frames, 2,172 readbacks, zero mismatch/error, 595.913 s. Dedicated residency remained 22.38 GiB. Busy is intentionally bursty during full-buffer verification (median 30%, p10 0%, max 91%), while 2827 MHz median clock and 228.9 W median power plus continuous frame/readback progress prove real work.
+- Unified plan/guard: MemTotal 32,972,406,784; launch MemAvailable 28,116,111,360; reserve 1,073,741,824; safe pool 27,042,369,536. Allocation ledger is RAM 20,120,839,587 plus shared-consumer commitment 6,921,529,949, exactly the pool. Dedicated RTX VRAM is outside it. The Renoir runtime claim is 6,920,484,864; minimum MemAvailable 1,400,778,752. No warning, emergency, denied growth, guard trigger, or termination; claims were released during clean worker shutdown.
+- Concurrency: every worker lifespan exceeds 593.319 s inside the 602.441-second stage. Therefore every worker necessarily covers the complete stage+30 to stage-end-30 interval: 542.441 seconds of simultaneous CPU, RAM, Renoir stateful, and RTX stateful work. During that overlap CPU is 100%, memory is near its sustained 29.16 GiB median, Renoir is 96.5% median busy with full retained allocation, RTX retains 22.38 GiB and produces verified bursts, and all final verification counters are positive with zero failures.
+
+Independent verdict: **VALIDATED**, high confidence. LVS PASS agrees with the underlying behavior. Its report-only RTX utilization recommendation is an advisory telemetry caveat, not a missing workload or verification failure.
+
+### Ryzen 5 8600G confirmation
+
+- CPU: native tuned `avx512_int`; CPUs 0-11 intended/actual; 12/12 threads, affinity attempted/applied 12/12, observed CPU equals target. The 542.036-second trimmed steady window has aggregate median/p10/min 100/100/100%; every logical median is 100%, with no outside CPU or underloaded target. The helper completed 5,768,651 verify/canary passes, zero errors. Clock median 4670.245 MHz, power 87.22 W, temperature 62.12 C.
+- RAM: 70% requested 22,846,529,126; assigned 19,215,032,196; allocated/retained 19,215,032,320 (100.000% assigned, 84.105% requested). Twelve threads completed 2,816 passes: mix64 709, inverted_mix64 707, walking_bit 702, address_xor 698; zero mismatches. Steady used-memory median/min/max is 29.27/29.11/29.43 GiB.
+- Radeon 760M: physical RADV PHOENIX `card2`, `0000:08:00.0`, integrated, hardware match score 2760 and unambiguous; no software renderer selected. Requested 7,866,048,511; assigned 6,609,678,460; allocated 6,609,682,432 (100.000% assigned, 84.028% requested; 58.820% of the 11,237,212,160-byte selected shared heap). The 512 MiB carved-out report did not cap allocation. Seven buffers span 167,227,392 to 1,073,741,824 bytes, no failure/backoff; all seven covered, 2,214 frames, 738 verifies, zero mismatch/error, 592.086 s. Busy median/p10 95/93%, clock median 2445.5 MHz, temperature median/max 43/44 C.
+- RTX PRO 6000: dedicated `card0` `0000:01:00.0`; requested/assigned 71,849,371,238; allocated 71,849,374,720, 20 buffers, 3,467 frames, 1,156 verifies, zero errors, 587.721 s. Steady busy median 62%, clock 1991 MHz, power 222.375 W, temperature median/max 77/80 C, residency 67.02 GiB.
+- RX 550: dedicated `card1` `0000:04:00.0`; requested/assigned 751,619,276; allocated 751,623,168, three buffers, 6,967 frames, 2,323 verifies, zero errors, 597.652 s. Busy median/max 100/100%, clock 1183 MHz, temperature median/max 73/81 C, residency 0.71 GiB. This proves the small dGPU remains included.
+- T1000 8GB: dedicated `card3` `0000:05:00.0`; requested/assigned 6,012,954,214; allocated 6,012,957,696, six buffers, 5,580 frames, 1,860 verifies, zero errors, 594.288 s. Busy median/p10 84/81%, memory busy 85/83%, clock 1395 MHz, residency 5.62 GiB. Temperature median/max 84/87 C crossed the 85 C warning hint but caused no mismatch, throttle fault, reset, or early exit.
+- Unified plan/guard: MemTotal 32,637,898,752; launch MemAvailable 26,899,501,056; reserve 1,073,741,824; pool 25,825,759,232. Allocation ledger is RAM 19,215,032,196 plus shared-consumer commitment 6,610,727,036, exactly the pool. All three dedicated targets remain outside it. The 760M claimed 6,609,682,432 real growth. Minimum MemAvailable was 1,033,822,208, briefly below the 1 GiB warning threshold but well above the 512 MiB emergency threshold. Growth stopped safely after full assigned allocation; no claim was denied, guard did not trigger, termination was not required, and cleanup released claims.
+- Concurrency: the shortest GPU lifespan is 587.721 s within the 602.036-second stage, which guarantees all CPU/RAM/four-GPU workers cover the entire 30-second-trimmed 542.036-second interval. During overlap CPU remains 100%, memory remains at 29.27 GiB median, 760M remains 95% median busy with 6.61 GB retained, and every dGPU retains its assigned allocation and produces verification progress.
+
+Independent verdict: **VALIDATED WITH EXPLAINED WARNING**, high confidence. LVS WARN accurately represents the non-emergency memory warning and T1000 87 C thermal warning. Neither invalidates workload integrity or concurrency.
+
+### Evidence consistency and final reconciliation
+
+For both runs, `run_manifest.json` stage worker payloads exactly equal `parsed_results_extended.json`; legacy custom output contains every stable target; summaries report the same worker counts, allocation ratios, verification counters, warnings, and PASS/WARN outcomes. All GPU workers report hardware verification, unambiguous device matching, 100% assigned allocation, complete buffer coverage, positive frames/readbacks, zero mismatches, and zero observed process exit codes. There is no device loss, reset, timeout, OOM, kernel fault, or worker exception.
+
+Stable telemetry mapping is correct despite Vulkan runtime-index ordering: source-map indices bind by card/slot to RTX/Renoir on 5700G and RTX PRO/RX 550/760M/T1000 on 8600G. Worker target slot/card, system inventory, telemetry source, parsed output, and summary all agree. No duplication, drift, missing source, or cross-device temperature/clock association was found.
+
+The saved `executed_plan.commands` list is the pre-launch planning snapshot and contains byte arguments from an earlier MemAvailable sample. `system_memory_plan_launch`, final materialized worker specs, runtime guard, and worker results are the authoritative launch/execution evidence and agree. This field distinction did not affect execution, parsing, evaluation, or acceptance.
+
+The two new rows supersede, but do not erase, the historical partial rows. The prior missing-APU-stateful defect is conclusively closed on both Renoir and Phoenix. The historical matrix now contains 20 `VALIDATED`, 7 `VALIDATED WITH EXPLAINED WARNING`, 2 superseded `PARTIALLY EXECUTED, NOT VALIDATED`, and 1 external-known-hardware row. Current unresolved count is zero.
+
+The completed `x86_64 APU Full Mixed Stateful Confirmation` profile is archived under `profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed/`, outside normal nonrecursive discovery, with both JSON and sidecar preserved for reproducibility.
 
 ## Software validation
 
