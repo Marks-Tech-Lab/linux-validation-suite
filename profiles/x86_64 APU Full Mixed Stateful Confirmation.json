@@ -1,0 +1,23 @@
+{
+  "profile_name": "x86_64 APU Full Mixed Stateful Confirmation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "x86_64 APU Full Mixed Stateful Confirmation_info.txt",
+  "menu_description": "One-stage x86_64 APU full mixed confirmation with integrated shared-memory and all-GPU stateful pressure",
+  "menu_group": "advanced",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 1.0, "trim_start_seconds": 30, "trim_end_seconds": 30},
+  "stages": [
+    {
+      "id": "x86_apu_full_mixed_stateful_confirmation",
+      "name": "Full CPU RAM and All-GPU Stateful Mixed Confirmation",
+      "duration_seconds": 600,
+      "modules": {
+        "cpu": {"enabled": true, "backend_preference": "native", "mode": "normal", "load": "steady", "instruction_set": "auto", "threads": "all", "priority": "high", "dataset": "large"},
+        "memory": {"enabled": true, "backend_preference": "native", "allocation_percent": 70, "instruction_set": "auto", "priority": "high", "threads": "all"},
+        "gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "integrated_all", "backend_preference": "vulkan_compute", "compute_variant": "stress_hash", "priority": "high"},
+        "vram": {"enabled": true, "allocation_percent": 70, "gpus": "all", "priority": "high", "backend_preference": "vulkan"}
+      },
+      "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30}
+    }
+  ]
+}

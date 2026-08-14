@@ -160,14 +160,22 @@ def skip_concurrent_vram_worker_for_target(
 ) -> bool:
     if not concurrent_gpu_3d or target is None:
         return False
+    normalized_vram_backend = str(vram_backend or "").strip().lower()
     device_class = str((capability or {}).get("device_class", "") or "").strip().lower()
     if (
-        str(vram_backend or "").strip().lower() == "python_opencl"
+        normalized_vram_backend == "python_opencl"
         and int(concurrent_amd_discrete_target_count or 0) >= 2
         and target_is_amd_discrete(target, capability)
     ):
         return True
     if device_class not in {"integrated", "apu"}:
+        return False
+    # The Vulkan stateful worker fuses compute and verified memory pressure, so
+    # it replaces the same-target 3D worker instead of doubling GPU load.  A
+    # small firmware/carved-out VRAM report must not suppress that worker on a
+    # shared-memory GPU; its target is resolved from the compatible Vulkan heap
+    # and the unified system-memory budget.
+    if normalized_vram_backend == "python_vulkan_compute":
         return False
     target_total = int(target.get("vram_total") or 0)
     return 0 < target_total <= 2 * 1024 ** 3

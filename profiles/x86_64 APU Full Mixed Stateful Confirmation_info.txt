@@ -1,0 +1,1 @@
+Full CPU RAM and All-GPU Stateful Mixed Confirmation
