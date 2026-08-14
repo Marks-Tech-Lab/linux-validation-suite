@@ -102,10 +102,11 @@ def profile_stage_detail_lines(
     if stage.modules.cpu.enabled:
         cpu = stage.modules.cpu
         backend_text = f"backend={cpu.backend_preference}, " if cpu.backend_preference != "auto" else ""
+        intent_text = f", instruction_intent={cpu.instruction_intent}" if cpu.instruction_intent else ""
         lines.append(
             "CPU: "
             + backend_text
-            + f"instruction={cpu.instruction_set}, threads={cpu.threads}, "
+            + f"instruction={cpu.instruction_set}{intent_text}, threads={cpu.threads}, "
             + f"mode={cpu.mode}, load={cpu.load}, priority={cpu.priority}"
         )
     else:
@@ -250,6 +251,7 @@ class ProfileEditPresenter:
         "i": FrontendActionSpec("i", "picker", target="intensity", label="edit selected GPU stage intensity"),
         "c": FrontendActionSpec("c", "picker", target="compute_variant", label="edit selected GPU compute variant"),
         "p": FrontendActionSpec("p", "picker", target="cpu_instruction", label="edit selected CPU instruction set"),
+        "o": FrontendActionSpec("o", "picker", target="cpu_instruction_intent", label="edit selected CPU instruction intent"),
         "r": FrontendActionSpec("r", "picker", target="memory_instruction", label="edit selected memory instruction set"),
         "n": FrontendActionSpec("n", "input", target="trim_start", label="edit selected stage trim"),
         "v": FrontendActionSpec("v", "input", target="vram_allocation", label="edit selected stage VRAM allocation percent"),
@@ -261,6 +263,7 @@ class ProfileEditPresenter:
         "intensity": "GPU Intensity",
         "compute_variant": "GPU Compute Variant",
         "cpu_instruction": "CPU Instruction Set",
+        "cpu_instruction_intent": "CPU Instruction Intent",
         "memory_instruction": "Memory Instruction Set",
     }
 
@@ -280,6 +283,7 @@ class ProfileEditPresenter:
         options = {
             "gpu_target": list(self.profile_editor.GPU_TARGET_OPTIONS),
             "cpu_instruction": list(self.profile_editor.CPU_INSTRUCTION_OPTIONS),
+            "cpu_instruction_intent": list(self.profile_editor.CPU_INSTRUCTION_INTENT_OPTIONS),
             "memory_instruction": list(self.profile_editor.MEMORY_INSTRUCTION_OPTIONS),
             "gpu_backend": self.profile_editor.gpu_backend_options(),
             "vram_backend": list(self.profile_editor.VRAM_BACKEND_OPTIONS),
@@ -324,6 +328,10 @@ class ProfileEditPresenter:
             if not stage.modules.cpu.enabled:
                 raise ValueError("Selected stage does not have a CPU workload.")
             current = stage.modules.cpu.instruction_set
+        elif normalized == "cpu_instruction_intent":
+            if not stage.modules.cpu.enabled:
+                raise ValueError("Selected stage does not have a CPU workload.")
+            current = stage.modules.cpu.instruction_intent
         elif normalized == "memory_instruction":
             if not stage.modules.memory.enabled:
                 raise ValueError("Selected stage does not have a memory workload.")

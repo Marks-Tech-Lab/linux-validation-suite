@@ -73,7 +73,7 @@ class RunSetupPromptMixin:
         minutes = float(self._pending_heatsoak_minutes or 0.0)
         if minutes <= 0:
             return "Disabled"
-        return f"{minutes:g} min Power Test (3D Auto + AVX, all CPUs/GPUs)"
+        return f"{minutes:g} min Power Test (Power Auto CPU + 3D Auto, all CPUs/GPUs)"
 
     def _enter_heatsoak_minutes(self, current: float = 0.0) -> float:
         raw = self._input(f"Heatsoak duration minutes [0 disables, current {float(current or 0.0):g}]: ").strip()

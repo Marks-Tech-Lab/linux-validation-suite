@@ -98,11 +98,13 @@ def build_compatibility_metadata_block(
             {
                 "Segment": window.display_name,
                 "Backend": window.cpu_backend or "",
+                "InstructionIntent": window.cpu_instruction_intent or "",
                 "Requested": window.cpu_mode_requested or "",
                 "Resolved": window.cpu_mode_resolved or "",
                 "KernelFlavor": window.cpu_kernel_flavor or "",
                 "TuningPolicy": window.cpu_tuning_policy or "",
                 "TunedAvgPowerW": window.cpu_tuned_avg_power_w,
+                "SelectionEvidence": window.cpu_selection_evidence,
             }
             for window in window_list
             if window.cpu_backend

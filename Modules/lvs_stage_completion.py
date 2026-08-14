@@ -98,6 +98,7 @@ def complete_stage_record(
     serialize_gpu_worker: Callable[[Any], Dict[str, Any]],
     stage_plan: Dict[str, Any],
     cpu_backend: str,
+    cpu_instruction_intent: str = "",
     cpu_mode_requested: str,
     cpu_mode_resolved: str,
     cpu_kernel_flavor: str,
@@ -162,11 +163,13 @@ def complete_stage_record(
         worker_results=stage_worker_results,
     )
     stage_window.cpu_backend = cpu_backend
+    stage_window.cpu_instruction_intent = cpu_instruction_intent
     stage_window.cpu_mode_requested = cpu_mode_requested
     stage_window.cpu_mode_resolved = cpu_mode_resolved
     stage_window.cpu_kernel_flavor = cpu_kernel_flavor
     stage_window.cpu_tuning_policy = cpu_tuning_policy
     stage_window.cpu_tuned_avg_power_w = cpu_tuned_avg_power_w
+    stage_window.cpu_selection_evidence = dict(stage_plan.get("cpu_selection_evidence") or {})
     stage_window.gpu_retune_events = gpu_retune_events
     stage_window.verdict = stage_verdict
     stage_window.failure_reasons = stage_failure_reasons

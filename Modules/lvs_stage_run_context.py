@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 @dataclass(frozen=True)
 class StageRunContext:
     cpu_backend: str = ""
+    cpu_instruction_intent: str = ""
     gpu_3d_backend_resolved: str = ""
     vram_backend_resolved: str = ""
     cpu_mode_requested: str = ""
@@ -37,6 +38,7 @@ class CpuTuningContext:
     cpu_tuning_policy: str
     cpu_tuned_avg_power_w: Any
     cpu_tune_results: List[Dict[str, Any]]
+    cpu_selection_evidence: Dict[str, Any]
 
 
 def stage_run_context_from_plan(stage_plan: Dict[str, Any]) -> StageRunContext:
@@ -50,6 +52,7 @@ def stage_run_context_from_plan(stage_plan: Dict[str, Any]) -> StageRunContext:
     }
     return StageRunContext(
         cpu_backend=str(backend_usage.get("cpu", "") or ""),
+        cpu_instruction_intent=str(stage_plan.get("cpu_instruction_intent", "") or ""),
         gpu_3d_backend_resolved=str(backend_usage.get("gpu_3d", "") or ""),
         vram_backend_resolved=str(backend_usage.get("vram", "") or ""),
         cpu_mode_requested=str(stage_plan.get("cpu_mode_requested", "") or ""),
@@ -78,6 +81,7 @@ def apply_cpu_tuning_execution(stage_plan: Dict[str, Any], cpu_execution: Dict[s
         cpu_tuning_policy=cpu_execution["tuning_policy"],
         cpu_tuned_avg_power_w=cpu_execution["tuned_avg_power_w"],
         cpu_tune_results=cpu_execution["candidate_results"],
+        cpu_selection_evidence=dict(cpu_execution.get("selection_evidence") or {}),
     )
     stage_plan["cpu_mode_requested"] = context.cpu_mode_requested
     stage_plan["cpu_mode_resolved"] = context.cpu_mode_resolved
@@ -85,6 +89,7 @@ def apply_cpu_tuning_execution(stage_plan: Dict[str, Any], cpu_execution: Dict[s
     stage_plan["cpu_tuning_policy"] = context.cpu_tuning_policy
     stage_plan["cpu_tune_results"] = context.cpu_tune_results
     stage_plan["cpu_tuned_avg_power_w"] = context.cpu_tuned_avg_power_w
+    stage_plan["cpu_selection_evidence"] = context.cpu_selection_evidence
     return context
 
 
@@ -92,9 +97,9 @@ def cpu_tune_summary_suffix(cpu_tune_results: List[Dict[str, Any]]) -> str:
     if not cpu_tune_results:
         return ""
     return " | " + ", ".join(
-        f"{result['kernel_flavor']}={result['avg_cpu_power_w']}W"
+        f"{result.get('kernel_flavor') or result.get('candidate_id') or result.get('backend') or 'candidate'}={result['avg_cpu_power_w']}W"
         if result.get("avg_cpu_power_w") is not None
-        else f"{result['kernel_flavor']}=n/a"
+        else f"{result.get('kernel_flavor') or result.get('candidate_id') or result.get('backend') or 'candidate'}=n/a"
         for result in cpu_tune_results
     )
 
@@ -102,6 +107,7 @@ def cpu_tune_summary_suffix(cpu_tune_results: List[Dict[str, Any]]) -> str:
 def cpu_stage_start_suffix(
     *,
     cpu_backend: str,
+    cpu_instruction_intent: str = "",
     cpu_mode_requested: str,
     cpu_mode_resolved: str,
     cpu_kernel_flavor: str,
@@ -110,6 +116,8 @@ def cpu_stage_start_suffix(
     if not cpu_backend:
         return ""
     suffix = f" | cpu={cpu_backend}"
+    if cpu_instruction_intent:
+        suffix += f" | intent={cpu_instruction_intent}"
     if cpu_mode_requested:
         suffix += f" ({cpu_mode_requested}"
         if cpu_mode_resolved:

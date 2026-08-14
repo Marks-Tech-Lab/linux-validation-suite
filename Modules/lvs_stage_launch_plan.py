@@ -22,6 +22,7 @@ def build_stage_launch_commands(
     stage: Any,
     cpu_kernel_flavor: str = "",
     worker_results_dir: Optional[Path] = None,
+    cpu_backend_override: str = "",
     stage_memory_plan: Optional[Dict[str, Any]] = None,
     resolved_gpu_workers: Optional[List[GpuWorkerSpec]] = None,
 ) -> List[StageLaunchCommand]:
@@ -49,7 +50,15 @@ def build_stage_launch_commands(
         return commands
     if stage.modules.cpu.enabled:
         cpu_result_path = str(worker_results_dir / f"{stage.id}_cpu.json") if worker_results_dir else ""
-        cpu_cmd = runner._cpu_command(stage.modules.cpu, cpu_kernel_flavor, cpu_result_path)
+        if cpu_backend_override:
+            cpu_cmd = runner._cpu_command(
+                stage.modules.cpu,
+                cpu_kernel_flavor,
+                cpu_result_path,
+                backend_override=cpu_backend_override,
+            )
+        else:
+            cpu_cmd = runner._cpu_command(stage.modules.cpu, cpu_kernel_flavor, cpu_result_path)
         if cpu_cmd:
             commands.append(StageLaunchCommand("cpu", cpu_cmd, None, cpu_result_path or None, stage_memory_plan))
     if stage.modules.memory.enabled:

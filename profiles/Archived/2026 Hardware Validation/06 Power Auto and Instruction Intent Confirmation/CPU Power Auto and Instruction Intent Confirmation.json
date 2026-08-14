@@ -1,0 +1,112 @@
+{
+  "profile_name": "CPU Power Auto and Instruction Intent Confirmation",
+  "profile_type": "validation_schedule",
+  "segment_label_source": "CPU Power Auto and Instruction Intent Confirmation_info.txt",
+  "menu_description": "Temporary generic CPU-only confirmation for Power Auto and architecture-aware instruction intents.",
+  "menu_group": "diagnostic",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 15,
+    "trim_end_seconds": 15,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "power_auto",
+      "name": "CPU",
+      "duration_seconds": 600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "power_auto": true,
+          "instruction_set": "auto",
+          "instruction_intent": "",
+          "mode": "extreme",
+          "load": "steady",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 15,
+        "trim_end_seconds": 15
+      }
+    },
+    {
+      "id": "baseline_vector",
+      "name": "CPU",
+      "duration_seconds": 180,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "power_auto": false,
+          "instruction_set": "auto",
+          "instruction_intent": "baseline_vector",
+          "mode": "normal",
+          "load": "steady",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 15,
+        "trim_end_seconds": 15
+      }
+    },
+    {
+      "id": "high_throughput_vector",
+      "name": "CPU",
+      "duration_seconds": 180,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "power_auto": false,
+          "instruction_set": "auto",
+          "instruction_intent": "high_throughput_vector",
+          "mode": "normal",
+          "load": "steady",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 15,
+        "trim_end_seconds": 15
+      }
+    },
+    {
+      "id": "highest_verified_vector",
+      "name": "CPU",
+      "duration_seconds": 180,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "power_auto": false,
+          "instruction_set": "auto",
+          "instruction_intent": "highest_verified_vector",
+          "mode": "extreme",
+          "load": "steady",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 15,
+        "trim_end_seconds": 15
+      }
+    }
+  ]
+}

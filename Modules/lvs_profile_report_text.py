@@ -20,11 +20,17 @@ def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], me
         workloads = []
         if stage.modules.cpu.enabled:
             cpu = stage.modules.cpu
-            workloads.append(
-                f"CPU/{cpu.backend_preference}/{cpu.instruction_set}/{cpu.threads}"
-                if cpu.backend_preference != "auto"
-                else f"CPU/{cpu.instruction_set}/{cpu.threads}"
+            instruction_text = (
+                f"intent:{cpu.instruction_intent}"
+                if str(getattr(cpu, "instruction_intent", "") or "")
+                else cpu.instruction_set
             )
+            cpu_text = (
+                f"CPU/{cpu.backend_preference}/{instruction_text}/{cpu.threads}"
+                if cpu.backend_preference != "auto"
+                else f"CPU/{instruction_text}/{cpu.threads}"
+            )
+            workloads.append(cpu_text + ("/PowerAuto" if cpu.power_auto else ""))
         if stage.modules.memory.enabled:
             memory = stage.modules.memory
             workloads.append(
@@ -120,9 +126,11 @@ def profile_execution_cpu_line(stage: Dict[str, Any]) -> str:
     cpu_resolved = stage.get("cpu_mode_resolved") or "-"
     cpu_kernel = stage.get("cpu_kernel_flavor") or "-"
     cpu_preference = stage.get("cpu_backend_preference") or "auto"
+    cpu_intent = stage.get("cpu_instruction_intent") or ""
+    intent_text = f", intent={cpu_intent}" if cpu_intent else ""
     if cpu_preference == "auto":
-        return f"  cpu: backend={cpu_backend}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
-    return f"  cpu: requested_backend={cpu_preference}, backend={cpu_backend}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
+        return f"  cpu: backend={cpu_backend}{intent_text}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
+    return f"  cpu: requested_backend={cpu_preference}, backend={cpu_backend}{intent_text}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
 
 
 def profile_execution_memory_line(stage: Dict[str, Any]) -> str:

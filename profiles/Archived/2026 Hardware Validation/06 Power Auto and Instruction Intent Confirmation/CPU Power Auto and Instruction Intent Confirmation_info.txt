@@ -1,0 +1,4 @@
+Power Auto CPU — measured probe or truthful architecture fallback
+Architecture Baseline SIMD — native common-target vector resolution
+High-Throughput SIMD — native common-target vector resolution
+Highest Verified SIMD — highest native vector common to all targets

@@ -20,6 +20,7 @@
           "enabled": true,
           "mode": "extreme",
           "load": "steady",
+          "power_auto": true,
           "instruction_set": "auto",
           "threads": "all",
           "priority": "high",
@@ -66,7 +67,8 @@
           "enabled": true,
           "mode": "normal",
           "load": "steady",
-          "instruction_set": "sse",
+          "instruction_set": "auto",
+          "instruction_intent": "baseline_vector",
           "threads": "all",
           "priority": "normal",
           "dataset": "large"
@@ -74,7 +76,7 @@
         "memory": {
           "enabled": true,
           "allocation_percent": 90,
-          "instruction_set": "sse",
+          "instruction_set": "auto",
           "priority": "normal",
           "threads": "all"
         },
@@ -112,7 +114,8 @@
           "enabled": true,
           "mode": "normal",
           "load": "steady",
-          "instruction_set": "avx2",
+          "instruction_set": "auto",
+          "instruction_intent": "high_throughput_vector",
           "threads": "all",
           "priority": "high",
           "dataset": "large"
@@ -120,7 +123,7 @@
         "memory": {
           "enabled": true,
           "allocation_percent": 90,
-          "instruction_set": "avx2",
+          "instruction_set": "auto",
           "priority": "normal",
           "threads": "all"
         },
@@ -204,6 +207,7 @@
           "enabled": true,
           "mode": "extreme",
           "load": "steady",
+          "power_auto": true,
           "instruction_set": "auto",
           "threads": "all",
           "priority": "high",
@@ -250,7 +254,8 @@
           "enabled": true,
           "mode": "normal",
           "load": "steady",
-          "instruction_set": "sse",
+          "instruction_set": "auto",
+          "instruction_intent": "baseline_vector",
           "threads": "all",
           "priority": "normal",
           "dataset": "large"
@@ -258,7 +263,7 @@
         "memory": {
           "enabled": true,
           "allocation_percent": 90,
-          "instruction_set": "sse",
+          "instruction_set": "auto",
           "priority": "normal",
           "threads": "all"
         },
@@ -296,7 +301,8 @@
           "enabled": true,
           "mode": "normal",
           "load": "steady",
-          "instruction_set": "avx2",
+          "instruction_set": "auto",
+          "instruction_intent": "high_throughput_vector",
           "threads": "all",
           "priority": "high",
           "dataset": "large"
@@ -304,7 +310,7 @@
         "memory": {
           "enabled": true,
           "allocation_percent": 90,
-          "instruction_set": "avx2",
+          "instruction_set": "auto",
           "priority": "normal",
           "threads": "all"
         },

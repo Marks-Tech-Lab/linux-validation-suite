@@ -69,6 +69,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
         self._vulkan_native_backend_cache: Optional[Dict[str, Any]] = None
         self._cpu_tuning_cache: Dict[Any, Dict[str, Any]] = {}
         self._cpu_power_tuning_available_cache: Optional[bool] = None
+        self._cpu_power_capability_cache: Optional[Dict[str, Any]] = None
         self._gpu_capability_cache: Dict[str, Dict[str, Any]] = {}
         self._gpu_backend_target_support_cache: Dict[tuple[str, str, str], Dict[str, Any]] = {}
         self._pci_device_names: Optional[Dict[str, Dict[str, str]]] = None
@@ -179,6 +180,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
         stage: StageConfig,
         cpu_kernel_flavor: str = "",
         result_dir: Optional[Path] = None,
+        cpu_backend_override: str = "",
     ) -> List[StageProcess]:
         if not stage.enabled:
             return []
@@ -205,6 +207,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
             stage,
             cpu_kernel_flavor,
             worker_results_dir,
+            cpu_backend_override=cpu_backend_override,
             stage_memory_plan=stage_memory_plan,
             resolved_gpu_workers=resolved_workers,
         )
@@ -259,6 +262,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
         self,
         stage: StageConfig,
         cpu_kernel_flavor: str = "",
+        cpu_backend_override: str = "",
         stage_memory_plan: Optional[Dict[str, Any]] = None,
         resolved_gpu_workers: Optional[List[Any]] = None,
     ) -> List[List[str]]:
@@ -268,6 +272,7 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
                 self,
                 stage,
                 cpu_kernel_flavor,
+                cpu_backend_override=cpu_backend_override,
                 stage_memory_plan=stage_memory_plan,
                 resolved_gpu_workers=resolved_gpu_workers,
             )

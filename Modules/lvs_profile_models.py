@@ -23,6 +23,8 @@ class StageNormalization:
 class ModuleCpu:
     enabled: bool = False
     backend_preference: str = "auto"
+    power_auto: bool = False
+    instruction_intent: str = ""
     mode: str = "normal"
     load: str = "steady"
     instruction_set: str = "auto"

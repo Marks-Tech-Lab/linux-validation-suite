@@ -206,8 +206,12 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         # Test/integration adapters predating the unified planner may expose the
         # legacy callable shape; production WorkloadRunner accepts the plan.
         cmds = runner._build_commands(stage)
-    missing_tools = runner._missing_tools(cmds)
     cpu_mode_requested = runner._cpu_helper_mode(stage.modules.cpu) if stage.modules.cpu.enabled else ""
+    cpu_instruction_intent = (
+        str(getattr(stage.modules.cpu, "instruction_intent", "") or "").strip().lower()
+        if stage.modules.cpu.enabled
+        else ""
+    )
     cpu_preference_resolver = getattr(runner, "_cpu_backend_preference", None)
     cpu_backend_preference = (
         cpu_preference_resolver(stage.modules.cpu)
@@ -219,14 +223,33 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     cpu_tuning_policy = ""
     cpu_kernel_candidates: List[str] = []
     cpu_preview: Dict[str, Any] = {}
-    if stage.modules.cpu.enabled and backend_usage["cpu"] != "none" and (
-        backend_usage["cpu"] == "cpu_native_helper" or cpu_backend_preference != "auto"
+    cpu_power_auto = bool(getattr(stage.modules.cpu, "power_auto", False)) if stage.modules.cpu.enabled else False
+    if stage.modules.cpu.enabled and (
+        cpu_power_auto
+        or cpu_instruction_intent
+        or (
+            backend_usage["cpu"] != "none"
+            and (backend_usage["cpu"] == "cpu_native_helper" or cpu_backend_preference != "auto")
+        )
     ):
         cpu_preview = runner.resolve_cpu_execution(stage.modules.cpu, tune_max_power=False)
         cpu_mode_resolved = cpu_preview["resolved_mode"]
         cpu_kernel_flavor = cpu_preview["kernel_flavor"]
         cpu_tuning_policy = cpu_preview["tuning_policy"]
         cpu_kernel_candidates = cpu_preview["candidate_kernel_flavors"]
+        if cpu_power_auto:
+            backend_usage["cpu"] = str(cpu_preview.get("backend") or "none")
+            try:
+                cmds = runner._build_commands(
+                    stage,
+                    cpu_kernel_flavor=cpu_kernel_flavor,
+                    cpu_backend_override=backend_usage["cpu"],
+                    stage_memory_plan=stage_memory_plan,
+                    resolved_gpu_workers=gpu_workers,
+                )
+            except TypeError:
+                cmds = runner._build_commands(stage)
+    missing_tools = runner._missing_tools(cmds)
 
     if stage.enabled and not workloads:
         issues.append("enabled stage has no enabled workloads")
@@ -341,6 +364,21 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         issues.append("enabled workloads produced no runnable commands")
     if missing_tools:
         issues.append(f"missing tools: {', '.join(missing_tools)}")
+    if cpu_tuning_policy == "power_auto":
+        warnings.append(
+            "Power Auto will compare viable CPU backends using trustworthy CPU/package power telemetry; "
+            "when unavailable it will use the documented architecture-specific validated fallback"
+        )
+    if cpu_instruction_intent:
+        intent_evidence = dict(cpu_preview.get("instruction_intent_evidence") or cpu_preview.get("selection_evidence") or {})
+        if intent_evidence.get("tier_collapse"):
+            warnings.append(str(intent_evidence.get("tier_collapse_reason") or "CPU instruction intent tiers collapse on this architecture"))
+        if intent_evidence.get("resolved_kernel_flavor"):
+            warnings.append(
+                "CPU instruction intent resolved through the complete target-set capability intersection: "
+                f"{cpu_instruction_intent} -> {intent_evidence.get('resolved_isa')} "
+                f"({intent_evidence.get('resolved_kernel_flavor')})"
+            )
     if stage.modules.cpu.enabled and backend_usage["cpu"] == "cpu_native_helper":
         warnings.append(
             f"CPU stage is using the native helper backend ({cpu_mode_requested}, kernel {cpu_kernel_flavor or 'unknown'})"
@@ -676,11 +714,13 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         "system_memory_plan": stage_memory_plan,
         "backend_usage": backend_usage,
         "cpu_backend_preference": cpu_backend_preference,
+        "cpu_instruction_intent": cpu_instruction_intent,
         "cpu_mode_requested": cpu_mode_requested,
         "cpu_mode_resolved": cpu_mode_resolved,
         "cpu_kernel_flavor": cpu_kernel_flavor,
         "cpu_tuning_policy": cpu_tuning_policy,
         "cpu_kernel_candidates": cpu_kernel_candidates,
+        "cpu_selection_evidence": dict(cpu_preview.get("selection_evidence") or {}),
         "cpu_targeting": {
             key: cpu_preview.get(key)
             for key in (
@@ -695,6 +735,8 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
                 "per_cpu_capabilities",
                 "capability_probe_failures",
                 "capability_intersection_reason",
+                "instruction_intent",
+                "instruction_intent_evidence",
             )
             if key in cpu_preview
         },

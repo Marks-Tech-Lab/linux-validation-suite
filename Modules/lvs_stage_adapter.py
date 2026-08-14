@@ -83,6 +83,7 @@ def run_stage_adapter(
 ) -> StageAdapterResult:
     stage_context = stage_run_context_from_plan(stage_plan)
     cpu_backend = stage_context.cpu_backend
+    cpu_instruction_intent = stage_context.cpu_instruction_intent
     gpu_3d_backend_resolved = stage_context.gpu_3d_backend_resolved
     vram_backend_resolved = stage_context.vram_backend_resolved
     cpu_mode_requested = stage_context.cpu_mode_requested
@@ -126,6 +127,7 @@ def run_stage_adapter(
 
     cpu_suffix = cpu_stage_start_suffix(
         cpu_backend=cpu_backend,
+        cpu_instruction_intent=cpu_instruction_intent,
         cpu_mode_requested=cpu_mode_requested,
         cpu_mode_resolved=cpu_mode_resolved,
         cpu_kernel_flavor=cpu_kernel_flavor,
@@ -146,6 +148,7 @@ def run_stage_adapter(
         stage_name=display_name,
         stage_id=stage.id,
         timestamp_iso=stage_started_iso,
+        cpu_evidence=dict(stage_plan.get("cpu_selection_evidence") or {}),
     )
     stage_execution = execute_stage_runtime(
         profile_name=profile_name,
@@ -157,6 +160,7 @@ def run_stage_adapter(
         stage_started_iso=stage_started_iso,
         stage_start=stage_start,
         cpu_backend=cpu_backend,
+        cpu_instruction_intent=cpu_instruction_intent,
         cpu_mode_requested=cpu_mode_requested,
         cpu_mode_resolved=cpu_mode_resolved,
         cpu_kernel_flavor=cpu_kernel_flavor,

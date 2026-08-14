@@ -32,6 +32,7 @@ class ProfileEditController:
         ProfileStageAction("duration", "Edit duration"),
         ProfileStageAction("toggle", "Toggle enabled"),
         ProfileStageAction("cpu_instruction", "Edit CPU instruction set"),
+        ProfileStageAction("cpu_instruction_intent", "Edit CPU instruction intent"),
         ProfileStageAction("cpu_threads", "Edit CPU threads"),
         ProfileStageAction("memory_allocation", "Edit memory allocation percent"),
         ProfileStageAction("gpu_target", "Edit GPU target mode"),
@@ -124,7 +125,7 @@ class ProfileEditController:
     def stage_action_error(stage: Any, action: str) -> str:
         if action == "duration" and stage.modules.storage_benchmark.enabled:
             return "Storage Benchmark is completion-based and has no stage duration."
-        if action in {"cpu_instruction", "cpu_threads"} and not stage.modules.cpu.enabled:
+        if action in {"cpu_instruction", "cpu_instruction_intent", "cpu_threads"} and not stage.modules.cpu.enabled:
             return "CPU module is not enabled on this stage."
         if action == "memory_allocation" and not stage.modules.memory.enabled:
             return "Memory module is not enabled on this stage."
@@ -175,6 +176,8 @@ class ProfileEditController:
             changed = self.profile_editor.toggle_stage_enabled(profile, index)
         elif action == "cpu_instruction":
             changed = self.profile_editor.set_cpu_instruction_set(stage, str(value))
+        elif action == "cpu_instruction_intent":
+            changed = self.profile_editor.set_cpu_instruction_intent(stage, str(value))
         elif action == "cpu_threads":
             changed = self.profile_editor.set_cpu_threads(stage, str(value))
         elif action == "memory_instruction":
@@ -249,6 +252,7 @@ class ProfileEditController:
             "intensity": "gpu_intensity",
             "compute_variant": "gpu_compute_variant",
             "cpu_instruction": "cpu_instruction",
+            "cpu_instruction_intent": "cpu_instruction_intent",
             "memory_instruction": "memory_instruction",
         }
         action = action_map.get(action, action)

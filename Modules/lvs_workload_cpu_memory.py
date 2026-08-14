@@ -3,19 +3,26 @@
 
 from __future__ import annotations
 
+import copy
+import json
+import math
 import os
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from Modules.lvs_cpu_architecture import (
-    cpu_max_power_kernel_order,
+    cpu_native_power_probe_kernel_order,
     cpu_instruction_set_policy,
     current_cpu_architecture,
     native_cpu_helper_binary_name,
+    normalize_cpu_instruction_intent,
     python_cpu_fallback_policy,
+    resolve_cpu_instruction_intent,
 )
 from Modules.lvs_cpu_backend_policy import (
     CPU_BACKEND_IDENTITIES,
@@ -34,6 +41,10 @@ from Modules.lvs_cpu_execution import (
     normalize_cpu_helper_mode,
     resolve_cpu_execution_policy,
 )
+from Modules.lvs_cpu_power_selection import (
+    power_cpu_candidate_inventory,
+    select_power_cpu_candidate,
+)
 from Modules.lvs_cpu_targeting import (
     common_kernel_capabilities,
     discover_linux_cpu_sets,
@@ -50,6 +61,7 @@ from Modules.lvs_memory_execution import (
     select_memory_backend,
 )
 from Modules.lvs_memory_architecture import native_memory_helper_binary_name
+from Modules.lvs_external_process_evidence import build_stress_ng_cpu_evidence
 from Modules.lvs_linux_memory import read_linux_memory_snapshot
 from Modules.lvs_native_helpers import find_c_compiler
 from Modules.lvs_telemetry_collector import TelemetryCollector
@@ -143,6 +155,13 @@ class WorkloadCpuMemoryMixin:
         helper_available = bool(self._cpu_helper_status().get("available"))
         capability = self._cpu_capability_plan(cpu) if helper_available else {}
         helper_available = helper_available and bool(capability.get("selected_kernel_flavor"))
+        instruction_intent = self._cpu_instruction_intent(cpu)
+        if instruction_intent:
+            return {
+                "cpu_native_helper": helper_available,
+                "stress_ng": False,
+                "python_fallback": False,
+            }
         generic_backend_request = requested_mode == "auto"
         return {
             "cpu_native_helper": helper_available,
@@ -160,6 +179,18 @@ class WorkloadCpuMemoryMixin:
         instruction_policy = self._cpu_instruction_set_policy(cpu)
         if not instruction_policy.get("allowed"):
             return str(instruction_policy.get("reason") or "")
+        instruction_intent = self._cpu_instruction_intent(cpu)
+        if instruction_intent:
+            helper = self._cpu_helper_status()
+            if not helper.get("available"):
+                helper_reason = str(helper.get("reason") or "native CPU helper is unavailable")
+                return f"CPU instruction intent '{instruction_intent}' requires the native CPU helper: {helper_reason}"
+            capability = self._cpu_capability_plan(cpu)
+            evidence = dict(capability.get("instruction_intent_evidence") or {})
+            return str(
+                evidence.get("fail_closed_reason")
+                or f"CPU instruction intent '{instruction_intent}' requires a common native vector implementation"
+            )
         policy = self._cpu_python_fallback_policy(cpu)
         preference = self._cpu_backend_preference(cpu)
         requested_mode = str(instruction_policy.get("requested_mode") or "auto")
@@ -201,11 +232,12 @@ class WorkloadCpuMemoryMixin:
         cpu: Any,
         cpu_kernel_flavor: str = "",
         result_file: str = "",
+        backend_override: str = "",
     ) -> Optional[List[str]]:
         target_plan = self._cpu_target_plan(cpu)
         target_cpu_ids = list(target_plan.get("target_cpu_ids") or [])
         worker_count = len(target_cpu_ids)
-        backend = self._cpu_backend_name(cpu)
+        backend = str(backend_override or self._cpu_backend_name(cpu))
         if backend == "none":
             return None
         helper = self._cpu_helper_status()
@@ -241,6 +273,9 @@ class WorkloadCpuMemoryMixin:
 
     def _cpu_helper_mode(self, cpu: Any) -> str:
         return normalize_cpu_helper_mode(cpu.instruction_set)
+
+    def _cpu_instruction_intent(self, cpu: Any) -> str:
+        return normalize_cpu_instruction_intent(getattr(cpu, "instruction_intent", ""))
 
     def _cpu_helper_resolved_mode(self, requested_mode: str) -> str:
         return self._native_helper_runtime.cpu_resolved_mode(
@@ -279,7 +314,7 @@ class WorkloadCpuMemoryMixin:
         target = dict(target_plan or self._cpu_target_plan(cpu))
         target_ids = list(target.get("target_cpu_ids") or [])
         architecture = self._cpu_machine()
-        flavors = list(cpu_max_power_kernel_order(architecture))
+        flavors = list(cpu_native_power_probe_kernel_order(architecture))
         per_cpu: Dict[int, List[str]] = {}
         if architecture == "arm64":
             # Linux AArch64 HWCAP is the process-safe common capability set;
@@ -297,14 +332,36 @@ class WorkloadCpuMemoryMixin:
             capability_scope = "per_cpu_affinity_pinned_cpuid"
         intersection = common_kernel_capabilities(target_ids, per_cpu)
         requested = self._cpu_helper_mode(cpu)
-        selected = select_common_kernel(
-            architecture=architecture,
-            requested_mode=requested,
-            common_flavors=intersection["common_kernel_flavors"],
-        )
+        instruction_intent = self._cpu_instruction_intent(cpu)
+        intent_evidence: Dict[str, Any] = {}
+        if instruction_intent:
+            intent_evidence = resolve_cpu_instruction_intent(
+                architecture,
+                instruction_intent,
+                intersection["common_kernel_flavors"],
+            )
+            selected = str(intent_evidence.get("resolved_kernel_flavor") or "")
+            helper = self._cpu_helper_status()
+            if not helper.get("available"):
+                selected = ""
+                intent_evidence["resolved_backend"] = "none"
+                intent_evidence["resolved_isa"] = ""
+                intent_evidence["resolved_kernel_flavor"] = ""
+                intent_evidence["fail_closed_reason"] = (
+                    f"CPU instruction intent '{instruction_intent}' requires the native CPU helper: "
+                    + str(helper.get("reason") or "native CPU helper is unavailable")
+                )
+        else:
+            selected = select_common_kernel(
+                architecture=architecture,
+                requested_mode=requested,
+                common_flavors=intersection["common_kernel_flavors"],
+            )
         reason = ""
         if not target_ids:
             reason = "no online CPUs are available within the process affinity/cpuset"
+        elif not selected and instruction_intent:
+            reason = str(intent_evidence.get("fail_closed_reason") or "")
         elif not selected:
             reason = (
                 f"CPU instruction set '{requested}' is not supported across the complete target CPU set "
@@ -316,6 +373,17 @@ class WorkloadCpuMemoryMixin:
             "capability_scope": capability_scope,
             "common_safe_instruction_set": mode_for_common_kernel(selected),
             "selected_kernel_flavor": selected,
+            "instruction_intent": instruction_intent,
+            "instruction_intent_evidence": {
+                **intent_evidence,
+                "target_cpu_ids": target_ids,
+                "actual_worker_count": len(target_ids),
+                "capability_scope": capability_scope,
+                "capability_intersection_complete": bool(intersection["capability_intersection_complete"]),
+                "per_cpu_capabilities": dict(intersection["per_cpu_capabilities"]),
+            }
+            if instruction_intent
+            else {},
             "capability_intersection_reason": (
                 "intersection_of_all_target_cpu_capabilities"
                 if intersection["capability_intersection_complete"]
@@ -360,7 +428,24 @@ class WorkloadCpuMemoryMixin:
         )
         return self._cpu_power_tuning_available_cache
 
+    def _cpu_power_capability(self) -> Dict[str, Any]:
+        if self._cpu_power_capability_cache is not None:
+            return dict(self._cpu_power_capability_cache)
+        capabilities = self._telemetry_collector_factory()(
+            interval_seconds=DEFAULT_CPU_TUNER_SAMPLE_INTERVAL_SECONDS,
+            runtime_environment=self._env_overrides,
+            privileged_helper_enabled=bool(self._settings and self._settings.privileged_helper_enabled),
+        ).detect_capabilities()
+        capability = dict(capabilities.get("cpu_power_w", {}) or {})
+        self._cpu_power_capability_cache = capability
+        self._cpu_power_tuning_available_cache = bool(capability.get("available"))
+        return dict(capability)
+
     def _cpu_tuning_policy(self, cpu: Any) -> str:
+        if bool(getattr(cpu, "power_auto", False)):
+            return "power_auto"
+        if self._cpu_instruction_intent(cpu):
+            return "instruction_intent"
         return cpu_tuning_policy(
             requested_mode=self._cpu_helper_mode(cpu),
             cpu_power_available=self._cpu_power_tuning_available(),
@@ -368,6 +453,9 @@ class WorkloadCpuMemoryMixin:
 
     def _cpu_candidate_kernel_flavors(self, cpu: Any) -> List[str]:
         capability = self._cpu_capability_plan(cpu)
+        if self._cpu_instruction_intent(cpu):
+            selected = str(capability.get("selected_kernel_flavor") or "")
+            return [selected] if selected else []
         common = set(capability.get("common_kernel_flavors") or [])
         return cpu_candidate_kernel_flavors(
             helper_available=bool(self._cpu_helper_status()["available"]),
@@ -378,16 +466,22 @@ class WorkloadCpuMemoryMixin:
         )
 
     def resolve_cpu_execution(self, cpu: Any, tune_max_power: bool = False) -> Dict[str, Any]:
+        if bool(getattr(cpu, "power_auto", False)) and self._cpu_helper_mode(cpu) == "auto":
+            return self._resolve_power_cpu_execution(cpu, probe_candidates=tune_max_power)
         backend = self._cpu_backend_name(cpu)
         requested_mode = self._cpu_helper_mode(cpu)
         resolved_mode = self._cpu_resolved_mode(cpu)
         tuning_policy = self._cpu_tuning_policy(cpu)
         kernel_flavor = self._cpu_helper_default_kernel_flavor(requested_mode) if backend == "cpu_native_helper" else ""
-        capability = self._cpu_capability_plan(cpu) if backend == "cpu_native_helper" else self._cpu_target_plan(cpu)
+        capability = (
+            self._cpu_capability_plan(cpu)
+            if backend == "cpu_native_helper" or self._cpu_instruction_intent(cpu)
+            else self._cpu_target_plan(cpu)
+        )
         if backend == "cpu_native_helper":
             kernel_flavor = str(capability.get("selected_kernel_flavor") or "")
         candidates = self._cpu_candidate_kernel_flavors(cpu) if backend == "cpu_native_helper" else []
-        return resolve_cpu_execution_policy(
+        execution = resolve_cpu_execution_policy(
             backend=backend,
             requested_mode=requested_mode,
             resolved_mode=resolved_mode,
@@ -413,7 +507,239 @@ class WorkloadCpuMemoryMixin:
                 "per_cpu_capabilities",
                 "capability_probe_failures",
                 "capability_intersection_reason",
+                "instruction_intent",
+                "instruction_intent_evidence",
             )
+        }
+        if self._cpu_instruction_intent(cpu):
+            execution["selection_evidence"] = dict(capability.get("instruction_intent_evidence") or {})
+        return execution
+
+    def _resolve_power_cpu_execution(self, cpu: Any, *, probe_candidates: bool) -> Dict[str, Any]:
+        architecture = self._cpu_machine()
+        target_plan = self._cpu_target_plan(cpu)
+        availability = self._cpu_backend_availability(cpu)
+        capability = self._cpu_capability_plan(cpu) if availability.get("cpu_native_helper") else dict(target_plan)
+        native_flavors = list(capability.get("common_kernel_flavors") or [])
+        selected_native = str(capability.get("selected_kernel_flavor") or "")
+        viable, unavailable = power_cpu_candidate_inventory(
+            architecture=architecture,
+            availability=availability,
+            native_kernel_flavors=native_flavors,
+            selected_native_kernel=selected_native,
+        )
+        telemetry = self._cpu_power_capability()
+        telemetry_evidence = {
+            "available": bool(telemetry.get("available")),
+            "source": str(telemetry.get("source") or telemetry.get("details") or ""),
+            "permission_issue": bool(telemetry.get("permission_issue")),
+        }
+        cache_key = (
+            "power_auto",
+            architecture,
+            tuple(target_plan.get("target_cpu_ids") or []),
+            tuple(item.get("candidate_id") for item in viable),
+            bool(telemetry_evidence["available"]),
+        )
+        cached = self._cpu_tuning_cache.get(cache_key) if probe_candidates else None
+        if cached is not None:
+            return dict(cached)
+        started = time.monotonic()
+        candidate_results = (
+            [self._benchmark_power_cpu_candidate(cpu, candidate) for candidate in viable]
+            if probe_candidates and telemetry_evidence["available"]
+            else []
+        )
+        selection = select_power_cpu_candidate(
+            architecture=architecture,
+            viable_candidates=viable,
+            unavailable_candidates=unavailable,
+            telemetry=telemetry_evidence,
+            candidate_results=candidate_results,
+            probe_duration_seconds=time.monotonic() - started,
+        )
+        selection["target_cpu_ids"] = list(target_plan.get("target_cpu_ids") or [])
+        selection["requested_thread_count"] = target_plan.get("requested_thread_count")
+        selection["actual_worker_count"] = target_plan.get("actual_worker_count")
+        if not probe_candidates and telemetry_evidence["available"]:
+            selection["selection_mechanism"] = "power_probe_pending"
+            selection["fallback_reason"] = ""
+            selection["telemetry"]["trustworthy_usable"] = False
+        selected = dict(selection.get("selected_candidate") or {})
+        backend = str(selected.get("backend") or "none")
+        kernel = str(selected.get("kernel_flavor") or "")
+        resolved_mode = str(selected.get("resolved_mode") or "")
+        if backend == "cpu_native_helper" and not resolved_mode:
+            resolved_mode = self._cpu_mode_for_kernel_flavor(kernel)
+        selection["selected_isa"] = (
+            resolved_mode if backend == "cpu_native_helper" else "not_explicitly_enforced" if selected else ""
+        )
+        selection["selected_resolved_mode"] = resolved_mode
+        execution = {
+            "backend": backend,
+            "requested_mode": "auto",
+            "resolved_mode": resolved_mode,
+            "kernel_flavor": kernel,
+            "tuning_policy": "power_auto",
+            "candidate_kernel_flavors": native_flavors,
+            "tuned": selection.get("selection_mechanism") == "power_probe",
+            "tuned_avg_power_w": next(
+                (
+                    item.get("avg_cpu_power_w")
+                    for item in candidate_results
+                    if item.get("candidate_id") == selected.get("candidate_id")
+                ),
+                None,
+            ),
+            "candidate_results": candidate_results,
+            "selection_evidence": selection,
+        } | {
+            key: capability.get(key)
+            for key in (
+                "available_cpu_ids", "online_cpu_ids", "allowed_cpu_ids", "target_cpu_ids",
+                "requested_thread_count", "actual_worker_count", "capability_scope",
+                "common_safe_instruction_set", "per_cpu_capabilities", "capability_probe_failures",
+                "capability_intersection_reason",
+            )
+        }
+        if probe_candidates:
+            self._cpu_tuning_cache[cache_key] = dict(execution)
+        return execution
+
+    def _benchmark_power_cpu_candidate(self, cpu: Any, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        backend = str(candidate.get("backend") or "")
+        probe_cpu = copy.copy(cpu)
+        probe_cpu.backend_preference = {
+            "cpu_native_helper": "native",
+            "stress_ng": "stress_ng",
+            "python_fallback": "python_fallback",
+        }.get(backend, "auto")
+        result_path = ""
+        stdout_path = ""
+        stderr_path = ""
+        process = None
+        command: List[str] = []
+        samples: List[float] = []
+        started = time.monotonic()
+        result_payload: Dict[str, Any] = {}
+        output = ""
+        try:
+            with tempfile.NamedTemporaryFile(prefix="lvs_power_cpu_", suffix=".json", delete=False) as handle:
+                result_path = handle.name
+            with tempfile.NamedTemporaryFile(prefix="lvs_power_cpu_", suffix=".stdout", delete=False) as handle:
+                stdout_path = handle.name
+            with tempfile.NamedTemporaryFile(prefix="lvs_power_cpu_", suffix=".stderr", delete=False) as handle:
+                stderr_path = handle.name
+            command = self._cpu_command(
+                probe_cpu,
+                str(candidate.get("kernel_flavor") or ""),
+                result_path,
+            )
+            if not command:
+                raise RuntimeError("candidate command could not be materialized")
+            telemetry = self._telemetry_collector_factory()(
+                interval_seconds=DEFAULT_CPU_TUNER_SAMPLE_INTERVAL_SECONDS,
+                runtime_environment=self._env_overrides,
+                privileged_helper_enabled=bool(self._settings and self._settings.privileged_helper_enabled),
+            )
+            with open(stdout_path, "wb") as stdout_handle, open(stderr_path, "wb") as stderr_handle:
+                process = subprocess.Popen(command, stdout=stdout_handle, stderr=stderr_handle, env=self._command_env())
+                warmup_deadline = time.monotonic() + DEFAULT_CPU_TUNER_WARMUP_SECONDS
+                measure_deadline = warmup_deadline + DEFAULT_CPU_TUNER_MEASURE_SECONDS
+                while time.monotonic() < measure_deadline:
+                    if process.poll() is not None:
+                        break
+                    telemetry.collect_once()
+                    value = telemetry.samples[-1].values.get("cpu_power_w") if telemetry.samples else None
+                    if time.monotonic() >= warmup_deadline and isinstance(value, (int, float)):
+                        value = float(value)
+                        if math.isfinite(value) and 0.0 < value <= 1000.0:
+                            samples.append(value)
+                    time.sleep(DEFAULT_CPU_TUNER_SAMPLE_INTERVAL_SECONDS)
+        except Exception as exc:
+            result_payload = {"status": "error", "error_count": 1, "last_error": str(exc)}
+        finally:
+            if process is not None:
+                self.stop_processes([process])
+            try:
+                output = "\n".join(
+                    Path(path).read_text(encoding="utf-8", errors="replace")
+                    for path in (stdout_path, stderr_path)
+                    if path and Path(path).exists()
+                )
+            except Exception:
+                output = ""
+            if backend == "stress_ng" and process is not None:
+                result_payload = build_stress_ng_cpu_evidence(command, output)
+            elif result_path and Path(result_path).exists():
+                try:
+                    loaded = json.loads(Path(result_path).read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        result_payload = loaded
+                except Exception:
+                    pass
+            for path in (result_path, stdout_path, stderr_path):
+                if path:
+                    Path(path).unlink(missing_ok=True)
+        error_count = int(result_payload.get("error_count") or result_payload.get("verification_error_count") or 0)
+        status = str(result_payload.get("status") or "").lower()
+        if backend == "stress_ng":
+            meaningful = sum(
+                float(row.get("bogo_ops") or 0)
+                for row in list(result_payload.get("stressor_metrics") or [])
+            ) > 0
+        elif backend == "python_fallback":
+            meaningful = int(result_payload.get("verification_passes") or 0) > 0 and sum(
+                int(item.get("completed_pbkdf2_iterations") or 0)
+                for item in list(result_payload.get("worker_progress") or [])
+            ) > 0
+        else:
+            meaningful = int(result_payload.get("verify_passes") or 0) > 0
+        target_cpu_ids = list(self._cpu_target_plan(cpu).get("target_cpu_ids") or [])
+        worker_count = int(
+            result_payload.get("actual_worker_count")
+            or result_payload.get("requested_stressor_count")
+            or 0
+        )
+        affinity_failed_count = int(result_payload.get("affinity_failed_count") or 0)
+        worker_topology_valid = bool(target_cpu_ids) and worker_count == len(target_cpu_ids)
+        verification_valid = (
+            bool(result_payload)
+            and status == "ok"
+            and error_count == 0
+            and affinity_failed_count == 0
+            and worker_topology_valid
+        )
+        failure_reason = str(result_payload.get("last_error") or "")
+        if not failure_reason and not worker_topology_valid:
+            failure_reason = (
+                f"probe worker count {worker_count} did not match target CPU count {len(target_cpu_ids)}"
+            )
+        elif not failure_reason and affinity_failed_count:
+            failure_reason = f"{affinity_failed_count} probe worker affinity operation(s) failed"
+        return {
+            **dict(candidate),
+            "command": command,
+            "target_cpu_ids": target_cpu_ids,
+            "avg_cpu_power_w": round(statistics.mean(samples), 2) if samples else None,
+            "max_cpu_power_w": round(max(samples), 2) if samples else None,
+            "power_sample_count": len(samples),
+            "probe_elapsed_seconds": round(time.monotonic() - started, 3),
+            "return_code": process.returncode if process is not None else None,
+            "verification_valid": verification_valid,
+            "meaningful_work": meaningful,
+            "valid": verification_valid and meaningful and bool(samples),
+            "verification_status": status,
+            "verification_error_count": error_count,
+            "verification_passes": int(
+                result_payload.get("verification_passes")
+                or result_payload.get("verify_passes")
+                or result_payload.get("passed_stressor_count")
+                or 0
+            ),
+            "worker_count": worker_count,
+            "affinity_failed_count": affinity_failed_count,
+            "failure_reason": failure_reason,
         }
 
     def _benchmark_cpu_kernel(self, cpu: Any, kernel_flavor: str) -> Dict[str, Any]:

@@ -20,6 +20,7 @@
           "enabled": true,
           "mode": "extreme",
           "load": "steady",
+          "power_auto": true,
           "instruction_set": "auto",
           "threads": "all",
           "priority": "high",
@@ -66,7 +67,8 @@
           "enabled": true,
           "mode": "extreme",
           "load": "steady",
-          "instruction_set": "sse",
+          "instruction_set": "auto",
+          "instruction_intent": "baseline_vector",
           "threads": "all",
           "priority": "high",
           "dataset": "large"
@@ -112,7 +114,8 @@
           "enabled": true,
           "mode": "extreme",
           "load": "steady",
-          "instruction_set": "avx512",
+          "instruction_set": "auto",
+          "instruction_intent": "highest_verified_vector",
           "threads": "all",
           "priority": "high",
           "dataset": "large"

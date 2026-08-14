@@ -18,6 +18,7 @@
       "modules": {
         "cpu": {
           "enabled": true,
+          "power_auto": true,
           "mode": "extreme",
           "load": "steady",
           "instruction_set": "auto",

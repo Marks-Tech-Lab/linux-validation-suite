@@ -34,6 +34,7 @@ class HeatsoakManager:
             modules=StageModules(
                 cpu=ModuleCpu(
                     enabled=True,
+                    power_auto=True,
                     mode="extreme",
                     load="steady",
                     instruction_set=heatsoak_cpu_instruction_set(current_cpu_architecture()),
@@ -92,7 +93,28 @@ class HeatsoakManager:
             + f"{format_duration_hms(duration_seconds)} | Power Test (3D Auto + {stage.modules.cpu.instruction_set.upper()}, all CPUs/GPUs)"
         )
         print("Heatsoak is not written to the result folder or compatibility export.")
-        stage_processes = runner.launch_stage_processes(stage, result_dir=None)
+        cpu_execution = runner.resolve_cpu_execution(stage.modules.cpu, tune_max_power=True)
+        selection_evidence = dict(cpu_execution.get("selection_evidence") or {})
+        selected_backend = str(cpu_execution.get("backend") or "")
+        selected_workload = str(selection_evidence.get("selected_workload") or "")
+        selection_mechanism = str(selection_evidence.get("selection_mechanism") or "")
+        print(
+            "Power Auto CPU selection: "
+            f"{selected_backend or 'none'}"
+            + (f"/{selected_workload}" if selected_workload else "")
+            + (f" via {selection_mechanism}" if selection_mechanism else "")
+        )
+        if advanced_debug:
+            advanced_debug.capture_heatsoak_cpu_selection(
+                timestamp_iso=now_local_iso(),
+                evidence=selection_evidence,
+            )
+        stage_processes = runner.launch_stage_processes(
+            stage,
+            str(cpu_execution.get("kernel_flavor") or ""),
+            result_dir=None,
+            cpu_backend_override=selected_backend,
+        )
         if not stage_processes:
             print("No heatsoak processes launched. Continuing to logged test.")
             if advanced_debug:

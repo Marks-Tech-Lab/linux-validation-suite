@@ -208,6 +208,7 @@ class LinuxValidationSuiteTui(
         self.pending_migration_bundle_path: Optional[Path] = None
         self.last_audit_notes: list[str] = []
         self.last_run_dir: Optional[Path] = None
+        self.upload_result_dir: Optional[Path] = None
         self.last_run_metadata = None
         self.run_live_lines: list[str] = []
         self.run_live_profile_name = ""

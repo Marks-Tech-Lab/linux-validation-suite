@@ -1,4 +1,4 @@
-Power (CPU + 3D)
-SSE (CPU + RAM)
-AVX (CPU + RAM)
+Power Auto CPU + GPU
+Architecture Baseline SIMD + RAM
+High-Throughput SIMD + RAM
 GPU (3D + VRAM)

@@ -114,10 +114,33 @@ class AdvancedDebugLogger:
         self._capture_kernel_log("heatsoak", since_iso=since_iso)
         self._write_manifest()
 
-    def capture_stage_start(self, *, stage_name: str, stage_id: str, timestamp_iso: str) -> None:
+    def capture_heatsoak_cpu_selection(self, *, timestamp_iso: str, evidence: Dict[str, Any]) -> None:
         if not self.enabled:
             return
-        self._capture_event("stage_start", stage_name=stage_name, stage_id=stage_id, timestamp_iso=timestamp_iso)
+        self._capture_event(
+            "heatsoak_cpu_selection",
+            timestamp_iso=timestamp_iso,
+            evidence=dict(evidence or {}),
+        )
+        self._write_manifest()
+
+    def capture_stage_start(
+        self,
+        *,
+        stage_name: str,
+        stage_id: str,
+        timestamp_iso: str,
+        cpu_evidence: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        self._capture_event(
+            "stage_start",
+            stage_name=stage_name,
+            stage_id=stage_id,
+            timestamp_iso=timestamp_iso,
+            cpu_evidence=dict(cpu_evidence or {}),
+        )
         self._write_manifest()
 
     def capture_stage_end(

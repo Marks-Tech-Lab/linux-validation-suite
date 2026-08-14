@@ -394,17 +394,27 @@ from Modules.lvs_python_cpu_worker import (
     supervise_python_cpu_workers,
 )
 from Modules.lvs_cpu_architecture import (
+    ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER,
+    CPU_INSTRUCTION_INTENTS,
+    X86_NATIVE_POWER_PROBE_KERNEL_ORDER,
     X86_MAX_POWER_KERNEL_ORDER,
+    cpu_native_power_probe_kernel_order,
     cpu_max_power_kernel_order,
     cpu_instruction_set_policy,
     heatsoak_cpu_instruction_set,
     native_cpu_helper_binary_name,
     normalize_cpu_architecture,
+    resolve_cpu_instruction_intent,
     python_cpu_fallback_policy,
 )
 from Modules.lvs_cpu_backend_policy import (
     normalize_cpu_backend_preference,
     select_cpu_backend,
+)
+from Modules.lvs_cpu_power_selection import (
+    power_cpu_candidate_inventory,
+    power_cpu_fallback_order,
+    select_power_cpu_candidate,
 )
 from Modules.lvs_cpu_topology import (
     collect_cpu_topology_info,
@@ -649,6 +659,7 @@ import Modules.lvs_cli_run as cli_run_module
 from Modules.lvs_cli_run import RunCliAdapter
 from Modules.lvs_cli_run_setup import RunSetupCliAdapter
 from Modules.lvs_cli_results import ResultCliAdapter
+from Modules.lvs_cli_upload import UploadCliAdapter
 from Modules.lvs_run_setup import RunSetupManager
 from Modules.lvs_run_setup_controller import RunSetupActionController, RunSetupPromptCallbacks, RunSetupReviewController
 from Modules.lvs_profile_editor import ProfileEditor
@@ -660,7 +671,7 @@ from Modules.lvs_profile_creation import (
 )
 from Modules.lvs_profile_save import ProfileSaveController
 from Modules.lvs_profile_validation import ProfileValidator as SharedProfileValidator
-from Modules.lvs_profile_models import ModuleCpu
+from Modules.lvs_profile_models import ModuleCpu, StageModules
 from Modules.lvs_profile_edit_view import (
     ProfileEditPresenter,
     profile_detail_lines,
@@ -831,6 +842,7 @@ from Modules.lvs_tui_run_execution_flow import (
     upload_finish_result,
     upload_not_ready_detail,
     upload_return_view_mode,
+    upload_target_result_dir,
     upload_workflow_detail,
     uploaded_result_dir,
 )
@@ -977,6 +989,12 @@ def assert_equal(actual, expected, message: str) -> None:
 def assert_true(value, message: str) -> None:
     if not value:
         raise AssertionError(message)
+
+
+def archived_hardware_profile_path(filename: str) -> Path:
+    matches = list((Path("profiles") / "Archived" / "2026 Hardware Validation").rglob(filename))
+    assert_equal(len(matches), 1, f"{filename} has one archived reproducibility copy")
+    return matches[0]
 
 
 def test_output_contract_index_and_casing_policy() -> None:
@@ -2405,6 +2423,21 @@ def test_tui_run_execution_adapter_helpers() -> None:
     assert_equal(upload_return_view_mode("profiles"), "profiles", "TUI upload returns to Profiles when started there")
     assert_equal(upload_return_view_mode("post_run_upload_picker"), "results",
                  "TUI post-run upload restores normal Results navigation")
+    assert_equal(
+        upload_target_result_dir("results", SimpleNamespace(path=Path("historical")), Path("latest")),
+        Path("historical"),
+        "Results upload targets the selected historical result",
+    )
+    assert_equal(
+        upload_target_result_dir("results", None, Path("latest")),
+        None,
+        "Results upload does not silently fall back when nothing is selected",
+    )
+    assert_equal(
+        upload_target_result_dir("post_run_upload_picker", None, Path("latest")),
+        Path("latest"),
+        "immediate post-run upload preserves last-run behavior",
+    )
     workflow = upload_workflow_detail(
         title="Google Drive Upload Prompt",
         result_dir=Path("result"),
@@ -2429,6 +2462,8 @@ def test_tui_run_execution_adapter_helpers() -> None:
                 ),
             )
             self.last_run_dir = Path("result")
+            self.selected_result = None
+            self.upload_result_dir = None
             self.upload_in_progress = False
             self.upload_return_view_mode = "results"
             self.view_mode = "profiles"
@@ -2444,6 +2479,7 @@ def test_tui_run_execution_adapter_helpers() -> None:
             self.items = SimpleNamespace(disabled=False)
             self.global_refreshes = 0
             self.restored_view = ""
+            self.upload_targets = []
 
         def _set_status(self, value: str) -> None:
             self.status = value
@@ -2461,8 +2497,8 @@ def test_tui_run_execution_adapter_helpers() -> None:
             self.sidebar_rows = list(labels)
             return int(selected_index or 0)
 
-        def _upload_last_result_thread(self, _result_dir) -> None:
-            return
+        def _upload_last_result_thread(self, result_dir) -> None:
+            self.upload_targets.append(Path(result_dir))
 
         async def action_show_profiles(self) -> None:
             self.restored_view = "profiles"
@@ -2483,6 +2519,7 @@ def test_tui_run_execution_adapter_helpers() -> None:
         assert_true(any("Navigation locked" in row for row in upload_tui.sidebar_rows),
                     "TUI upload replaces profile rows with active status")
         assert_true("navigation locked" in upload_tui.status, "TUI upload status exposes navigation lock")
+        assert_equal(upload_tui.upload_targets, [Path("result")], "non-Results upload uses latest run")
 
         upload_tui._finish_upload_from_thread("fallback", {"result": "uploaded"})
         await asyncio.sleep(0)
@@ -2505,7 +2542,62 @@ def test_tui_run_execution_adapter_helpers() -> None:
         assert_equal(picker_tui.upload_return_view_mode, "results",
                      "TUI post-run upload will restore Results navigation")
 
+        result_tui = UploadStateTui()
+        result_tui.view_mode = "results"
+        result_tui.selected_result = SimpleNamespace(path=Path("historical-result"), name="Historical")
+        assert_true(result_tui._start_upload_last_result(), "Results view starts selected-result upload")
+        await asyncio.sleep(0)
+        assert_equal(result_tui.upload_targets, [Path("historical-result")], "selected historical result overrides last_run_dir")
+        assert_true("historical-result" in result_tui.detail, "TUI clearly displays selected upload folder")
+        result_tui._finish_upload_from_thread(
+            "fallback",
+            {"result": "uploaded", "moved_to": "/tmp/Uploaded/historical-result"},
+        )
+        await asyncio.sleep(0)
+        assert_equal(result_tui.last_run_dir, Path("result"), "moving historical result does not rewrite last run")
+        assert_equal(result_tui.selected_result, None, "moved selected result is cleared before inventory refresh")
+        assert_equal(result_tui.restored_view, "results", "successful move refreshes Results view")
+
+        no_selection = UploadStateTui()
+        no_selection.view_mode = "results"
+        no_selection.selected_result = None
+        assert_true(not no_selection._start_upload_last_result(), "Results upload requires a selection")
+        assert_equal(no_selection.upload_targets, [], "missing selection launches no uploader")
+
+        not_ready_tui = UploadStateTui()
+        not_ready_tui.view_mode = "results"
+        not_ready_tui.selected_result = SimpleNamespace(path=Path("historical-result"))
+        not_ready_tui.service.google_drive_readiness = lambda: {"ready": False, "missing": ["credentials"]}
+        assert_true(not not_ready_tui._start_upload_last_result(), "readiness failure blocks selected-result upload")
+        assert_equal(not_ready_tui.upload_targets, [], "readiness failure does not launch uploader")
+
     asyncio.run(run_upload_active_state_check())
+
+    cli_upload_targets = []
+    cli_inputs = iter(["2", "y"])
+    cli_post_run = SimpleNamespace(
+        google_drive_readiness=lambda: {"ready": True},
+        google_drive_readiness_text=lambda: "Google Drive ready",
+        attempt_upload_result_folder=lambda path, _status: (
+            cli_upload_targets.append(Path(path))
+            or SimpleNamespace(payload={"result": "success"})
+        ),
+        upload_result_summary_text=lambda _payload: "Upload success",
+    )
+    cli_launcher = SimpleNamespace(
+        results_cli=SimpleNamespace(
+            result_artifact_candidates=lambda: [Path("latest-result"), Path("historical-result")],
+            print_result_choices=lambda _items, heading="": None,
+        ),
+        post_run_manager=cli_post_run,
+        _input=lambda _prompt: next(cli_inputs),
+    )
+    UploadCliAdapter(cli_launcher).google_drive_upload_result_folder()
+    assert_equal(
+        cli_upload_targets,
+        [Path("historical-result")],
+        "CLI upload still targets the arbitrary active result selected by the operator",
+    )
 
     class FakePostRunArtifactService:
         def result_artifact_inventory_item(self, result_dir):
@@ -8198,10 +8290,13 @@ def test_cli_heatsoak_cancel_plumbing_and_screen_refresh() -> None:
 
     adapter = RunSetupCliAdapter(
         SimpleNamespace(
-            _pending_heatsoak_minutes=0.0,
+            _pending_heatsoak_minutes=5.0,
             orchestrator=SimpleNamespace(),
         )
     )
+    compatibility_stage = adapter._build_heatsoak_stage(90)
+    assert_true(compatibility_stage.modules.cpu.power_auto, "CLI compatibility heatsoak uses Power Auto")
+    assert_true("Power Auto CPU" in adapter._heatsoak_display_text(), "CLI heatsoak text describes Power Auto")
     assert_true(
         adapter._run_heatsoak_if_requested(0.0, cancel_check=cancel_requested),
         "CLI run setup heatsoak bridge accepts cancel_check on no-heatsoak path",
@@ -12061,6 +12156,14 @@ def test_profile_editor_stage_mutations() -> None:
 
     cpu_stage = profile.stages[0]
     assert_equal(editor.set_cpu_instruction_set(cpu_stage, "avx2"), "avx2", "profile editor CPU instruction")
+    assert_equal(
+        editor.set_cpu_instruction_intent(cpu_stage, "highest_verified_vector"),
+        "highest_verified_vector",
+        "profile editor CPU instruction intent",
+    )
+    assert_equal(cpu_stage.modules.cpu.instruction_set, "auto", "profile editor intent clears explicit ISA")
+    assert_equal(editor.set_cpu_instruction_set(cpu_stage, "avx2"), "avx2", "profile editor restores explicit ISA")
+    assert_equal(cpu_stage.modules.cpu.instruction_intent, "", "profile editor explicit ISA clears intent")
     assert_equal(editor.set_cpu_threads(cpu_stage, "6"), "6", "profile editor CPU threads")
     assert_equal(editor.set_memory_instruction_set(cpu_stage, "avx2"), "avx2", "profile editor memory instruction fallback")
 
@@ -12101,17 +12204,19 @@ def test_profile_editor_stage_mutations() -> None:
 
     power_stage, power_label = editor.template_stage(profile, "power_auto", duration_seconds=300)
     assert_equal(power_stage.name, "Combined", "profile editor power template stage type")
-    assert_equal(power_label, "Power (CPU + 3D)", "profile editor power template label")
+    assert_equal(power_label, "Power Auto CPU + GPU", "profile editor power template label")
     assert_true(power_stage.modules.cpu.enabled, "profile editor power template CPU")
     assert_true(power_stage.modules.gpu_3d.enabled, "profile editor power template GPU")
     sse_stage, sse_label = editor.template_stage(profile, "sse_vram", duration_seconds=300)
-    assert_equal(sse_label, "SSE + VRAM", "profile editor SSE template label")
-    assert_equal(sse_stage.modules.cpu.instruction_set, "sse", "profile editor SSE template CPU instruction")
+    assert_equal(sse_label, "Architecture Baseline SIMD + VRAM", "profile editor baseline template label")
+    assert_equal(sse_stage.modules.cpu.instruction_set, "auto", "profile editor baseline template CPU instruction")
+    assert_equal(sse_stage.modules.cpu.instruction_intent, "baseline_vector", "profile editor baseline template intent")
     assert_true(sse_stage.modules.vram.enabled, "profile editor SSE template VRAM")
     avx_stage, avx_label = editor.template_stage(profile, "avx_ram", duration_seconds=300)
-    assert_equal(avx_label, "AVX (CPU + RAM)", "profile editor AVX template label")
-    assert_equal(avx_stage.modules.cpu.instruction_set, "avx2", "profile editor AVX template CPU instruction")
-    assert_equal(avx_stage.modules.memory.instruction_set, "avx2", "profile editor AVX template memory instruction")
+    assert_equal(avx_label, "High-Throughput SIMD + RAM", "profile editor high-throughput template label")
+    assert_equal(avx_stage.modules.cpu.instruction_set, "auto", "profile editor high-throughput CPU instruction")
+    assert_equal(avx_stage.modules.cpu.instruction_intent, "high_throughput_vector", "profile editor high-throughput intent")
+    assert_equal(avx_stage.modules.memory.instruction_set, "auto", "profile editor generic memory instruction")
 
     profile, labels = editor.remove_stage(profile, labels, 0)
     assert_equal(labels, ["3D Adaptive", "VRAM Stage", "GPU Stage"], "profile editor remove label")
@@ -12157,6 +12262,11 @@ def test_profile_edit_controller_dispatch() -> None:
     assert_equal(controller.apply_stage_action(profile, labels, 0, "duration", 240).value, 240, "profile controller duration")
     assert_equal(controller.apply_stage_action(profile, labels, 0, "toggle").value, False, "profile controller toggle")
     assert_equal(controller.apply_stage_action(profile, labels, 0, "cpu_instruction", "avx2").value, "avx2", "profile controller CPU instruction")
+    assert_equal(
+        controller.apply_stage_action(profile, labels, 0, "cpu_instruction_intent", "baseline_vector").value,
+        "baseline_vector",
+        "profile controller CPU instruction intent",
+    )
     assert_equal(controller.apply_stage_action(profile, labels, 0, "cpu_threads", "8").value, "8", "profile controller CPU threads")
     assert_equal(controller.apply_stage_action(profile, labels, 0, "memory_instruction", "avx2").value, "avx2", "profile controller memory instruction")
     assert_equal(controller.apply_stage_action(profile, labels, 0, "memory_allocation", 88).value, 88, "profile controller memory allocation")
@@ -13221,7 +13331,7 @@ def test_storage_benchmark_profile_module_integration() -> None:
         mixed = StageConfig(
             id="mixed",
             name="Mixed",
-            duration_seconds=60,
+            duration_seconds=120,
             modules=StageModules(
                 cpu=ModuleCpu(enabled=True),
                 storage_benchmark=ModuleStorageBenchmark(enabled=True),
@@ -17773,10 +17883,23 @@ def test_advanced_debug_logger_helpers() -> None:
         logger._capture_command("missing_command", ["lvs-definitely-missing-command"], timeout=1)
         assert_true((run_dir / "advanced_debug" / "missing_command.txt").exists(), "missing command debug output")
         logger._capture_event("run_start", started_iso="2026-05-28T12:00:00-04:00", profile_name="Smoke")
+        logger.capture_stage_start(
+            stage_name="Intent",
+            stage_id="intent",
+            timestamp_iso="2026-05-28T12:00:01-04:00",
+            cpu_evidence={"requested_instruction_intent": "baseline_vector", "resolved_isa": "sse"},
+        )
         logger._write_manifest()
         assert_true((run_dir / "advanced_debug" / "advanced_debug_manifest.json").exists(), "debug manifest")
         text = (run_dir / "advanced_debug" / "advanced_debug_log.txt").read_text(encoding="utf-8")
         assert_true("Event: run_start" in text, "debug log content")
+        debug_payload = JsonStore.read(run_dir / "advanced_debug" / "advanced_debug_manifest.json", {})
+        stage_events = [event for event in debug_payload.get("events", []) if event.get("event") == "stage_start"]
+        assert_equal(
+            stage_events[-1]["payload"]["cpu_evidence"]["requested_instruction_intent"],
+            "baseline_vector",
+            "Advanced Debug stage evidence includes instruction intent",
+        )
         heatsoak_logger = AdvancedDebugLogger(run_dir, enabled=True, scope="heatsoak")
         heatsoak_logger.capture_heatsoak_start(timestamp_iso="2026-05-28T12:00:00-04:00", duration_seconds=60)
         heatsoak_logger.capture_heatsoak_end(
@@ -20513,6 +20636,410 @@ def test_cpu_execution_resolution_policy() -> None:
     assert_equal(tuned["tuned_avg_power_w"], 145.0, "CPU resolver tuned power")
 
 
+def test_power_auto_cross_backend_selection_policy() -> None:
+    power_path = Path("profiles/Power Test 5hr.json")
+    power_loader = ProfileLoader(Path("profiles"))
+    power_profile = power_loader.load_profile(power_path)
+    power_labels = power_loader.load_segment_labels(power_path, power_profile)
+    assert_equal(SharedProfileValidator().validate(power_profile, power_labels)["errors"], [], "Power Auto profile validates")
+    assert_true(power_profile.stages[0].modules.cpu.power_auto, "Power profile explicitly opts into cross-backend Auto")
+    from Modules.lvs_profile_report_text import profile_summary_text
+    assert_true(
+        "PowerAuto" in profile_summary_text(power_path, power_profile, power_labels, lambda value: value),
+        "profile summary exposes Power Auto intent",
+    )
+    arm_candidates, arm_unavailable = power_cpu_candidate_inventory(
+        architecture="aarch64",
+        availability={"stress_ng": True, "python_fallback": True, "cpu_native_helper": True},
+        native_kernel_flavors=["neon", "scalar"],
+        selected_native_kernel="neon",
+    )
+    assert_equal(
+        [item["candidate_id"] for item in power_cpu_fallback_order("aarch64", arm_candidates)],
+        ["stress_ng:matrixprod", "python_fallback:pbkdf2", "cpu_native_helper:neon", "cpu_native_helper:scalar"],
+        "AArch64 no-power fallback follows sustained hardware-validation evidence",
+    )
+    no_power = select_power_cpu_candidate(
+        architecture="aarch64",
+        viable_candidates=arm_candidates,
+        unavailable_candidates=arm_unavailable,
+        telemetry={"available": False, "source": ""},
+        candidate_results=[],
+        probe_duration_seconds=0,
+    )
+    assert_equal(no_power["selected_backend"], "stress_ng", "AArch64 no-power selects stress-ng")
+    assert_equal(no_power["selected_workload"], "matrixprod", "AArch64 fallback records matrixprod")
+    assert_equal(no_power["selection_mechanism"], "thermal_validated_fallback", "fallback is not mislabeled measured")
+    assert_equal(no_power["fallback_reason"], "cpu_package_power_telemetry_unavailable", "fallback reason is explicit")
+
+    arm_without_stress, unavailable = power_cpu_candidate_inventory(
+        architecture="arm64",
+        availability={"stress_ng": False, "python_fallback": True, "cpu_native_helper": True},
+        native_kernel_flavors=["neon", "scalar"],
+        selected_native_kernel="neon",
+    )
+    fallback = select_power_cpu_candidate(
+        architecture="arm64",
+        viable_candidates=arm_without_stress,
+        unavailable_candidates=unavailable,
+        telemetry={"available": False},
+        candidate_results=[],
+        probe_duration_seconds=0,
+    )
+    assert_equal(fallback["selected_backend"], "python_fallback", "missing preferred backend advances to Python")
+    assert_true(any(item["candidate_id"] == "stress_ng:matrixprod" for item in unavailable), "unavailable candidate reason retained")
+
+    native_only, unavailable = power_cpu_candidate_inventory(
+        architecture="arm64",
+        availability={"stress_ng": False, "python_fallback": False, "cpu_native_helper": True},
+        native_kernel_flavors=["neon", "scalar"],
+        selected_native_kernel="neon",
+    )
+    fallback = select_power_cpu_candidate(
+        architecture="arm64",
+        viable_candidates=native_only,
+        unavailable_candidates=unavailable,
+        telemetry={"available": False},
+        candidate_results=[],
+        probe_duration_seconds=0,
+    )
+    assert_equal(fallback["selected_kernel_flavor"], "neon", "native-only ARM fallback selects native Auto/NEON")
+
+    x86_candidates, unavailable = power_cpu_candidate_inventory(
+        architecture="x86_64",
+        availability={"stress_ng": True, "python_fallback": True, "cpu_native_helper": True},
+        native_kernel_flavors=["avx2_fma", "scalar"],
+        selected_native_kernel="avx2_fma",
+    )
+    result_template = {"valid": True, "verification_valid": True, "meaningful_work": True, "power_sample_count": 5}
+    x86_measured = select_power_cpu_candidate(
+        architecture="x86_64",
+        viable_candidates=x86_candidates,
+        unavailable_candidates=unavailable,
+        telemetry={"available": True, "source": "rapl:package-0"},
+        candidate_results=[
+            {**result_template, "candidate_id": "stress_ng:matrixprod", "avg_cpu_power_w": 110.0},
+            {**result_template, "candidate_id": "python_fallback:pbkdf2", "avg_cpu_power_w": 95.0},
+            {**result_template, "candidate_id": "cpu_native_helper:avx2_fma", "avg_cpu_power_w": 125.0},
+        ],
+        probe_duration_seconds=12.0,
+    )
+    assert_equal(x86_measured["selected_backend"], "cpu_native_helper", "x86 measured Power Auto chooses highest credible power")
+    assert_equal(x86_measured["selection_mechanism"], "power_probe", "x86 selection is labeled measured")
+    assert_true(x86_measured["telemetry"]["trustworthy_usable"], "measured selection records trustworthy telemetry")
+
+    x86_no_power = select_power_cpu_candidate(
+        architecture="x86_64",
+        viable_candidates=x86_candidates,
+        unavailable_candidates=unavailable,
+        telemetry={"available": False, "source": ""},
+        candidate_results=[],
+        probe_duration_seconds=0,
+    )
+    assert_equal(
+        x86_no_power["selection_mechanism"],
+        "architecture_validated_fallback",
+        "x86 no-power fallback does not claim ARM thermal-validation provenance",
+    )
+    x86_invalid_probe = select_power_cpu_candidate(
+        architecture="x86_64",
+        viable_candidates=x86_candidates,
+        unavailable_candidates=unavailable,
+        telemetry={"available": True, "source": "rapl:package-0"},
+        candidate_results=[
+            {**result_template, "candidate_id": "cpu_native_helper:avx2_fma", "avg_cpu_power_w": 150.0, "verification_valid": False},
+        ],
+        probe_duration_seconds=4.0,
+    )
+    assert_equal(
+        x86_invalid_probe["selection_mechanism"],
+        "architecture_validated_fallback",
+        "x86 invalid power probes use truthful architecture fallback",
+    )
+    assert_equal(
+        x86_invalid_probe["fallback_reason"],
+        "cpu_power_probes_unusable_or_failed_verification",
+        "x86 invalid probe fallback reason is explicit",
+    )
+
+    arm_measured = select_power_cpu_candidate(
+        architecture="arm64",
+        viable_candidates=arm_candidates,
+        unavailable_candidates=arm_unavailable,
+        telemetry={"available": True, "source": "hwmon:cpu_package"},
+        candidate_results=[
+            {**result_template, "candidate_id": "stress_ng:matrixprod", "avg_cpu_power_w": 8.0},
+            {**result_template, "candidate_id": "python_fallback:pbkdf2", "avg_cpu_power_w": 9.5},
+            {**result_template, "candidate_id": "cpu_native_helper:neon", "avg_cpu_power_w": 9.0},
+        ],
+        probe_duration_seconds=12.0,
+    )
+    assert_equal(arm_measured["selected_backend"], "python_fallback", "ARM measured path compares backends rather than fallback order")
+
+    invalid = select_power_cpu_candidate(
+        architecture="arm64",
+        viable_candidates=arm_candidates,
+        unavailable_candidates=arm_unavailable,
+        telemetry={"available": True, "source": "hwmon:cpu_package"},
+        candidate_results=[
+            {**result_template, "candidate_id": "stress_ng:matrixprod", "avg_cpu_power_w": 12.0, "verification_valid": False},
+            {**result_template, "candidate_id": "python_fallback:pbkdf2", "avg_cpu_power_w": None, "power_sample_count": 0},
+        ],
+        probe_duration_seconds=8.0,
+    )
+    assert_equal(invalid["selection_mechanism"], "thermal_validated_fallback", "failed verification cannot win a power probe")
+    assert_equal(invalid["selected_backend"], "stress_ng", "unusable probe returns to documented ARM fallback")
+    assert_equal(invalid["fallback_reason"], "cpu_power_probes_unusable_or_failed_verification", "invalid probe reason explicit")
+
+    arm_runner = WorkloadRunner()
+    arm_runner._cpu_machine = lambda: "arm64"
+    arm_runner._cpu_target_plan = lambda _cpu: {
+        "target_cpu_ids": [0, 1, 2, 3],
+        "requested_thread_count": 4,
+        "actual_worker_count": 4,
+    }
+    arm_runner._cpu_backend_availability = lambda _cpu: {
+        "stress_ng": True,
+        "python_fallback": True,
+        "cpu_native_helper": True,
+    }
+    arm_runner._cpu_capability_plan = lambda _cpu: {
+        **arm_runner._cpu_target_plan(_cpu),
+        "common_kernel_flavors": ["neon", "scalar"],
+        "selected_kernel_flavor": "neon",
+    }
+    arm_runner._cpu_power_capability = lambda: {"available": False, "source": ""}
+    integrated_arm = arm_runner.resolve_cpu_execution(
+        ModuleCpu(enabled=True, backend_preference="auto", instruction_set="auto", power_auto=True),
+        tune_max_power=True,
+    )
+    assert_equal(integrated_arm["backend"], "stress_ng", "runner-level ARM Power Auto uses validated fallback")
+    assert_equal(
+        integrated_arm["selection_evidence"]["target_cpu_ids"],
+        [0, 1, 2, 3],
+        "runner-level selection evidence preserves affinity target set",
+    )
+
+    x86_runner = WorkloadRunner()
+    x86_runner._cpu_machine = lambda: "x86_64"
+    x86_runner._cpu_target_plan = lambda _cpu: {
+        "target_cpu_ids": [0, 1],
+        "requested_thread_count": 2,
+        "actual_worker_count": 2,
+    }
+    x86_runner._cpu_backend_availability = lambda _cpu: {
+        "stress_ng": True,
+        "python_fallback": True,
+        "cpu_native_helper": True,
+    }
+    x86_runner._cpu_capability_plan = lambda _cpu: {
+        **x86_runner._cpu_target_plan(_cpu),
+        "common_kernel_flavors": ["avx2_fma", "scalar"],
+        "selected_kernel_flavor": "avx2_fma",
+    }
+    x86_runner._cpu_power_capability = lambda: {"available": True, "source": "rapl:package-0"}
+    measured_watts = {
+        "stress_ng:matrixprod": 105.0,
+        "python_fallback:pbkdf2": 92.0,
+        "cpu_native_helper:avx2_fma": 128.0,
+        "cpu_native_helper:scalar": 74.0,
+    }
+    x86_runner._benchmark_power_cpu_candidate = lambda _cpu, candidate: {
+        **candidate,
+        **result_template,
+        "avg_cpu_power_w": measured_watts[candidate["candidate_id"]],
+        "target_cpu_ids": [0, 1],
+        "worker_count": 2,
+        "affinity_failed_count": 0,
+    }
+    integrated_x86 = x86_runner.resolve_cpu_execution(
+        ModuleCpu(enabled=True, backend_preference="auto", instruction_set="auto", power_auto=True),
+        tune_max_power=True,
+    )
+    assert_equal(integrated_x86["kernel_flavor"], "avx2_fma", "runner-level x86 probe selects measured winner")
+    assert_equal(
+        integrated_x86["selection_evidence"]["selected_isa"],
+        "avx2",
+        "runner-level x86 selection evidence records the resolved ISA",
+    )
+    assert_equal(integrated_x86["tuned_avg_power_w"], 128.0, "runner-level x86 evidence preserves selected average")
+
+
+def test_cpu_instruction_intent_resolution_and_profile_conversion() -> None:
+    assert_equal(
+        CPU_INSTRUCTION_INTENTS,
+        frozenset({"baseline_vector", "high_throughput_vector", "highest_verified_vector"}),
+        "CPU instruction intent vocabulary remains deliberately small",
+    )
+    cases = (
+        ("x86_64", "baseline_vector", ["sse2", "scalar"], "sse", "sse2", False),
+        ("arm64", "baseline_vector", ["neon", "scalar"], "neon", "neon", False),
+        ("x86_64", "high_throughput_vector", ["avx2_fma", "sse2", "scalar"], "avx2", "avx2_fma", False),
+        ("arm64", "high_throughput_vector", ["neon", "scalar"], "neon", "neon", True),
+        ("x86_64", "highest_verified_vector", ["avx512_int", "avx2_fma", "scalar"], "avx512", "avx512_int", False),
+        ("x86_64", "highest_verified_vector", ["avx2", "sse2", "scalar"], "avx2", "avx2", False),
+        ("arm64", "highest_verified_vector", ["neon", "scalar"], "neon", "neon", False),
+    )
+    for architecture, intent, common, resolved_isa, kernel, tier_collapse in cases:
+        evidence = resolve_cpu_instruction_intent(architecture, intent, common)
+        assert_equal(evidence["resolved_backend"], "cpu_native_helper", f"{architecture} {intent} native backend")
+        assert_equal(evidence["resolved_isa"], resolved_isa, f"{architecture} {intent} resolved ISA")
+        assert_equal(evidence["resolved_kernel_flavor"], kernel, f"{architecture} {intent} kernel")
+        assert_equal(evidence["tier_collapse"], tier_collapse, f"{architecture} {intent} tier collapse")
+    unsupported = resolve_cpu_instruction_intent("x86_64", "highest_verified_vector", ["scalar"])
+    assert_equal(unsupported["resolved_backend"], "none", "vector intent never substitutes scalar")
+    assert_true(bool(unsupported["fail_closed_reason"]), "unsupported vector intent has fail-closed evidence")
+    heterogeneous = common_kernel_capabilities(
+        [0, 1],
+        {0: ["avx512_fma", "avx2_fma", "sse2"], 1: ["avx2_fma", "sse2"]},
+    )
+    heterogeneous_resolution = resolve_cpu_instruction_intent(
+        "x86_64",
+        "highest_verified_vector",
+        heterogeneous["common_kernel_flavors"],
+    )
+    assert_equal(
+        heterogeneous_resolution["resolved_kernel_flavor"],
+        "avx2_fma",
+        "highest intent uses the heterogeneous all-target intersection",
+    )
+    assert_equal(
+        X86_NATIVE_POWER_PROBE_KERNEL_ORDER,
+        X86_MAX_POWER_KERNEL_ORDER,
+        "x86 native power-probe order keeps max-power compatibility alias",
+    )
+    assert_equal(
+        cpu_native_power_probe_kernel_order("arm64"),
+        ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER,
+        "ARM native power-probe alias resolves the existing order",
+    )
+
+    def synthetic_runner(architecture: str, per_cpu: dict[int, list[str]]) -> WorkloadRunner:
+        runner = WorkloadRunner()
+        target_ids = sorted(per_cpu)
+        runner._cpu_machine = lambda: architecture
+        runner._cpu_target_plan = lambda _cpu: {
+            "available_cpu_ids": target_ids,
+            "online_cpu_ids": target_ids,
+            "allowed_cpu_ids": target_ids,
+            "target_cpu_ids": target_ids,
+            "requested_thread_count": "all",
+            "actual_worker_count": len(target_ids),
+        }
+        runner._cpu_helper_status = lambda: {"available": True, "path": "/bin/true", "reason": ""}
+        if architecture == "arm64":
+            common = set(per_cpu[target_ids[0]])
+            for cpu_id in target_ids[1:]:
+                common.intersection_update(per_cpu[cpu_id])
+            runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: sorted(common)
+        else:
+            runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: list(per_cpu.get(int(cpu_id), []))
+        runner._cpu_power_tuning_available = lambda: False
+        return runner
+
+    x86_runner = synthetic_runner("x86_64", {0: ["avx512_fma", "avx2_fma", "sse2"], 1: ["avx2_fma", "sse2"]})
+    intent_cpu = ModuleCpu(enabled=True, instruction_set="auto", instruction_intent="highest_verified_vector")
+    execution = x86_runner.resolve_cpu_execution(intent_cpu, tune_max_power=False)
+    assert_equal(execution["backend"], "cpu_native_helper", "intent runner forces native backend")
+    assert_equal(execution["resolved_mode"], "avx2", "intent runner resolves common ISA")
+    assert_equal(execution["kernel_flavor"], "avx2_fma", "intent runner materializes exact common kernel")
+    assert_equal(
+        execution["selection_evidence"]["requested_instruction_intent"],
+        "highest_verified_vector",
+        "intent execution evidence records request",
+    )
+    stage = StageConfig(id="intent", name="CPU", duration_seconds=60, modules=StageModules(cpu=intent_cpu))
+    diagnostics = x86_runner.stage_diagnostics(stage, "Intent")
+    assert_equal(diagnostics["cpu_instruction_intent"], "highest_verified_vector", "Dry Run exposes CPU intent")
+    assert_equal(diagnostics["cpu_mode_resolved"], "avx2", "Dry Run exposes resolved ISA")
+    assert_equal(diagnostics["cpu_kernel_flavor"], "avx2_fma", "Dry Run exposes exact kernel")
+    assert_equal(diagnostics["cpu_targeting"]["target_cpu_ids"], [0, 1], "Dry Run preserves target set")
+
+    arm_runner = synthetic_runner("arm64", {0: ["neon", "scalar"], 1: ["neon", "scalar"]})
+    arm_cpu = ModuleCpu(enabled=True, instruction_set="auto", instruction_intent="high_throughput_vector")
+    arm_execution = arm_runner.resolve_cpu_execution(arm_cpu, tune_max_power=False)
+    assert_true(arm_execution["selection_evidence"]["tier_collapse"], "ARM high-throughput evidence records tier collapse")
+
+    scalar_runner = synthetic_runner("x86_64", {0: ["scalar"], 1: ["scalar"]})
+    scalar_execution = scalar_runner.resolve_cpu_execution(intent_cpu, tune_max_power=False)
+    assert_equal(scalar_execution["backend"], "none", "scalar-only target set fails vector intent closed")
+    assert_true(bool(scalar_runner._cpu_unavailable_reason(intent_cpu)), "fail-closed reason reaches readiness")
+    missing_helper_runner = synthetic_runner("x86_64", {0: ["avx2_fma", "sse2"]})
+    missing_helper_runner._cpu_helper_status = lambda: {"available": False, "path": "", "reason": "not built"}
+    missing_helper_execution = missing_helper_runner.resolve_cpu_execution(intent_cpu, tune_max_power=False)
+    assert_equal(missing_helper_execution["backend"], "none", "intent does not leave native helper when unavailable")
+    assert_true(
+        "requires the native CPU helper" in missing_helper_execution["selection_evidence"]["fail_closed_reason"],
+        "missing helper is explicit in intent evidence",
+    )
+
+    validator = SharedProfileValidator()
+    conflicting = ValidationProfile(
+        profile_name="Conflict",
+        stages=[StageConfig(
+            id="conflict",
+            name="CPU",
+            duration_seconds=60,
+            modules=StageModules(cpu=ModuleCpu(
+                enabled=True,
+                instruction_set="avx2",
+                instruction_intent="highest_verified_vector",
+            )),
+        )],
+    )
+    conflict_errors = validator.validate(conflicting, ["Conflict"])["errors"]
+    assert_true(any("mutually exclusive" in error for error in conflict_errors), "explicit ISA plus intent is rejected")
+    explicit = ValidationProfile(
+        profile_name="Explicit",
+        stages=[StageConfig(
+            id="explicit",
+            name="CPU",
+            duration_seconds=120,
+            modules=StageModules(cpu=ModuleCpu(enabled=True, instruction_set="avx512")),
+        )],
+    )
+    assert_equal(validator.validate(explicit, ["Explicit"])["errors"], [], "explicit ISA remains authoritative and valid")
+
+    loader = ProfileLoader(Path("profiles"))
+    expected = {
+        "PL Validation.json": ["power_auto", "baseline_vector", "high_throughput_vector"],
+        "PL Validation 4hr.json": ["power_auto", "baseline_vector", "high_throughput_vector"],
+        "PL Validation 6hr.json": ["power_auto", "baseline_vector", "high_throughput_vector"],
+        "PL Validation 12hr.json": ["power_auto", "baseline_vector", "high_throughput_vector"] * 2,
+        "PL Validation 24hr.json": ["power_auto", "baseline_vector", "high_throughput_vector"] * 4,
+        "QA System Test Short v2.json": ["power_auto", "baseline_vector", "high_throughput_vector"],
+        "Quick Test.json": ["power_auto", "baseline_vector", "highest_verified_vector"],
+    }
+    for filename, expected_cpu_stages in expected.items():
+        profile = loader.load_profile(Path("profiles") / filename)
+        actual = [
+            "power_auto" if stage.modules.cpu.power_auto else stage.modules.cpu.instruction_intent
+            for stage in profile.stages
+            if stage.modules.cpu.enabled
+        ]
+        assert_equal(actual, expected_cpu_stages, f"{filename} converted CPU intents")
+        for stage in profile.stages:
+            if stage.modules.memory.enabled:
+                assert_equal(stage.modules.memory.instruction_set, "auto", f"{filename} RAM ISA remains generic")
+        labels = loader.load_segment_labels(Path("profiles") / filename, profile)
+        assert_true(not any("SSE" in label or "AVX" in label for label in labels), f"{filename} labels are architecture-neutral")
+        assert_equal(validator.validate(profile, labels)["errors"], [], f"{filename} validates after conversion")
+
+    confirmation_path = Path(
+        "profiles/Archived/2026 Hardware Validation/06 Power Auto and Instruction Intent Confirmation/"
+        "CPU Power Auto and Instruction Intent Confirmation.json"
+    )
+    confirmation = loader.load_profile(confirmation_path)
+    confirmation_labels = loader.load_segment_labels(confirmation_path, confirmation)
+    assert_equal([stage.duration_seconds for stage in confirmation.stages], [600, 180, 180, 180], "confirmation durations")
+    assert_true(confirmation.require_all_stages_runnable, "confirmation profile fails closed")
+    assert_equal(validator.validate(confirmation, confirmation_labels)["errors"], [], "confirmation profile validates")
+    assert_true(
+        confirmation_path.name not in {path.name for path in loader.list_profiles()},
+        "completed confirmation profile is hidden from normal discovery",
+    )
+
+
 def test_cpu_execution_helpers_build_and_parse_helper_probes() -> None:
     assert_equal(normalize_cpu_helper_mode("AVX2"), "avx2", "CPU helper mode normalization")
     assert_equal(normalize_cpu_helper_mode("bad"), "auto", "CPU helper invalid mode normalization")
@@ -20987,7 +21514,7 @@ def test_native_cpu_neon_architecture_policy_and_profile() -> None:
     runner._cpu_machine = lambda: "arm64"
     runner._cpu_helper_resolved_mode = lambda mode: {"auto": "neon", "scalar": "scalar", "neon": "neon"}.get(mode, "")
     runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["neon", "scalar"]
-    neon_path = Path("profiles") / "ARM64 Native CPU NEON.json"
+    neon_path = archived_hardware_profile_path("ARM64 Native CPU NEON.json")
     profile = ProfileLoader(Path("profiles")).load_profile(neon_path)
     labels = ProfileLoader(Path("profiles")).load_segment_labels(neon_path, profile)
     validation = SharedProfileValidator().validate(profile, labels)
@@ -21401,7 +21928,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         "ARM64 Python CPU Fallback AVX2 Diagnostic.json": ("avx2", False, ""),
     }
     for filename, (instruction_set, runnable, resolved_mode) in expected.items():
-        path = Path("profiles") / filename
+        path = archived_hardware_profile_path(filename)
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         validation = validator.validate(profile, labels)
@@ -21425,12 +21952,12 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         "ARM64 Python CPU Fallback Auto.json",
         "ARM64 Native CPU Scalar.json",
     ):
-        validated_profile = loader.load_profile(Path("profiles") / filename)
+        validated_profile = loader.load_profile(archived_hardware_profile_path(filename))
         assert_equal(validated_profile.stages[0].duration_seconds, 120, f"{filename} validated duration unchanged")
         assert_equal(validated_profile.defaults.trim_start_seconds, 10, f"{filename} validated start trim unchanged")
         assert_equal(validated_profile.defaults.trim_end_seconds, 10, f"{filename} validated end trim unchanged")
 
-    native_path = Path("profiles") / "ARM64 Native CPU Scalar.json"
+    native_path = archived_hardware_profile_path("ARM64 Native CPU Scalar.json")
     native_profile = loader.load_profile(native_path)
     native_labels = loader.load_segment_labels(native_path, native_profile)
     assert_equal(validator.validate(native_profile, native_labels)["errors"], [], "ARM native scalar profile validates")
@@ -21459,7 +21986,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         },
     }
     for filename, expected_short in short_profiles.items():
-        path = Path("profiles") / filename
+        path = archived_hardware_profile_path(filename)
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         assert_equal(validator.validate(profile, labels)["errors"], [], f"{filename} validates")
@@ -21499,7 +22026,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
             worker_arg = command.index("--workers")
             assert_equal(command[worker_arg + 1], "8", f"{filename} Python workers")
 
-    stress_path = Path("profiles") / "ARM64 stress-ng CPU Auto.json"
+    stress_path = archived_hardware_profile_path("ARM64 stress-ng CPU Auto.json")
     stress_profile = loader.load_profile(stress_path)
     stress_labels = loader.load_segment_labels(stress_path, stress_profile)
     assert_equal(validator.validate(stress_profile, stress_labels)["errors"], [], "ARM stress-ng profile validates")
@@ -21516,7 +22043,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         "ARM stress-ng generic matrixprod command",
     )
 
-    heatsoak_path = Path("profiles") / "ARM64 Combined Heatsoak Validation.json"
+    heatsoak_path = archived_hardware_profile_path("ARM64 Combined Heatsoak Validation.json")
     heatsoak_profile = loader.load_profile(heatsoak_path)
     heatsoak_labels = loader.load_segment_labels(heatsoak_path, heatsoak_profile)
     assert_equal(validator.validate(heatsoak_profile, heatsoak_labels)["errors"], [], "ARM heatsoak profile validates")
@@ -21743,7 +22270,7 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
         "x86 workload runner keeps established memory helper artifact",
     )
 
-    profile_path = Path("profiles") / "ARM64 Native Memory Validation.json"
+    profile_path = archived_hardware_profile_path("ARM64 Native Memory Validation.json")
     loader = ProfileLoader(Path("profiles"))
     profile = loader.load_profile(profile_path)
     labels = loader.load_segment_labels(profile_path, profile)
@@ -21813,8 +22340,15 @@ def test_final_hardware_validation_profile_pack() -> None:
     }
     loader = ProfileLoader(Path("profiles"))
     validator = SharedProfileValidator()
+    archive_root = Path("profiles/Archived/2026 Hardware Validation")
+
+    def archived_profile_path(profile_name: str) -> Path:
+        matches = list(archive_root.rglob(f"{profile_name}.json"))
+        assert_equal(len(matches), 1, f"{profile_name} has one archived reproducibility copy")
+        return matches[0]
+
     for profile_name, (stage_count, total_seconds) in expected.items():
-        path = Path("profiles") / f"{profile_name}.json"
+        path = archived_profile_path(profile_name)
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         source = loader.inspect_segment_label_source(path, profile)
@@ -21827,8 +22361,10 @@ def test_final_hardware_validation_profile_pack() -> None:
         expected_duration = 90 if "Targeting Functional" in profile_name else 600
         assert_true(all(stage.duration_seconds == expected_duration for stage in profile.stages), f"{profile_name} stage durations")
 
-    arm_memory = loader.load_profile(Path("profiles/ARM64 Memory Full Validation.json"))
-    x86_memory = loader.load_profile(Path("profiles/x86_64 Memory Full Validation.json"))
+    arm_memory_path = archived_profile_path("ARM64 Memory Full Validation")
+    x86_memory_path = archived_profile_path("x86_64 Memory Full Validation")
+    arm_memory = loader.load_profile(arm_memory_path)
+    x86_memory = loader.load_profile(x86_memory_path)
     for profile in (arm_memory, x86_memory):
         assert_equal(
             [stage.modules.memory.backend_preference for stage in profile.stages],
@@ -21839,22 +22375,22 @@ def test_final_hardware_validation_profile_pack() -> None:
     from Modules.lvs_profile_report_text import profile_summary_text
 
     memory_report = profile_summary_text(
-        Path("profiles/ARM64 Memory Full Validation.json"),
+        arm_memory_path,
         arm_memory,
-        loader.load_segment_labels(Path("profiles/ARM64 Memory Full Validation.json"), arm_memory),
+        loader.load_segment_labels(arm_memory_path, arm_memory),
         lambda value: value,
     )
     assert_true("RAM/native/80%" in memory_report, "profile overview exposes requested RAM backend")
-    arm_payload = Path("profiles/ARM64 GPU Full Validation.json").read_text(encoding="utf-8").lower()
+    arm_payload = archived_profile_path("ARM64 GPU Full Validation").read_text(encoding="utf-8").lower()
     assert_true("opencl" not in arm_payload, "ARM GPU validation does not invent OpenCL")
     assert_true(not any(token in arm_payload for token in ('"sve"', '"sve2"', '"sme"')), "ARM pack does not add unsupported ISA")
-    x86_cpu = loader.load_profile(Path("profiles/x86_64 CPU Full Validation.json"))
+    x86_cpu = loader.load_profile(archived_profile_path("x86_64 CPU Full Validation"))
     assert_equal(
         [stage.modules.cpu.instruction_set for stage in x86_cpu.stages[:4]],
         ["scalar", "sse", "avx", "avx2"],
         "x86 sustained profile uses only public native ISA families",
     )
-    avx512 = loader.load_profile(Path("profiles/x86_64 CPU AVX512 Optional Validation.json"))
+    avx512 = loader.load_profile(archived_profile_path("x86_64 CPU AVX512 Optional Validation"))
     assert_equal(avx512.stages[0].modules.cpu.instruction_set, "avx512", "AVX512 is isolated as optional")
 
 
@@ -21891,6 +22427,7 @@ def test_unattended_vulkan_rerun_profiles_legacy_contract() -> None:
             {"target_id": "synthetic-dgpu", "vendor": "synthetic", "gpu_index": 1},
         ],
     }
+    rerun_archive = Path("profiles/Archived/2026 Hardware Validation/03 Exact-Hardware Vulkan Reruns")
 
     def resolve_backend(*, candidates: list[str], targets: list[dict], workload: str) -> dict:
         backend = candidates[0] if candidates and targets else "none"
@@ -21909,7 +22446,7 @@ def test_unattended_vulkan_rerun_profiles_legacy_contract() -> None:
         }
 
     for profile_name, contract in expected.items():
-        path = Path("profiles") / f"{profile_name}.json"
+        path = rerun_archive / f"{profile_name}.json"
         profile = loader.load_profile(path)
         labels = loader.load_segment_labels(path, profile)
         assert_equal(validator.validate(profile, labels)["errors"], [], f"{profile_name} validates")
@@ -21968,12 +22505,12 @@ def test_unattended_vulkan_rerun_profiles_legacy_contract() -> None:
                 assert_equal(stage.modules.vram.allocation_percent, 70, f"{profile_name} combined dGPU allocation")
                 assert_equal(stage.modules.memory.allocation_percent, 70, f"{profile_name} combined RAM allocation")
 
-    saved_5700 = loader.load_profile(Path("profiles/x86_64 5700G RTX 5090 Vulkan Rerun.json"))
+    saved_5700 = loader.load_profile(rerun_archive / "x86_64 5700G RTX 5090 Vulkan Rerun.json")
     assert_true(
         all(stage.modules.gpu_3d.gpus == "discrete_all" for stage in saved_5700.stages),
         "saved 5700G rerun never invents an unavailable integrated GPU",
     )
-    intended_payload = Path("profiles/x86_64 8600G RTX PRO 6000 Vulkan Rerun.json").read_text(encoding="utf-8")
+    intended_payload = (rerun_archive / "x86_64 8600G RTX PRO 6000 Vulkan Rerun.json").read_text(encoding="utf-8")
     assert_true(
         not any(token in intended_payload for token in ("vendor_id", "device_id", "pci_slot", "target_id")),
         "intended 8600G profile contains no invented physical identifiers",
@@ -22022,7 +22559,7 @@ def test_unified_system_memory_reserve_and_allocation_policy() -> None:
 def test_unattended_vulkan_rerun_profiles() -> None:
     loader = ProfileLoader(Path("profiles"))
     validator = ProfileValidator()
-    remediation_archive = Path("profiles/Archived/2026 Hardware Validation/2026-08 Final Remediation Completed")
+    remediation_archive = Path("profiles/Archived/2026 Hardware Validation/05 Final Remediation and Confirmation")
     contracts = {
         "x86_64 APU Full Mixed Stateful Confirmation": {
             "path": remediation_archive / "x86_64 APU Full Mixed Stateful Confirmation.json",
@@ -22127,9 +22664,12 @@ def test_unattended_vulkan_rerun_profiles() -> None:
         "x86_64 8600G RTX PRO 6000 Vulkan Rerun.json",
     ):
         assert_true(archived_name not in visible_names, f"archived {archived_name} absent from normal discovery")
-        assert_true((Path("profiles/Archived/2026 Hardware Validation") / archived_name).exists(), f"archived {archived_name} retained")
+        assert_true(
+            (Path("profiles/Archived/2026 Hardware Validation/03 Exact-Hardware Vulkan Reruns") / archived_name).exists(),
+            f"archived {archived_name} retained",
+        )
 
-    campaign_archive = Path("profiles/Archived/2026 Hardware Validation/2026-08 New Campaign Initial")
+    campaign_archive = Path("profiles/Archived/2026 Hardware Validation/04 Campaign Initial Reruns")
     for archived_name in (
         "ARM64 Integrated Shared-GPU Acceptance Rerun.json",
         "x86_64 Integrated and Discrete GPU Acceptance Rerun.json",
@@ -24058,6 +24598,7 @@ def test_stage_completion_helpers() -> None:
         serialize_gpu_worker=serialize_worker,
         stage_plan=stage_plan,
         cpu_backend="cpu_native_helper",
+        cpu_instruction_intent="highest_verified_vector",
         cpu_mode_requested="auto",
         cpu_mode_resolved="avx2",
         cpu_kernel_flavor="avx2",
@@ -24081,6 +24622,11 @@ def test_stage_completion_helpers() -> None:
     )
     assert_equal(record.issue_count, 1, "completion issue count")
     assert_equal(record.stage_window.display_name, "GPU Stage", "completion window display name")
+    assert_equal(
+        record.stage_window.cpu_instruction_intent,
+        "highest_verified_vector",
+        "completion window preserves instruction intent for parsed result builders",
+    )
     assert_equal(record.stage_window.gpu_workers_final, final_workers, "completion window final workers")
     assert_equal(stage_plan["gpu_workers_final"], final_workers, "completion mirrors final workers to plan")
     assert_equal(stage_plan["verdict"], "warning", "completion mirrors verdict to plan")
@@ -26184,6 +26730,8 @@ def main() -> int:
         test_gpu_retune_process_helpers,
         test_cpu_execution_helpers_select_policy_candidates_and_best_result,
         test_cpu_execution_resolution_policy,
+        test_power_auto_cross_backend_selection_policy,
+        test_cpu_instruction_intent_resolution_and_profile_conversion,
         test_cpu_execution_helpers_build_and_parse_helper_probes,
         test_cpu_execution_helpers_build_commands_and_benchmark_results,
         test_cpu_python_fallback_x86_contract_and_architecture_policy,
@@ -26194,6 +26742,7 @@ def main() -> int:
         test_cpu_backend_preference_policy_and_arm_lab_profiles,
         test_memory_execution_helpers_build_commands_and_targets,
         test_final_hardware_validation_profile_pack,
+        test_unattended_vulkan_rerun_profiles_legacy_contract,
         test_unattended_vulkan_rerun_profiles,
         test_python_memory_fallback_exact_allocation_evidence,
         test_unified_system_memory_reserve_and_allocation_policy,

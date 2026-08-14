@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from .lvs_cpu_architecture import X86_MAX_POWER_KERNEL_ORDER, cpu_max_power_kernel_order
+from .lvs_cpu_architecture import X86_NATIVE_POWER_PROBE_KERNEL_ORDER, cpu_native_power_probe_kernel_order
 
 
 CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon")
@@ -33,8 +33,10 @@ CPU_KERNEL_FAMILY_CANDIDATES = {
     "avx512": ["avx512_fma", "avx512_int"],
     "neon": ["neon"],
 }
-CPU_KERNEL_MAX_POWER_ORDER = list(X86_MAX_POWER_KERNEL_ORDER)
-CPU_KERNEL_CAPABILITY_ORDER = [*CPU_KERNEL_MAX_POWER_ORDER, "neon"]
+CPU_NATIVE_POWER_PROBE_KERNEL_ORDER = list(X86_NATIVE_POWER_PROBE_KERNEL_ORDER)
+# Compatibility alias retained for existing callers and fixtures.
+CPU_KERNEL_MAX_POWER_ORDER = CPU_NATIVE_POWER_PROBE_KERNEL_ORDER
+CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon"]
 
 
 def normalize_cpu_helper_mode(requested_mode: str) -> str:
@@ -179,7 +181,7 @@ def cpu_candidate_kernel_flavors(
     if not helper_available:
         return []
     if policy == "max_power":
-        ordered = cpu_max_power_kernel_order(architecture)
+        ordered = cpu_native_power_probe_kernel_order(architecture)
     elif policy == "capabilities":
         ordered = CPU_KERNEL_CAPABILITY_ORDER
     else:

@@ -145,6 +145,14 @@ def upload_return_view_mode(view_mode: Any) -> str:
     return mode if mode in {"profiles", "results"} else "results"
 
 
+def upload_target_result_dir(view_mode: Any, selected_result: Any, last_run_dir: Any) -> Path | None:
+    """Resolve the one shared uploader target from current TUI context."""
+    if str(view_mode or "") == "results":
+        selected_path = getattr(selected_result, "path", None)
+        return Path(selected_path) if selected_path else None
+    return Path(last_run_dir) if last_run_dir else None
+
+
 def upload_workflow_detail(
     *,
     title: str,

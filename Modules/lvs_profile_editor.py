@@ -35,6 +35,7 @@ class ProfileEditor:
     """
 
     CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "neon"]
+    CPU_INSTRUCTION_INTENT_OPTIONS = ["", "baseline_vector", "high_throughput_vector", "highest_verified_vector"]
     CPU_BACKEND_OPTIONS = ["auto", "native", "stress_ng", "python_fallback"]
     MEMORY_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512"]
     GPU_TARGET_OPTIONS = ["all", "discrete_all", "primary", "first"]
@@ -49,9 +50,9 @@ class ProfileEditor:
         {"key": "cpu_3d", "label": "CPU + 3D", "stage_type": "Combined", "default_label": "CPU + 3D"},
         {"key": "cpu_vram", "label": "CPU + VRAM", "stage_type": "Combined", "default_label": "CPU + VRAM"},
         {"key": "gpu_vram", "label": "3D + VRAM", "stage_type": "Combined", "default_label": "3D + VRAM"},
-        {"key": "power_auto", "label": "Power Test (CPU + 3D)", "stage_type": "Combined", "default_label": "Power (CPU + 3D)"},
-        {"key": "sse_vram", "label": "SSE + VRAM", "stage_type": "Combined", "default_label": "SSE + VRAM"},
-        {"key": "avx_ram", "label": "AVX + RAM", "stage_type": "Combined", "default_label": "AVX (CPU + RAM)"},
+        {"key": "power_auto", "label": "Power Auto CPU + GPU", "stage_type": "Combined", "default_label": "Power Auto CPU + GPU"},
+        {"key": "sse_vram", "label": "Architecture Baseline SIMD + VRAM", "stage_type": "Combined", "default_label": "Architecture Baseline SIMD + VRAM"},
+        {"key": "avx_ram", "label": "High-Throughput SIMD + RAM", "stage_type": "Combined", "default_label": "High-Throughput SIMD + RAM"},
         {"key": "storage_benchmark", "label": "Storage Benchmark", "stage_type": "Storage Benchmark", "default_label": "Storage Benchmark"},
     ]
 
@@ -105,6 +106,7 @@ class ProfileEditor:
         include_vram: bool = False,
         gpu_target_mode: str = "all",
         cpu_instruction_set: str = "auto",
+        cpu_instruction_intent: str = "",
         cpu_mode: str = "normal",
         cpu_load: str = "steady",
         cpu_priority: str = "normal",
@@ -150,7 +152,7 @@ class ProfileEditor:
         if test_type == "Storage Benchmark":
             return StageModules(storage_benchmark=ModuleStorageBenchmark(enabled=True))
         if test_type == "Power Test (CPU + 3D)":
-            return self.build_stage_modules(
+            modules = self.build_stage_modules(
                 "Combined",
                 include_cpu=True,
                 include_gpu_3d=True,
@@ -161,12 +163,14 @@ class ProfileEditor:
                 gpu_intensity=gpu_intensity,
                 gpu_compute_variant=gpu_compute_variant,
             )
+            modules.cpu.power_auto = True
+            return modules
         if test_type == "SSE + VRAM":
             return self.build_stage_modules(
                 "Combined",
                 include_cpu=True,
                 include_vram=True,
-                cpu_instruction_set="sse",
+                cpu_instruction_intent="baseline_vector",
                 gpu_target_mode=gpu_target_mode,
                 vram_backend_preference=vram_backend_preference,
                 vram_allocation_percent=90,
@@ -176,8 +180,8 @@ class ProfileEditor:
                 "Combined",
                 include_cpu=True,
                 include_memory=True,
-                cpu_instruction_set="avx2",
-                memory_instruction_set="avx2",
+                cpu_instruction_intent="high_throughput_vector",
+                memory_instruction_set="auto",
                 memory_allocation_percent=90,
             )
 
@@ -186,6 +190,7 @@ class ProfileEditor:
             mode=cpu_mode or "normal",
             load=cpu_load or "steady",
             instruction_set=cpu_instruction_set or "auto",
+            instruction_intent=cpu_instruction_intent or "",
             threads=cpu_threads or "all",
             priority=cpu_priority or "normal",
         )
@@ -384,6 +389,19 @@ class ProfileEditor:
     def set_cpu_instruction_set(self, stage: StageConfig, instruction_set: str) -> str:
         normalized = self._normalize_choice(instruction_set, self.CPU_INSTRUCTION_OPTIONS, "auto")
         stage.modules.cpu.instruction_set = normalized
+        if normalized != "auto":
+            stage.modules.cpu.instruction_intent = ""
+        return normalized
+
+    def set_cpu_instruction_intent(self, stage: StageConfig, instruction_intent: str) -> str:
+        normalized = self._normalize_choice(
+            instruction_intent,
+            self.CPU_INSTRUCTION_INTENT_OPTIONS,
+            "",
+        )
+        stage.modules.cpu.instruction_intent = normalized
+        if normalized:
+            stage.modules.cpu.instruction_set = "auto"
         return normalized
 
     def set_cpu_backend_preference(self, stage: StageConfig, backend_preference: str) -> str:

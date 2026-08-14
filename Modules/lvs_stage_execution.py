@@ -42,6 +42,7 @@ def execute_stage_runtime(
     stage_start: float,
     cpu_kernel_flavor: str,
     cpu_backend: str,
+    cpu_instruction_intent: str = "",
     cpu_mode_requested: str,
     cpu_mode_resolved: str,
     cpu_tuning_policy: str,
@@ -71,7 +72,7 @@ def execute_stage_runtime(
     start_intel_gpu_top_sidecar: Callable[..., Optional[Dict[str, Any]]],
     stop_intel_gpu_top_sidecar: Callable[[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]],
     clear_gpu_safety_marker: Callable[[], None],
-    launch_stage_processes: Callable[[Any, str, Path], List[Any]],
+    launch_stage_processes: Callable[..., List[Any]],
     stop_stage_processes: Callable[[List[Any]], None],
     telemetry_collect_once: Callable[[], None],
     poll_stage_process_failures: Callable[[List[Any], str], List[Dict[str, Any]]],
@@ -106,7 +107,14 @@ def execute_stage_runtime(
         write_gpu_safety_marker=write_gpu_safety_marker,
         start_intel_gpu_top_sidecar=start_intel_gpu_top_sidecar,
     )
-    stage_processes = launch_stage_processes(stage, cpu_kernel_flavor, run_dir)
+    stage_modules = getattr(stage, "modules", None)
+    if bool(getattr(getattr(stage_modules, "cpu", None), "power_auto", False)):
+        stage_processes = launch_stage_processes(stage, cpu_kernel_flavor, run_dir, cpu_backend)
+    else:
+        # Preserve the long-standing launch callback contract for ordinary CPU
+        # Auto and non-CPU stages.  Only explicit Power Auto needs to override
+        # the backend selected by the normal CPU policy.
+        stage_processes = launch_stage_processes(stage, cpu_kernel_flavor, run_dir)
     intel_gpu_top_sidecar_summary: Optional[Dict[str, Any]] = None
     try:
         live_loop_result = run_stage_live_loop(
@@ -224,6 +232,7 @@ def execute_stage_runtime(
         serialize_gpu_worker=serialize_gpu_worker,
         stage_plan=stage_plan,
         cpu_backend=cpu_backend,
+        cpu_instruction_intent=cpu_instruction_intent,
         cpu_mode_requested=cpu_mode_requested,
         cpu_mode_resolved=cpu_mode_resolved,
         cpu_kernel_flavor=cpu_kernel_flavor,

@@ -20,11 +20,13 @@ class StageWindow:
     trim_start_seconds: int
     trim_end_seconds: int
     cpu_backend: str = ""
+    cpu_instruction_intent: str = ""
     cpu_mode_requested: str = ""
     cpu_mode_resolved: str = ""
     cpu_kernel_flavor: str = ""
     cpu_tuning_policy: str = ""
     cpu_tuned_avg_power_w: Optional[float] = None
+    cpu_selection_evidence: Dict[str, Any] = field(default_factory=dict)
     gpu_3d_backend_preference: str = ""
     gpu_3d_backend_resolved: str = ""
     vram_backend_preference: str = ""

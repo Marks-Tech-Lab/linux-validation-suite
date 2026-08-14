@@ -3,40 +3,15 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from .lvs_advanced_debug import AdvancedDebugLogger
-from .lvs_cpu_architecture import current_cpu_architecture, heatsoak_cpu_instruction_set
 from .lvs_heatsoak import HeatsoakManager
-from .lvs_profile_models import ModuleCpu, ModuleGpu3D, StageConfig, StageModules, StageNormalization
+from .lvs_profile_models import StageConfig
 
 
 class HeatsoakBridgeMixin:
     """CLI heatsoak stage construction and runtime delegation."""
 
     def _build_heatsoak_stage(self, duration_seconds: int) -> StageConfig:
-        return StageConfig(
-            id="heatsoak",
-            name="Combined",
-            duration_seconds=max(1, int(duration_seconds)),
-            enabled=True,
-            modules=StageModules(
-                cpu=ModuleCpu(
-                    enabled=True,
-                    mode="extreme",
-                    load="steady",
-                    instruction_set=heatsoak_cpu_instruction_set(current_cpu_architecture()),
-                    threads="all",
-                    priority="high",
-                ),
-                gpu_3d=ModuleGpu3D(
-                    enabled=True,
-                    mode="steady",
-                    intensity="extreme",
-                    gpus="all",
-                    backend_preference="auto",
-                    compute_variant="stress_hash",
-                ),
-            ),
-            normalization=StageNormalization(0, 0),
-        )
+        return HeatsoakManager(self.orchestrator).build_heatsoak_stage(duration_seconds)
 
     def _run_heatsoak_if_requested(
         self,

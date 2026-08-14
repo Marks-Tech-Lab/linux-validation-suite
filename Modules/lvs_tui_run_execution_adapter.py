@@ -43,6 +43,7 @@ from Modules.lvs_tui_run_execution_flow import (
     upload_finish_result,
     upload_not_ready_detail,
     upload_thread_failure_text,
+    upload_target_result_dir,
     upload_return_view_mode,
     upload_workflow_detail,
     uploaded_result_dir,
@@ -184,16 +185,27 @@ class TuiRunExecutionAdapterMixin:
         self._start_upload_last_result()
 
     def _start_upload_last_result(self) -> bool:
-        if self.last_run_dir is None:
-            self._set_detail(self._post_run_operator_text(None, "No completed TUI run is available for upload yet."))
+        result_dir = upload_target_result_dir(
+            self.view_mode,
+            getattr(self, "selected_result", None),
+            self.last_run_dir,
+        )
+        if result_dir is None:
+            message = (
+                "Select a result folder in Results before uploading."
+                if self.view_mode == "results"
+                else "No completed TUI run is available for upload yet."
+            )
+            self._set_detail(self._post_run_operator_text(None, message))
             return False
         if self.upload_in_progress:
+            active_dir = getattr(self, "upload_result_dir", None) or result_dir
             self._set_detail(
                 upload_workflow_detail(
                     title="Google Drive Upload",
-                    result_dir=self.last_run_dir,
+                    result_dir=active_dir,
                     status="uploading",
-                    body=upload_active_detail(self.last_run_dir),
+                    body=upload_active_detail(active_dir),
                 )
             )
             return False
@@ -203,16 +215,17 @@ class TuiRunExecutionAdapterMixin:
             self._set_detail(
                 upload_workflow_detail(
                     title="Google Drive Upload Not Ready",
-                    result_dir=self.last_run_dir,
+                    result_dir=result_dir,
                     status="not ready",
-                    body=upload_not_ready_detail(self.last_run_dir, readiness),
+                    body=upload_not_ready_detail(result_dir, readiness),
                 )
             )
             self._set_status("Google Drive not ready")
             return False
         self.upload_return_view_mode = upload_return_view_mode(self.view_mode)
+        self.upload_result_dir = result_dir
         self.upload_in_progress = True
-        presentation = upload_active_presentation(self.last_run_dir)
+        presentation = upload_active_presentation(result_dir)
         self.view_mode = presentation.view_mode
         self._rendered_context_action_mode = None
         self._rendered_global_action_mode = None
@@ -220,14 +233,14 @@ class TuiRunExecutionAdapterMixin:
         self._set_detail(
             upload_workflow_detail(
                 title="Google Drive Upload",
-                result_dir=self.last_run_dir,
+                result_dir=result_dir,
                 status="uploading",
-                body=upload_active_detail(self.last_run_dir),
+                body=upload_active_detail(result_dir),
             )
         )
         self._refresh_global_action_buttons()
         asyncio.create_task(self._show_upload_active_sidebar(presentation))
-        thread = threading.Thread(target=self._upload_last_result_thread, args=(self.last_run_dir,), daemon=True)
+        thread = threading.Thread(target=self._upload_last_result_thread, args=(result_dir,), daemon=True)
         thread.start()
         return True
 
@@ -479,7 +492,7 @@ class TuiRunExecutionAdapterMixin:
     async def _show_upload_active_sidebar(self, presentation=None) -> None:
         if not self.upload_in_progress or self.view_mode != "upload_active":
             return
-        current = presentation or upload_active_presentation(self.last_run_dir)
+        current = presentation or upload_active_presentation(getattr(self, "upload_result_dir", None))
         self.query_one("#sidebar-title").update(current.sidebar_title)
         list_view = self.query_one("#items")
         list_view.disabled = False
@@ -516,9 +529,9 @@ class TuiRunExecutionAdapterMixin:
             self._set_detail(
                 upload_workflow_detail(
                     title="Google Drive Upload",
-                    result_dir=self.last_run_dir,
+                    result_dir=getattr(self, "upload_result_dir", None),
                     status="uploading",
-                    body=upload_active_detail(self.last_run_dir or Path("-")),
+                    body=upload_active_detail(getattr(self, "upload_result_dir", None) or Path("-")),
                 )
             )
             return
@@ -536,20 +549,25 @@ class TuiRunExecutionAdapterMixin:
 
     def _finish_upload_from_thread(self, text: str, payload: dict) -> None:
         self.upload_in_progress = False
+        source_dir = getattr(self, "upload_result_dir", None) or self.last_run_dir
         moved_to = uploaded_result_dir(payload)
-        if moved_to is not None:
+        if moved_to is not None and source_dir == self.last_run_dir:
             self.last_run_dir = moved_to
         status, detail, _outcome = upload_finish_result(payload, text, self.service)
         upload_status = ""
         if isinstance(payload, dict) and payload.get("result"):
             upload_status = str(payload.get("result"))
+        completed_result_dir = moved_to or source_dir
         completed_detail = upload_workflow_detail(
             title="Google Drive Upload Complete",
-            result_dir=self.last_run_dir,
+            result_dir=completed_result_dir,
             status=upload_status or status,
             body=detail,
         )
         return_mode = upload_return_view_mode(getattr(self, "upload_return_view_mode", "results"))
+        if moved_to is not None and return_mode == "results":
+            self.selected_result = None
+        self.upload_result_dir = None
         self.view_mode = return_mode
         asyncio.create_task(self._restore_navigation_after_upload(return_mode, status, completed_detail))
 
