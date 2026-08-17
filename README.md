@@ -8,26 +8,31 @@ review.
 
 ## Current Platform Support
 
-This project is currently developed and validated primarily on x86_64 Linux systems.
+Linux Validation Suite supports x86_64 and AArch64 Linux. Support is
+architecture-specific: x86 vector execution covers the verified SSE/AVX
+families available across the complete targeted CPU set, while AArch64 native
+vector execution currently uses NEON. Explicit architecture-specific ISA
+requests fail closed when unavailable rather than silently substituting
+another ISA or backend.
 
-ARM64/Linux support is a long-term goal after the core project is more complete
-and mature. It is not fully validated now and is not promised for a specific
-release. Some telemetry, sensor, GPU, stress-test, or dependency behavior may
-remain incomplete or inconsistent on ARM systems until dedicated validation is
-completed.
+This is not a generic guarantee for every ARM architecture or platform. SVE,
+SVE2, and SME are not implemented, and unrelated architectures such as RISC-V
+are outside the current support guarantee. Hardware and telemetry coverage
+still depends on the CPU, GPU, driver, kernel, firmware, and system tools
+available on each host.
 
 ## Public Alpha
 
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current release is `v0.2.0-alpha`, focused on Storage Health
-and Storage Benchmark.
+pre-releases. The current release is `v0.3.0-alpha`, focused on first-class
+AArch64 support and cross-architecture CPU, power, memory, GPU, profile, and
+evidence validation.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
-baseline. On `main` after that tag, Phase 1 contract clarifications and Phase 2A
-artifact identities are complete. See [ROADMAP.md](ROADMAP.md) for completed,
-deferred, and undecided project status.
+baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
+[ROADMAP.md](ROADMAP.md) for completed, deferred, and undecided project status.
 
 Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
 intended for early validation and feedback; hardware-sensitive and experimental
@@ -35,9 +40,13 @@ areas are identified below.
 
 ## Fresh Clone And First Run
 
+### Core and Python requirements
+
 Python 3.14 is the currently tested version. The code requires Python 3.10 or
 newer because it uses modern typing syntax. Newer Python versions are allowed,
-but run the smoke tests before relying on an untested interpreter version.
+but run the smoke tests before relying on an untested interpreter version. The
+baseline Python requirements include the established Textual dependency used by
+the TUI.
 
 From the repository root, create the ignored local virtual environment and
 install baseline dependencies:
@@ -62,6 +71,33 @@ source .venv/bin/activate
 .venv/bin/python linux_validation_suite_tui.py
 .venv/bin/python smoke_tests/run_smoke_tests.py
 ```
+
+### Native helper build requirements
+
+A fresh clone needs `gcc` or a compatible `cc` when LVS must build its native
+CPU and memory helpers. Helpers are built for the architecture on which LVS is
+running. An AArch64 host therefore needs an AArch64-capable native compiler; it
+does not need an x86 cross-compiler merely because LVS also supports x86_64.
+
+### Capability-dependent system backends
+
+System backends are installed and configured separately from the Python virtual
+environment. They are capability dependent rather than universal requirements:
+
+- `stress-ng` enables applicable CPU/RAM workloads and participates as a Power
+  Auto candidate.
+- A Vulkan loader and usable hardware GPU driver enable Vulkan compute,
+  transfer/readback, and stateful-memory workloads.
+- An OpenCL ICD loader and applicable GPU runtime enable OpenCL workloads.
+- EGL/GLES libraries and a hardware renderer enable EGL/GLES workloads.
+- `fio` with the `libaio` engine enables Storage Benchmark.
+- `nvme-cli` and `smartmontools` provide applicable storage-health coverage.
+- Vendor utilities such as `nvidia-smi` and `intel_gpu_top` add telemetry where
+  the matching hardware and driver expose it.
+
+LVS does not silently install system packages. Use Dependency Check and
+Readiness/Dry Run to determine which capabilities are available on a particular
+host and which are required by the selected profile.
 
 On first launch, the suite uses `settings/global_settings.example.json` as the
 initial settings payload and writes the ignored local file
@@ -272,7 +308,7 @@ Available workflows include:
   conflicts are staged for manual comparison, and bundle manifests, checksums,
   paths, and symlinks are validated before use.
 
-The runtime version is `0.2.0-alpha`, corresponding to the `v0.2.0-alpha`
+The runtime version is `0.3.0-alpha`, corresponding to the `v0.3.0-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -299,20 +335,174 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
 
-## Release Notes — v0.2.0-alpha
+## Release Notes — v0.3.0-alpha
 
-**Storage health and benchmark alpha**
+Linux Validation Suite v0.3.0-alpha adds first-class AArch64 execution alongside
+x86_64 and substantially improves CPU, power, memory, GPU, profile, and result
+evidence behavior. It remains an alpha release intended for early hardware
+validation and operator feedback.
 
-- Added normalized internal-drive inventory enrichment and SMART health through
-  `nvme-cli` and optional `smartctl` providers.
-- Added the fio-backed KDiskMark/CDM-style Storage Benchmark as a standalone
-  CLI workflow and a completion-based profile module.
-- Added sequential all-internal-drive benchmarking, explicit system-drive
-  safeguards, CoW/Btrfs warnings, and JSON/TXT benchmark artifacts.
-- Added `Storage Benchmark Quick` and `Storage Benchmark Sequential`; `Quick
-  Test` now finishes with a one-run Storage Benchmark stage.
-- Retained normalized output boundaries: raw SMART and raw fio provider payloads
-  are not embedded in normal system information or parsed results.
+### Highlights
+
+- Added supported AArch64 execution, validated on Qualcomm Oryon and a Qualcomm
+  Adreno integrated GPU.
+- Added architecture-aware CPU instruction intent and heterogeneous-core-safe
+  targeting.
+- Added measured cross-backend Power Auto selection with truthful fallbacks
+  when package-power telemetry is unavailable.
+- Unified RAM and shared-GPU memory planning to prevent double counting and
+  unsafe overcommit.
+- Improved Vulkan compute, transfer/readback, stateful-memory, APU, and
+  multi-GPU execution.
+- Expanded verification, affinity, utilization, allocation, and worker evidence
+  while preserving legacy result compatibility.
+- Converted the standard PL, QA, and Quick profiles to architecture-portable
+  CPU intent.
+- Added an optional low-occupancy, non-root internal-drive Storage Benchmark
+  target mode.
+
+### Supported architectures
+
+- x86_64 Linux
+- AArch64 Linux
+
+Support is architecture-specific rather than generic support for every ARM
+version or unrelated architecture. AArch64 native vector execution currently
+uses NEON; SVE, SVE2, and SME are not implemented. Explicit ISA requests remain
+architecture constrained and fail closed when unavailable.
+
+### AArch64 support
+
+- Added AArch64 architecture detection, helper readiness, topology, targeting,
+  affinity, telemetry, and result-evidence policy.
+- Added native AArch64 scalar and NEON CPU paths, verified stress-ng and Python
+  CPU paths, and native, stress-ng, and Python RAM paths.
+- Added platform plus PCI/DRM GPU discovery and verified Vulkan operation on
+  Qualcomm Adreno.
+- Preserved truthful behavior when CPU clocks, package watts, or other platform
+  telemetry are unavailable.
+
+### CPU and Power validation
+
+- CPU targets now use the intersection of online CPUs and the process-allowed
+  affinity set, including sparse and nonzero allowed CPU sets.
+- Improved physical/logical topology, SMT grouping, Intel P/E hybrid-core
+  detection, and CPUID-based P/E classification.
+- Native ISA selection uses the common safe capability set across every
+  targeted CPU, supporting heterogeneous-core-safe execution across verified
+  SSE, AVX, AVX2, and AVX-512 tiers.
+- Added `baseline_vector`, `high_throughput_vector`, and
+  `highest_verified_vector`. On AArch64, the current baseline and
+  high-throughput tiers both resolve to NEON and disclose that tier collapse.
+- Exact ISA requests keep their explicit meaning and fail closed when the
+  architecture or complete target CPU set cannot provide them.
+- Power Auto is separate from ordinary CPU Auto. It compares viable native
+  kernels, stress-ng matrixprod, and Python PBKDF2 candidates using measured
+  CPU/package power when trustworthy telemetry exists.
+- When trustworthy package-power telemetry is unavailable, Power Auto uses an
+  explicitly reported architecture-appropriate fallback. The validated
+  AArch64 fallback is based on thermal testing, while x86_64 uses a
+  compatibility/capability fallback.
+
+### Memory and GPU improvements
+
+- Unified RAM and shared-GPU memory budgeting with one system reserve, exact
+  worker assignments, launch-time planning, and a runtime allocation guard.
+- Prevented shared system memory from being counted independently as both RAM
+  and integrated-GPU memory, while keeping dedicated VRAM outside the shared
+  system-memory pool.
+- Fixed Python RAM continuous verification across the zero-pattern transition,
+  retained stress-ng final verification and metrics, and improved native RAM
+  final verification evidence.
+- Added platform plus PCI/DRM GPU discovery, including Qualcomm Adreno, and
+  improved integrated/discrete classification, AMD APU selection, and
+  small-dGPU selection.
+- Improved Vulkan compute/readback, transfer/readback, stateful-memory,
+  shared-heap selection, allocation-count splitting, buffer planning, and
+  integrated-GPU memory handling.
+- Stabilized GPU telemetry association by physical platform/card/slot identity
+  and improved multi-GPU execution across exercised Intel, AMD, NVIDIA, and
+  platform paths.
+
+### Profiles and workflow
+
+- The PL Validation family, QA System Test Short v2, and Quick Test use
+  architecture-aware CPU intent without requiring duplicated x86 and AArch64
+  profile variants.
+- Power Test explicitly uses Power Auto.
+- Completed hardware campaign and confirmation profiles were archived outside
+  normal discovery, but retained for historical reproduction rather than
+  deleted. Normal discovery now presents the active operator set instead of
+  campaign-only profiles.
+- Added `all_internal_non_root_low_occupancy` for explicitly configured Storage
+  Benchmark profiles, with unconditional root/system-drive exclusion and
+  execution-time occupancy and free-space rechecks.
+- TUI Results-view `G Upload` now targets the selected result path rather than
+  relying only on the latest run directory. Successful moves refresh result
+  inventory/selection while preserving the shared uploader and readiness flow.
+
+### Reliability and evidence
+
+- Added meaningful stress-ng `--verify` and metrics behavior, independent
+  Python CPU/RAM verification, and native canary evidence.
+- Expanded CPU utilization, target-set, affinity, worker-count, memory,
+  allocation, and verification evidence.
+- Improved Readiness, Dry Run, materialized launch-plan, and Advanced Debug
+  evidence.
+- Added memory-plan, telemetry, and worker evidence to
+  `parsed_results_extended.json` while preserving the existing
+  `parsed_results_custom.json` compatibility contract and aliases.
+- Added contract identities to run manifests, dependency reports, and telemetry
+  source maps.
+- Added unit-correct `_gib` telemetry aliases while retaining existing `_gb`
+  compatibility fields.
+
+### Compatibility
+
+Existing user profiles remain loadable. New profile fields are additive:
+`cpu.power_auto` and `cpu.instruction_intent` are opt-in and use safe defaults
+when absent. Explicit historical `instruction_set` values retain their original
+meanings, and architecture-specific requests continue to fail closed rather
+than silently downgrade.
+
+`parsed_results_custom.json` and existing compatibility aliases remain intact.
+`parsed_results_extended.json`, manifests, worker artifacts, and telemetry
+outputs gain additive evidence.
+
+Completed campaign profiles were moved, not deleted. Scripts or external tools
+that hard-code their former paths may need adjustment because those historical
+profiles now reside below `profiles/Archived/2026 Hardware Validation/`.
+
+### Known limitations
+
+- AArch64 native vector support currently covers NEON, not SVE, SVE2, or SME.
+- ARM GPU OpenCL was not hardware validated during this campaign. The OpenCL
+  loader uses normal system discovery, but its hard-coded fallback list does
+  not yet include common AArch64 multiarch paths.
+- TUI selected-result Google Drive upload is software/regression validated.
+  Physical end-to-end Google Drive integration was not exercised on the current
+  host because the optional dependency and integration setup was incomplete.
+- CPU/package-power telemetry availability varies by platform. Power Auto
+  reports the selection mechanism it used and falls back truthfully where watts
+  are unavailable.
+
+These are capability boundaries and future expansion areas, not unresolved
+release failures.
+
+### Validation
+
+AArch64 and x86_64 were exercised across five materially different final
+Power Auto/instruction-intent confirmation systems. All 20 confirmation stages
+were accepted: 17 `VALIDATED`, 3 `VALIDATED WITH EXPLAINED WARNING`, and no
+current unresolved acceptance failures.
+
+Real hardware acceptance included Qualcomm Oryon/NEON, Qualcomm Adreno Vulkan,
+Intel hybrid P/E common-safe ISA behavior, x86 AVX-512 selection where common
+and supported, measured Power Auto on multiple Intel and AMD systems, and the
+AArch64 no-package-power fallback. This coverage does not imply validation of
+every hardware combination.
+
+The v0.3.0-alpha release audit passed all 240 non-hardware smoke tests.
 
 ## Default Configuration
 

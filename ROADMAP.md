@@ -15,7 +15,7 @@ undecided work. Deferred or possible work is not committed release scope.
   workflows, sequential all-internal mode, system-drive safeguards, CoW/Btrfs
   warnings, and normalized/raw artifact separation.
 
-## Completed After v0.2.0-alpha On Main
+## Completed In v0.3.0-alpha
 
 - Completed Phase 1 contract clarifications covering legacy unit meanings,
   compatibility aliases, enum domains, storage-provider semantics, and
@@ -33,6 +33,43 @@ undecided work. Deferred or possible work is not committed release scope.
   root/system-drive exclusion, and execution-time occupancy and free-space
   rechecks. Existing `all_internal` and `selected_target` modes and the
   ready-made Storage Benchmark profiles remain unchanged.
+- Added first-class AArch64 execution alongside x86_64, including native scalar
+  and NEON CPU helpers, stress-ng and Python CPU paths, native/stress-ng/Python
+  RAM paths, helper readiness, targeting, affinity, topology, telemetry, and
+  evidence behavior.
+- Added platform GPU discovery and validated Qualcomm Adreno Vulkan compute,
+  transfer/readback, and stateful-memory operation on AArch64.
+- Unified RAM and shared-GPU memory planning with reserve-once accounting,
+  launch-time worker assignments, dedicated-VRAM isolation, and a runtime
+  allocation guard.
+- Hardened CPU targeting around online and process-allowed CPU intersections,
+  including sparse and nonzero CPU sets, SMT topology, Intel P/E hybrid-core
+  CPUID classification, and common-safe ISA selection across every targeted
+  CPU.
+- Added explicit `baseline_vector`, `high_throughput_vector`, and
+  `highest_verified_vector` instruction intents with architecture-aware
+  resolution, AArch64 NEON tier-collapse disclosure, and fail-closed exact ISA
+  behavior.
+- Added Power Auto as a distinct cross-backend policy comparing viable native,
+  stress-ng matrixprod, and Python PBKDF2 candidates. It uses measured package
+  power when trustworthy telemetry exists, the validated thermal fallback on
+  AArch64 without package watts, and the compatibility/capability fallback on
+  x86_64 without package watts.
+- Converted the PL Validation family, QA System Test Short v2, and Quick Test to
+  architecture-aware instruction intent; Power Test now explicitly requests
+  Power Auto.
+- Corrected Python RAM zero-pattern verification, stress-ng final metrics and
+  verification retention, native RAM evidence, AMD APU and small-dGPU routing,
+  shared Vulkan heap selection, stateful buffer allocation, multi-GPU planning,
+  stable physical telemetry association, and selected-result TUI upload
+  targeting.
+- Archived completed hardware campaign profiles outside normal discovery while
+  retaining them for historical reproduction.
+- Completed cross-architecture hardware acceptance for the current development
+  wave, including Qualcomm Oryon/NEON, Qualcomm Adreno Vulkan, Intel hybrid P/E
+  common-safe ISA behavior, measured Intel/AMD Power Auto, and the AArch64
+  no-package-power fallback. No current acceptance failure remained at
+  closeout.
 
 ## Deferred Compatibility And Output Work
 
@@ -74,9 +111,20 @@ milestone and does not authorize new storage testing, comparison, or reporting.
 
 - Additional storage testing beyond the current Storage Health and Storage
   Benchmark baseline is deferred pending actual planning.
-- ARM64/Linux support is a long-term goal after the core project is more
-  complete and mature. It is not fully validated now and is not promised for a
-  specific release.
+- SVE, SVE2, and SME are not implemented. Any future AArch64 ISA expansion must
+  retain explicit capability detection, complete-target safety, and fail-closed
+  behavior.
+- Before the first real AArch64 GPU OpenCL validation, add common AArch64
+  multiarch loader paths through one shared resolver. Do not fork the OpenCL
+  workers or claim ARM GPU OpenCL acceptance before hardware validation.
+- Additional CPU/package-power telemetry providers may be added for unfamiliar
+  platforms. Current missing-watts behavior remains a truthful reported
+  fallback, not a failed feature.
+- Power Auto close-margin confidence/repeat policy is optional future
+  refinement, not a current acceptance requirement.
+- Additional CPU architectures and platform-specific hardware support require
+  separate implementation and validation; x86_64 and AArch64 are the current
+  supported architecture contract.
 - NIC/network testing remains deferred candidate scope, not an adopted
   roadmap. Reconsidering it requires deliberate planning for loopback
   connectors, an operator-provided `iperf3` server or external peer, a

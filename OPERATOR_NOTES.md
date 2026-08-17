@@ -33,6 +33,24 @@ The repo-local `.venv` commands are the expected operator and smoke-test path.
 The setup script selects the preferred available interpreter and records the
 actual virtual-environment Python in its output.
 
+## Platform And Dependency Guidance
+
+LVS supports x86_64 and AArch64 Linux. Generic operator profiles use
+architecture-aware CPU intent where applicable. Explicit architecture-specific
+ISA requests remain explicit and fail closed when unsupported rather than
+silently selecting another ISA or backend.
+
+On a fresh clone, native CPU and memory helper compilation requires `gcc` or a
+compatible `cc` toolchain for the running architecture. Build the AArch64
+helpers natively on AArch64 with an AArch64-capable compiler; an x86
+cross-compiler is not required merely because LVS also supports x86_64.
+
+`stress-ng`, GPU runtimes/loaders, storage tools, and vendor telemetry utilities
+are capability-dependent system backends. Missing optional capabilities should
+appear in Dependency Check and Readiness/Dry Run for the selected profile. LVS
+does not silently install system packages. Google Drive integration remains
+optional and separately configured.
+
 ## Which Profile To Use
 
 - `Quick Test.json`: short machine validation that finishes with a one-run
