@@ -281,24 +281,32 @@ class RunCliAdapter:
             return
         if preflight_action.skip_notice:
             print(preflight_action.skip_notice)
-        if cli_live_run_supported(sys.stdout):
-            live = CliLiveRunPresenter(stream=sys.stdout, enabled=True)
-            try:
-                result = self.run_launcher.run_prepared_capture(
+        try:
+            if cli_live_run_supported(sys.stdout):
+                live = CliLiveRunPresenter(stream=sys.stdout, enabled=True)
+                try:
+                    result = self.run_launcher.run_prepared_capture(
+                        prepared_run.launch_request,
+                        output_callback=live.write_line,
+                        operator_stop_source="cli",
+                    )
+                    run_dir = result.run_dir
+                finally:
+                    live.finish()
+            else:
+                run_dir = self.run_launcher.run_prepared_direct(
                     prepared_run.launch_request,
-                    output_callback=live.write_line,
-                    operator_stop_source="cli",
+                    heatsoak_debug_callback=lambda path: print(f"Heatsoak advanced debug logging: {path}"),
                 )
-                run_dir = result.run_dir
-            except RunExecutionError as exc:
-                raise exc
-            finally:
-                live.finish()
-        else:
-            run_dir = self.run_launcher.run_prepared_direct(
-                prepared_run.launch_request,
-                heatsoak_debug_callback=lambda path: print(f"Heatsoak advanced debug logging: {path}"),
-            )
+        except RunExecutionError as exc:
+            print(f"Run failed: {exc}")
+            if exc.output:
+                print("Captured output:")
+                print(exc.output.rstrip())
+            return
+        except Exception as exc:
+            print(f"Run failed: {exc}")
+            return
         if run_dir is None:
             print("Run cancelled during heatsoak.")
             return

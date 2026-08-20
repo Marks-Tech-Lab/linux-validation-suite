@@ -26,9 +26,10 @@ available on each host.
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current release is `v0.3.0-alpha`, focused on first-class
-AArch64 support and cross-architecture CPU, power, memory, GPU, profile, and
-evidence validation.
+pre-releases. The current release is `v0.3.1-alpha`, a corrective alpha for the
+Heatsoak startup regression in `v0.3.0-alpha`. It preserves that release's
+first-class AArch64 support and cross-architecture CPU, power, memory, GPU,
+profile, and evidence validation.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
 baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
@@ -308,7 +309,7 @@ Available workflows include:
   conflicts are staged for manual comparison, and bundle manifests, checksums,
   paths, and symlinks are validated before use.
 
-The runtime version is `0.3.0-alpha`, corresponding to the `v0.3.0-alpha`
+The runtime version is `0.3.1-alpha`, corresponding to the `v0.3.1-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -334,6 +335,39 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 `parsed_results_custom.json` and its compatibility aliases remain unchanged.
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
+
+## Release Notes — v0.3.1-alpha
+
+Linux Validation Suite v0.3.1-alpha is a corrective alpha release for the
+Heatsoak startup regression in v0.3.0-alpha. It preserves the architecture,
+Power Auto, profile, and result behavior introduced in that release.
+
+### Fixes
+
+- Fixed Heatsoak exiting before worker launch because its unlogged runtime path
+  referenced Python's `tempfile` module without importing it.
+- Improved CLI launch-error containment so launch failures are reported to the
+  operator without escaping the CLI session.
+- Added regression coverage through the real shared Heatsoak manager, runner,
+  Power Auto materialization, CLI, and TUI execution paths.
+
+### Validation
+
+- Confirmed a real AArch64 Heatsoak launch using the shared service path.
+- Power Auto selected the expected `thermal_validated_fallback` path when
+  package-power telemetry was unavailable.
+- Real Python CPU and Qualcomm Adreno Vulkan workers launched, ran briefly, and
+  were cleanly reaped through normal cancellation.
+- The complete non-hardware smoke suite passed: 241/241.
+- All 65 profiles validated successfully.
+
+### Compatibility
+
+No profile, configuration, result-schema, workload-policy, or operator migration
+is required. Ordinary CPU Auto and existing v0.3.0-alpha compatibility behavior
+remain unchanged.
+
+This remains an alpha release.
 
 ## Release Notes — v0.3.0-alpha
 

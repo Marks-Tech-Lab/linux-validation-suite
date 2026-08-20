@@ -4,10 +4,11 @@ The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
 included. Alpha releases are published as pre-releases; the current
-`v0.3.0-alpha` release adds first-class AArch64 support alongside x86_64 and
-cross-architecture CPU, power, memory, GPU, profile, and evidence validation.
-It is validated with the full smoke suite and the committed hardware-acceptance
-records.
+`v0.3.1-alpha` release corrects the Heatsoak launch regression in
+`v0.3.0-alpha` while preserving its first-class AArch64 support alongside
+x86_64 and its cross-architecture CPU, power, memory, GPU, profile, evidence,
+and output-compatibility boundaries. It is validated with the full smoke suite
+and the committed hardware-acceptance records.
 
 Use this checklist when updating the public repository. Publish only generic
 Linux Validation Suite (LVS) code, examples, documentation, and empty runtime

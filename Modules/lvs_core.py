@@ -10,7 +10,7 @@ from typing import Any
 
 
 APP_NAME = "Linux Validation Suite"
-APP_VERSION = "0.3.0-alpha"
+APP_VERSION = "0.3.1-alpha"
 
 
 def now_local_iso() -> str:

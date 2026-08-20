@@ -310,7 +310,7 @@ from Modules.lvs_strict_threshold_policy import (
     strict_threshold_warning_scope,
 )
 from Modules.lvs_result_report_workflows import build_result_validation_payload
-from Modules.lvs_stage_launch_plan import build_stage_launch_commands
+from Modules.lvs_stage_launch_plan import StageLaunchCommand, build_stage_launch_commands
 from Modules.lvs_stage_completion import build_stage_check_window, complete_stage_record, serialize_final_gpu_workers, stage_issue_count
 from Modules.lvs_stage_evaluation import evaluate_completed_stage
 from Modules.lvs_stage_process_control import (
@@ -645,6 +645,7 @@ from Modules.lvs_run_progress import (
 from Modules.lvs_cli_live_run import CliLiveRunPresenter, cli_live_run_supported
 from Modules.lvs_cli_preflight_summary import compact_cli_preflight_summary
 from Modules.lvs_cli_screen import clear_cli_screen, cli_screen_refresh_supported
+from Modules.lvs_cli_heatsoak_bridge import HeatsoakBridgeMixin
 from Modules.lvs_cli_heatsoak_compat import HeatsoakCompatibilityMixin
 from Modules.lvs_run_finalization import finalize_run_stage_windows
 from Modules.lvs_run_verdict import combine_run_verdict
@@ -656,6 +657,7 @@ from Modules.lvs_run_flow import RunFlowCoordinator, build_run_preflight_action_
 from Modules.lvs_run_launch import RunLaunchCoordinator, RunLaunchRequest
 from Modules.lvs_run_preflight import RunPreflightManager
 import Modules.lvs_cli_run as cli_run_module
+import Modules.lvs_workload_runner as workload_runner_module
 from Modules.lvs_cli_run import RunCliAdapter
 from Modules.lvs_cli_run_setup import RunSetupCliAdapter
 from Modules.lvs_cli_results import ResultCliAdapter
@@ -8258,6 +8260,60 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
     assert_equal(launcher.saved_history[0], profile_path, "CLI heatsoak history saved after run")
     assert_equal(launcher.saved_history[3], 7.5, "CLI heatsoak saved to run setup history")
 
+    class FailingRunLauncher(RunLauncherStub):
+        def run_prepared_capture(
+            self,
+            request,
+            *,
+            output_callback=None,
+            progress_callback=None,
+            cancel_check=None,
+            operator_stop_source="cli",
+        ):
+            raise RunExecutionError(
+                "synthetic Heatsoak launch failure",
+                output="heatsoak-start\nrun-error\n",
+                metadata=request.metadata,
+                progress_events=[],
+                run_status=RunStatusTracker().snapshot,
+            )
+
+    failing_launcher = FakeLauncher()
+    failing_launcher.run_setup_cli = RunSetupCliAdapter(failing_launcher)
+    failing_launcher.run_launcher = FailingRunLauncher()
+    failure_output = io.StringIO()
+    original_live_run_supported = cli_run_module.cli_live_run_supported
+    cli_run_module.cli_live_run_supported = lambda stream: True
+    try:
+        with contextlib.redirect_stdout(failure_output):
+            RunCliAdapter(failing_launcher).new_run()
+    finally:
+        cli_run_module.cli_live_run_supported = original_live_run_supported
+    assert_true("Run failed: synthetic Heatsoak launch failure" in failure_output.getvalue(), "CLI reports Heatsoak launch failure")
+    assert_true("Captured output:" in failure_output.getvalue(), "CLI retains captured Heatsoak failure context")
+    assert_equal(failing_launcher.saved_history, None, "CLI failed Heatsoak does not save completed-run history")
+
+    class FailingDirectRunLauncher(RunLauncherStub):
+        def run_prepared_direct(self, request, *, heatsoak_debug_callback=None):
+            raise RuntimeError("synthetic direct Heatsoak launch failure")
+
+    direct_failure_launcher = FakeLauncher()
+    direct_failure_launcher.run_setup_cli = RunSetupCliAdapter(direct_failure_launcher)
+    direct_failure_launcher.run_launcher = FailingDirectRunLauncher()
+    direct_failure_output = io.StringIO()
+    original_live_run_supported = cli_run_module.cli_live_run_supported
+    cli_run_module.cli_live_run_supported = lambda stream: False
+    try:
+        with contextlib.redirect_stdout(direct_failure_output):
+            RunCliAdapter(direct_failure_launcher).new_run()
+    finally:
+        cli_run_module.cli_live_run_supported = original_live_run_supported
+    assert_true(
+        "Run failed: synthetic direct Heatsoak launch failure" in direct_failure_output.getvalue(),
+        "CLI direct Heatsoak failure returns to the shell instead of escaping",
+    )
+    assert_equal(direct_failure_launcher.saved_history, None, "CLI direct failed Heatsoak saves no run history")
+
 
 def test_cli_heatsoak_cancel_plumbing_and_screen_refresh() -> None:
     cancel_requested = lambda: True
@@ -8453,6 +8509,284 @@ def test_post_run_and_heatsoak_helpers() -> None:
     assert_true(stage.modules.gpu_3d.enabled, "heatsoak GPU enabled")
     assert_equal(stage.modules.gpu_3d.backend_preference, "auto", "heatsoak GPU backend")
     assert_equal(stage.modules.gpu_3d.compute_variant, "stress_hash", "heatsoak GPU variant")
+
+
+def test_heatsoak_shared_runtime_launch_regression() -> None:
+    class FakeProcess:
+        def __init__(self, running: bool) -> None:
+            self.running = running
+            self.returncode = None if running else 0
+            self.terminated = False
+            self.killed = False
+            self.waited = False
+
+        def poll(self):
+            return None if self.running else self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.running = False
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            self.waited = True
+            self.running = False
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.running = False
+            self.returncode = -9
+
+    state = {
+        "gpu_available": True,
+        "launch_running": False,
+        "launches": [],
+        "stages": [],
+        "resolve_calls": [],
+    }
+    runner = WorkloadRunner()
+    runner.stage_diagnostics = lambda stage, _label: {
+        "commands": ["stubbed-cpu", *( ["stubbed-gpu"] if state["gpu_available"] else [])],
+        "issues": [] if state["gpu_available"] else ["no compatible GPU backend"],
+    }
+    runner.resolve_cpu_execution = lambda cpu, tune_max_power=False: (
+        state["resolve_calls"].append((cpu, tune_max_power))
+        or {
+            "backend": "python_fallback",
+            "requested_mode": "auto",
+            "resolved_mode": "portable",
+            "kernel_flavor": "",
+            "tuning_policy": "power_auto",
+            "candidate_results": [],
+            "selection_evidence": {
+                "selected_workload": "pbkdf2_compare_digest",
+                "selection_mechanism": "architecture_validated_fallback",
+            },
+        }
+    )
+    runner._gpu_worker_specs = lambda stage: ["synthetic-gpu"] if state["gpu_available"] else []
+    runner._stage_system_memory_plan = lambda stage, workers: {
+        "valid": True,
+        "consumers": ["cpu", *(["gpu_3d"] if workers else [])],
+        "system_memory_total_bytes": 8 * 1024**3,
+        "system_memory_available_bytes": 6 * 1024**3,
+        "system_memory_budget_bytes": 5 * 1024**3,
+        "system_memory_safety_reserve_bytes": 1024**3,
+    }
+    runner._command_env = lambda extra_env=None, unset_keys=None: dict(extra_env or {})
+
+    original_tempfile = workload_runner_module.tempfile
+    original_apply_plan = workload_runner_module.apply_stage_system_memory_plan
+    original_build_commands = workload_runner_module.build_stage_launch_commands
+    original_launch = workload_runner_module.launch_stage_processes_from_plan
+    with TemporaryDirectory() as tmp:
+        guard_path = Path(tmp) / "heatsoak_runtime_memory_guard.json"
+
+        def fake_build_commands(
+            _runner,
+            stage,
+            cpu_kernel_flavor="",
+            worker_results_dir=None,
+            cpu_backend_override="",
+            stage_memory_plan=None,
+            resolved_gpu_workers=None,
+        ):
+            state["stages"].append(stage)
+            assert_equal(worker_results_dir, None, "Heatsoak launch remains unlogged")
+            assert_equal(cpu_backend_override, "python_fallback", "Power Auto backend reaches launch plan")
+            assert_true(stage.modules.cpu.power_auto, "Heatsoak launch stage preserves Power Auto")
+            commands = [
+                StageLaunchCommand(
+                    "cpu",
+                    ["synthetic-cpu-worker"],
+                    result_path=None,
+                    system_memory_plan=stage_memory_plan,
+                )
+            ]
+            if resolved_gpu_workers:
+                commands.append(
+                    StageLaunchCommand(
+                        "gpu_3d",
+                        ["synthetic-gpu-worker"],
+                        result_path=None,
+                        system_memory_plan=stage_memory_plan,
+                    )
+                )
+            return commands
+
+        def fake_launch_commands(planned_commands, **_kwargs):
+            launches = []
+            for command in planned_commands:
+                process = FakeProcess(bool(state["launch_running"]))
+                launches.append(
+                    StageProcess(
+                        kind=command.kind,
+                        command=list(command.command),
+                        process=process,
+                        system_memory_plan=command.system_memory_plan,
+                    )
+                )
+            state["launches"].append(launches)
+            return launches
+
+        workload_runner_module.tempfile = SimpleNamespace(gettempdir=lambda: tmp)
+        workload_runner_module.apply_stage_system_memory_plan = lambda workers, _plan: list(workers)
+        workload_runner_module.build_stage_launch_commands = fake_build_commands
+        workload_runner_module.launch_stage_processes_from_plan = fake_launch_commands
+        try:
+            manager = HeatsoakManager(SimpleNamespace(workload_runner=runner))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                completed = manager.run_heatsoak_if_requested(1.0)
+            assert_true(completed, "shared HeatsoakManager reaches launch without SystemExit")
+            assert_true("Starting heatsoak: 00:01:00" in output.getvalue(), "Heatsoak reports resolved duration")
+            assert_true("Power Auto CPU selection" in output.getvalue(), "Heatsoak reports Power Auto selection")
+            assert_equal(state["stages"][-1].duration_seconds, 60, "Heatsoak minute reaches materialized stage")
+            assert_equal(
+                [entry.kind for entry in state["launches"][-1]],
+                ["cpu", "gpu_3d"],
+                "Heatsoak materializes CPU and detected GPU participants",
+            )
+            assert_true(all(entry.process.waited for entry in state["launches"][-1]), "completed fake workers are reaped")
+            assert_true(not guard_path.exists(), "temporary Heatsoak runtime guard is removed after completion")
+
+            class BridgeHost(HeatsoakBridgeMixin):
+                def __init__(self) -> None:
+                    self.orchestrator = SimpleNamespace(workload_runner=runner)
+                    self._pending_heatsoak_minutes = 1.0
+
+            state["launch_running"] = True
+            with contextlib.redirect_stdout(io.StringIO()):
+                bridge_completed = BridgeHost()._run_heatsoak_if_requested(1.0, cancel_check=lambda: True)
+            assert_true(not bridge_completed, "CLI compatibility bridge forwards Heatsoak cancellation")
+            cancelled = state["launches"][-1]
+            assert_true(all(entry.process.terminated for entry in cancelled), "cancelled Heatsoak workers receive terminate")
+            assert_true(all(entry.process.waited for entry in cancelled), "cancelled Heatsoak workers are reaped")
+            assert_true(all(not entry.process.running for entry in cancelled), "no cancelled fake worker remains running")
+            assert_true(not guard_path.exists(), "temporary guard is removed after cancellation")
+
+            state["launch_running"] = False
+            state["gpu_available"] = False
+            with contextlib.redirect_stdout(io.StringIO()):
+                cpu_only_completed = manager.run_heatsoak_if_requested(1.0)
+            assert_true(cpu_only_completed, "Heatsoak continues with CPU when no compatible GPU is launchable")
+            assert_equal(
+                [entry.kind for entry in state["launches"][-1]],
+                ["cpu"],
+                "no-GPU Heatsoak materializes only the viable CPU participant",
+            )
+            assert_true(not guard_path.exists(), "CPU-only Heatsoak removes its temporary guard")
+
+            launches_before_unavailable = len(state["launches"])
+            runner.stage_diagnostics = lambda stage, _label: {
+                "commands": [],
+                "issues": ["no compatible CPU or GPU backend"],
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                unavailable_completed = manager.run_heatsoak_if_requested(1.0)
+            assert_true(unavailable_completed, "unavailable Heatsoak backends report and continue")
+            assert_equal(len(state["launches"]), launches_before_unavailable, "unavailable backends launch no worker")
+
+            runner.stage_diagnostics = lambda stage, _label: {"commands": ["stubbed-cpu"], "issues": []}
+            profile_path = Path("profiles/HeatsoakSharedRuntimeSmoke.json")
+            profile = ValidationProfile(
+                profile_name="HeatsoakSharedRuntimeSmoke",
+                stages=[StageConfig(id="logged", name="CPU", duration_seconds=60)],
+            )
+            setup = RunSetupState(
+                profile_path=profile_path,
+                metadata=RunMetadata(),
+                profile=profile,
+                labels=["CPU"],
+                heatsoak_minutes=1.0,
+            )
+
+            class Orchestrator:
+                workload_runner = runner
+
+                def run(self, *_args, **_kwargs):
+                    return Path("/tmp/heatsoak-shared-runtime-result")
+
+            executor = RunExecutor(
+                settings=SimpleNamespace(suite_department="Production"),
+                profile_loader=SimpleNamespace(),
+                orchestrator=Orchestrator(),
+                default_run_metadata=lambda _path: RunMetadata(),
+                ensure_enhanced_telemetry_ready=lambda: True,
+                run_heatsoak_if_requested=manager.run_heatsoak_if_requested,
+            )
+            result = executor.run_profile_capture_output(
+                profile_path,
+                setup=setup,
+                heatsoak_minutes=setup.heatsoak_minutes,
+                operator_stop_source="tui",
+            )
+            assert_equal(result.run_dir, Path("/tmp/heatsoak-shared-runtime-result"), "shared executor continues after Heatsoak")
+            assert_true(any(event.event_type == "heatsoak-start" for event in result.progress_events), "shared executor begins Heatsoak")
+            assert_true(any(event.event_type == "heatsoak-end" for event in result.progress_events), "shared executor completes Heatsoak")
+
+            class TuiHost(TuiRunExecutionAdapterMixin):
+                def __init__(self, run_executor) -> None:
+                    self.run_setup = setup
+                    self.run_cancel_event = threading.Event()
+                    self.finished = None
+                    self.lines = []
+                    self.events = []
+                    self.service = SimpleNamespace(
+                        run_profile_capture_output=run_executor.run_profile_capture_output,
+                        run_complete_outcome=lambda _path: SimpleNamespace(text="Run complete"),
+                    )
+
+                def call_from_thread(self, callback, *args):
+                    callback(*args)
+
+                def _append_run_output_line(self, line):
+                    self.lines.append(line)
+
+                def _append_run_progress_event(self, event):
+                    self.events.append(event)
+
+                def _finish_run_from_thread(self, text, result):
+                    self.finished = (text, result)
+
+            tui = TuiHost(executor)
+            tui._run_profile_thread(SimpleNamespace(path=profile_path))
+            assert_true(tui.finished is not None and tui.finished[1] is not None, "TUI real execution path survives Heatsoak launch")
+
+            failing_executor = RunExecutor(
+                settings=SimpleNamespace(suite_department="Production"),
+                profile_loader=SimpleNamespace(),
+                orchestrator=Orchestrator(),
+                default_run_metadata=lambda _path: RunMetadata(),
+                ensure_enhanced_telemetry_ready=lambda: True,
+                run_heatsoak_if_requested=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeError("synthetic heatsoak launch failure")
+                ),
+            )
+            try:
+                failing_executor.run_profile_capture_output(
+                    profile_path,
+                    setup=setup,
+                    heatsoak_minutes=1.0,
+                )
+                raise AssertionError("expected captured Heatsoak launch failure")
+            except RunExecutionError as exc:
+                assert_true("synthetic heatsoak launch failure" in str(exc), "Heatsoak failure is surfaced")
+                assert_true("heatsoak-start" in exc.output, "Heatsoak failure retains launch progress")
+                assert_true("run-error" in exc.output, "Heatsoak failure records structured run error")
+
+            failed_tui = TuiHost(failing_executor)
+            failed_tui._run_profile_thread(SimpleNamespace(path=profile_path))
+            assert_true(failed_tui.finished is not None and failed_tui.finished[1] is None, "TUI contains Heatsoak failure")
+            assert_true("synthetic heatsoak launch failure" in failed_tui.finished[0], "TUI displays Heatsoak failure")
+        finally:
+            workload_runner_module.tempfile = original_tempfile
+            workload_runner_module.apply_stage_system_memory_plan = original_apply_plan
+            workload_runner_module.build_stage_launch_commands = original_build_commands
+            workload_runner_module.launch_stage_processes_from_plan = original_launch
 
 
 def test_run_setup_metadata_specs() -> None:
@@ -26625,6 +26959,7 @@ def main() -> int:
         test_cli_heatsoak_cancel_plumbing_and_screen_refresh,
         test_compact_cli_preflight_summary,
         test_post_run_and_heatsoak_helpers,
+        test_heatsoak_shared_runtime_launch_regression,
         test_run_bootstrap_artifact_helpers,
         test_run_setup_metadata_specs,
         test_run_preflight_manager_readiness,
