@@ -120,6 +120,12 @@ def write_final_run_artifacts(
     )
     compat = preserve_legacy_worker_evidence_contract(compatibility_payload)
 
+    normalized_hardware_evidence: Dict[str, Any] = {}
+    if export_extended_json:
+        normalized_hardware_evidence_method = getattr(telemetry, "normalized_hardware_evidence", None)
+        if callable(normalized_hardware_evidence_method):
+            normalized_hardware_evidence = normalized_hardware_evidence_method()
+
     if export_compatibility_json:
         JsonStore.write(run_dir / "parsed_results_custom.json", compat)
     (run_dir / "run_summary.txt").write_text(
@@ -151,6 +157,7 @@ def write_final_run_artifacts(
                     telemetry.samples,
                     extended_telemetry_metric_field_names(telemetry.samples),
                 ),
+                "normalized_hardware_evidence": normalized_hardware_evidence,
                 "compatibility_export": compat,
             },
         )

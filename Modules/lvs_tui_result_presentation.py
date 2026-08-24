@@ -44,6 +44,7 @@ def _artifact_category_paths(result_dir: Path, artifact_names: set[str]) -> Dict
             "raw_telemetry.csv",
             "telemetry_source_map.json",
             "telemetry_capabilities.json",
+            "parsed_results_extended.json",
         ],
         "Reports / review": [
             "result_validation.json",

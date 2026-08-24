@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .lvs_gpu_identity import gpu_vendor_name, normalize_pci_slot
+from .lvs_hardware_evidence import HardwareEvidenceCollector, format_hardware_evidence_summary
 from .lvs_settings import DEFAULT_SAMPLE_INTERVAL_SECONDS
 from .lvs_telemetry_gpu import (
     discover_gpu_cards,
@@ -157,6 +158,7 @@ class TelemetryCollector:
         self._last_cpu_package_power_values: Dict[str, float] = {}
         self.memory_total_gib: Optional[float] = None
         self._intel_gpu_top_snapshot_cache: Optional[Dict[int, Dict[str, Optional[float]]]] = None
+        self._normalized_hardware_evidence_cache: Optional[Dict[str, Any]] = None
 
     def _command_env(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -322,7 +324,7 @@ class TelemetryCollector:
         return build_gpu_telemetry_matrix(self._discover_gpu_cards(), self._gpu_sources)
 
     def source_map(self) -> Dict[str, Any]:
-        return build_telemetry_source_map(
+        payload = build_telemetry_source_map(
             cpu_temp_source=self._cpu_temp_sources[0] if self._cpu_temp_sources else None,
             cpu_package_temp_sources=self._cpu_package_temp_sources,
             cpu_power_source=self._cpu_power_source,
@@ -341,6 +343,23 @@ class TelemetryCollector:
             cpu_power_unreadable_sources=self._cpu_power_unreadable_sources,
             cpu_utilization_source=self._cpu_utilization_source,
         )
+        # Additive schema-v1 evidence. The established telemetry source fields
+        # retain their original meanings and casing.
+        payload["normalized_hardware_evidence"] = self.normalized_hardware_evidence()
+        return payload
+
+    def normalized_hardware_evidence(self) -> Dict[str, Any]:
+        if self._normalized_hardware_evidence_cache is None:
+            collector = HardwareEvidenceCollector(
+                cpu_core_topology=self._cpu_core_topology,
+                gpu_cards=self._discover_gpu_cards(),
+                read_text=self._safe_read_text,
+                command_env=self._command_env,
+            )
+            evidence = collector.collect()
+            evidence["operator_summary"] = format_hardware_evidence_summary(evidence)
+            self._normalized_hardware_evidence_cache = evidence
+        return self._normalized_hardware_evidence_cache
 
     def _process_is_root(self) -> bool:
         return bool(hasattr(os, "geteuid") and os.geteuid() == 0)

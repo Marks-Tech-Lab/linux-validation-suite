@@ -1,0 +1,36 @@
+{
+  "amd_dpm": {
+    "core": "0: 500Mhz\n1: 1200Mhz *\n2: 2491Mhz",
+    "memory": "0: 96Mhz *\n1: 1000Mhz"
+  },
+  "nvidia_absolute": "GPU 00000000:01:00.0\n    Temperature\n        GPU Current Temp : 41 C\n        GPU Current T.Limit Temp : N/A\n        GPU Shutdown Temp : 90 C\n        GPU Slowdown Temp : 92 C\n        GPU Max Operating Temp : 93 C\n        GPU Target Temperature Specification : 83 C",
+  "nvidia_relative": "GPU 00000000:02:00.0\n    Temperature\n        GPU Current Temp : 48 C\n        GPU Current T.Limit Temp : 40 C\n        GPU Shutdown T.Limit Temp Specification : -5 C\n        GPU Slowdown T.Limit Temp Specification : -2 C\n        GPU Max Operating T.Limit Temp Specification : 0 C\n        GPU Target Temperature Specification : N/A",
+  "nvidia_query": "00000000:01:00.0, 1875, 1875, 6001, 2100, 2100, 7001, 41\n00000000:02:00.0, 0, 0, 101, 3000, 3000, 14001, 48",
+  "nvme_kelvin": "wctemp : 343 K\ncctemp : 353 K\nmntmt : 0 K\nmxtmt : 0 K",
+  "nvme_management": "wctemp : 350 K\ncctemp : 360 K\nmntmt : 273 K\nmxtmt : 358 K",
+  "ipmi": "CPU1 Temp | 47.000 | degrees C | ok | na | na | na | 80.000 | 90.000 | 100.000\nDIMM_A1 Temp | 39.000 | degrees C | ok | na | na | na | 70.000 | 80.000 | 90.000\nPSU1 Temp | 35.000 | degrees C | ok | na | na | na | 60.000 | 70.000 | 80.000",
+  "thermal_invalid": {
+    "absolute_zero_mc": "-273150",
+    "probe_sentinel_mc": "-274000",
+    "gigantic_mc": "65261850",
+    "acpi_low_critical_mc": "20800"
+  },
+  "hybrid_policy_signatures": {
+    "intel_core_i9_14900k": {
+      "p_base_khz": 3200000,
+      "p_max_khz": 5700000,
+      "favored_capability": 255,
+      "p_capability": 250,
+      "e_base_khz": 2400000,
+      "e_max_khz": 4400000
+    },
+    "intel_core_ultra_9_285k": {
+      "p_base_khz": 3700000,
+      "p_max_khz": 5700000,
+      "favored_capability": 255,
+      "p_capability": 252,
+      "e_base_khz": 3200000,
+      "e_max_khz": 4700000
+    }
+  }
+}

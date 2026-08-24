@@ -33,6 +33,7 @@ from smoke_tests.module_organization_checks import (
     test_modules_have_no_static_internal_import_cycles,
     test_textual_is_confined_to_optional_tui_boundary,
 )
+from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -5304,6 +5305,12 @@ def test_final_run_artifact_writer_helpers() -> None:
         def source_map(self) -> dict:
             return {"cpu": {"source": "smoke"}}
 
+        def normalized_hardware_evidence(self) -> dict:
+            return {
+                "schema_version": 1,
+                "cpu": {"frequency": {"policies": []}, "thermal": {"sensors": []}},
+            }
+
     class FakeSegmentParser:
         def summarize(self, stage_windows, telemetry, gpus, cpu_info=None):
             return {"Segments": [{"Label": stage_windows[0].display_name}], "GpuCount": len(gpus), "CpuInfo": cpu_info}
@@ -5397,6 +5404,12 @@ def test_final_run_artifact_writer_helpers() -> None:
         assert_equal(parsed["ParserOutput"]["GpuCount"], 1, "artifact writer parsed export")
         assert_true("telemetry_metrics" not in parsed, "legacy compatibility output excludes telemetry summaries")
         assert_true("memory_allocation_plans" not in parsed, "legacy compatibility output excludes allocation metadata")
+        assert_true("normalized_hardware_evidence" not in parsed, "legacy compatibility output excludes normalized hardware evidence")
+        assert_equal(
+            extended["normalized_hardware_evidence"]["schema_version"],
+            1,
+            "extended output carries additive normalized hardware evidence",
+        )
         assert_equal(
             extended["memory_allocation_plans"][0]["dry_run"],
             allocation_plan,
@@ -22237,6 +22250,13 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
     runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: ["scalar"]
     runner._cpu_power_tuning_available = lambda: False
     runner._command_exists = lambda name: name in {"stress-ng", "/usr/bin/python3", "/bin/true"}
+    synthetic_arm_cpu_sets = {
+        "available_cpu_ids": list(range(8)),
+        "online_cpu_ids": list(range(8)),
+        "allowed_cpu_ids": list(range(8)),
+        "executable_cpu_ids": list(range(8)),
+    }
+    runner._cpu_target_plan = lambda cpu: resolve_target_cpu_ids(synthetic_arm_cpu_sets, cpu.threads)
     for instruction_set in ("auto", "scalar"):
         explicit_native = ModuleCpu(
             enabled=True,
@@ -27007,6 +27027,7 @@ def main() -> int:
         test_storage_benchmark_cow_workspace_resolution,
         test_storage_benchmark_all_internal_discovery,
         test_storage_benchmark_single_and_batch_artifacts,
+        run_clock_thermal_provider_checks,
         test_telemetry_source_helpers,
         test_telemetry_source_capability_fixture_contract,
         test_telemetry_sensor_io_helpers,
