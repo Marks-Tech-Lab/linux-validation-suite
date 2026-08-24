@@ -1,7 +1,6 @@
 {
   "profile_name": "QA System Test Short v2",
   "profile_type": "validation_schedule",
-  "segment_label_source": "QA System Test Short v2_info.txt",
   "menu_group": "standard",
   "defaults": {
     "telemetry_interval_seconds": 2,
@@ -55,7 +54,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Power (CPU + GPU)"
     },
     {
       "id": "segment_2",
@@ -102,7 +102,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Baseline SIMD (CPU + RAM)"
     },
     {
       "id": "segment_3",
@@ -149,7 +150,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "High-Throughput SIMD (CPU + RAM)"
     },
     {
       "id": "segment_4",
@@ -195,7 +197,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "GPU (3D + VRAM)"
     }
   ]
 }

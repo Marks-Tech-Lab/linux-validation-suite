@@ -91,6 +91,7 @@ class StageConfig:
     id: str
     name: str
     duration_seconds: Optional[int]
+    display_label: str = ""
     enabled: bool = True
     modules: StageModules = field(default_factory=StageModules)
     normalization: StageNormalization = field(default_factory=StageNormalization)

@@ -1,4 +1,0 @@
-Power Auto CPU + GPU
-Architecture Baseline SIMD + RAM
-High-Throughput SIMD + RAM
-GPU (3D + VRAM)

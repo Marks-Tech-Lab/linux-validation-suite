@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU Vulkan Transfer Diagnostic",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU Vulkan Transfer Diagnostic_info.txt",
   "menu_group": "diagnostic",
   "defaults": {
     "telemetry_interval_seconds": 2.0,
@@ -37,7 +36,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (Vulkan Transfer Diagnostic)"
     }
   ]
 }

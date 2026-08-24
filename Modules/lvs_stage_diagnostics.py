@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
 from .lvs_gpu_backend_resolution import gpu_backend_resolution_messages, gpu_excluded_targets_summary
+from .lvs_profile_metadata import stage_result_metadata
 from .lvs_stage_gpu_diagnostics import (
     build_stage_gpu_backend_diagnostics,
     gpu_3d_backend_identity_warnings,
@@ -169,6 +170,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             "warnings": warnings,
             "runnable": bool(stage.enabled and not issues),
         }
+        payload.update(stage_result_metadata(stage, label))
         if storage.target_mode == "all_internal_non_root_low_occupancy":
             payload["storage_benchmark"]["max_used_percent"] = max_used_percent
         return payload
@@ -657,7 +659,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             ),
         }
 
-    return {
+    payload = {
         "stage_id": stage.id,
         "label": label,
         "type": stage.name,
@@ -746,3 +748,5 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         "warnings": warnings,
         "runnable": (not stage.enabled) or not issues,
     }
+    payload.update(stage_result_metadata(stage, label))
+    return payload

@@ -1,4 +1,0 @@
-GPU (3D Auto + VRAM)
-GPU (EGL/GLES)
-GPU (OpenCL Compute)
-VRAM (Vulkan Stateful Memory)

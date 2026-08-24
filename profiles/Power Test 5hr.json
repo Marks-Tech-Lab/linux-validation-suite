@@ -1,7 +1,6 @@
 {
   "profile_name": "Power Test 5hr",
   "profile_type": "validation_schedule",
-  "segment_label_source": "Power Test 5hr_info.txt",
   "menu_group": "standard",
   "defaults": {
     "telemetry_interval_seconds": 2,
@@ -55,7 +54,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Power (CPU + GPU)"
     }
   ]
 }

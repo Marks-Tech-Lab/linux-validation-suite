@@ -19,6 +19,9 @@ class StageWindow:
     duration_seconds: float
     trim_start_seconds: int
     trim_end_seconds: int
+    display_label: str = ""
+    legacy_bucket_category: Optional[str] = None
+    legacy_bucket_category_source: str = "lvs_derived"
     cpu_backend: str = ""
     cpu_instruction_intent: str = ""
     cpu_mode_requested: str = ""

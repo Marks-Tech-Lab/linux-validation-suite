@@ -34,6 +34,7 @@ from smoke_tests.module_organization_checks import (
     test_textual_is_confined_to_optional_tui_boundary,
 )
 from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
+from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -5338,6 +5339,9 @@ def test_final_run_artifact_writer_helpers() -> None:
         duration_seconds=60.0,
         trim_start_seconds=0,
         trim_end_seconds=0,
+        display_label="CPU Stage",
+        legacy_bucket_category="SSE",
+        legacy_bucket_category_source="lvs_derived",
         verdict="pass",
     )
     allocation_plan = {
@@ -5400,6 +5404,11 @@ def test_final_run_artifact_writer_helpers() -> None:
             label="final run manifest",
         )
         assert_equal(manifest["verdict"], "warning", "artifact writer manifest verdict")
+        assert_equal(
+            manifest["stage_windows"][0]["legacy_bucket_category"],
+            "SSE",
+            "run manifest freezes derived legacy bucket",
+        )
         assert_equal(plan[0]["verdict"], "warning", "artifact writer mirrors final plan verdict")
         assert_equal(parsed["ParserOutput"]["GpuCount"], 1, "artifact writer parsed export")
         assert_true("telemetry_metrics" not in parsed, "legacy compatibility output excludes telemetry summaries")
@@ -5409,6 +5418,16 @@ def test_final_run_artifact_writer_helpers() -> None:
             extended["normalized_hardware_evidence"]["schema_version"],
             1,
             "extended output carries additive normalized hardware evidence",
+        )
+        assert_equal(
+            extended["stage_windows"][0]["display_label"],
+            "CPU Stage",
+            "extended output carries native stage display label",
+        )
+        assert_equal(
+            extended["stage_windows"][0]["legacy_bucket_category"],
+            "SSE",
+            "extended output carries explicit legacy bucket",
         )
         assert_equal(
             extended["memory_allocation_plans"][0]["dry_run"],
@@ -12551,22 +12570,22 @@ def test_profile_editor_stage_mutations() -> None:
 
     power_stage, power_label = editor.template_stage(profile, "power_auto", duration_seconds=300)
     assert_equal(power_stage.name, "Combined", "profile editor power template stage type")
-    assert_equal(power_label, "Power Auto CPU + GPU", "profile editor power template label")
+    assert_equal(power_label, "Power (CPU + GPU)", "profile editor power template label")
     assert_true(power_stage.modules.cpu.enabled, "profile editor power template CPU")
     assert_true(power_stage.modules.gpu_3d.enabled, "profile editor power template GPU")
     sse_stage, sse_label = editor.template_stage(profile, "sse_vram", duration_seconds=300)
-    assert_equal(sse_label, "Architecture Baseline SIMD + VRAM", "profile editor baseline template label")
+    assert_equal(sse_label, "Baseline SIMD (CPU + VRAM)", "profile editor baseline template label")
     assert_equal(sse_stage.modules.cpu.instruction_set, "auto", "profile editor baseline template CPU instruction")
     assert_equal(sse_stage.modules.cpu.instruction_intent, "baseline_vector", "profile editor baseline template intent")
     assert_true(sse_stage.modules.vram.enabled, "profile editor SSE template VRAM")
     avx_stage, avx_label = editor.template_stage(profile, "avx_ram", duration_seconds=300)
-    assert_equal(avx_label, "High-Throughput SIMD + RAM", "profile editor high-throughput template label")
+    assert_equal(avx_label, "High-Throughput SIMD (CPU + RAM)", "profile editor high-throughput template label")
     assert_equal(avx_stage.modules.cpu.instruction_set, "auto", "profile editor high-throughput CPU instruction")
     assert_equal(avx_stage.modules.cpu.instruction_intent, "high_throughput_vector", "profile editor high-throughput intent")
     assert_equal(avx_stage.modules.memory.instruction_set, "auto", "profile editor generic memory instruction")
 
     profile, labels = editor.remove_stage(profile, labels, 0)
-    assert_equal(labels, ["3D Adaptive", "VRAM Stage", "GPU Stage"], "profile editor remove label")
+    assert_equal(labels, ["GPU (3D)", "VRAM Stage", "GPU Stage"], "profile editor remove label")
     assert_equal(len(profile.stages), 3, "profile editor remove stage")
 
 
@@ -12730,6 +12749,7 @@ def test_profile_detail_presentation_helpers() -> None:
             "Stage ID: segment_1",
             "Type: Combined",
             "Enabled: True",
+            "Legacy result compatibility: none",
             "Duration: 600s",
             "Trim: start=10s, end=20s",
             "Strict threshold warnings: enabled",
@@ -12865,12 +12885,17 @@ def test_profile_creation_controller() -> None:
     profile = result.profile
     assert_equal(profile.profile_name, "Creation Smoke", "profile creation name")
     assert_equal(profile.profile_type, "validation_schedule", "profile creation type")
-    assert_equal(profile.segment_label_source, "Creation Smoke_info.txt", "profile creation label source")
+    assert_equal(profile.segment_label_source, None, "profile creation uses native labels")
     assert_equal(profile.menu_group, "gpu", "profile creation menu group")
     assert_equal(profile.defaults.telemetry_interval_seconds, 2.5, "profile creation telemetry interval")
     assert_equal(profile.defaults.trim_start_seconds, 7, "profile creation trim start")
     assert_equal(profile.defaults.trim_end_seconds, 9, "profile creation trim end")
     assert_equal(result.labels, ["CPU Segment", "GPU Segment"], "profile creation labels")
+    assert_equal(
+        [stage.display_label for stage in profile.stages],
+        ["CPU Segment", "GPU Segment"],
+        "profile creation stores labels on stages",
+    )
     assert_equal([stage.id for stage in profile.stages], ["segment_1", "segment_2"], "profile creation stage IDs")
     assert_equal(profile.stages[0].duration_seconds, -10, "profile creation preserves CLI duration")
     assert_equal(profile.stages[1].normalization.trim_start_seconds, 7, "profile creation stage trim start")
@@ -12990,10 +13015,12 @@ def test_profile_loader_round_trip_and_sorting() -> None:
         assert_equal(len(loaded.stages), 1, "profile loader loaded stage count")
         assert_true(loaded.stages[0].modules.gpu_3d.enabled, "profile loader loaded GPU module")
         labels = loader.load_segment_labels(tmp_path / "GPU Smoke.json", loaded)
-        assert_equal(labels, ["GPU Stage"], "profile loader sidecar labels")
+        assert_equal(labels, ["GPU Stage"], "profile loader native labels")
         label_source = loader.inspect_segment_label_source(tmp_path / "GPU Smoke.json", loaded)
-        assert_true(label_source["exists"], "profile loader sidecar exists")
-        assert_equal(label_source["issues"], [], "profile loader sidecar issues")
+        assert_true(label_source["exists"], "profile loader native labels exist")
+        assert_equal(label_source["source"], "native_json", "profile loader native label source")
+        assert_equal(label_source["issues"], [], "profile loader native label issues")
+        assert_true(not (tmp_path / "GPU Smoke_info.txt").exists(), "native save creates no sidecar")
 
 
 def test_google_drive_not_ready_manifest() -> None:
@@ -13426,9 +13453,8 @@ def test_quick_test_final_storage_benchmark_stage() -> None:
     loader = ProfileLoader(ROOT / "profiles")
     profile = loader.load_profile(profile_path)
     labels = loader.load_segment_labels(profile_path, profile)
-    assert_equal(len(labels), 5, "Quick Test sidecar retains one label per stage")
-    assert_true("bounded LVS-owned temp files" in labels[-1] and "CoW/Btrfs" in labels[-1],
-                "Quick Test storage label documents bounded temp files and CoW behavior")
+    assert_equal(len(labels), 5, "Quick Test native JSON retains one label per stage")
+    assert_equal(labels[-1], "Storage Benchmark", "Quick Test storage label is concise")
     storage_stage = profile.stages[-1]
     assert_equal(stage_execution_mode(storage_stage), "completion", "Quick Test final stage execution mode")
     validation = ProfileValidator().validate(profile, labels)
@@ -13523,7 +13549,7 @@ def test_checked_in_storage_benchmark_profiles() -> None:
         labels = loader.load_segment_labels(path, profile)
         stage = profile.stages[0]
         storage = stage.modules.storage_benchmark
-        assert_equal(labels, ["Storage Benchmark"], f"{filename} stage label sidecar")
+        assert_equal(labels, ["Storage Benchmark"], f"{filename} native stage label")
         assert_equal(stage.duration_seconds, None, f"{filename} needs no fake duration")
         assert_true(storage.enabled, f"{filename} enables storage_benchmark")
         assert_equal(storage.profile_id, "storage_kdiskmark_cdm_style_v1", f"{filename} profile id")
@@ -26599,10 +26625,17 @@ def test_service_new_profile_round_trip() -> None:
         edit.labels = service.add_profile_stage(edit.profile, edit.labels, stage, label)
         service.save_profile_edit(edit)
         assert_true(edit.profile_path.exists(), "new profile saved JSON")
-        assert_true((tmp_path / "Created Smoke Profile_info.txt").exists(), "new profile saved labels")
+        assert_true(not (tmp_path / "Created Smoke Profile_info.txt").exists(), "new profile creates no sidecar")
+        saved_profile = json.loads(edit.profile_path.read_text(encoding="utf-8"))
+        assert_true("segment_label_source" not in saved_profile, "new profile has no sidecar dependency")
+        assert_equal(
+            [stage["display_label"] for stage in saved_profile["stages"]],
+            ["CPU", "GPU (3D + VRAM)"],
+            "new profile stores native display labels",
+        )
         reloaded = service.create_profile_edit(edit.profile_path)
         assert_equal(reloaded.profile.profile_name, "Renamed Smoke Profile", "new profile reloaded name")
-        assert_equal(reloaded.labels, ["CPU", "3D + VRAM"], "new profile reloaded labels")
+        assert_equal(reloaded.labels, ["CPU", "GPU (3D + VRAM)"], "new profile reloaded labels")
         assert_true(reloaded.profile.stages[1].modules.gpu_3d.enabled, "new profile reloaded GPU")
         assert_true(reloaded.profile.stages[1].modules.vram.enabled, "new profile reloaded VRAM")
 
@@ -27015,6 +27048,7 @@ def main() -> int:
         test_profile_creation_controller,
         test_profile_save_controller,
         test_profile_loader_round_trip_and_sorting,
+        run_profile_metadata_checks,
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,

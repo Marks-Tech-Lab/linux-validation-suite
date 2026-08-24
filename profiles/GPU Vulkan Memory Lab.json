@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU Vulkan Memory Lab",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU Vulkan Memory Lab_info.txt",
   "menu_group": "gpu",
   "defaults": {
     "telemetry_interval_seconds": 2.0,
@@ -52,7 +51,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "VRAM (Vulkan Stateful Memory)"
     }
   ]
 }

@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU OpenCL Variant Lab",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU OpenCL Variant Lab_info.txt",
   "menu_group": "advanced",
   "defaults": {
     "telemetry_interval_seconds": 2.0,
@@ -51,7 +50,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (OpenCL Baseline)"
     },
     {
       "id": "segment_2",
@@ -95,7 +95,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (OpenCL Integer Mix)"
     }
   ]
 }

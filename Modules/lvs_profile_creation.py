@@ -73,6 +73,7 @@ class ProfileCreationController:
                     id=f"segment_{index}",
                     name=draft.test_type,
                     duration_seconds=None if draft.modules.storage_benchmark.enabled else draft.duration_seconds,
+                    display_label=draft.label,
                     enabled=True,
                     modules=draft.modules,
                     normalization=StageNormalization(defaults.trim_start_seconds, defaults.trim_end_seconds),
@@ -82,7 +83,7 @@ class ProfileCreationController:
         profile = ValidationProfile(
             profile_name=request.profile_name,
             profile_type=request.profile_type,
-            segment_label_source=request.segment_label_source or f"{request.profile_name}_info.txt",
+            segment_label_source=None,
             menu_group=request.menu_group,
             defaults=defaults,
             stages=stages,

@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU VRAM dGPU Isolation",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU VRAM dGPU Isolation_info.txt",
   "menu_description": "10-minute dGPU-only OpenCL VRAM isolation",
   "menu_group": "gpu",
   "defaults": {
@@ -53,7 +52,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (VRAM, dGPU only)"
     }
   ]
 }

@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU EGL GLES 12hr",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU EGL GLES 12hr_info.txt",
   "menu_group": "gpu",
   "defaults": {
     "telemetry_interval_seconds": 2.0,
@@ -51,7 +50,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (EGL/GLES)"
     }
   ]
 }

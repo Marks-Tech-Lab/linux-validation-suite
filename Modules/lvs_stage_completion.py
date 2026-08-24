@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_runtime_memory_guard import refresh_runtime_memory_guard
+from Modules.lvs_profile_metadata import stage_result_metadata
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ def build_stage_check_window(
         trim_start_seconds = stage.normalization.trim_start_seconds
     if trim_end_seconds is None:
         trim_end_seconds = stage.normalization.trim_end_seconds
+    metadata = stage_result_metadata(stage, display_name)
     return stage_window_cls(
         stage_id=stage.id,
         stage_type=stage.name,
@@ -72,6 +74,9 @@ def build_stage_check_window(
         duration_seconds=duration_seconds,
         trim_start_seconds=trim_start_seconds,
         trim_end_seconds=trim_end_seconds,
+        display_label=metadata["display_label"],
+        legacy_bucket_category=metadata["legacy_bucket_category"],
+        legacy_bucket_category_source=metadata["legacy_bucket_category_source"],
         gpu_3d_backend_preference=gpu_3d_backend_preference,
         gpu_3d_backend_resolved=gpu_3d_backend_resolved,
         vram_backend_preference=vram_backend_preference,

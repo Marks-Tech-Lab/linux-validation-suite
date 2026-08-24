@@ -119,13 +119,14 @@ class ProfileLoader:
                     id=stage_raw["id"],
                     name=stage_raw["name"],
                     duration_seconds=stage_raw.get("duration_seconds"),
+                    display_label=str(stage_raw.get("display_label") or "").strip(),
                     enabled=stage_raw.get("enabled", True),
                     modules=modules,
                     normalization=StageNormalization(**stage_raw.get("normalization", {})),
                     strict_threshold_recommendation_warnings=stage_raw.get("strict_threshold_recommendation_warnings"),
                 )
             )
-        return ValidationProfile(
+        profile = ValidationProfile(
             profile_name=raw["profile_name"],
             profile_type=raw.get("profile_type", "validation_schedule"),
             segment_label_source=raw.get("segment_label_source"),
@@ -135,12 +136,21 @@ class ProfileLoader:
             defaults=defaults,
             stages=stages,
         )
+        self._hydrate_legacy_display_labels(path, profile)
+        return profile
 
-    def save_profile(self, path: Path, profile: ValidationProfile, labels: List[str]) -> None:
+    def save_profile(self, path: Path, profile: ValidationProfile, labels: Optional[List[str]] = None) -> None:
+        if labels is not None:
+            for index, stage in enumerate(profile.stages):
+                if index < len(labels) and str(labels[index] or "").strip():
+                    stage.display_label = str(labels[index]).strip()
+        for stage in profile.stages:
+            if not stage.display_label.strip():
+                stage.display_label = stage.name
+        profile.segment_label_source = None
         payload = {
             "profile_name": profile.profile_name,
             "profile_type": profile.profile_type,
-            "segment_label_source": profile.segment_label_source,
             "menu_group": self._normalize_menu_group(profile.menu_group),
             "require_all_stages_runnable": bool(profile.require_all_stages_runnable),
             "defaults": asdict(profile.defaults),
@@ -150,18 +160,13 @@ class ProfileLoader:
         if menu_description:
             payload["menu_description"] = menu_description
         JsonStore.write(path, payload)
-        if profile.segment_label_source:
-            info_path = path.parent / profile.segment_label_source
-            info_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
 
     def ensure_example_profile(self) -> Path:
         path = self.profiles_dir / "PL Validation.json"
-        info_path = self.profiles_dir / "PL Validation_info.txt"
         if not path.exists():
             example = {
                 "profile_name": "PL Validation",
                 "profile_type": "validation_schedule",
-                "segment_label_source": "PL Validation_info.txt",
                 "menu_group": "standard",
                 "defaults": {
                     "telemetry_interval_seconds": 2,
@@ -172,11 +177,13 @@ class ProfileLoader:
                     {
                         "id": "segment_1",
                         "name": "Combined",
+                        "display_label": "Power (CPU + GPU)",
                         "duration_seconds": 600,
                         "enabled": True,
                         "modules": {
                             "cpu": {
                                 "enabled": True,
+                                "power_auto": True,
                                 "mode": "extreme",
                                 "load": "steady",
                                 "instruction_set": "auto",
@@ -201,6 +208,7 @@ class ProfileLoader:
                     {
                         "id": "segment_2",
                         "name": "Combined",
+                        "display_label": "Baseline SIMD (CPU + RAM/VRAM)",
                         "duration_seconds": 300,
                         "enabled": True,
                         "modules": {
@@ -208,7 +216,8 @@ class ProfileLoader:
                                 "enabled": True,
                                 "mode": "normal",
                                 "load": "steady",
-                                "instruction_set": "sse",
+                                "instruction_set": "auto",
+                                "instruction_intent": "baseline_vector",
                                 "threads": "all",
                                 "priority": "normal",
                                 "dataset": "large",
@@ -216,7 +225,7 @@ class ProfileLoader:
                             "memory": {
                                 "enabled": True,
                                 "allocation_percent": 90,
-                                "instruction_set": "sse",
+                                "instruction_set": "auto",
                                 "priority": "normal",
                                 "threads": "all",
                             },
@@ -234,6 +243,7 @@ class ProfileLoader:
                     {
                         "id": "segment_3",
                         "name": "Combined",
+                        "display_label": "High-Throughput SIMD (CPU + RAM)",
                         "duration_seconds": 600,
                         "enabled": True,
                         "modules": {
@@ -241,7 +251,8 @@ class ProfileLoader:
                                 "enabled": True,
                                 "mode": "normal",
                                 "load": "steady",
-                                "instruction_set": "avx2",
+                                "instruction_set": "auto",
+                                "instruction_intent": "high_throughput_vector",
                                 "threads": "all",
                                 "priority": "high",
                                 "dataset": "large",
@@ -249,7 +260,7 @@ class ProfileLoader:
                             "memory": {
                                 "enabled": True,
                                 "allocation_percent": 90,
-                                "instruction_set": "avx2",
+                                "instruction_set": "auto",
                                 "priority": "normal",
                                 "threads": "all",
                             },
@@ -261,24 +272,42 @@ class ProfileLoader:
                 ],
             }
             JsonStore.write(path, example)
-        if not info_path.exists():
-            info_path.write_text("Power (CPU + 3D)\nSSE + VRAM\nAVX (CPU + RAM)\n", encoding="utf-8")
         return path
 
     def load_segment_labels(self, profile_path: Path, profile: ValidationProfile) -> List[str]:
-        if not profile.segment_label_source:
-            return [stage.name for stage in profile.stages]
+        return [str(stage.display_label or stage.name).strip() for stage in profile.stages]
+
+    def _hydrate_legacy_display_labels(self, profile_path: Path, profile: ValidationProfile) -> None:
+        missing = [stage for stage in profile.stages if not stage.display_label]
+        if not missing or not profile.segment_label_source:
+            for stage in missing:
+                stage.display_label = stage.name
+            return
         info_path = profile_path.parent / profile.segment_label_source
-        if not info_path.exists():
-            return [stage.name for stage in profile.stages]
-        labels = [line.strip() for line in info_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        labels = self._read_sidecar_labels(info_path)
         if len(labels) != len(profile.stages):
-            return [stage.name for stage in profile.stages]
-        return labels
+            for stage in missing:
+                stage.display_label = stage.name
+            return
+        for index, stage in enumerate(profile.stages):
+            if not stage.display_label:
+                stage.display_label = labels[index]
+
+    @staticmethod
+    def _read_sidecar_labels(info_path: Path) -> List[str]:
+        if not info_path.exists():
+            return []
+        return [line.strip() for line in info_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def inspect_segment_label_source(self, profile_path: Path, profile: ValidationProfile) -> Dict[str, Any]:
         if not profile.segment_label_source:
-            return {"exists": False, "path": None, "issues": ["segment_label_source is not set"]}
+            missing = [stage.id for stage in profile.stages if not str(stage.display_label or "").strip()]
+            return {
+                "exists": True,
+                "path": None,
+                "source": "native_json",
+                "issues": [f"display_label missing for stage: {stage_id}" for stage_id in missing],
+            }
         info_path = profile_path.parent / profile.segment_label_source
         issues: List[str] = []
         if not info_path.exists():

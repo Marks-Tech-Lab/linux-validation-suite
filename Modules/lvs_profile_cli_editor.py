@@ -13,6 +13,7 @@ from typing import Any, List, Tuple
 from .lvs_profile_creation import ProfileCreationRequest, ProfileStageDraft
 from .lvs_profile_edit_view import profile_detail_lines, profile_dry_run_preview_text
 from .lvs_profile_models import ModuleStorageBenchmark, StageConfig, StageModules, ValidationProfile
+from .lvs_profile_metadata import derive_legacy_bucket_category
 
 
 TEST_TYPE_CATALOG = {
@@ -292,9 +293,12 @@ class ProfileCliEditor:
                 cpu_instruction = stage.modules.cpu.instruction_set if stage.modules.cpu.enabled else "-"
                 strict_text = host._strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)
                 execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
+                legacy_bucket = derive_legacy_bucket_category(stage)
                 print(
                     f"{idx}. {label} | {stage.name} | {execution} | "
-                    f"{'on' if stage.enabled else 'off'} | cpu={cpu_instruction}/{cpu_threads} | gpu={gpu_mode}/{gpu_backend}/{gpu_profile} | strict={strict_text}"
+                    f"{'on' if stage.enabled else 'off'} | cpu={cpu_instruction}/{cpu_threads} | "
+                    f"gpu={gpu_mode}/{gpu_backend}/{gpu_profile} | strict={strict_text} | "
+                    f"legacy={f'{legacy_bucket} (derived)' if legacy_bucket else 'none'}"
                 )
             print("T. Cycle profile strict threshold warnings override")
             print("M. Edit profile menu metadata")
@@ -376,7 +380,7 @@ class ProfileCliEditor:
                 insert_index = len(profile.stages)
         display_index = insert_index + 1
         print(f"\n--- New Stage {display_index} ---")
-        label = host._input("Segment label for parser/results: ").strip() or f"Segment {display_index}"
+        label = host._input("Display label for results/UI: ").strip() or f"Segment {display_index}"
         test_type = host._choose_test_type()
         if test_type == "Storage Benchmark":
             duration_seconds = None

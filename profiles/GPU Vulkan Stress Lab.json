@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU Vulkan Stress Lab",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU Vulkan Stress Lab_info.txt",
   "menu_group": "gpu",
   "defaults": {
     "telemetry_interval_seconds": 0.5,
@@ -51,7 +50,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (Vulkan Stress Hash)"
     }
   ]
 }

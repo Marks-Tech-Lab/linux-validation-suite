@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU Troubleshooting dGPU Isolation",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU Troubleshooting dGPU Isolation_info.txt",
   "menu_description": "10-minute dGPU-only 3D + VRAM isolation",
   "menu_group": "gpu",
   "defaults": {
@@ -52,7 +51,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (3D + VRAM, dGPU only)"
     }
   ]
 }

@@ -1,7 +1,6 @@
 {
   "profile_name": "Storage Benchmark Sequential",
   "profile_type": "validation_schedule",
-  "segment_label_source": "Storage Benchmark Sequential_info.txt",
   "menu_group": "standard",
   "menu_description": "Five-run completion-based benchmark of eligible internal drives in sequence",
   "defaults": {
@@ -32,7 +31,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Storage Benchmark"
     }
   ]
 }

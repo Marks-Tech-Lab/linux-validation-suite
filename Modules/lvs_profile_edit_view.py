@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
 
+from .lvs_profile_metadata import derive_legacy_bucket_category
+
 from .lvs_profile_editor import ProfileEditor
 from .lvs_strict_threshold_policy import optional_bool
 from .lvs_service_models import (
@@ -81,6 +83,7 @@ def profile_stage_detail_lines(
     gpu_preference_catalog: Callable[[str], List[Dict[str, Any]]],
     normalize_vram_preference: Callable[[str], str],
 ) -> List[str]:
+    legacy_bucket = derive_legacy_bucket_category(stage)
     lines = [
         "",
         "Stage Details",
@@ -88,6 +91,8 @@ def profile_stage_detail_lines(
         f"Stage ID: {stage.id}",
         f"Type: {stage.name}",
         f"Enabled: {stage.enabled}",
+        "Legacy result compatibility: "
+        + (f"{legacy_bucket} (derived)" if legacy_bucket else "none"),
     ]
     if stage.modules.storage_benchmark.enabled:
         lines.extend(["Execution: completion-based", "Duration: not applicable", "Trim: not applicable"])
@@ -245,7 +250,7 @@ class ProfileEditPresenter:
         "delete": FrontendActionSpec("delete", "remove_stage", label="remove selected stage"),
         "t": FrontendActionSpec("t", "toggle_stage", label="toggle selected stage enabled state"),
         "d": FrontendActionSpec("d", "input", target="duration", label="edit selected stage duration"),
-        "l": FrontendActionSpec("l", "input", target="label", label="edit selected stage label"),
+        "l": FrontendActionSpec("l", "input", target="label", label="edit selected stage display label"),
         "g": FrontendActionSpec("g", "picker", target="gpu_target", label="edit selected stage GPU target mode"),
         "b": FrontendActionSpec("b", "picker", target="backend", label="edit selected stage backend preference"),
         "i": FrontendActionSpec("i", "picker", target="intensity", label="edit selected GPU stage intensity"),
@@ -358,7 +363,7 @@ class ProfileEditPresenter:
             ),
             "label": (
                 "__profile_stage_label",
-                f"Stage {stage_index + 1} label",
+                f"Stage {stage_index + 1} display label",
                 labels[stage_index] if stage_index < len(labels) else stage.name,
             ),
             "vram_allocation": (
@@ -448,11 +453,13 @@ class ProfileEditPresenter:
         for index, stage in enumerate(profile.stages):
             label = labels[index] if index < len(labels) else stage.name
             state = "enabled" if stage.enabled else "disabled"
+            legacy_bucket = derive_legacy_bucket_category(stage)
             rows.append(
                 ProfileEditItem(
                     "stage",
                     f"{index + 1}. {label} [{stage.name}] "
-                    f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, {state}",
+                    f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, {state} | "
+                    f"Legacy result compatibility: {f'{legacy_bucket} (derived)' if legacy_bucket else 'none'}",
                     index=index,
                 )
             )
@@ -540,6 +547,11 @@ class ProfileEditPresenter:
                 f"{'enabled' if stage.enabled else 'disabled'}"
                 + (f" | {', '.join(workloads)}" if workloads else "")
             )
+            legacy_bucket = derive_legacy_bucket_category(stage)
+            lines.append(
+                "   Legacy result compatibility: "
+                + (f"{legacy_bucket} (derived)" if legacy_bucket else "none")
+            )
         lines.extend(
             [
                 "",
@@ -549,7 +561,7 @@ class ProfileEditPresenter:
                 "- Storage Benchmark configuration is edited through the indented rows beneath its stage.",
                 "- S saves the profile after validation.",
                 "- D edits selected stage duration.",
-                "- L edits selected stage label.",
+                "- L edits selected stage display label.",
                 "- T toggles selected stage enabled/disabled.",
                 "- Delete removes selected stage.",
                 "- G cycles selected stage GPU target mode.",

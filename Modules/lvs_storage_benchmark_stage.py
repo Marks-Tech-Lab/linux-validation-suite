@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_core import now_local_iso
+from .lvs_profile_metadata import stage_result_metadata
 from .lvs_run_models import StageWindow
 
 
@@ -249,6 +250,7 @@ def run_storage_benchmark_stage(
         "failure_reasons": failures,
         "verdict": verdict,
     })
+    stage_metadata = stage_result_metadata(stage, display_name)
     window = StageWindow(
         stage_id=stage.id,
         stage_type=stage.name,
@@ -260,6 +262,9 @@ def run_storage_benchmark_stage(
         duration_seconds=max(0.0, ended - started),
         trim_start_seconds=0,
         trim_end_seconds=0,
+        display_label=stage_metadata["display_label"],
+        legacy_bucket_category=stage_metadata["legacy_bucket_category"],
+        legacy_bucket_category_source=stage_metadata["legacy_bucket_category_source"],
         verdict=verdict,
         failure_reasons=failures,
         error_events=events,

@@ -32,7 +32,6 @@ class SuiteProfileServiceMixin:
         profile_path = self._unique_profile_path(name)
         result = self.profile_creation.build_profile(ProfileCreationRequest(
             profile_name=name,
-            segment_label_source=f"{profile_path.stem}_info.txt",
             menu_group="custom",
             stages=[
                 ProfileStageDraft(

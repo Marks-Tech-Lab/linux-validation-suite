@@ -1,7 +1,6 @@
 {
   "profile_name": "GPU Troubleshooting Extended",
   "profile_type": "validation_schedule",
-  "segment_label_source": "GPU Troubleshooting Extended_info.txt",
   "menu_group": "gpu",
   "defaults": {
     "telemetry_interval_seconds": 2.0,
@@ -51,7 +50,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (3D + VRAM)"
     },
     {
       "id": "segment_2",
@@ -95,7 +95,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (EGL/GLES)"
     },
     {
       "id": "segment_3",
@@ -139,7 +140,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "GPU (OpenCL Compute)"
     },
     {
       "id": "segment_4",
@@ -184,7 +186,8 @@
       "normalization": {
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
-      }
+      },
+      "display_label": "VRAM (Vulkan Stateful Memory)"
     }
   ]
 }

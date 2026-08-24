@@ -1,7 +1,6 @@
 {
   "profile_name": "PL Validation 12hr",
   "profile_type": "validation_schedule",
-  "segment_label_source": "PL Validation 12hr_info.txt",
   "menu_group": "standard",
   "defaults": {
     "telemetry_interval_seconds": 2,
@@ -55,7 +54,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Power (CPU + GPU)"
     },
     {
       "id": "segment_2",
@@ -102,7 +102,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Baseline SIMD (CPU + RAM/VRAM)"
     },
     {
       "id": "segment_3",
@@ -149,7 +150,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "High-Throughput SIMD (CPU + RAM)"
     },
     {
       "id": "segment_4",
@@ -195,7 +197,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "GPU (3D + VRAM)"
     },
     {
       "id": "segment_5",
@@ -242,7 +245,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Power (CPU + GPU)"
     },
     {
       "id": "segment_6",
@@ -289,7 +293,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Baseline SIMD (CPU + RAM/VRAM)"
     },
     {
       "id": "segment_7",
@@ -336,7 +341,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "High-Throughput SIMD (CPU + RAM)"
     },
     {
       "id": "segment_8",
@@ -382,7 +388,8 @@
         "trim_start_seconds": 30,
         "trim_end_seconds": 30
       },
-      "strict_threshold_recommendation_warnings": null
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "GPU (3D + VRAM)"
     }
   ]
 }

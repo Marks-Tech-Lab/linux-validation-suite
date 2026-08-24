@@ -1,5 +1,0 @@
-Power Auto CPU + GPU
-Architecture Baseline SIMD + VRAM
-Highest Verified SIMD + RAM
-GPU (3D + VRAM)
-Storage Benchmark — final completion-based sequential benchmark of all eligible internal drives including root/system drives; writes bounded LVS-owned temp files; CoW/Btrfs results may differ from raw-device behavior.

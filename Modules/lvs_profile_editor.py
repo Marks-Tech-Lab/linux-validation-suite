@@ -45,14 +45,14 @@ class ProfileEditor:
         {"key": "cpu", "label": "CPU", "stage_type": "CPU", "default_label": "CPU"},
         {"key": "memory", "label": "Memory", "stage_type": "Memory", "default_label": "Memory"},
         {"key": "cpu_ram", "label": "CPU + RAM", "stage_type": "Combined", "default_label": "CPU + RAM"},
-        {"key": "gpu_3d", "label": "3D Adaptive", "stage_type": "3D Adaptive", "default_label": "3D Adaptive"},
+        {"key": "gpu_3d", "label": "GPU (3D)", "stage_type": "3D Adaptive", "default_label": "GPU (3D)"},
         {"key": "vram", "label": "VRAM", "stage_type": "VRAM", "default_label": "VRAM"},
-        {"key": "cpu_3d", "label": "CPU + 3D", "stage_type": "Combined", "default_label": "CPU + 3D"},
+        {"key": "cpu_3d", "label": "CPU + GPU", "stage_type": "Combined", "default_label": "CPU + GPU"},
         {"key": "cpu_vram", "label": "CPU + VRAM", "stage_type": "Combined", "default_label": "CPU + VRAM"},
-        {"key": "gpu_vram", "label": "3D + VRAM", "stage_type": "Combined", "default_label": "3D + VRAM"},
-        {"key": "power_auto", "label": "Power Auto CPU + GPU", "stage_type": "Combined", "default_label": "Power Auto CPU + GPU"},
-        {"key": "sse_vram", "label": "Architecture Baseline SIMD + VRAM", "stage_type": "Combined", "default_label": "Architecture Baseline SIMD + VRAM"},
-        {"key": "avx_ram", "label": "High-Throughput SIMD + RAM", "stage_type": "Combined", "default_label": "High-Throughput SIMD + RAM"},
+        {"key": "gpu_vram", "label": "GPU (3D + VRAM)", "stage_type": "Combined", "default_label": "GPU (3D + VRAM)"},
+        {"key": "power_auto", "label": "Power (CPU + GPU)", "stage_type": "Combined", "default_label": "Power (CPU + GPU)"},
+        {"key": "sse_vram", "label": "Baseline SIMD (CPU + VRAM)", "stage_type": "Combined", "default_label": "Baseline SIMD (CPU + VRAM)"},
+        {"key": "avx_ram", "label": "High-Throughput SIMD (CPU + RAM)", "stage_type": "Combined", "default_label": "High-Throughput SIMD (CPU + RAM)"},
         {"key": "storage_benchmark", "label": "Storage Benchmark", "stage_type": "Storage Benchmark", "default_label": "Storage Benchmark"},
     ]
 
@@ -80,12 +80,12 @@ class ProfileEditor:
         return dict(self.STAGE_TEMPLATES[0])
 
     def normalize_labels(self, profile: ValidationProfile, labels: List[str]) -> List[str]:
-        normalized = list(labels or [])
-        while len(normalized) < len(profile.stages):
-            index = len(normalized)
-            normalized.append(profile.stages[index].name if index < len(profile.stages) else f"Segment {index + 1}")
-        if len(normalized) > len(profile.stages):
-            normalized = normalized[: len(profile.stages)]
+        supplied = list(labels or [])
+        normalized: List[str] = []
+        for index, stage in enumerate(profile.stages):
+            value = supplied[index] if index < len(supplied) else stage.display_label
+            stage.display_label = str(value or stage.display_label or stage.name or f"Segment {index + 1}").strip()
+            normalized.append(stage.display_label)
         return normalized
 
     def next_stage_id(self, profile: ValidationProfile) -> str:
@@ -286,6 +286,7 @@ class ProfileEditor:
             id=stage_id or self.next_stage_id(profile),
             name=test_type or "Combined",
             duration_seconds=None if completion_based else max(1, int(duration_seconds or 300)),
+            display_label=test_type or "Combined",
             enabled=bool(enabled),
             modules=selected_modules,
             normalization=StageNormalization(
@@ -305,7 +306,8 @@ class ProfileEditor:
         normalized = self.normalize_labels(profile, labels)
         insert_index = len(profile.stages) if position is None else max(0, min(len(profile.stages), int(position)))
         profile.stages.insert(insert_index, stage)
-        normalized.insert(insert_index, str(label or stage.name or f"Segment {insert_index + 1}"))
+        stage.display_label = str(label or stage.display_label or stage.name or f"Segment {insert_index + 1}")
+        normalized.insert(insert_index, stage.display_label)
         return profile, self.normalize_labels(profile, normalized)
 
     def remove_stage(
@@ -360,6 +362,7 @@ class ProfileEditor:
         self._require_stage_index(profile, index)
         normalized = self.normalize_labels(profile, labels)
         normalized[index] = str(label or normalized[index]).strip() or normalized[index]
+        profile.stages[index].display_label = normalized[index]
         return normalized
 
     def set_stage_duration(self, profile: ValidationProfile, index: int, duration_seconds: int) -> int:

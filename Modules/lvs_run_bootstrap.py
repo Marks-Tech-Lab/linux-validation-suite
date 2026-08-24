@@ -53,6 +53,7 @@ def build_effective_profile_for_run(
                 id=stage.id,
                 name=stage.name,
                 duration_seconds=stage.duration_seconds,
+                display_label=stage.display_label,
                 enabled=effective_enabled,
                 modules=stage.modules,
                 normalization=stage.normalization,
