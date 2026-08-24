@@ -176,6 +176,7 @@ run_cmd "uname" uname -a
 read_one_line /proc/cmdline
 run_cmd_if_present lscpu "lscpu" lscpu
 run_cmd_if_present lscpu "lscpu JSON" lscpu -J
+run_cmd "proc cpuinfo" cat /proc/cpuinfo
 run_cmd_if_present lsmem "lsmem" lsmem
 run_cmd_if_present free "free -h" free -h
 run_cmd_if_present lsmod "kernel modules" lsmod
@@ -210,8 +211,32 @@ safe_find /sys/devices/system/cpu -type f \( \
   -name cpuinfo_max_freq -o -name base_frequency -o -name thread_siblings_list \
 \) | head -n 2000
 
+section "CPU Frequency Policy Map"
+for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+  [[ -d "$policy" ]] || continue
+  subsection "$policy"
+  printf 'resolved path: %s\n' "$(readlink -f "$policy" 2>/dev/null || true)"
+  for field in \
+    affected_cpus related_cpus scaling_available_frequencies scaling_available_governors \
+    scaling_driver scaling_governor scaling_cur_freq cpuinfo_cur_freq cpuinfo_avg_freq \
+    cpuinfo_min_freq cpuinfo_max_freq cpuinfo_transition_latency \
+    scaling_min_freq scaling_max_freq base_frequency bios_limit boost \
+    energy_performance_available_preferences energy_performance_preference; do
+    [[ -e "$policy/$field" ]] && read_one_line "$policy/$field"
+  done
+done
+for path in \
+  /sys/devices/system/cpu/cpufreq/boost \
+  /sys/devices/system/cpu/intel_pstate/no_turbo \
+  /sys/devices/system/cpu/intel_pstate/max_perf_pct \
+  /sys/devices/system/cpu/intel_pstate/min_perf_pct \
+  /sys/devices/system/cpu/amd_pstate/status; do
+  [[ -e "$path" ]] && read_one_line "$path"
+done
+run_cmd_if_present cpupower "cpupower frequency-info" cpupower frequency-info
+
 section "Tool Availability"
-for tool in sensors lspci lsusb lscpu lsmem lsblk smartctl nvme dmidecode decode-dimms i2cdetect i2cdump lshw inxi vulkaninfo clinfo glxinfo eglinfo nvidia-smi rocm-smi radeontop intel_gpu_top ipmitool ipmi-sensors ipmimonitoring bmc-info modinfo; do
+for tool in sensors lspci lsusb lscpu lsmem lsblk cpupower smartctl nvme dmidecode decode-dimms i2cdetect i2cdump lshw inxi vulkaninfo clinfo glxinfo eglinfo nvidia-smi rocm-smi amd-smi radeontop intel_gpu_top ipmitool ipmi-sensors ipmimonitoring bmc-info modinfo; do
   if have "$tool"; then
     printf '%-18s %s\n' "$tool" "$(command -v "$tool")"
   else
@@ -287,9 +312,14 @@ for dev in /dev/nvme*n1 /dev/sd? /dev/hd? /dev/mmcblk?; do
   subsection "$dev"
   run_cmd_if_present smartctl "smartctl -i $dev" smartctl -i "$dev"
   run_cmd_if_present smartctl "smartctl -A $dev" smartctl -A "$dev"
+  run_cmd_if_present smartctl "smartctl -x $dev" smartctl -x "$dev"
+  run_sudo_if_available "sudo smartctl -x $dev" smartctl -x "$dev"
   if [[ "$dev" == /dev/nvme* ]]; then
     run_cmd_if_present nvme "nvme id-ctrl $dev" nvme id-ctrl "$dev"
     run_cmd_if_present nvme "nvme smart-log $dev" nvme smart-log "$dev"
+    run_cmd_if_present nvme "nvme smart-log -H $dev" nvme smart-log -H "$dev"
+    run_sudo_if_available "sudo nvme id-ctrl $dev" nvme id-ctrl "$dev"
+    run_sudo_if_available "sudo nvme smart-log -H $dev" nvme smart-log -H "$dev"
   fi
 done
 
@@ -332,6 +362,11 @@ for hwmon in /sys/class/hwmon/hwmon*; do
   read_one_line "$hwmon/name"
   printf 'resolved path: %s\n' "$(readlink -f "$hwmon" 2>/dev/null || true)"
   [[ -e "$hwmon/device" ]] && printf 'device path: %s\n' "$(readlink -f "$hwmon/device" 2>/dev/null || true)"
+  [[ -e "$hwmon/device/driver" ]] && printf 'device driver: %s\n' "$(readlink -f "$hwmon/device/driver" 2>/dev/null || true)"
+  [[ -r "$hwmon/device/uevent" ]] && sed 's/^/  device uevent: /' "$hwmon/device/uevent"
+  for path in "$hwmon/device/modalias" "$hwmon/device/vendor" "$hwmon/device/device" "$hwmon/device/subsystem_vendor" "$hwmon/device/subsystem_device"; do
+    [[ -f "$path" ]] && read_one_line "$path"
+  done
   [[ -r "$hwmon/uevent" ]] && sed 's/^/  uevent: /' "$hwmon/uevent"
   for path in "$hwmon"/temp* "$hwmon"/power* "$hwmon"/energy* "$hwmon"/fan* "$hwmon"/in* "$hwmon"/curr* "$hwmon"/pwm* "$hwmon"/freq* "$hwmon"/humidity*; do
     [[ -e "$path" ]] || continue
@@ -342,8 +377,13 @@ done
 section "Thermal Zones"
 for zone in /sys/class/thermal/thermal_zone*; do
   subsection "$zone"
+  printf 'resolved path: %s\n' "$(readlink -f "$zone" 2>/dev/null || true)"
+  [[ -e "$zone/device" ]] && printf 'device path: %s\n' "$(readlink -f "$zone/device" 2>/dev/null || true)"
   read_one_line "$zone/type"
   read_one_line "$zone/temp"
+  for path in "$zone/mode" "$zone/policy" "$zone/available_policies"; do
+    [[ -e "$path" ]] && read_one_line "$path"
+  done
   for path in "$zone"/trip_point_*; do
     [[ -e "$path" ]] && read_one_line "$path"
   done
@@ -361,6 +401,7 @@ done
 
 section "DRM GPU Sysfs Map"
 for card in /sys/class/drm/card[0-9]*; do
+  [[ "$(basename "$card")" =~ ^card[0-9]+$ ]] || continue
   [[ -d "$card/device" ]] || continue
   subsection "$card"
   device="$card/device"
@@ -380,6 +421,37 @@ for card in /sys/class/drm/card[0-9]*; do
       [[ -e "$path" ]] && read_one_line "$path"
     done
   done
+  subsection "$card frequency interfaces"
+  resolved_device="$(readlink -f "$device" 2>/dev/null || true)"
+  if [[ -n "$resolved_device" ]]; then
+    while IFS= read -r path; do
+      read_one_line "$path"
+    done < <(find "$resolved_device" -maxdepth 8 -type f \( \
+      -name 'gt_*_freq_mhz' -o -name 'rps_*_freq_mhz' -o \
+      -name 'cur_freq' -o -name 'act_freq' -o -name 'min_freq' -o \
+      -name 'max_freq' -o -name 'boost_freq' -o -name 'rp0_freq' -o \
+      -name 'rpe_freq' -o -name 'rpn_freq' -o -name 'freq*_input' -o \
+      -name 'freq*_label' -o -name 'pp_od_clk_voltage' \
+    \) -print 2>/dev/null | sort)
+  fi
+done
+
+section "Devfreq Raw Map"
+for devfreq in /sys/class/devfreq/*; do
+  [[ -d "$devfreq" ]] || continue
+  subsection "$devfreq"
+  printf 'resolved path: %s\n' "$(readlink -f "$devfreq" 2>/dev/null || true)"
+  [[ -e "$devfreq/device" ]] && printf 'device path: %s\n' "$(readlink -f "$devfreq/device" 2>/dev/null || true)"
+  [[ -e "$devfreq/device/driver" ]] && printf 'device driver: %s\n' "$(readlink -f "$devfreq/device/driver" 2>/dev/null || true)"
+  [[ -r "$devfreq/device/uevent" ]] && sed 's/^/  device uevent: /' "$devfreq/device/uevent"
+  for path in \
+    "$devfreq/name" "$devfreq/governor" "$devfreq/available_governors" \
+    "$devfreq/cur_freq" "$devfreq/target_freq" "$devfreq/min_freq" \
+    "$devfreq/max_freq" "$devfreq/available_frequencies" \
+    "$devfreq/polling_interval" "$devfreq/timer" "$devfreq/trans_stat" \
+    "$devfreq/device/modalias" "$devfreq/device/of_node/compatible"; do
+    [[ -e "$path" ]] && read_one_line "$path"
+  done
 done
 
 section "Vulkan / OpenCL / GL Discovery"
@@ -395,6 +467,9 @@ run_cmd_if_present nvidia-smi "nvidia-smi supported query fields" nvidia-smi --h
 run_cmd_if_present nvidia-smi "nvidia-smi temperature detail" nvidia-smi -q -d TEMPERATURE
 run_cmd_if_present nvidia-smi "nvidia-smi -q" nvidia-smi -q
 run_cmd_if_present rocm-smi "rocm-smi" rocm-smi
+run_cmd_if_present rocm-smi "rocm-smi clock and thermal detail" rocm-smi --showclocks --showtemp --showmeminfo all
+run_cmd_if_present amd-smi "amd-smi static clock detail" amd-smi static --clock
+run_cmd_if_present amd-smi "amd-smi metric thermal and clock detail" amd-smi metric --temperature --clock
 run_cmd_if_present radeontop "radeontop dump" radeontop -d - -l 1
 run_cmd_if_present intel_gpu_top "intel_gpu_top json sample" intel_gpu_top -J -s 1000 -o -
 
