@@ -10,6 +10,12 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from Modules.lvs_platform_hwmon import (
+    canonical_temperature_identity,
+    normalize_platform_temperature_c,
+    stable_temperature_device_locator,
+    valid_platform_temperature,
+)
 from Modules.lvs_telemetry_sampling import parse_optional_float
 
 
@@ -99,26 +105,67 @@ def spd5118_memory_temp_sources(
     read_text: ReadText | None = None,
     sensor_index: int = 0,
 ) -> List[Dict[str, Any]]:
+    return direct_memory_temp_sources(
+        hwmon_root=hwmon_root,
+        read_text=read_text,
+        sensor_index=sensor_index,
+        providers=("spd5118",),
+    )
+
+
+def direct_memory_temp_sources(
+    hwmon_root: Path = Path("/sys/class/hwmon"),
+    read_text: ReadText | None = None,
+    sensor_index: int = 0,
+    providers: Tuple[str, ...] = ("spd5118", "jc42"),
+) -> List[Dict[str, Any]]:
+    """Discover valid direct DIMM sensors before platform/IPMI fallbacks."""
     if read_text is None:
         read_text = read_text_memory_sysfs
-    sources: List[Dict[str, Any]] = []
+    candidates: List[Dict[str, Any]] = []
+    seen_identities: set[str] = set()
     for hwmon_dir in sorted(hwmon_root.glob("hwmon*")):
-        name = read_text(hwmon_dir / "name")
-        if (name or "").lower() != "spd5118":
+        provider = (read_text(hwmon_dir / "name") or "").lower()
+        if provider not in providers:
             continue
         for path in sorted(hwmon_dir.glob("temp*_input")):
-            if read_text(path) is None:
+            canonical_identity = canonical_temperature_identity(path)
+            if canonical_identity in seen_identities:
                 continue
-            sources.append(
+            seen_identities.add(canonical_identity)
+            value = normalize_platform_temperature_c(read_text(path))
+            if not valid_platform_temperature(provider, "", value):
+                continue
+            stem = path.name.removesuffix("_input")
+            candidates.append(
                 {
                     "kind": "memory_temp",
                     "path": str(path),
-                    "label": f"DIMM {sensor_index} SPD Hub",
-                    "key": f"memory_module_{sensor_index}_temp_c",
-                    "module_index": sensor_index,
+                    "provider": provider,
+                    "canonical_identity": canonical_identity,
+                    "stable_device_locator": stable_temperature_device_locator(path),
+                    "kernel_channel": stem,
                 }
             )
-            sensor_index += 1
+    candidates.sort(
+        key=lambda source: (
+            0 if source["provider"] == "spd5118" else 1,
+            str(source["stable_device_locator"]),
+            str(source["kernel_channel"]),
+        )
+    )
+    sources: List[Dict[str, Any]] = []
+    for offset, source in enumerate(candidates):
+        module_index = sensor_index + offset
+        provider_label = "SPD Hub" if source["provider"] == "spd5118" else "JC42"
+        source.update(
+            {
+                "label": f"DIMM {module_index} {provider_label}",
+                "key": f"memory_module_{module_index}_temp_c",
+                "module_index": module_index,
+            }
+        )
+        sources.append(source)
     return sources
 
 
@@ -315,7 +362,7 @@ def discover_memory_temp_sources(
     read_text: ReadText | None = None,
     ipmi_temperatures: Dict[str, Optional[float]] | None = None,
 ) -> List[Dict[str, Any]]:
-    sources = spd5118_memory_temp_sources(hwmon_root, read_text)
+    sources = direct_memory_temp_sources(hwmon_root, read_text)
     if sources:
         return sources
     sources = platform_memory_temp_sources(thermal_root, read_text)

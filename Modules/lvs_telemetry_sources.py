@@ -191,6 +191,14 @@ def telemetry_source_record(
         "clock_capability",
         "temperature_capability",
         "source_quality",
+        "provider",
+        "raw_label",
+        "normalized_label",
+        "component_classification",
+        "confidence",
+        "canonical_identity",
+        "stable_device_locator",
+        "kernel_channel",
     ):
         if source.get(key) not in (None, ""):
             record[key] = source.get(key)

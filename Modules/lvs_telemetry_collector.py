@@ -463,7 +463,11 @@ class TelemetryCollector:
         return read_storage_temps(self._storage_temp_sources, self._read_temperature_path)
 
     def _read_device_temps(self) -> Dict[str, Optional[float]]:
-        return read_device_temps(self._device_temp_sources, self._read_temperature_path)
+        return read_device_temps(
+            self._device_temp_sources,
+            self._read_temperature_path,
+            self._safe_read_text,
+        )
 
     def _read_gpu_values(self, sample_time: Optional[float] = None) -> Dict[str, Optional[float]]:
         if sample_time is None:

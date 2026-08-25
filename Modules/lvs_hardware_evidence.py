@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_gpu_identity import normalize_pci_slot
+from .lvs_platform_hwmon import (
+    normalize_platform_temperature_c,
+    platform_hwmon_classification,
+    valid_platform_temperature,
+)
 from .lvs_telemetry_cpu import parse_cpu_list
 
 
@@ -44,12 +49,12 @@ def _number(raw: Any) -> Optional[float]:
 
 
 def _temperature_c(raw: Any, raw_units: str = "millidegrees_c") -> Optional[float]:
+    if raw_units == "millidegrees_c":
+        return normalize_platform_temperature_c(raw)
     value = _number(raw)
     if value is None:
         return None
-    if raw_units == "millidegrees_c":
-        value /= 1000.0
-    elif raw_units == "kelvin":
+    if raw_units == "kelvin":
         value -= 273.15
     # Below absolute zero is universally invalid. Other negative values require
     # provider-specific handling (notably NVIDIA relative T.Limit margins).
@@ -987,10 +992,6 @@ class HardwareEvidenceCollector:
         records: List[Dict[str, Any]] = []
         other_records: List[Dict[str, Any]] = []
         excluded = {"coretemp", "k10temp", "zenpower", "amdgpu", "i915", "xe", "nouveau", "nvme", "drivetemp", "spd5118", "jc42"}
-        other_tokens = {
-            "nic": "nic", "lan": "nic", "ethernet": "nic", "wifi": "wifi", "wi-fi": "wifi",
-            "psu": "psu", "power supply": "psu",
-        }
         for hwmon in sorted(self.hwmon_root.glob("hwmon*")):
             provider = (self.read_text(hwmon / "name") or "").lower()
             if provider in excluded:
@@ -999,36 +1000,27 @@ class HardwareEvidenceCollector:
                 stem = input_path.name.removesuffix("_input")
                 label = (self.read_text(hwmon / f"{stem}_label") or "").strip()
                 current = _temperature_c(self.read_text(input_path))
-                normalized_label = re.sub(r"\s+", " ", label.lower()).strip()
-                if current is None or current == 0 or ("t_sensor" in normalized_label and current < -40):
+                classified = platform_hwmon_classification(provider, label)
+                if classified["owner"] in {"cpu", "gpu", "memory_module", "storage"}:
                     continue
-                component = None
-                if normalized_label == "motherboard" or normalized_label.startswith("motherboard "):
-                    component = "motherboard"
-                elif normalized_label == "system" or normalized_label.startswith("system "):
-                    component = "system"
-                elif normalized_label == "pch" or normalized_label.startswith("pch "):
-                    component = "pch"
-                elif normalized_label == "vrm" or normalized_label.startswith("vrm "):
-                    component = "vrm_mos" if "mos" in normalized_label else "vrm"
+                if not valid_platform_temperature(provider, label, current):
+                    continue
+                component = classified["classification"]
                 record: Dict[str, Any] = {
                     "provider": provider, "source_path": str(input_path), "label": label or stem,
                     "temperature_c": current,
-                    "classification": component or "generic_channel",
-                    "confidence": "high" if component else "low",
+                    "classification": component,
+                    "confidence": classified["confidence"],
                 }
                 # NCT6687 limits are retained as raw provider evidence only.
                 if provider == "nct6687":
                     raw_limits = {suffix: self.read_text(hwmon / f"{stem}_{suffix}") for suffix in ("min", "max", "crit")}
                     record["raw_thresholds"] = {key: value for key, value in raw_limits.items() if value is not None}
                     record["threshold_normalization"] = "do_not_normalize"
-                elif component:
+                elif component in {"motherboard", "system", "pch", "vrm", "vrm_mos"}:
                     _thermal_value(record, "temperature_max_c", hwmon / f"{stem}_max", self.read_text, provider or "hwmon", "provider_maximum", "medium")
                     _thermal_value(record, "temperature_crit_c", hwmon / f"{stem}_crit", self.read_text, provider or "hwmon", "provider_critical", "medium")
-                unrelated = next((classification for token, classification in other_tokens.items() if token in normalized_label or token in provider), None)
-                if unrelated:
-                    record["classification"] = unrelated
-                    record["confidence"] = "high" if label else "medium"
+                if component in {"nic", "wifi", "psu"}:
                     other_records.append(record)
                 else:
                     records.append(record)

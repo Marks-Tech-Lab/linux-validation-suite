@@ -36,6 +36,7 @@ from smoke_tests.module_organization_checks import (
 from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
+from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -27092,6 +27093,7 @@ def main() -> int:
         test_profile_loader_round_trip_and_sorting,
         run_profile_metadata_checks,
         run_profile_authoring_ux_checks,
+        run_platform_sensor_telemetry_checks,
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,
