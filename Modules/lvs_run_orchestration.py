@@ -49,6 +49,50 @@ def execute_validation_run(
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
         cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
     )
+    try:
+        return _execute_validation_run_with_collector(
+            orchestrator,
+            profile_path=profile_path,
+            profile=profile,
+            labels=labels,
+            metadata=metadata,
+            stage_window_cls=stage_window_cls,
+            run_dir=run_dir,
+            cancel_check=cancel_check,
+            operator_stop_source=operator_stop_source,
+            preflight=preflight,
+            abort_on_worker_error=abort_on_worker_error,
+            abort_on_system_fault=abort_on_system_fault,
+            abort_run_on_stage_abort=abort_run_on_stage_abort,
+            started_iso=started_iso,
+            started_monotonic=started_monotonic,
+            telemetry=telemetry,
+        )
+    finally:
+        close_telemetry = getattr(telemetry, "close", None)
+        if callable(close_telemetry):
+            close_telemetry()
+
+
+def _execute_validation_run_with_collector(
+    orchestrator: Any,
+    *,
+    profile_path: Path,
+    profile: Any,
+    labels: List[str],
+    metadata: Any,
+    stage_window_cls: Callable[..., Any],
+    run_dir: Path,
+    cancel_check: Optional[Callable[[], bool]],
+    operator_stop_source: str,
+    preflight: Dict[str, Any],
+    abort_on_worker_error: bool,
+    abort_on_system_fault: bool,
+    abort_run_on_stage_abort: bool,
+    started_iso: str,
+    started_monotonic: float,
+    telemetry: TelemetryCollector,
+) -> Path:
     stage_windows: List[Any] = []
     executed_plan: List[Dict[str, Any]] = []
     run_aborted = False

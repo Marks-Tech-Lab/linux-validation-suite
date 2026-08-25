@@ -147,21 +147,22 @@ class WorkloadRunner(WorkloadCpuMemoryMixin, WorkloadGpuRuntimeMixin, WorkloadGp
 
     def _ipmi_sensor_details(self) -> Dict[str, Any]:
         device_nodes = [str(path) for path in sorted(Path("/dev").glob("ipmi*")) if path.exists()]
+        ipmitool_available = self._command_exists("ipmitool")
         details: Dict[str, Any] = {
-            "available": self._command_exists("ipmitool") or self._command_exists("ipmi-sensors"),
-            "ipmitool": self._command_exists("ipmitool"),
+            "available": ipmitool_available,
+            "ipmitool": ipmitool_available,
             "freeipmi_ipmi_sensors": self._command_exists("ipmi-sensors"),
             "device_nodes": device_nodes,
             "device_node_available": bool(device_nodes or list(Path("/sys/class/ipmi").glob("ipmi*"))),
-            "path": "ipmitool" if self._command_exists("ipmitool") else "ipmi-sensors" if self._command_exists("ipmi-sensors") else "",
+            "path": "ipmitool" if ipmitool_available else "",
             "reason": "",
-            "telemetry_role": "optional fallback for board/BMC-exposed temperatures such as DIMM/DRAM sensors",
+            "telemetry_role": "optional local BMC numeric telemetry and DIMM-temperature fallback",
         }
         if not details["available"]:
             if details["device_node_available"]:
-                details["reason"] = "IPMI device is present, but ipmitool/freeipmi tools are missing"
+                details["reason"] = "IPMI device is present, but the supported ipmitool telemetry provider is missing"
             else:
-                details["reason"] = "IPMI tools and local IPMI device are not available"
+                details["reason"] = "ipmitool and a local IPMI device are not available"
         return details
 
     def _intel_gpu_top_details(self) -> Dict[str, Any]:

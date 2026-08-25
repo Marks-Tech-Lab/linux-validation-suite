@@ -50,8 +50,14 @@ def build_dry_run_report(
         runtime_environment=orchestrator.settings.runtime_environment,
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
         cpu_core_type_probe=cpu_core_type_probe,
+        enable_bmc_provider=False,
     )
-    telemetry_capabilities = telemetry.detect_capabilities()
+    try:
+        telemetry_capabilities = telemetry.detect_capabilities()
+    finally:
+        close_telemetry = getattr(telemetry, "close", None)
+        if callable(close_telemetry):
+            close_telemetry()
     plan = build_dry_run_plan(orchestrator.workload_runner, profile, labels)
     profile_errors = list(validation["errors"])
     stage_errors: List[str] = []

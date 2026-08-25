@@ -383,7 +383,7 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
             "IPMI/BMC sensor tools",
             bool(ipmi_details.get("available")),
             detail=str(ipmi_details.get("reason") or ipmi_details.get("path") or ""),
-            fix="install ipmitool or freeipmi if this server board exposes DIMM/DRAM temperatures only through IPMI",
+            fix="install ipmitool if this server board exposes useful numeric sensors through its local BMC",
             preferred=bool(ipmi_details.get("device_node_available")),
         )
     )

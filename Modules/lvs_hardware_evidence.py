@@ -22,6 +22,12 @@ from .lvs_platform_hwmon import (
     valid_platform_temperature,
 )
 from .lvs_telemetry_cpu import parse_cpu_list
+from .lvs_telemetry_bmc import (
+    BmcSnapshot,
+    bmc_snapshot_evidence,
+    bmc_thermal_compatibility,
+    parse_ipmitool_sensor,
+)
 
 
 ReadText = Callable[[Path], Optional[str]]
@@ -586,52 +592,17 @@ def parse_nvme_id_ctrl(text: str) -> Dict[str, Any]:
 
 
 def parse_ipmi_temperature_thresholds(text: str) -> List[Dict[str, Any]]:
-    """Parse ipmitool sensor's named upper threshold columns without inventing TjMax."""
-    records: List[Dict[str, Any]] = []
-    for line in str(text or "").splitlines():
-        if "|" not in line:
-            continue
-        parts = [part.strip() for part in line.split("|")]
-        if len(parts) < 10 or "degree" not in parts[2].lower():
-            continue
-        label = parts[0]
-        current = _number(parts[1])
-        if current is None or current <= -273.15 or current > 250:
-            continue
-        lowered = label.lower()
-        component = "cpu" if "cpu" in lowered else (
-            "memory_module" if any(token in lowered for token in ("dimm", "ddr", "dram", "memory")) else (
-                "vrm" if "vrm" in lowered else ("pch" if "pch" in lowered or "chipset" in lowered else (
-                    "psu" if "psu" in lowered else ("nic" if "nic" in lowered or "lan" in lowered else "platform")
-                ))
-            )
-        )
-        record: Dict[str, Any] = {
-            "component_class": component,
-            "provider": "ipmi_bmc",
-            "label": label,
-            "temperature_c": round(current, 2),
-            "source": "ipmitool sensor",
-            "evidence": {
-                "temperature_c": _evidence(
-                    provider="ipmi_bmc", source="ipmitool sensor", raw_field=label,
-                    raw_value=parts[1], raw_units=parts[2], normalized_value=round(current, 2),
-                    normalized_units="c", semantics="bmc_sensor_current",
-                )
-            },
-        }
-        # ipmitool columns: lnr, lcr, lnc, unc, ucr, unr.
-        for index, field in ((7, "upper_noncritical_c"), (8, "upper_critical_c"), (9, "upper_nonrecoverable_c")):
-            value = _number(parts[index])
-            if value is not None and 0 < value <= 250:
-                record[field] = round(value, 2)
-                record["evidence"][field] = _evidence(
-                    provider="ipmi_bmc", source="ipmitool sensor", raw_field=field.removesuffix("_c"),
-                    raw_value=parts[index], raw_units=parts[2], normalized_value=round(value, 2),
-                    normalized_units="c", semantics=field.removesuffix("_c"),
-                )
-        records.append(record)
-    return records
+    """Compatibility adapter backed by the canonical BMC sensor parser."""
+    snapshot = BmcSnapshot(
+        provider="ipmi_bmc",
+        command="ipmitool sensor",
+        access_mode="direct",
+        captured_at="",
+        captured_monotonic=0.0,
+        status="ok",
+        sensors=parse_ipmitool_sensor(text),
+    )
+    return bmc_thermal_compatibility(snapshot)
 
 
 def _run(command: List[str], command_env: CommandEnv, timeout: int = 10) -> str:
@@ -657,6 +628,7 @@ class HardwareEvidenceCollector:
         thermal_root: Path = Path("/sys/class/thermal"),
         drm_root: Path = Path("/sys/class/drm"),
         devfreq_root: Path = Path("/sys/class/devfreq"),
+        bmc_snapshot: Optional[BmcSnapshot] = None,
     ) -> None:
         self.topology = cpu_core_topology or {}
         self.gpu_cards = gpu_cards or []
@@ -667,15 +639,10 @@ class HardwareEvidenceCollector:
         self.thermal_root = thermal_root
         self.drm_root = drm_root
         self.devfreq_root = devfreq_root
+        self.bmc_snapshot = bmc_snapshot
 
     def collect(self) -> Dict[str, Any]:
         zones = discover_thermal_zones(self.thermal_root, self.read_text)
-        local_ipmi = any(path.exists() for path in (Path("/dev/ipmi0"), Path("/dev/ipmi/0"), Path("/dev/ipmidev/0")))
-        ipmi_text = (
-            _run(["ipmitool", "sensor"], self.command_env, timeout=8)
-            if local_ipmi and shutil.which("ipmitool")
-            else ""
-        )
         platform_sensors = self._platform_sensors()
         return {
             "schema_version": 1,
@@ -690,7 +657,8 @@ class HardwareEvidenceCollector:
             "soc_memory_zones": [zone for zone in zones if zone["zone_type"].lower().replace("_", "-") in {"mem-thermal", "memory-thermal"}],
             "board_sensors": platform_sensors["board_sensors"],
             "other_component_sensors": platform_sensors["other_component_sensors"],
-            "bmc_thermal_sensors": parse_ipmi_temperature_thresholds(ipmi_text),
+            "bmc_sensors": bmc_snapshot_evidence(self.bmc_snapshot),
+            "bmc_thermal_sensors": bmc_thermal_compatibility(self.bmc_snapshot),
         }
 
     def _gpus(self, zones: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

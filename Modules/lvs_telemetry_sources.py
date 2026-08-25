@@ -77,6 +77,9 @@ def telemetry_source_description(source: Optional[TelemetrySource]) -> str:
 def telemetry_source_access_mode(source: Optional[TelemetrySource]) -> str:
     if not source:
         return "unavailable"
+    explicit = str(source.get("access_mode") or "")
+    if explicit:
+        return explicit
     kind = str(source.get("kind") or "")
     if kind.startswith("sudo_"):
         return "sudo"
@@ -199,6 +202,23 @@ def telemetry_source_record(
         "canonical_identity",
         "stable_device_locator",
         "kernel_channel",
+        "command",
+        "sensor_number",
+        "entity_id",
+        "entity_instance",
+        "sensor_type",
+        "metric_class",
+        "raw_units",
+        "normalized_units",
+        "component_locator",
+        "thresholds",
+        "threshold_source",
+        "sampling_mode",
+        "native_refresh_interval_seconds",
+        "stale_after_seconds",
+        "last_successful_snapshot_at",
+        "last_snapshot_status",
+        "potential_duplicate_of",
     ):
         if source.get(key) not in (None, ""):
             record[key] = source.get(key)
@@ -230,6 +250,7 @@ def build_telemetry_source_map(
     cpu_utilization_source: Optional[TelemetrySource] = None,
     cpu_core_utilization_sources: Iterable[TelemetrySource] = (),
     llcc_edac_sources: Iterable[TelemetrySource] = (),
+    bmc_sources: Iterable[TelemetrySource] = (),
 ) -> Dict[str, Any]:
     """Build a machine-readable map for raw telemetry CSV fields.
 
@@ -245,6 +266,7 @@ def build_telemetry_source_map(
     storage_temp_source_list = list(storage_temp_sources)
     device_temp_source_list = list(device_temp_sources)
     gpu_source_list = list(gpu_sources)
+    bmc_source_list = list(bmc_sources)
     cpu_power_unreadable_source_list = list(cpu_power_unreadable_sources)
 
     fields: Dict[str, Dict[str, Any]] = {
@@ -365,6 +387,16 @@ def build_telemetry_source_map(
                     metric="vram_used_gib",
                 )
 
+    for source in bmc_source_list:
+        field = str(source.get("key") or "")
+        if field:
+            fields[field] = telemetry_source_record(
+                field,
+                source,
+                category="bmc",
+                metric=f"{source.get('metric_class') or 'numeric'}_{source.get('normalized_units') or ''}".rstrip("_"),
+            )
+
     gpu_index_map: List[Dict[str, Any]] = []
     for card in gpu_cards:
         entry = {
@@ -396,6 +428,7 @@ def build_telemetry_source_map(
         + storage_temp_source_list
         + device_temp_source_list
         + gpu_source_list
+        + bmc_source_list
     ):
         source_list.extend(_source_and_components(source))
 

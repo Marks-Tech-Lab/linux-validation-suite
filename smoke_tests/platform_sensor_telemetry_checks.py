@@ -192,7 +192,6 @@ def run_platform_sensor_telemetry_checks() -> None:
         direct_memory = discover_memory_temp_sources(
             hwmon_root=dimm_root,
             thermal_root=root / "thermal_memory",
-            ipmi_temperatures={"DIMM_A1 Temp": 44.0},
         )
         assert [(item["provider"], item["key"]) for item in direct_memory] == [
             ("spd5118", "memory_module_0_temp_c"),
@@ -214,7 +213,6 @@ def run_platform_sensor_telemetry_checks() -> None:
         broken_jc_direct = discover_memory_temp_sources(
             hwmon_root=broken_jc_root,
             thermal_root=root / "thermal_memory",
-            ipmi_temperatures={"DIMM_A1 Temp": 44.0},
         )
         assert [(item["provider"], item["key"]) for item in broken_jc_direct] == [
             ("spd5118", "memory_module_0_temp_c"),

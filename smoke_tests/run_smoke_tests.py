@@ -37,6 +37,7 @@ from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
+from smoke_tests.bmc_telemetry_provider_checks import run_bmc_telemetry_provider_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -71,7 +72,6 @@ from Modules.lvs_dependency_report_text import storage_health_provider_lines
 from Modules.lvs_diagnostics_cli import DiagnosticsCliAdapter
 from Modules.lvs_advanced_debug import AdvancedDebugLogger
 from Modules import lvs_telemetry_intel
-from Modules import lvs_telemetry_memory
 from Modules import lvs_telemetry_nvidia
 from Modules.lvs_faults import LinuxFaultCollector, faults_for_stage_window, summarize_fault_events
 from Modules.lvs_gpu_safety_marker import GpuSafetyMarkerStore
@@ -922,15 +922,9 @@ from Modules.lvs_telemetry_gpu import (
     read_gpu_values,
 )
 from Modules.lvs_telemetry_memory import (
-    cached_ipmi_sensor_temperatures,
     discover_memory_temp_sources,
-    discover_memory_temp_sources_with_ipmi,
     ipmi_memory_sensor_sort_key,
-    parse_ipmi_sensor_temperatures,
-    read_ipmi_sensor_temperatures,
     read_memory_temps,
-    run_ipmitool_sensor_text,
-    looks_like_ipmi_memory_temperature,
     memory_usage_gib_from_meminfo,
     platform_memory_temp_sources,
 )
@@ -15841,98 +15835,21 @@ def test_telemetry_memory_helpers() -> None:
     labels = ["DIMM_B2 Temp", "DDR_A1 Temp", "DIMM_A2 Temp", "DDR_B1 Temp"]
     ordered = sorted(labels, key=ipmi_memory_sensor_sort_key)
     assert_equal(ordered, ["DDR_A1 Temp", "DDR_B1 Temp", "DIMM_A2 Temp", "DIMM_B2 Temp"], "IPMI DIMM sort order")
-    assert_true(looks_like_ipmi_memory_temperature("DDR_A1 Temp"), "DDR IPMI memory temp label")
-    assert_true(looks_like_ipmi_memory_temperature("DIMM B2"), "DIMM IPMI memory temp label")
-    assert_true(looks_like_ipmi_memory_temperature("DRAM Temp"), "DRAM IPMI memory temp label")
-    assert_true(not looks_like_ipmi_memory_temperature("GPU Memory Temp"), "GPU memory temp is not DIMM temp")
-    assert_true(not looks_like_ipmi_memory_temperature("VRM DIMM Rail"), "VRM DIMM rail is not DIMM temp")
-    assert_true(not looks_like_ipmi_memory_temperature("System Ambient"), "ambient temp is not DIMM temp")
-    ipmi_text = """
-DDR_A1 Temp | 42.000 | degrees C | ok
-GPU Memory Temp | 70.000 | degrees C | ok
-Bad DIMM | na | degrees C | ns
-DIMM_B2 Temp | 43.500 | C | ok
-"""
-    ipmi_values = parse_ipmi_sensor_temperatures(ipmi_text)
-    assert_equal(ipmi_values["DDR_A1 Temp"], 42.0, "IPMI memory temperature parse")
-    assert_equal(ipmi_values["DIMM_B2 Temp"], 43.5, "IPMI C unit parse")
-    original_run = lvs_telemetry_memory.subprocess.run
-    calls: list[dict[str, object]] = []
-
-    def fake_ipmi_run(command, **kwargs):
-        calls.append({"command": command, "kwargs": kwargs})
-        return SimpleNamespace(returncode=0, stdout=ipmi_text)
-
-    try:
-        lvs_telemetry_memory.subprocess.run = fake_ipmi_run
-        sensor_text = run_ipmitool_sensor_text(
-            command_exists=lambda command: command == "ipmitool",
-            command_env=lambda: {"PATH": "/usr/bin"},
-        )
-        assert_true("DDR_A1 Temp" in sensor_text, "IPMI command helper returns sensor text")
-        assert_equal(calls[0]["command"], ["ipmitool", "sensor"], "IPMI command helper command")
-        assert_equal(
-            read_ipmi_sensor_temperatures(
-                command_exists=lambda command: command == "ipmitool",
-                command_env=lambda: {"PATH": "/usr/bin"},
-            )["DIMM_B2 Temp"],
-            43.5,
-            "IPMI command helper parses temperatures",
-        )
-    finally:
-        lvs_telemetry_memory.subprocess.run = original_run
-
-    cache_reads = 0
-
-    def read_cached_ipmi() -> dict[str, float]:
-        nonlocal cache_reads
-        cache_reads += 1
-        return {"DDR_A1 Temp": 42.0}
-
-    cached_values, cache = cached_ipmi_sensor_temperatures(None, 10.0, read_cached_ipmi)
-    assert_equal(cached_values, {"DDR_A1 Temp": 42.0}, "IPMI cache first read")
-    cached_values, cache = cached_ipmi_sensor_temperatures(cache, 12.0, read_cached_ipmi)
-    assert_equal(cache_reads, 1, "IPMI cache reuses fresh values")
-    assert_equal(cached_values, {"DDR_A1 Temp": 42.0}, "IPMI cache value copy")
-    cached_values, cache = cached_ipmi_sensor_temperatures(cache, 20.0, read_cached_ipmi, force=True)
-    assert_equal(cache_reads, 2, "IPMI cache force refresh")
     with TemporaryDirectory(dir="/tmp") as tmp:
         empty_hwmon_root = Path(tmp) / "empty_hwmon"
         empty_hwmon_root.mkdir()
         empty_thermal_root = Path(tmp) / "empty_thermal"
         empty_thermal_root.mkdir()
-        ipmi_sources = discover_memory_temp_sources(
-            hwmon_root=empty_hwmon_root,
-            thermal_root=empty_thermal_root,
-            ipmi_temperatures=ipmi_values,
-        )
-        assert_equal([source["sensor_id"] for source in ipmi_sources], ["DDR_A1 Temp", "DIMM_B2 Temp"], "IPMI memory source filtering")
-        assert_equal(ipmi_sources[0]["key"], "memory_module_0_temp_c", "IPMI memory source key")
-        fallback_sources = discover_memory_temp_sources_with_ipmi(
-            read_text=lambda path: None,
-            command_exists=lambda command: command == "ipmitool",
-            local_ipmi_available=lambda: True,
-            read_ipmi_temperatures_cached=lambda: ipmi_values,
-            hwmon_root=empty_hwmon_root,
-            thermal_root=empty_thermal_root,
-        )
-        assert_equal(
-            [source["sensor_id"] for source in fallback_sources],
-            ["DDR_A1 Temp", "DIMM_B2 Temp"],
-            "IPMI fallback memory source discovery",
-        )
         memory_values = read_memory_temps(
             [
                 {"kind": "memory_temp", "key": "memory_module_0_temp_c", "path": "/memory/temp0"},
-                {"kind": "ipmi_memory_temp", "key": "memory_module_1_temp_c", "sensor_id": "DIMM_B2 Temp"},
             ],
             read_temperature=lambda path: 40.0 if str(path) == "/memory/temp0" else None,
-            read_ipmi_temperatures_cached=lambda: ipmi_values,
         )
         assert_equal(
             memory_values,
-            {"memory_module_0_temp_c": 40.0, "memory_module_1_temp_c": 43.5},
-            "memory temp reader combines SPD and IPMI sources",
+            {"memory_module_0_temp_c": 40.0},
+            "memory temp reader retains direct sources",
         )
         thermal_root = Path(tmp) / "thermal"
         memory_zone = thermal_root / "thermal_zone12"
@@ -15947,7 +15864,6 @@ DIMM_B2 Temp | 43.500 | C | ok
             discover_memory_temp_sources(
                 hwmon_root=empty_hwmon_root,
                 thermal_root=thermal_root,
-                ipmi_temperatures=ipmi_values,
             )[0]["kind"],
             "thermal_zone_memory",
             "platform memory thermal source precedes IPMI fallback",
@@ -15956,7 +15872,6 @@ DIMM_B2 Temp | 43.500 | C | ok
             read_memory_temps(
                 platform_sources,
                 read_temperature=read_temperature_path,
-                read_ipmi_temperatures_cached=lambda: {},
             ),
             {"memory_temp_c": 41.5},
             "platform memory temperature reading",
@@ -15970,7 +15885,6 @@ DIMM_B2 Temp | 43.500 | C | ok
         spd_sources = discover_memory_temp_sources(
             hwmon_root=hwmon_root,
             thermal_root=thermal_root,
-            ipmi_temperatures={"DDR_A1 Temp": 42.0},
         )
         assert_equal(len(spd_sources), 2, "SPD5118 memory source count")
         assert_equal(spd_sources[0]["kind"], "memory_temp", "SPD5118 preferred over IPMI")
@@ -27094,6 +27008,7 @@ def main() -> int:
         run_profile_metadata_checks,
         run_profile_authoring_ux_checks,
         run_platform_sensor_telemetry_checks,
+        run_bmc_telemetry_provider_checks,
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,

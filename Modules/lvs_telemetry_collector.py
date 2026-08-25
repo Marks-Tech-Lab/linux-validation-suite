@@ -67,14 +67,12 @@ from .lvs_telemetry_cpu import (
 from .lvs_telemetry_device import discover_device_temp_sources, read_device_temps
 from .lvs_telemetry_edac import discover_llcc_edac_sources, read_llcc_edac_counters
 from .lvs_telemetry_memory import (
-    cached_ipmi_sensor_temperatures,
-    discover_memory_temp_sources_with_ipmi,
-    local_ipmi_device_available,
+    discover_memory_temp_sources,
+    ipmi_memory_sensor_sort_key,
     memory_usage_gib_from_meminfo,
-    read_ipmi_sensor_temperatures,
     read_memory_temps,
-    run_ipmitool_sensor_text,
 )
+from .lvs_telemetry_bmc import BmcSnapshotProvider
 from .lvs_telemetry_nvidia import (
     discover_nvidia_smi_gpus,
     read_nvidia_smi_gpu_metrics,
@@ -127,6 +125,8 @@ class TelemetryCollector:
         runtime_environment: Optional[Dict[str, str]] = None,
         privileged_helper_enabled: bool = False,
         cpu_core_type_probe: Optional[Dict[str, Any]] = None,
+        bmc_provider: Optional[BmcSnapshotProvider] = None,
+        enable_bmc_provider: bool = True,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.samples: List[Sample] = []
@@ -148,8 +148,10 @@ class TelemetryCollector:
         )
         self._cpu_package_temp_sources = self._assign_cpu_package_temp_sources()
         self._cpu_core_clock_sources = self._discover_cpu_core_clock_sources()
-        self._ipmi_sensor_snapshot_cache: Optional[tuple[float, Dict[str, Optional[float]]]] = None
         self._memory_temp_sources = self._discover_memory_temp_sources()
+        self._direct_memory_temp_sources_present = bool(self._memory_temp_sources)
+        self._bmc_memory_aliases_initialized = False
+        self._bmc_memory_aliases: Dict[str, str] = {}
         self._llcc_edac_sources = self._discover_llcc_edac_sources()
         self._storage_temp_sources = self._discover_storage_temp_sources()
         self._device_temp_sources = self._discover_device_temp_sources()
@@ -159,6 +161,14 @@ class TelemetryCollector:
         self.memory_total_gib: Optional[float] = None
         self._intel_gpu_top_snapshot_cache: Optional[Dict[int, Dict[str, Optional[float]]]] = None
         self._normalized_hardware_evidence_cache: Optional[Dict[str, Any]] = None
+        # Start the optional worker only after synchronous source discovery has
+        # completed, so constructor failures cannot orphan it.
+        self._bmc_provider = bmc_provider or BmcSnapshotProvider(
+            command_exists=self._command_exists,
+            command_env=self._command_env,
+            privileged_helper_enabled=self._privileged_helper_enabled,
+            enabled=enable_bmc_provider,
+        )
 
     def _command_env(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -226,6 +236,7 @@ class TelemetryCollector:
         values.update(self._last_cpu_package_power_values)
         values.update(self._read_cpu_core_clocks())
         values.update(self._read_memory_temps())
+        values.update(self._read_bmc_values(sample_time))
         values.update(self._read_llcc_edac_counters())
         values.update(self._read_storage_temps())
         values.update(self._read_device_temps())
@@ -291,7 +302,25 @@ class TelemetryCollector:
         return None
 
     def write_csv(self, path: Path) -> None:
+        self.finalize_sources()
         write_telemetry_csv(self.samples, path)
+
+    def finalize_sources(self) -> None:
+        """Nonblockingly incorporate provider catalogs before artifacts are written."""
+        provider = getattr(self, "_bmc_provider", None)
+        if provider is None:
+            return
+        values = provider.sample_values()
+        catalog = provider.source_catalog()
+        self._initialize_bmc_memory_aliases(catalog, values)
+        field_names = {
+            self._bmc_memory_aliases.get(str(source.get("key") or ""), str(source.get("key") or ""))
+            for source in catalog
+            if source.get("key")
+        }
+        for sample in self.samples:
+            for field_name in field_names:
+                sample.values.setdefault(field_name, None)
 
     def detect_capabilities(self) -> Dict[str, Dict[str, Any]]:
         return build_telemetry_capability_summary(
@@ -324,6 +353,14 @@ class TelemetryCollector:
         return build_gpu_telemetry_matrix(self._discover_gpu_cards(), self._gpu_sources)
 
     def source_map(self) -> Dict[str, Any]:
+        self.finalize_sources()
+        provider = getattr(self, "_bmc_provider", None)
+        bmc_catalog = provider.source_catalog() if provider is not None else []
+        bmc_catalog = [
+            source
+            for source in bmc_catalog
+            if str(source.get("key") or "") not in self._bmc_memory_aliases
+        ]
         payload = build_telemetry_source_map(
             cpu_temp_source=self._cpu_temp_sources[0] if self._cpu_temp_sources else None,
             cpu_package_temp_sources=self._cpu_package_temp_sources,
@@ -332,6 +369,7 @@ class TelemetryCollector:
             cpu_core_clock_sources=self._cpu_core_clock_sources,
             cpu_core_utilization_sources=self._cpu_core_utilization_sources,
             memory_temp_sources=self._memory_temp_sources,
+            bmc_sources=bmc_catalog,
             llcc_edac_sources=self._llcc_edac_sources,
             storage_temp_sources=self._storage_temp_sources,
             device_temp_sources=self._device_temp_sources,
@@ -350,11 +388,15 @@ class TelemetryCollector:
 
     def normalized_hardware_evidence(self) -> Dict[str, Any]:
         if self._normalized_hardware_evidence_cache is None:
+            provider = getattr(self, "_bmc_provider", None)
+            if provider is not None:
+                provider.poll()
             collector = HardwareEvidenceCollector(
                 cpu_core_topology=self._cpu_core_topology,
                 gpu_cards=self._discover_gpu_cards(),
                 read_text=self._safe_read_text,
                 command_env=self._command_env,
+                bmc_snapshot=provider.snapshot_for_evidence() if provider is not None else None,
             )
             evidence = collector.collect()
             evidence["operator_summary"] = format_hardware_evidence_summary(evidence)
@@ -456,8 +498,56 @@ class TelemetryCollector:
         return read_memory_temps(
             self._memory_temp_sources,
             self._read_temperature_path,
-            self._read_ipmi_sensor_temperatures_cached,
         )
+
+    def _initialize_bmc_memory_aliases(
+        self,
+        catalog: List[Dict[str, Any]],
+        values: Optional[Dict[str, Optional[float]]] = None,
+    ) -> None:
+        if getattr(self, "_bmc_memory_aliases_initialized", False) or getattr(
+            self, "_direct_memory_temp_sources_present", bool(getattr(self, "_memory_temp_sources", []))
+        ):
+            return
+        if not hasattr(self, "_bmc_memory_aliases"):
+            self._bmc_memory_aliases = {}
+        candidates = [
+            source
+            for source in catalog
+            if source.get("metric_class") == "temperature"
+            and source.get("component_classification") == "memory_module"
+            and (values is None or values.get(str(source.get("key") or "")) is not None)
+        ]
+        if not candidates:
+            return
+        candidates.sort(key=lambda source: ipmi_memory_sensor_sort_key(str(source.get("label") or "")))
+        for module_index, source in enumerate(candidates):
+            bmc_key = str(source.get("key") or "")
+            alias_key = f"memory_module_{module_index}_temp_c"
+            self._bmc_memory_aliases[bmc_key] = alias_key
+            self._memory_temp_sources.append(
+                {
+                    **source,
+                    "kind": "ipmi_memory_temp",
+                    "path": str(source.get("command") or "ipmitool sdr elist full"),
+                    "key": alias_key,
+                    "module_index": module_index,
+                    "sensor_id": list(source.get("canonical_identity") or ()),
+                    "bmc_source_key": bmc_key,
+                }
+            )
+        self._bmc_memory_aliases_initialized = True
+
+    def _read_bmc_values(self, sample_time: float) -> Dict[str, Optional[float]]:
+        provider = getattr(self, "_bmc_provider", None)
+        if provider is None:
+            return {}
+        values = provider.sample_values(sample_time)
+        catalog = provider.source_catalog()
+        self._initialize_bmc_memory_aliases(catalog, values)
+        for bmc_key, alias_key in self._bmc_memory_aliases.items():
+            values[alias_key] = values.pop(bmc_key, None)
+        return values
 
     def _read_storage_temps(self) -> Dict[str, Optional[float]]:
         return read_storage_temps(self._storage_temp_sources, self._read_temperature_path)
@@ -543,12 +633,7 @@ class TelemetryCollector:
         return discover_cpu_core_clock_sources(self._cpu_core_topology, read_text=self._safe_read_text)
 
     def _discover_memory_temp_sources(self) -> List[Dict[str, Any]]:
-        return discover_memory_temp_sources_with_ipmi(
-            self._safe_read_text,
-            self._command_exists,
-            self._local_ipmi_device_available,
-            lambda: self._read_ipmi_sensor_temperatures_cached(force=True),
-        )
+        return discover_memory_temp_sources(read_text=self._safe_read_text)
 
     def _discover_llcc_edac_sources(self) -> List[Dict[str, Any]]:
         return discover_llcc_edac_sources(read_text=self._safe_read_text)
@@ -559,31 +644,10 @@ class TelemetryCollector:
             self._safe_read_text,
         )
 
-    def _local_ipmi_device_available(self) -> bool:
-        return local_ipmi_device_available()
-
-    def _read_ipmi_sensor_temperatures_cached(self, force: bool = False) -> Dict[str, Optional[float]]:
-        values, self._ipmi_sensor_snapshot_cache = cached_ipmi_sensor_temperatures(
-            self._ipmi_sensor_snapshot_cache,
-            time.monotonic(),
-            self._read_ipmi_sensor_temperatures,
-            force=force,
-        )
-        return values
-
-    def _read_ipmi_sensor_temperatures(self) -> Dict[str, Optional[float]]:
-        return read_ipmi_sensor_temperatures(
-            self._command_exists,
-            self._command_env,
-            privileged_helper_enabled=self._privileged_helper_enabled,
-        )
-
-    def _run_ipmitool_sensor_text(self) -> str:
-        return run_ipmitool_sensor_text(
-            self._command_exists,
-            self._command_env,
-            privileged_helper_enabled=self._privileged_helper_enabled,
-        )
+    def close(self) -> None:
+        provider = getattr(self, "_bmc_provider", None)
+        if provider is not None:
+            provider.close()
 
     def _discover_storage_temp_sources(self) -> List[Dict[str, Any]]:
         return discover_storage_temp_sources(read_text=self._safe_read_text)
