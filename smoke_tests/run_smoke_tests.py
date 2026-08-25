@@ -35,6 +35,7 @@ from smoke_tests.module_organization_checks import (
 )
 from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
+from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -2028,6 +2029,10 @@ def test_tui_profile_edit_adapter_helpers() -> None:
             self.pending_input_field = None
             self.detail = ""
             self.last_input_state = None
+            self.pending_profile_template_key = None
+            self.pending_profile_template_stage = None
+            self.pending_profile_template_label = ""
+            self.pending_profile_template_allocation_fields = []
 
         async def _show_profile_edit(self, detail: str = "") -> None:
             self.profile_edit_items = self.service.profile_edit_items(self.profile_edit)
@@ -2064,7 +2069,9 @@ def test_tui_profile_edit_adapter_helpers() -> None:
                 "TUI Profile Edit renders prominent storage template action",
             )
             first_template = next(item for item in tui.profile_edit_items if item.kind == "add_template")
-            assert_equal(first_template.template_key, "storage_benchmark", "TUI promotes storage template to top of add actions")
+            assert_equal(first_template.template_key, "cpu", "TUI presents guided templates in shared catalog order")
+            await tui._activate_profile_edit_item(template_index)
+            assert_equal(edit.profile.stages, [], "TUI stage review does not add before acceptance")
             await tui._activate_profile_edit_item(template_index)
             storage_stage = edit.profile.stages[-1]
             assert_true(storage_stage.modules.storage_benchmark.enabled,
@@ -2083,12 +2090,12 @@ def test_tui_profile_edit_adapter_helpers() -> None:
             await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_target_mode"]))
             assert_equal(storage_stage.modules.storage_benchmark.target_mode, "selected_target",
                          "TUI storage target mode cycles to selected_target")
-            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 0 and item.kind.startswith("storage_")}
             await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_allow_system"]))
             assert_true(storage_stage.modules.storage_benchmark.allow_system_drive,
                         "TUI storage allow-system row toggles")
 
-            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 0 and item.kind.startswith("storage_")}
             await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows["storage_target_mode"]))
             assert_equal(
                 storage_stage.modules.storage_benchmark.target_mode,
@@ -2097,7 +2104,7 @@ def test_tui_profile_edit_adapter_helpers() -> None:
             )
             assert_true(not storage_stage.modules.storage_benchmark.allow_system_drive,
                         "TUI low-occupancy mode clears system-drive permission")
-            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+            storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 0 and item.kind.startswith("storage_")}
             assert_true("storage_max_used_percent" in storage_rows and "storage_allow_system" not in storage_rows,
                         "TUI shows threshold and hides system-drive toggle in low-occupancy mode")
             await tui._activate_profile_edit_item(
@@ -2114,7 +2121,7 @@ def test_tui_profile_edit_adapter_helpers() -> None:
                 ("storage_test_size", "99", "__profile_stage_storage_test_size"),
                 ("storage_runs", "0", "__profile_stage_storage_runs"),
             ):
-                storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 1 and item.kind.startswith("storage_")}
+                storage_rows = {item.kind: item for item in tui.profile_edit_items if item.index == 0 and item.kind.startswith("storage_")}
                 await tui._activate_profile_edit_item(tui.profile_edit_items.index(storage_rows[kind]))
                 assert_equal(tui.pending_input_field, expected_field, f"TUI {kind} opens its input prompt")
                 await tui._commit_profile_edit_input(expected_field, entered)
@@ -2127,7 +2134,7 @@ def test_tui_profile_edit_adapter_helpers() -> None:
 
             stage_row_index = next(
                 index for index, item in enumerate(tui.profile_edit_items)
-                if item.kind == "stage" and item.index == 1
+                if item.kind == "stage" and item.index == 0
             )
             tui.profile_edit_selected_index = stage_row_index
             tui._begin_profile_stage_input("duration")
@@ -2136,9 +2143,9 @@ def test_tui_profile_edit_adapter_helpers() -> None:
 
             service.save_profile_edit(edit)
             saved = json.loads(edit.profile_path.read_text(encoding="utf-8"))
-            saved_storage = saved["stages"][1]["modules"]["storage_benchmark"]
+            saved_storage = saved["stages"][0]["modules"]["storage_benchmark"]
             assert_true(saved_storage["enabled"], "TUI-authored profile JSON contains storage_benchmark")
-            assert_equal(saved["stages"][1]["duration_seconds"], None,
+            assert_equal(saved["stages"][0]["duration_seconds"], None,
                          "TUI-authored JSON retains null completion duration")
             assert_equal(saved_storage["target_mode"], "all_internal_non_root_low_occupancy",
                          "TUI-authored JSON retains low-occupancy target mode")
@@ -2146,6 +2153,34 @@ def test_tui_profile_edit_adapter_helpers() -> None:
                          "TUI-authored JSON retains low-occupancy threshold")
             assert_true(not saved_storage["allow_system_drive"],
                         "TUI-authored low-occupancy JSON excludes system drives")
+
+            allocation_edit = service.create_new_profile_edit("TUI Guided Allocation")
+            allocation_tui = AuthoringTui(service, allocation_edit)
+            baseline_index = next(
+                index for index, item in enumerate(allocation_tui.profile_edit_items)
+                if item.kind == "add_template" and item.template_key == "baseline_ram_vram"
+            )
+            await allocation_tui._activate_profile_edit_item(baseline_index)
+            assert_equal(
+                allocation_tui.pending_input_field,
+                "__profile_template_memory_allocation",
+                "TUI guided baseline prompts for RAM allocation first",
+            )
+            await allocation_tui._commit_profile_edit_input("__profile_template_memory_allocation", "81")
+            assert_equal(
+                allocation_tui.pending_input_field,
+                "__profile_template_vram_allocation",
+                "TUI guided baseline prompts for VRAM allocation second",
+            )
+            await allocation_tui._commit_profile_edit_input("__profile_template_vram_allocation", "74")
+            assert_true("RAM: 81%" in allocation_tui.detail and "VRAM: 74%" in allocation_tui.detail,
+                        "TUI guided Stage Review shows selected allocations")
+            await allocation_tui._activate_profile_edit_item(baseline_index)
+            added = allocation_edit.profile.stages[0]
+            assert_equal(added.modules.memory.allocation_percent, 81,
+                         "TUI guided RAM allocation reaches shared draft")
+            assert_equal(added.modules.vram.allocation_percent, 74,
+                         "TUI guided VRAM allocation reaches shared draft")
 
     asyncio.run(run_storage_authoring_check())
 
@@ -2889,6 +2924,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
             ("dry-run", "Dry"),
             ("deps", "Deps"),
             ("new-profile", "New"),
+            ("copy-profile", "Copy"),
             ("setup", "Setup"),
             ("edit-profile", "Edit"),
         ),
@@ -2924,8 +2960,10 @@ def test_tui_app_actions_adapter_helpers() -> None:
                 "TUI Settings panel exposes compatibility toggle")
     tui_app_source = (ROOT / "Modules" / "lvs_tui_app.py").read_text(encoding="utf-8")
     tui_actions_source = (ROOT / "Modules" / "lvs_tui_app_actions_adapter.py").read_text(encoding="utf-8")
-    assert_true("choose Add Storage Benchmark Stage" in tui_actions_source,
-                "TUI New Profile guidance directs users to normal storage stage authoring")
+    assert_true("Blank profile created in memory" in tui_actions_source,
+                "TUI New Profile guidance describes blank unsaved authoring")
+    assert_true(("copy-profile", "Copy") in ACTION_BUTTONS,
+                "TUI profile actions expose Copy Profile")
     assert_true(".action-row {\n        height: 3;\n        width: 100%;" in tui_app_source, "TUI action rows span panel width")
     assert_true("#actions Button {\n        width: 1fr;" in tui_app_source, "TUI right-pane buttons share row width")
     assert_true("margin-right: 0;" in tui_app_source, "TUI right-pane buttons avoid standalone gaps")
@@ -9312,7 +9350,7 @@ def test_settings_and_result_action_specs() -> None:
             "profile group delete",
         )
         restored = service_facade.restore_profile_menu_group_defaults_text()
-        assert_true("standard profile (standard)" in restored, "profile group restore defaults")
+        assert_true("standard validation profile (standard)" in restored, "profile group restore defaults")
 
 
 def test_result_overview_text_fixture() -> None:
@@ -12496,8 +12534,12 @@ def test_profile_editor_stage_mutations() -> None:
     assert_equal(target_picker.current, "all", "profile edit gpu target current")
     duration_input = presenter.stage_input_spec(edit, 1, "duration")
     assert_equal(duration_input.field, "__profile_stage_duration", "profile edit duration input field")
-    assert_equal(duration_input.label, "Stage 2 duration seconds", "profile edit duration input label")
-    assert_equal(duration_input.initial_value, "90", "profile edit duration initial value")
+    assert_equal(
+        duration_input.label,
+        "Stage 2 duration (for example 90s, 5m, or 1h 30m)",
+        "profile edit duration input label",
+    )
+    assert_equal(duration_input.initial_value, "90s", "profile edit duration initial value")
     assert_equal(editor.cycle_profile_strict_threshold_warnings(profile), False, "profile editor strict false")
     assert_equal(editor.cycle_profile_strict_threshold_warnings(profile), None, "profile editor strict inherit")
 
@@ -12678,7 +12720,7 @@ def test_profile_edit_controller_dispatch() -> None:
     launcher.profile_editor = editor
     launcher.profile_edit_controller = controller
     launcher.profile_creation = ProfileCreationController(editor)
-    responses = iter(["", "Inserted Stage", "180"])
+    responses = iter(["", "1", "3m", "Inserted Stage", "y"])
     launcher._input = lambda _prompt="": next(responses)
     launcher._choose_test_type = lambda: "CPU"
     launcher._build_stage_modules = lambda test_type: editor.build_stage_modules(test_type)
@@ -26609,11 +26651,11 @@ def test_service_new_profile_round_trip() -> None:
         edit = service.create_new_profile_edit("Created Smoke Profile")
         assert_equal(edit.profile_path.parent, tmp_path, "new profile temp parent")
         assert_equal(edit.profile.profile_name, "Created Smoke Profile", "new profile name")
-        assert_equal(edit.labels, ["CPU"], "new profile starter label")
-        assert_true(edit.profile.stages[0].modules.cpu.enabled, "new profile starter CPU")
+        assert_equal(edit.labels, [], "new profile begins blank")
+        assert_equal(edit.profile.stages, [], "new profile has no forced starter stage")
         items = service.profile_edit_items(edit)
         assert_true(any(item.kind == "save" for item in items), "new profile edit save row")
-        assert_true(any(item.kind == "stage" and item.index == 0 for item in items), "new profile edit stage row")
+        assert_true(not any(item.kind == "stage" for item in items), "blank new profile has no stage row")
         assert_true(any(
             item.kind == "add_template"
             and item.template_key == "storage_benchmark"
@@ -26630,14 +26672,14 @@ def test_service_new_profile_round_trip() -> None:
         assert_true("segment_label_source" not in saved_profile, "new profile has no sidecar dependency")
         assert_equal(
             [stage["display_label"] for stage in saved_profile["stages"]],
-            ["CPU", "GPU (3D + VRAM)"],
+            ["GPU (3D + VRAM)"],
             "new profile stores native display labels",
         )
         reloaded = service.create_profile_edit(edit.profile_path)
         assert_equal(reloaded.profile.profile_name, "Renamed Smoke Profile", "new profile reloaded name")
-        assert_equal(reloaded.labels, ["CPU", "GPU (3D + VRAM)"], "new profile reloaded labels")
-        assert_true(reloaded.profile.stages[1].modules.gpu_3d.enabled, "new profile reloaded GPU")
-        assert_true(reloaded.profile.stages[1].modules.vram.enabled, "new profile reloaded VRAM")
+        assert_equal(reloaded.labels, ["GPU (3D + VRAM)"], "new profile reloaded labels")
+        assert_true(reloaded.profile.stages[0].modules.gpu_3d.enabled, "new profile reloaded GPU")
+        assert_true(reloaded.profile.stages[0].modules.vram.enabled, "new profile reloaded VRAM")
 
 
 def test_service_frontend_contract_methods() -> None:
@@ -27049,6 +27091,7 @@ def main() -> int:
         test_profile_save_controller,
         test_profile_loader_round_trip_and_sorting,
         run_profile_metadata_checks,
+        run_profile_authoring_ux_checks,
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,

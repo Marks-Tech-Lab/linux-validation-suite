@@ -34,6 +34,14 @@ class ProfileEditState:
     profile: Any
     labels: List[str]
     dirty: bool = False
+    is_new: bool = False
+
+
+@dataclass
+class ProfileCopySelectionState:
+    source_edit: ProfileEditState
+    mode: str
+    selected_stage_indices: List[int]
 
 
 @dataclass

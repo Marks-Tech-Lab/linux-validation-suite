@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import math
+import re
 import time
+from copy import deepcopy
 from typing import Any, List, Optional, Tuple
 
 from .lvs_gpu_backend_catalog import (
@@ -27,6 +29,42 @@ from .lvs_profile_models import (
 )
 
 
+def format_profile_duration(seconds: Optional[int]) -> str:
+    """Render a stored duration without making operators convert seconds."""
+    if seconds is None:
+        return "Completion-based"
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts: List[str] = []
+    if hours:
+        parts.append(f"{hours} hour" + ("s" if hours != 1 else ""))
+    if minutes:
+        parts.append(f"{minutes} minute" + ("s" if minutes != 1 else ""))
+    if secs or not parts:
+        parts.append(f"{secs} second" + ("s" if secs != 1 else ""))
+    return " ".join(parts)
+
+
+def parse_profile_duration(value: Any) -> int:
+    """Parse seconds or a compact sequence such as ``1h 30m``."""
+    text = str(value or "").strip().lower()
+    if not text:
+        raise ValueError("Duration is required (examples: 90s, 5m, 1h 30m).")
+    if re.fullmatch(r"\d+", text):
+        total = int(text)
+    else:
+        compact = re.sub(r"\s+", "", text)
+        matches = list(re.finditer(r"(\d+)(h|m|s)", compact))
+        if not matches or "".join(match.group(0) for match in matches) != compact:
+            raise ValueError("Use seconds or a compact duration such as 90s, 5m, or 1h 30m.")
+        factors = {"h": 3600, "m": 60, "s": 1}
+        total = sum(int(match.group(1)) * factors[match.group(2)] for match in matches)
+    if total <= 0:
+        raise ValueError("Duration must be greater than zero.")
+    return total
+
+
 class ProfileEditor:
     """Pure profile edit operations shared by frontends.
 
@@ -37,6 +75,8 @@ class ProfileEditor:
     CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "neon"]
     CPU_INSTRUCTION_INTENT_OPTIONS = ["", "baseline_vector", "high_throughput_vector", "highest_verified_vector"]
     CPU_BACKEND_OPTIONS = ["auto", "native", "stress_ng", "python_fallback"]
+    CPU_MODE_OPTIONS = ["normal", "extreme"]
+    CPU_LOAD_OPTIONS = ["steady", "variable"]
     MEMORY_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512"]
     GPU_TARGET_OPTIONS = ["all", "discrete_all", "primary", "first"]
     GPU_3D_MODE_OPTIONS = ["steady", "variable"]
@@ -45,16 +85,22 @@ class ProfileEditor:
         {"key": "cpu", "label": "CPU", "stage_type": "CPU", "default_label": "CPU"},
         {"key": "memory", "label": "Memory", "stage_type": "Memory", "default_label": "Memory"},
         {"key": "cpu_ram", "label": "CPU + RAM", "stage_type": "Combined", "default_label": "CPU + RAM"},
+        {"key": "power_auto", "label": "Power (CPU + GPU)", "stage_type": "Combined", "default_label": "Power (CPU + GPU)"},
+        {"key": "baseline_ram", "label": "Baseline SIMD (CPU + RAM)", "stage_type": "Combined", "default_label": "Baseline SIMD (CPU + RAM)"},
+        {"key": "baseline_vram", "label": "Baseline SIMD (CPU + VRAM)", "stage_type": "Combined", "default_label": "Baseline SIMD (CPU + VRAM)"},
+        {"key": "baseline_ram_vram", "label": "Baseline SIMD (CPU + RAM/VRAM)", "stage_type": "Combined", "default_label": "Baseline SIMD (CPU + RAM/VRAM)"},
+        {"key": "high_throughput_ram", "label": "High-Throughput SIMD (CPU + RAM)", "stage_type": "Combined", "default_label": "High-Throughput SIMD (CPU + RAM)"},
         {"key": "gpu_3d", "label": "GPU (3D)", "stage_type": "3D Adaptive", "default_label": "GPU (3D)"},
+        {"key": "gpu_vram", "label": "GPU (3D + VRAM)", "stage_type": "Combined", "default_label": "GPU (3D + VRAM)"},
         {"key": "vram", "label": "VRAM", "stage_type": "VRAM", "default_label": "VRAM"},
+        {"key": "storage_benchmark", "label": "Storage Benchmark", "stage_type": "Storage Benchmark", "default_label": "Storage Benchmark"},
+        {"key": "custom_advanced", "label": "Custom / Advanced", "stage_type": "Combined", "default_label": "Custom Stage"},
+    ]
+    LEGACY_STAGE_TEMPLATES = [
         {"key": "cpu_3d", "label": "CPU + GPU", "stage_type": "Combined", "default_label": "CPU + GPU"},
         {"key": "cpu_vram", "label": "CPU + VRAM", "stage_type": "Combined", "default_label": "CPU + VRAM"},
-        {"key": "gpu_vram", "label": "GPU (3D + VRAM)", "stage_type": "Combined", "default_label": "GPU (3D + VRAM)"},
-        {"key": "power_auto", "label": "Power (CPU + GPU)", "stage_type": "Combined", "default_label": "Power (CPU + GPU)"},
-        {"key": "sse_vram", "label": "Baseline SIMD (CPU + VRAM)", "stage_type": "Combined", "default_label": "Baseline SIMD (CPU + VRAM)"},
-        {"key": "avx_ram", "label": "High-Throughput SIMD (CPU + RAM)", "stage_type": "Combined", "default_label": "High-Throughput SIMD (CPU + RAM)"},
-        {"key": "storage_benchmark", "label": "Storage Benchmark", "stage_type": "Storage Benchmark", "default_label": "Storage Benchmark"},
     ]
+    TEMPLATE_ALIASES = {"sse_vram": "baseline_vram", "avx_ram": "high_throughput_ram"}
 
     def gpu_backend_options(self) -> List[str]:
         return list(GPU_3D_PREFERENCE_CANDIDATE_MAP.keys())
@@ -74,7 +120,8 @@ class ProfileEditor:
 
     def stage_template(self, key: str) -> dict:
         normalized = str(key or "").strip().lower()
-        for item in self.STAGE_TEMPLATES:
+        normalized = self.TEMPLATE_ALIASES.get(normalized, normalized)
+        for item in self.STAGE_TEMPLATES + self.LEGACY_STAGE_TEMPLATES:
             if item["key"] == normalized:
                 return dict(item)
         return dict(self.STAGE_TEMPLATES[0])
@@ -242,17 +289,17 @@ class ProfileEditor:
         if key == "cpu":
             return self.build_stage_modules("CPU")
         if key == "memory":
-            return self.build_stage_modules("Memory")
+            return self.build_stage_modules(
+                "Combined", include_memory=True, memory_allocation_percent=90
+            )
         if key == "cpu_ram":
-            return self.build_stage_modules("Combined", include_cpu=True, include_memory=True)
+            return self.build_stage_modules("Combined", include_cpu=True, include_memory=True, memory_allocation_percent=90)
         if key == "gpu_3d":
             return self.build_stage_modules("3D Adaptive")
         if key == "vram":
-            return self.build_stage_modules("VRAM")
-        if key == "cpu_3d":
-            return self.build_stage_modules("Combined", include_cpu=True, include_gpu_3d=True)
-        if key == "cpu_vram":
-            return self.build_stage_modules("Combined", include_cpu=True, include_vram=True, vram_allocation_percent=90)
+            return self.build_stage_modules(
+                "Combined", include_vram=True, vram_allocation_percent=90
+            )
         if key == "gpu_vram":
             return self.build_stage_modules(
                 "Combined",
@@ -260,14 +307,36 @@ class ProfileEditor:
                 include_vram=True,
                 vram_allocation_percent=90,
             )
+        if key == "cpu_3d":
+            return self.build_stage_modules("Combined", include_cpu=True, include_gpu_3d=True)
+        if key == "cpu_vram":
+            return self.build_stage_modules(
+                "Combined", include_cpu=True, include_vram=True, vram_allocation_percent=90
+            )
         if key == "power_auto":
             return self.build_stage_modules("Power Test (CPU + 3D)")
-        if key == "sse_vram":
-            return self.build_stage_modules("SSE + VRAM")
-        if key == "avx_ram":
-            return self.build_stage_modules("AVX + RAM")
+        if key in {"baseline_ram", "baseline_vram", "baseline_ram_vram"}:
+            return self.build_stage_modules(
+                "Combined",
+                include_cpu=True,
+                include_memory=key in {"baseline_ram", "baseline_ram_vram"},
+                include_vram=key in {"baseline_vram", "baseline_ram_vram"},
+                cpu_instruction_intent="baseline_vector",
+                cpu_mode="normal",
+                memory_allocation_percent=90,
+                memory_instruction_set="auto",
+                vram_allocation_percent=90,
+            )
+        if key == "high_throughput_ram":
+            return self.build_stage_modules(
+                "Combined", include_cpu=True, include_memory=True,
+                cpu_instruction_intent="high_throughput_vector", cpu_mode="normal",
+                memory_instruction_set="auto", memory_allocation_percent=90,
+            )
         if key == "storage_benchmark":
             return self.build_stage_modules("Storage Benchmark")
+        if key == "custom_advanced":
+            return StageModules()
         return self.build_stage_modules("CPU")
 
     def create_stage(
@@ -316,8 +385,6 @@ class ProfileEditor:
         labels: List[str],
         index: int,
     ) -> Tuple[ValidationProfile, List[str]]:
-        if len(profile.stages) <= 1:
-            raise ValueError("Profiles must keep at least one stage")
         if index < 0 or index >= len(profile.stages):
             raise IndexError("stage index out of range")
         normalized = self.normalize_labels(profile, labels)
@@ -325,6 +392,54 @@ class ProfileEditor:
         if index < len(normalized):
             del normalized[index]
         return profile, self.normalize_labels(profile, normalized)
+
+    def duplicate_stage(self, profile: ValidationProfile, labels: List[str], index: int) -> Tuple[StageConfig, List[str]]:
+        self._require_stage_index(profile, index)
+        labels = self.normalize_labels(profile, labels)
+        duplicate = deepcopy(profile.stages[index])
+        duplicate.id = self.next_stage_id(profile)
+        profile.stages.insert(index + 1, duplicate)
+        labels.insert(index + 1, duplicate.display_label)
+        return duplicate, self.normalize_labels(profile, labels)
+
+    def move_stage(self, profile: ValidationProfile, labels: List[str], index: int, offset: int) -> Tuple[int, List[str]]:
+        self._require_stage_index(profile, index)
+        destination = index + int(offset)
+        if destination < 0 or destination >= len(profile.stages):
+            return index, self.normalize_labels(profile, labels)
+        labels = self.normalize_labels(profile, labels)
+        stage = profile.stages.pop(index)
+        label = labels.pop(index)
+        profile.stages.insert(destination, stage)
+        labels.insert(destination, label)
+        return destination, self.normalize_labels(profile, labels)
+
+    def copy_profile(
+        self,
+        source: ValidationProfile,
+        profile_name: str,
+        selected_stage_indices: List[int],
+    ) -> ValidationProfile:
+        if not selected_stage_indices:
+            raise ValueError("Select at least one stage to copy.")
+        selected: List[StageConfig] = []
+        for destination_index, source_index in enumerate(selected_stage_indices, start=1):
+            if source_index < 0 or source_index >= len(source.stages):
+                raise IndexError("stage index out of range")
+            stage = deepcopy(source.stages[source_index])
+            stage.id = f"segment_{destination_index}"
+            selected.append(stage)
+        defaults = deepcopy(source.defaults)
+        return ValidationProfile(
+            profile_name=str(profile_name or "").strip() or "New Profile",
+            profile_type=source.profile_type,
+            segment_label_source=None,
+            menu_description=source.menu_description,
+            menu_group=source.menu_group,
+            require_all_stages_runnable=source.require_all_stages_runnable,
+            defaults=defaults,
+            stages=selected,
+        )
 
     def set_profile_menu_group(self, profile: ValidationProfile, menu_group: str) -> str:
         profile.menu_group = ProfileLoader._normalize_menu_group(menu_group)
@@ -369,6 +484,25 @@ class ProfileEditor:
         stage = self._stage(profile, index)
         stage.duration_seconds = max(1, int(duration_seconds))
         return stage.duration_seconds
+
+    def set_stage_duration_text(self, profile: ValidationProfile, index: int, value: Any) -> int:
+        return self.set_stage_duration(profile, index, parse_profile_duration(value))
+
+    def set_cpu_mode(self, stage: StageConfig, mode: str) -> str:
+        stage.modules.cpu.mode = self._normalize_choice(mode, ["normal", "extreme"], "normal")
+        return stage.modules.cpu.mode
+
+    def set_cpu_load(self, stage: StageConfig, load: str) -> str:
+        stage.modules.cpu.load = self._normalize_choice(load, ["steady", "variable"], "steady")
+        return stage.modules.cpu.load
+
+    def set_cpu_priority(self, stage: StageConfig, priority: str) -> str:
+        stage.modules.cpu.priority = self._normalize_choice(priority, ["normal", "high"], "normal")
+        return stage.modules.cpu.priority
+
+    def set_cpu_dataset(self, stage: StageConfig, dataset: str) -> str:
+        stage.modules.cpu.dataset = str(dataset or "large").strip() or "large"
+        return stage.modules.cpu.dataset
 
     def set_stage_trim(self, profile: ValidationProfile, index: int, trim_start_seconds: int, trim_end_seconds: int) -> StageNormalization:
         stage = self._stage(profile, index)
@@ -458,6 +592,29 @@ class ProfileEditor:
     def set_vram_allocation_percent(self, stage: StageConfig, value: int) -> int:
         stage.modules.vram.allocation_percent = self._clamp_int(value, 1, 95, stage.modules.vram.allocation_percent)
         return stage.modules.vram.allocation_percent
+
+    def guided_allocation_fields(self, stage: StageConfig) -> List[str]:
+        """Return the numeric allocations enabled by a guided stage draft."""
+        fields: List[str] = []
+        if stage.modules.memory.enabled:
+            fields.append("memory")
+        if stage.modules.vram.enabled:
+            fields.append("vram")
+        return fields
+
+    def guided_allocation_percent(self, stage: StageConfig, field: str) -> int:
+        if field == "memory" and stage.modules.memory.enabled:
+            return int(stage.modules.memory.allocation_percent)
+        if field == "vram" and stage.modules.vram.enabled:
+            return int(stage.modules.vram.allocation_percent)
+        raise ValueError(f"Guided allocation field is not enabled: {field}")
+
+    def apply_guided_allocation_percent(self, stage: StageConfig, field: str, value: Any) -> int:
+        current = self.guided_allocation_percent(stage, field)
+        selected = current if not str(value or "").strip() else self._clamp_int(value, 1, 95, current)
+        if field == "memory":
+            return self.set_memory_allocation_percent(stage, selected)
+        return self.set_vram_allocation_percent(stage, selected)
 
     def cycle_storage_target_mode(self, stage: StageConfig) -> str:
         storage = stage.modules.storage_benchmark

@@ -66,7 +66,7 @@
   "profile_menu_groups": [
     {
       "key": "standard",
-      "label": "standard profile"
+      "label": "standard validation profile"
     },
     {
       "key": "quick",

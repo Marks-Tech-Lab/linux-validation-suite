@@ -14,6 +14,7 @@ from Modules.linux_validation_suite_service import SuiteAppService
 from Modules.lvs_run_progress import RunStatusTracker
 from Modules.lvs_service_models import (
     FrontendActionSpec,
+    ProfileCopySelectionState,
     ProfileEditItem,
     ProfileEditState,
     ProfileListEntry,
@@ -158,6 +159,7 @@ class LinuxValidationSuiteTui(
         ("c", "dependency_check", "Deps"),
         ("k", "show_migration_support", "Migration"),
         ("n", "new_profile", "New"),
+        ("b", "copy_profile", "Copy"),
         ("t", "setup_run", "Setup"),
         ("m", "edit_profile", "Edit"),
         ("h", "load_setup_history", "History"),
@@ -184,6 +186,11 @@ class LinuxValidationSuiteTui(
         self.profile_edit_picker_options: list[str] = []
         self.profile_edit_picker_stage_index: Optional[int] = None
         self.profile_edit_discard_confirm = False
+        self.pending_profile_template_key: Optional[str] = None
+        self.pending_profile_template_stage = None
+        self.pending_profile_template_label = ""
+        self.pending_profile_template_allocation_fields: list[str] = []
+        self.profile_copy_selection: Optional[ProfileCopySelectionState] = None
         self.view_mode = "profiles"
         self.confirm_run = False
         self.run_in_progress = False

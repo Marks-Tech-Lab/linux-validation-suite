@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List
 
 from .lvs_profile_metadata import derive_legacy_bucket_category
 
-from .lvs_profile_editor import ProfileEditor
+from .lvs_profile_editor import ProfileEditor, format_profile_duration
 from .lvs_strict_threshold_policy import optional_bool
 from .lvs_service_models import (
     FrontendActionSpec,
@@ -38,6 +38,68 @@ def stage_enabled_module_names(stage: Any) -> List[str]:
     if stage.modules.storage_benchmark.enabled:
         names.append("storage_benchmark")
     return names
+
+
+def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]:
+    """Return the concise, frontend-neutral authoring summary for one stage."""
+    duration = "Completion-based" if stage.modules.storage_benchmark.enabled else format_profile_duration(stage.duration_seconds)
+    state = " (disabled)" if not stage.enabled else ""
+    lines = [f"{index}. {label}{state}", f"   {duration}"]
+    if stage.modules.cpu.enabled:
+        cpu = stage.modules.cpu
+        intent_names = {
+            "baseline_vector": "architecture baseline SIMD",
+            "high_throughput_vector": "high-throughput SIMD",
+            "highest_verified_vector": "highest verified SIMD",
+        }
+        instruction_names = {
+            "auto": "automatic instruction selection",
+            "scalar": "scalar",
+            "sse": "SSE",
+            "avx": "AVX",
+            "avx2": "AVX2",
+            "avx512": "AVX-512",
+            "neon": "NEON",
+        }
+        instruction = intent_names.get(
+            cpu.instruction_intent,
+            instruction_names.get(str(cpu.instruction_set).lower(), str(cpu.instruction_set)),
+        )
+        thread_value = str(cpu.threads or "all").strip().lower()
+        threads = "all threads" if thread_value in {"", "0", "all", "auto"} else f"{cpu.threads} threads"
+        lines.append(f"   CPU: {str(cpu.mode).title()}, {instruction}, {threads}")
+    if stage.modules.memory.enabled:
+        lines.append(f"   RAM: {stage.modules.memory.allocation_percent}%")
+    if stage.modules.gpu_3d.enabled:
+        gpu = stage.modules.gpu_3d
+        target = {
+            "all": "all GPUs",
+            "discrete_all": "all discrete GPUs",
+            "primary": "primary GPU",
+            "first": "first GPU",
+        }.get(str(gpu.gpus), str(gpu.gpus).replace("_", " "))
+        intensity = "Maximum" if str(gpu.intensity) == "max" else str(gpu.intensity).title()
+        lines.append(f"   GPU: {intensity}, {target}")
+    if stage.modules.vram.enabled:
+        lines.append(f"   VRAM: {stage.modules.vram.allocation_percent}%")
+    legacy_bucket = derive_legacy_bucket_category(stage)
+    lines.append("   Legacy compatibility: " + (f"{legacy_bucket} (derived)" if legacy_bucket else "none"))
+    return lines
+
+
+def profile_copy_selection_rows(
+    profile: Any,
+    labels: List[str],
+    selected_stage_indices: List[int],
+) -> List[str]:
+    """Render the ordered stage choices shared by CLI and TUI copy flows."""
+    selected = set(selected_stage_indices)
+    rows: List[str] = []
+    for index, stage in enumerate(profile.stages):
+        label = labels[index] if index < len(labels) else stage.display_label
+        mark = "x" if index in selected else " "
+        rows.append(f"[{mark}] {index + 1}. {label} — {format_profile_duration(stage.duration_seconds)}")
+    return rows
 
 
 def vram_backend_candidates_for_preference(
@@ -247,17 +309,24 @@ class ProfileEditPresenter:
     PROFILE_EDIT_ACTIONS = {
         "escape": FrontendActionSpec("escape", "cancel", label="return to profile list without saving"),
         "s": FrontendActionSpec("s", "save", label="save profile"),
+        "a": FrontendActionSpec("a", "save_as", label="save as a new profile"),
         "delete": FrontendActionSpec("delete", "remove_stage", label="remove selected stage"),
+        "u": FrontendActionSpec("u", "move_stage", target="up", label="move selected stage up"),
+        "j": FrontendActionSpec("j", "move_stage", target="down", label="move selected stage down"),
+        "y": FrontendActionSpec("y", "duplicate_stage", label="duplicate selected stage"),
         "t": FrontendActionSpec("t", "toggle_stage", label="toggle selected stage enabled state"),
         "d": FrontendActionSpec("d", "input", target="duration", label="edit selected stage duration"),
         "l": FrontendActionSpec("l", "input", target="label", label="edit selected stage display label"),
         "g": FrontendActionSpec("g", "picker", target="gpu_target", label="edit selected stage GPU target mode"),
         "b": FrontendActionSpec("b", "picker", target="backend", label="edit selected stage backend preference"),
+        "h": FrontendActionSpec("h", "picker", target="cpu_backend", label="edit selected CPU backend preference"),
         "i": FrontendActionSpec("i", "picker", target="intensity", label="edit selected GPU stage intensity"),
         "c": FrontendActionSpec("c", "picker", target="compute_variant", label="edit selected GPU compute variant"),
         "p": FrontendActionSpec("p", "picker", target="cpu_instruction", label="edit selected CPU instruction set"),
         "o": FrontendActionSpec("o", "picker", target="cpu_instruction_intent", label="edit selected CPU instruction intent"),
         "r": FrontendActionSpec("r", "picker", target="memory_instruction", label="edit selected memory instruction set"),
+        "e": FrontendActionSpec("e", "picker", target="cpu_mode", label="edit selected CPU mode"),
+        "f": FrontendActionSpec("f", "picker", target="cpu_load", label="edit selected CPU load pattern"),
         "n": FrontendActionSpec("n", "input", target="trim_start", label="edit selected stage trim"),
         "v": FrontendActionSpec("v", "input", target="vram_allocation", label="edit selected stage VRAM allocation percent"),
         "m": FrontendActionSpec("m", "input", target="memory_allocation", label="edit selected stage memory allocation percent"),
@@ -270,6 +339,9 @@ class ProfileEditPresenter:
         "cpu_instruction": "CPU Instruction Set",
         "cpu_instruction_intent": "CPU Instruction Intent",
         "memory_instruction": "Memory Instruction Set",
+        "cpu_mode": "CPU Mode",
+        "cpu_load": "CPU Load Pattern",
+        "cpu_backend": "CPU Backend Preference",
     }
 
     def __init__(
@@ -294,6 +366,9 @@ class ProfileEditPresenter:
             "vram_backend": list(self.profile_editor.VRAM_BACKEND_OPTIONS),
             "gpu_intensity": self.profile_editor.gpu_intensity_options(),
             "compute_variant": self.profile_editor.compute_variant_options(),
+            "cpu_mode": list(self.profile_editor.CPU_MODE_OPTIONS),
+            "cpu_load": list(self.profile_editor.CPU_LOAD_OPTIONS),
+            "cpu_backend": list(self.profile_editor.CPU_BACKEND_OPTIONS),
         }
         return list(options.get(str(key or ""), []))
 
@@ -341,6 +416,18 @@ class ProfileEditPresenter:
             if not stage.modules.memory.enabled:
                 raise ValueError("Selected stage does not have a memory workload.")
             current = stage.modules.memory.instruction_set
+        elif normalized == "cpu_mode":
+            if not stage.modules.cpu.enabled:
+                raise ValueError("Selected stage does not have a CPU workload.")
+            current = stage.modules.cpu.mode
+        elif normalized == "cpu_load":
+            if not stage.modules.cpu.enabled:
+                raise ValueError("Selected stage does not have a CPU workload.")
+            current = stage.modules.cpu.load
+        elif normalized == "cpu_backend":
+            if not stage.modules.cpu.enabled:
+                raise ValueError("Selected stage does not have a CPU workload.")
+            current = stage.modules.cpu.backend_preference
         else:
             current = ""
         options = self.option_values(option_key)
@@ -358,8 +445,8 @@ class ProfileEditPresenter:
         field_map = {
             "duration": (
                 "__profile_stage_duration",
-                f"Stage {stage_index + 1} duration seconds",
-                str(stage.duration_seconds),
+                f"Stage {stage_index + 1} duration (for example 90s, 5m, or 1h 30m)",
+                f"{stage.duration_seconds}s",
             ),
             "label": (
                 "__profile_stage_label",
@@ -431,6 +518,7 @@ class ProfileEditPresenter:
         edit.labels = labels
         rows: List[ProfileEditItem] = [
             ProfileEditItem("save", "Save profile"),
+            ProfileEditItem("save_as", "Save As..."),
             ProfileEditItem("name", f"Name: {profile.profile_name}"),
             ProfileEditItem("group", f"Menu group: {self.menu_group_label(profile.menu_group)}"),
             ProfileEditItem("description", f"Description: {profile.menu_description or '-'}"),
@@ -440,7 +528,6 @@ class ProfileEditPresenter:
             ),
         ]
         templates = self.profile_editor.stage_templates()
-        templates.sort(key=lambda item: 0 if item.get("key") == "storage_benchmark" else 1)
         for template in templates:
             key = str(template.get("key") or "cpu")
             label = str(template.get("label") or key)
@@ -457,8 +544,8 @@ class ProfileEditPresenter:
             rows.append(
                 ProfileEditItem(
                     "stage",
-                    f"{index + 1}. {label} [{stage.name}] "
-                    f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, {state} | "
+                    f"{index + 1}. {label} — "
+                    f"{'Completion-based' if stage.modules.storage_benchmark.enabled else format_profile_duration(stage.duration_seconds)}, {state} | "
                     f"Legacy result compatibility: {f'{legacy_bucket} (derived)' if legacy_bucket else 'none'}",
                     index=index,
                 )
@@ -516,50 +603,21 @@ class ProfileEditPresenter:
             "",
             "Stages:",
         ]
+        if not profile.stages:
+            lines.append("(No stages yet. Choose Add Stage to begin.)")
         for index, stage in enumerate(profile.stages, start=1):
             label = labels[index - 1] if index - 1 < len(labels) else stage.name
-            workloads: List[str] = []
-            if stage.modules.cpu.enabled:
-                cpu = stage.modules.cpu
-                workloads.append(
-                    f"CPU/{cpu.backend_preference}/{cpu.instruction_set}"
-                    if cpu.backend_preference != "auto"
-                    else f"CPU/{cpu.instruction_set}"
-                )
-            if stage.modules.memory.enabled:
-                workloads.append(f"RAM/{stage.modules.memory.allocation_percent}%")
-            if stage.modules.gpu_3d.enabled:
-                workloads.append(
-                    f"3D/{stage.modules.gpu_3d.backend_preference}/{stage.modules.gpu_3d.gpus}"
-                )
-            if stage.modules.vram.enabled:
-                workloads.append(
-                    f"VRAM/{stage.modules.vram.backend_preference}/{stage.modules.vram.allocation_percent}%/{stage.modules.vram.gpus}"
-                )
-            if stage.modules.storage_benchmark.enabled:
-                storage = stage.modules.storage_benchmark
-                workloads.append(
-                    f"Storage/{storage.target_mode}/{storage.test_size_gib}GiB/{storage.runs}runs"
-                )
-            lines.append(
-                f"{index}. {label} [{stage.name}] "
-                f"{'completion-based' if stage.modules.storage_benchmark.enabled else f'{stage.duration_seconds}s'}, "
-                f"{'enabled' if stage.enabled else 'disabled'}"
-                + (f" | {', '.join(workloads)}" if workloads else "")
-            )
-            legacy_bucket = derive_legacy_bucket_category(stage)
-            lines.append(
-                "   Legacy result compatibility: "
-                + (f"{legacy_bucket} (derived)" if legacy_bucket else "none")
-            )
+            lines.extend(profile_stage_summary_lines(stage, label, index))
         lines.extend(
             [
                 "",
                 "Actions:",
                 "- Enter activates the highlighted edit action.",
-                "- Choose Add Storage Benchmark Stage (completion-based) to add storage_benchmark to this JSON profile.",
+                "- Choose an Add Stage row to review a guided workload before adding it.",
                 "- Storage Benchmark configuration is edited through the indented rows beneath its stage.",
                 "- S saves the profile after validation.",
+                "- A starts Save As using the current in-memory edits.",
+                "- Y duplicates the selected stage; U/J move it up/down.",
                 "- D edits selected stage duration.",
                 "- L edits selected stage display label.",
                 "- T toggles selected stage enabled/disabled.",
@@ -570,6 +628,9 @@ class ProfileEditPresenter:
                 "- C edits selected GPU compute variant.",
                 "- P edits selected CPU instruction set.",
                 "- R edits selected memory instruction set.",
+                "- E edits selected CPU mode; F edits its steady/variable load pattern.",
+                "- CPU mode is a backend-specific workload envelope; it does not change ISA selection.",
+                "- H edits the CPU backend preference; O edits architecture-neutral instruction intent.",
                 "- N edits selected stage trim start/end.",
                 "- V edits selected stage VRAM allocation percent.",
                 "- M edits selected stage memory allocation percent.",

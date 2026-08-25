@@ -7,13 +7,19 @@ delegating actual profile mutations to the shared profile controllers.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, List, Tuple
 
 from .lvs_profile_creation import ProfileCreationRequest, ProfileStageDraft
-from .lvs_profile_edit_view import profile_detail_lines, profile_dry_run_preview_text
+from .lvs_profile_edit_view import (
+    profile_detail_lines,
+    profile_copy_selection_rows,
+    profile_dry_run_preview_text,
+    profile_stage_summary_lines,
+)
+from .lvs_profile_editor import format_profile_duration, parse_profile_duration
 from .lvs_profile_models import ModuleStorageBenchmark, StageConfig, StageModules, ValidationProfile
-from .lvs_profile_metadata import derive_legacy_bucket_category
 
 
 TEST_TYPE_CATALOG = {
@@ -45,17 +51,20 @@ class ProfileCliEditor:
             print("\nProfiles / Test Definitions")
             print("1. Create Profile")
             print("2. Edit Profile")
-            print("3. Ensure Example Profile")
-            print("4. Back")
+            print("3. Copy Profile")
+            print("4. Ensure Example Profile")
+            print("5. Back")
             choice = host._input("Select: ").strip()
             if choice == "1":
                 self.create_profile()
             elif choice == "2":
                 self.edit_profile()
             elif choice == "3":
+                self.copy_profile()
+            elif choice == "4":
                 path = host.profile_loader.ensure_example_profile()
                 print(f"Example profile ensured at: {path}")
-            elif choice == "4":
+            elif choice == "5":
                 return
 
     def profile_choice_text(self, path: Path) -> str:
@@ -63,6 +72,12 @@ class ProfileCliEditor:
         group = str(metadata.get("menu_group") or "custom")
         group_label = self.host._profile_menu_group_label(group)
         return f"{path.name} ({group_label})" if group_label else path.name
+
+    def destination_path(self, profile_name: str) -> Path:
+        stem = re.sub(r"[^A-Za-z0-9_. -]+", "_", str(profile_name or "")).strip(" ._")
+        if not stem:
+            raise ValueError("Profile name must contain a usable filename.")
+        return self.host.profile_loader.profiles_dir / f"{stem}.json"
 
     def create_profile(self) -> None:
         host = self.host
@@ -72,43 +87,91 @@ class ProfileCliEditor:
             print("Profile name required.")
             return
         menu_group = host._choose_profile_menu_group(default="custom")
-        try:
-            stage_count = int(host._input("Number of segments/stages: ").strip())
-        except Exception:
-            print("Invalid stage count.")
-            return
-
-        stage_drafts: List[ProfileStageDraft] = []
-        for index in range(stage_count):
-            print(f"\n--- Segment {index + 1} ---")
-            label = host._input("Segment label for parser/results: ").strip() or f"Segment {index + 1}"
-            test_type = self.choose_test_type()
-            if test_type == "Storage Benchmark":
-                duration_seconds = None
-            else:
-                try:
-                    duration_seconds = int(host._input("Duration seconds: ").strip())
-                except Exception:
-                    print("Invalid duration. Using 300.")
-                    duration_seconds = 300
-            stage_drafts.append(ProfileStageDraft(
-                label=label,
-                test_type=test_type,
-                duration_seconds=duration_seconds,
-                modules=self.build_stage_modules(test_type),
-            ))
-
         result = host.profile_creation.build_profile(ProfileCreationRequest(
             profile_name=profile_name,
             menu_group=menu_group,
             telemetry_interval_seconds=host.settings_manager.settings.sample_interval_seconds,
             trim_start_seconds=host.settings_manager.settings.trim_start_seconds,
             trim_end_seconds=host.settings_manager.settings.trim_end_seconds,
-            stages=stage_drafts,
+            stages=[],
         ))
-        profile_path = host.profile_loader.profiles_dir / f"{profile_name}.json"
-        host.profile_loader.save_profile(profile_path, result.profile, result.labels)
-        print(f"Saved profile: {profile_path}")
+        try:
+            profile_path = self.destination_path(profile_name)
+        except ValueError as exc:
+            print(exc)
+            return
+        if profile_path.exists():
+            print(f"A profile already exists at {profile_path}; Create was not performed.")
+            return
+        print("Blank profile opened. Add one or more stages, then Save when ready.")
+        self.edit_profile_state(profile_path, result.profile, result.labels)
+
+    def copy_profile(self) -> None:
+        source = self.choose_profile_path("Choose profile to copy")
+        if source is None:
+            return
+        profile = self.host.profile_loader.load_profile(source)
+        labels = self.host.profile_loader.load_segment_labels(source, profile)
+        selected = self.select_stage_indices(profile, labels, require_one=True)
+        if selected is None:
+            return
+        name = self.host._input("New profile name: ").strip()
+        if not name:
+            print("Profile name required.")
+            return
+        copied = self.host.profile_editor.copy_profile(profile, name, selected)
+        copied_labels = self.host.profile_editor.normalize_labels(copied, [])
+        copied.menu_group = self.host._choose_profile_menu_group(default=copied.menu_group)
+        path = self.destination_path(name)
+        if path.exists():
+            print(f"A profile already exists at {path}; choose another name.")
+            return
+        print("Independent unsaved copy opened. The source profile is unchanged.")
+        self.edit_profile_state(path, copied, copied_labels)
+
+    def choose_profile_path(self, prompt: str) -> Path | None:
+        profiles = self.host.profile_loader.list_profiles()
+        if not profiles:
+            print("No profiles found.")
+            return None
+        for idx, path in enumerate(profiles, start=1):
+            print(f"{idx}. {self.profile_choice_text(path)}")
+        raw = self.host._input(f"{prompt} [Enter cancels]: ").strip()
+        if not raw:
+            return None
+        try:
+            return profiles[int(raw) - 1]
+        except Exception:
+            print("Invalid selection.")
+            return None
+
+    def select_stage_indices(self, profile: ValidationProfile, labels: List[str], *, require_one: bool) -> List[int] | None:
+        selected = set(range(len(profile.stages)))
+        while True:
+            print("\nSelect stages (source order is preserved):")
+            for row in profile_copy_selection_rows(profile, labels, sorted(selected)):
+                print(row)
+            print("Enter a number to toggle, A all, N none, C continue, Q cancel")
+            choice = self.host._input("Select: ").strip().lower()
+            if choice == "q":
+                return None
+            if choice == "a":
+                selected = set(range(len(profile.stages)))
+            elif choice == "n":
+                selected.clear()
+            elif choice == "c":
+                if require_one and not selected:
+                    print("Select at least one stage to continue.")
+                else:
+                    return sorted(selected)
+            else:
+                try:
+                    index = int(choice) - 1
+                    if index < 0 or index >= len(profile.stages):
+                        raise ValueError
+                    selected.symmetric_difference_update({index})
+                except ValueError:
+                    print("Invalid selection.")
 
     def choose_test_type(self) -> str:
         keys = list(TEST_TYPE_CATALOG.keys())
@@ -258,22 +321,16 @@ class ProfileCliEditor:
 
     def edit_profile(self) -> None:
         host = self.host
-        profiles = host.profile_loader.list_profiles()
-        if not profiles:
-            print("No profiles found.")
-            return
-        print("\nAvailable profiles:")
-        for idx, path in enumerate(profiles, start=1):
-            print(f"{idx}. {self.profile_choice_text(path)}")
-        raw = host._input("Choose profile to edit: ").strip()
-        try:
-            profile_path = profiles[int(raw) - 1]
-        except Exception:
-            print("Invalid selection.")
+        profile_path = self.choose_profile_path("Choose profile to edit")
+        if profile_path is None:
             return
 
         profile = host.profile_loader.load_profile(profile_path)
         labels = host.profile_loader.load_segment_labels(profile_path, profile)
+        self.edit_profile_state(profile_path, profile, labels)
+
+    def edit_profile_state(self, profile_path: Path, profile: ValidationProfile, labels: List[str]) -> None:
+        host = self.host
 
         while True:
             labels = self.normalize_profile_labels(profile, labels)
@@ -286,28 +343,21 @@ class ProfileCliEditor:
             )
             for idx, stage in enumerate(profile.stages, start=1):
                 label = labels[idx - 1] if idx - 1 < len(labels) else stage.name
-                gpu_mode = host._stage_gpu_target_mode_text(stage)
-                gpu_backend = host._stage_gpu_backend_text(stage)
-                gpu_profile = host._stage_gpu_profile_text(stage)
-                cpu_threads = stage.modules.cpu.threads if stage.modules.cpu.enabled else "-"
-                cpu_instruction = stage.modules.cpu.instruction_set if stage.modules.cpu.enabled else "-"
-                strict_text = host._strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)
-                execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
-                legacy_bucket = derive_legacy_bucket_category(stage)
-                print(
-                    f"{idx}. {label} | {stage.name} | {execution} | "
-                    f"{'on' if stage.enabled else 'off'} | cpu={cpu_instruction}/{cpu_threads} | "
-                    f"gpu={gpu_mode}/{gpu_backend}/{gpu_profile} | strict={strict_text} | "
-                    f"legacy={f'{legacy_bucket} (derived)' if legacy_bucket else 'none'}"
-                )
+                print("\n".join(profile_stage_summary_lines(stage, label, idx)))
+            if not profile.stages:
+                print("(No stages yet.)")
             print("T. Cycle profile strict threshold warnings override")
             print("M. Edit profile menu metadata")
             print("A. Add stage")
+            print("Y. Duplicate stage")
+            print("U. Move stage up")
+            print("J. Move stage down")
             print("X. Remove stage")
             print("R. Review profile details")
             print("V. Validate current edits")
             print("D. Dry-run current edits")
             print("S. Save and exit")
+            print("F. Save As")
             print("Q. Cancel")
             choice = host._input("Select stage to edit: ").strip().lower()
             if choice == "t":
@@ -319,6 +369,17 @@ class ProfileCliEditor:
                 continue
             if choice == "a":
                 labels = self.add_profile_stage(profile, labels)
+                continue
+            if choice in {"y", "u", "j"}:
+                raw = host._input("Stage number: ").strip()
+                try:
+                    index = int(raw) - 1
+                    if choice == "y":
+                        _, labels = host.profile_editor.duplicate_stage(profile, labels, index)
+                    else:
+                        _, labels = host.profile_editor.move_stage(profile, labels, index, -1 if choice == "u" else 1)
+                except (TypeError, ValueError, IndexError) as exc:
+                    print(str(exc) or "Invalid stage number.")
                 continue
             if choice == "x":
                 labels = self.remove_profile_stage(profile, labels)
@@ -339,6 +400,9 @@ class ProfileCliEditor:
                     print("\nProfile still has blocking validation errors:")
                     for message in preparation.errors:
                         print(f"  [error] {message}")
+                    if not profile.stages:
+                        print("Add at least one runnable stage before saving, or cancel this draft.")
+                        continue
                     raw = host._input("Save anyway? [y/N]: ").strip().lower()
                     if raw not in {"y", "yes"}:
                         print("Save cancelled.")
@@ -351,6 +415,25 @@ class ProfileCliEditor:
                 host.profile_save.save(profile_path, preparation, allow_errors=allow_errors)
                 print(f"Saved profile: {profile_path}")
                 return
+            if choice == "f":
+                print("Save As copies the current in-memory edits into an independent profile; the original is not overwritten.")
+                selected = self.select_stage_indices(profile, labels, require_one=True)
+                if selected is None:
+                    continue
+                name = host._input("New profile name: ").strip()
+                if not name:
+                    print("Profile name required.")
+                    continue
+                destination = self.destination_path(name)
+                if destination.exists():
+                    print(f"A profile already exists at {destination}; Save As was not performed.")
+                    continue
+                profile = host.profile_editor.copy_profile(profile, name, selected)
+                labels = host.profile_editor.normalize_labels(profile, [])
+                profile.menu_group = host._choose_profile_menu_group(default=profile.menu_group)
+                profile_path = destination
+                print("Save As copy opened with current in-memory edits; the source remains untouched.")
+                continue
             if choice == "q":
                 print("Edit cancelled.")
                 return
@@ -379,36 +462,82 @@ class ProfileCliEditor:
                 print("Invalid position. Adding at the end.")
                 insert_index = len(profile.stages)
         display_index = insert_index + 1
-        print(f"\n--- New Stage {display_index} ---")
-        label = host._input("Display label for results/UI: ").strip() or f"Segment {display_index}"
-        test_type = host._choose_test_type()
-        if test_type == "Storage Benchmark":
-            duration_seconds = None
+        print(f"\n--- Add Stage {display_index} ---")
+        templates = host.profile_editor.stage_templates()
+        for index, template in enumerate(templates, start=1):
+            print(f"{index}. {template['label']}")
+        raw = host._input("Choose workload purpose [Enter cancels]: ").strip()
+        if not raw:
+            return labels
+        try:
+            template = templates[int(raw) - 1]
+        except (ValueError, IndexError):
+            print("Invalid selection.")
+            return labels
+        key = str(template["key"])
+        if key == "custom_advanced":
+            print("Advanced construction keeps every existing module and exact-ISA option available.")
+            test_type = self.choose_test_type()
+            modules = self.build_stage_modules(test_type)
+            label = host._input("Display name: ").strip() or str(template["default_label"])
         else:
+            stage, label = host.profile_editor.template_stage(profile, key)
+            test_type = stage.name
+            modules = stage.modules
+        completion_based = bool(modules.storage_benchmark.enabled)
+        duration_seconds = None
+        if not completion_based:
+            raw_duration = host._input("Duration [5m]: ").strip() or "5m"
             try:
-                duration_seconds = int(host._input("Duration seconds [300]: ").strip() or "300")
-            except Exception:
-                print("Invalid duration. Using 300.")
-                duration_seconds = 300
+                duration_seconds = parse_profile_duration(raw_duration)
+            except ValueError as exc:
+                print(exc)
+                return labels
+        preview = StageConfig(
+            id="preview",
+            name=test_type,
+            duration_seconds=duration_seconds,
+            display_label=label,
+            modules=modules,
+        )
+        for allocation_field in host.profile_editor.guided_allocation_fields(preview):
+            current = host.profile_editor.guided_allocation_percent(preview, allocation_field)
+            prompt_name = "RAM" if allocation_field == "memory" else "VRAM"
+            raw_allocation = host._input(f"{prompt_name} allocation percent [{current}]: ").strip()
+            if raw_allocation:
+                try:
+                    int(raw_allocation)
+                except ValueError:
+                    print("Invalid allocation percent, keeping current.")
+            host.profile_editor.apply_guided_allocation_percent(
+                preview,
+                allocation_field,
+                raw_allocation,
+            )
+        edited_label = host._input(f"Display name [{label}]: ").strip()
+        if edited_label:
+            label = edited_label
+        preview.display_label = label
+        modules = preview.modules
+        print("\nStage Review")
+        print("\n".join(profile_stage_summary_lines(preview, label, display_index)))
+        if host._input("Add Stage? [Y/n]: ").strip().lower() in {"n", "no"}:
+            print("Add Stage cancelled.")
+            return labels
         result = host.profile_creation.insert_stage(
             profile,
             labels,
-            ProfileStageDraft(
-                label=label,
-                test_type=test_type,
-                duration_seconds=duration_seconds,
-                modules=host._build_stage_modules(test_type),
-            ),
+            ProfileStageDraft(label=label, test_type=test_type, duration_seconds=duration_seconds, modules=modules),
             position=insert_index,
         )
-        print(f"Added stage {display_index}: {label} [{test_type}]")
+        print(f"Added stage {display_index}: {label}")
         return result.labels
 
     def remove_profile_stage(self, profile: ValidationProfile, labels: List[str]) -> List[str]:
         host = self.host
         labels = self.normalize_profile_labels(profile, labels)
-        if len(profile.stages) <= 1:
-            print("Profiles must keep at least one stage.")
+        if not profile.stages:
+            print("This profile has no stages to remove.")
             return labels
         print("\nRemove Stage")
         for index, stage in enumerate(profile.stages, start=1):
@@ -553,6 +682,8 @@ class ProfileCliEditor:
                         "Stage strict threshold warnings override: "
                         + host._strict_threshold_override_text(result.value)
                     )
+                if action in {"duplicate", "move_up", "move_down"}:
+                    return labels
             except (TypeError, ValueError):
                 if action == "duration":
                     print("Invalid duration.")
@@ -565,14 +696,32 @@ class ProfileCliEditor:
             value = host._input(f"Label [{current_label}]: ").strip()
             return bool(value), value
         if action == "duration":
-            value = host._input(f"Duration seconds [{stage.duration_seconds}]: ").strip()
+            value = host._input(
+                f"Duration [{format_profile_duration(stage.duration_seconds)}; examples: 90s, 5m, 1h 30m]: "
+            ).strip()
             return bool(value), value
+        if action == "cpu_backend":
+            options = host.profile_editor.CPU_BACKEND_OPTIONS
+            return True, self.choose_catalog_value("CPU backend", options, stage.modules.cpu.backend_preference)
+        if action == "cpu_mode":
+            print("CPU mode is a workload envelope. Extreme increases work in the Python fallback; native/stress-ng semantics remain backend-defined.")
+            return True, self.choose_catalog_value("CPU mode", host.profile_editor.CPU_MODE_OPTIONS, stage.modules.cpu.mode)
+        if action == "cpu_load":
+            return True, self.choose_catalog_value("CPU load pattern", host.profile_editor.CPU_LOAD_OPTIONS, stage.modules.cpu.load)
         if action == "cpu_instruction":
             return True, host._choose_cpu_instruction_set(stage.modules.cpu.instruction_set)
+        if action == "cpu_instruction_intent":
+            return True, self.choose_catalog_value(
+                "CPU instruction intent",
+                host.profile_editor.CPU_INSTRUCTION_INTENT_OPTIONS,
+                stage.modules.cpu.instruction_intent,
+            )
         if action == "cpu_threads":
             return True, host._choose_cpu_threads(stage.modules.cpu.threads)
         if action == "memory_allocation":
             return True, host._choose_allocation_percent("Memory/RAM", stage.modules.memory.allocation_percent)
+        if action == "memory_instruction":
+            return True, host._choose_memory_instruction_set(stage.modules.memory.instruction_set)
         if action == "gpu_target":
             current = stage.modules.vram.gpus if stage.modules.vram.enabled else stage.modules.gpu_3d.gpus
             return True, host._choose_gpu_target_mode(current)
@@ -622,3 +771,15 @@ class ProfileCliEditor:
         if action == "storage_allow_system":
             return True, None
         return True, None
+
+    def choose_catalog_value(self, label: str, values: List[str], current: str) -> str:
+        print(label + ":")
+        for index, value in enumerate(values, start=1):
+            print(f"{index}. {value.replace('_', ' ').title()}")
+        raw = self.host._input(f"Choose [{current}]: ").strip()
+        if not raw:
+            return current
+        try:
+            return values[int(raw) - 1]
+        except (ValueError, IndexError):
+            return current

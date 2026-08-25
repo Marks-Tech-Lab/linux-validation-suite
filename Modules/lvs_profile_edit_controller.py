@@ -31,10 +31,17 @@ class ProfileEditController:
         ProfileStageAction("label", "Edit label"),
         ProfileStageAction("duration", "Edit duration"),
         ProfileStageAction("toggle", "Toggle enabled"),
+        ProfileStageAction("duplicate", "Duplicate stage"),
+        ProfileStageAction("move_up", "Move stage up"),
+        ProfileStageAction("move_down", "Move stage down"),
+        ProfileStageAction("cpu_backend", "Edit CPU backend preference"),
+        ProfileStageAction("cpu_mode", "Edit CPU workload level"),
+        ProfileStageAction("cpu_load", "Edit CPU load pattern"),
         ProfileStageAction("cpu_instruction", "Edit CPU instruction set"),
         ProfileStageAction("cpu_instruction_intent", "Edit CPU instruction intent"),
         ProfileStageAction("cpu_threads", "Edit CPU threads"),
         ProfileStageAction("memory_allocation", "Edit memory allocation percent"),
+        ProfileStageAction("memory_instruction", "Edit memory instruction set"),
         ProfileStageAction("gpu_target", "Edit GPU target mode"),
         ProfileStageAction("gpu_backend", "Edit 3D backend preference"),
         ProfileStageAction("gpu_mode", "Edit 3D mode"),
@@ -125,9 +132,9 @@ class ProfileEditController:
     def stage_action_error(stage: Any, action: str) -> str:
         if action == "duration" and stage.modules.storage_benchmark.enabled:
             return "Storage Benchmark is completion-based and has no stage duration."
-        if action in {"cpu_instruction", "cpu_instruction_intent", "cpu_threads"} and not stage.modules.cpu.enabled:
+        if action in {"cpu_backend", "cpu_mode", "cpu_load", "cpu_instruction", "cpu_instruction_intent", "cpu_threads"} and not stage.modules.cpu.enabled:
             return "CPU module is not enabled on this stage."
-        if action == "memory_allocation" and not stage.modules.memory.enabled:
+        if action in {"memory_allocation", "memory_instruction"} and not stage.modules.memory.enabled:
             return "Memory module is not enabled on this stage."
         if action == "gpu_target" and not (stage.modules.gpu_3d.enabled or stage.modules.vram.enabled):
             return "No GPU workload is enabled on this stage."
@@ -171,9 +178,22 @@ class ProfileEditController:
             labels = self.profile_editor.set_stage_label(profile, labels, index, str(value or ""))
             changed = labels[index]
         elif action == "duration":
-            changed = self.profile_editor.set_stage_duration(profile, index, int(value))
+            changed = self.profile_editor.set_stage_duration_text(profile, index, value)
         elif action == "toggle":
             changed = self.profile_editor.toggle_stage_enabled(profile, index)
+        elif action == "duplicate":
+            _, labels = self.profile_editor.duplicate_stage(profile, labels, index)
+            changed = index + 1
+        elif action in {"move_up", "move_down"}:
+            changed, labels = self.profile_editor.move_stage(
+                profile, labels, index, -1 if action == "move_up" else 1
+            )
+        elif action == "cpu_backend":
+            changed = self.profile_editor.set_cpu_backend_preference(stage, str(value))
+        elif action == "cpu_mode":
+            changed = self.profile_editor.set_cpu_mode(stage, str(value))
+        elif action == "cpu_load":
+            changed = self.profile_editor.set_cpu_load(stage, str(value))
         elif action == "cpu_instruction":
             changed = self.profile_editor.set_cpu_instruction_set(stage, str(value))
         elif action == "cpu_instruction_intent":
@@ -242,6 +262,19 @@ class ProfileEditController:
         edit.dirty = True
         return result
 
+    def duplicate_stage_in_edit(self, edit: ProfileEditState, index: int) -> ProfileEditMutationResult:
+        result = self.apply_stage_action(edit.profile, edit.labels, index, "duplicate")
+        edit.labels = result.labels
+        edit.dirty = True
+        return result
+
+    def move_stage_in_edit(self, edit: ProfileEditState, index: int, offset: int) -> ProfileEditMutationResult:
+        action = "move_up" if int(offset) < 0 else "move_down"
+        result = self.apply_stage_action(edit.profile, edit.labels, index, action)
+        edit.labels = result.labels
+        edit.dirty = edit.dirty or bool(result.value != index)
+        return result
+
     def apply_picker(self, edit: ProfileEditState, index: int, key: str, selected: str) -> ProfileEditMutationResult:
         stage = edit.profile.stages[index]
         action = str(key or "")
@@ -254,6 +287,9 @@ class ProfileEditController:
             "cpu_instruction": "cpu_instruction",
             "cpu_instruction_intent": "cpu_instruction_intent",
             "memory_instruction": "memory_instruction",
+            "cpu_backend": "cpu_backend",
+            "cpu_mode": "cpu_mode",
+            "cpu_load": "cpu_load",
         }
         action = action_map.get(action, action)
         result = self.apply_stage_action(edit.profile, edit.labels, index, action, selected)
@@ -304,7 +340,13 @@ class ProfileEditController:
             elif normalized in action_map:
                 action = action_map[normalized]
                 parsed: Any = value
-                if action in {"duration", "vram_allocation", "memory_allocation", "storage_test_size", "storage_runs"}:
+                if action == "duration":
+                    parsed = self.profile_editor.set_stage_duration_text(edit.profile, stage_index, value)
+                    result = ProfileEditMutationResult(edit.labels, parsed)
+                    edit.labels = result.labels
+                    edit.dirty = True
+                    return result
+                if action in {"vram_allocation", "memory_allocation", "storage_test_size", "storage_runs"}:
                     parsed = int(float(value or "0"))
                 elif action == "storage_max_used_percent":
                     parsed = float(value)

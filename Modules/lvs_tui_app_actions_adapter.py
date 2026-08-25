@@ -348,6 +348,17 @@ class TuiAppActionsAdapterMixin:
         except Exception as exc:
             self._set_detail(f"Unable to open profile editor:\n{exc}")
 
+    async def action_copy_profile(self) -> None:
+        if self.selected_profile is None:
+            self._set_detail("Select a source profile first.")
+            return
+        try:
+            source = self.service.create_profile_edit(self.selected_profile.path)
+            self.profile_edit = source
+            await self._begin_profile_copy_selection("copy")
+        except Exception as exc:
+            self._set_detail(f"Unable to copy profile:\n{exc}")
+
     async def action_new_profile(self) -> None:
         if self.view_mode == "settings_list":
             self._begin_settings_list_input("rename")
@@ -364,9 +375,9 @@ class TuiAppActionsAdapterMixin:
             self.profile_edit = self.service.create_new_profile_edit()
             self.profile_edit_selected_index = 0
             await self._show_profile_edit(
-                "New profile created in memory. Rename it, then choose Add Storage Benchmark Stage "
-                "(or another stage template) from the left list and press S to save the JSON profile."
+                "Blank profile created in memory. Choose its name and group, add stages, then Save when ready."
             )
+            self._begin_profile_name_input()
         except Exception as exc:
             self._set_detail(f"Unable to create profile:\n{exc}")
 

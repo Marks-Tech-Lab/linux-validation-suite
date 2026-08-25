@@ -5,7 +5,7 @@ from __future__ import annotations
 
 
 DEFAULT_PROFILE_MENU_GROUPS = [
-    {"key": "standard", "label": "standard profile"},
+    {"key": "standard", "label": "standard validation profile"},
     {"key": "quick", "label": "quick/smoke profile"},
     {"key": "gpu", "label": "GPU profile/lab"},
     {"key": "advanced", "label": "advanced/lab profile"},

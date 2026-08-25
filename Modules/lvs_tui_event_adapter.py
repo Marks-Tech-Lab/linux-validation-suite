@@ -54,6 +54,8 @@ class TuiEventAdapterMixin:
             await self.action_show_migration_support()
         elif action == "new_profile":
             await self.action_new_profile()
+        elif action == "copy_profile":
+            await self.action_copy_profile()
         elif action == "setup_run":
             await self.action_setup_run()
         elif action == "edit_profile":
@@ -115,6 +117,9 @@ class TuiEventAdapterMixin:
             if index_in_range(index, self.profile_edit_picker_options):
                 await self._select_profile_edit_picker_option(self.profile_edit_picker_options[index])
             return
+        if self.view_mode == "profile_copy":
+            await self._activate_profile_copy_item(index)
+            return
         if self.view_mode == "results":
             if index_in_range(index, self.results):
                 result = self.results[index]
@@ -138,6 +143,8 @@ class TuiEventAdapterMixin:
         if self.view_mode == "profile_edit":
             self.profile_edit_selected_index = max(0, index)
             await self._activate_profile_edit_item(index)
+            return
+        if self.view_mode == "profile_copy":
             return
         if index_in_range(index, self.profiles):
             self.selected_profile = self.profiles[index]
@@ -270,6 +277,15 @@ class TuiEventAdapterMixin:
             elif action.action == "save":
                 await self._save_profile_edit()
                 event.stop()
+            elif action.action == "save_as":
+                await self._begin_profile_copy_selection("save_as")
+                event.stop()
+            elif action.action == "duplicate_stage":
+                await self._duplicate_selected_profile_stage()
+                event.stop()
+            elif action.action == "move_stage":
+                await self._move_selected_profile_stage(action.target)
+                event.stop()
             elif action.action == "remove_stage":
                 await self._remove_selected_profile_stage()
                 event.stop()
@@ -342,6 +358,17 @@ class TuiEventAdapterMixin:
             return
         if self.profile_edit_picker_key:
             await self._restore_profile_edit_sidebar()
+            return
+        if str(self.pending_input_field or "").startswith("__profile_template_"):
+            self.pending_profile_template_key = None
+            self.pending_profile_template_stage = None
+            self.pending_profile_template_label = ""
+            self.pending_profile_template_allocation_fields = []
+            self._clear_setup_input(focus_items=True)
+            await self._show_profile_edit("Guided stage creation cancelled.")
+            return
+        if self.view_mode == "profile_copy":
+            await self._cancel_profile_copy_selection()
             return
         if self.view_mode == "settings_list":
             await self.action_show_settings()

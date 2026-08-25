@@ -15,7 +15,14 @@ from .lvs_profile_creation import (
 )
 from .lvs_profile_models import StageConfig, StageModules, ValidationProfile
 from .lvs_profile_save import ProfileSavePreparation
-from .lvs_service_models import FrontendActionSpec, ProfileEditItem, ProfileEditState, SetupInputSpec, SetupPickerSpec
+from .lvs_service_models import (
+    FrontendActionSpec,
+    ProfileCopySelectionState,
+    ProfileEditItem,
+    ProfileEditState,
+    SetupInputSpec,
+    SetupPickerSpec,
+)
 
 
 class SuiteProfileServiceMixin:
@@ -33,16 +40,88 @@ class SuiteProfileServiceMixin:
         result = self.profile_creation.build_profile(ProfileCreationRequest(
             profile_name=name,
             menu_group="custom",
-            stages=[
-                ProfileStageDraft(
-                    label="CPU",
-                    test_type="CPU",
-                    duration_seconds=300,
-                    modules=self.profile_editor.build_stage_modules("CPU"),
-                )
-            ],
+            telemetry_interval_seconds=self.settings.sample_interval_seconds,
+            trim_start_seconds=self.settings.trim_start_seconds,
+            trim_end_seconds=self.settings.trim_end_seconds,
+            stages=[],
         ))
-        return ProfileEditState(profile_path=profile_path, profile=result.profile, labels=result.labels, dirty=True)
+        return ProfileEditState(
+            profile_path=profile_path,
+            profile=result.profile,
+            labels=result.labels,
+            dirty=True,
+            is_new=True,
+        )
+
+    def create_profile_copy_edit(
+        self,
+        source_path: Path,
+        profile_name: str,
+        selected_stage_indices: List[int],
+    ) -> ProfileEditState:
+        source = self.profile_loader.load_profile(source_path)
+        return self._copied_profile_edit(source, profile_name, selected_stage_indices)
+
+    def create_profile_save_as_edit(
+        self,
+        edit: ProfileEditState,
+        profile_name: str,
+        selected_stage_indices: List[int],
+    ) -> ProfileEditState:
+        return self._copied_profile_edit(edit.profile, profile_name, selected_stage_indices)
+
+    def create_profile_copy_selection(
+        self,
+        edit: ProfileEditState,
+        *,
+        mode: str,
+    ) -> ProfileCopySelectionState:
+        return ProfileCopySelectionState(edit, str(mode), list(range(len(edit.profile.stages))))
+
+    def toggle_profile_copy_stage(self, selection: ProfileCopySelectionState, index: int) -> None:
+        if index < 0 or index >= len(selection.source_edit.profile.stages):
+            raise IndexError("stage index out of range")
+        values = set(selection.selected_stage_indices)
+        values.symmetric_difference_update({index})
+        selection.selected_stage_indices = sorted(values)
+
+    def set_all_profile_copy_stages(self, selection: ProfileCopySelectionState, selected: bool) -> None:
+        selection.selected_stage_indices = (
+            list(range(len(selection.source_edit.profile.stages))) if selected else []
+        )
+
+    def finish_profile_copy_selection(
+        self,
+        selection: ProfileCopySelectionState,
+        profile_name: str,
+    ) -> ProfileEditState:
+        if not selection.selected_stage_indices:
+            raise ValueError("Select at least one stage to continue.")
+        return self.create_profile_save_as_edit(
+            selection.source_edit,
+            profile_name,
+            selection.selected_stage_indices,
+        )
+
+    def _copied_profile_edit(
+        self,
+        source: ValidationProfile,
+        profile_name: str,
+        selected_stage_indices: List[int],
+    ) -> ProfileEditState:
+        name = re.sub(r"\s+", " ", str(profile_name or "").strip())
+        if not name:
+            raise ValueError("New profile name is required.")
+        profile = self.profile_editor.copy_profile(source, name, list(selected_stage_indices))
+        path = self._unique_profile_path(name)
+        labels = self.profile_editor.normalize_labels(profile, [])
+        return ProfileEditState(
+            profile_path=path,
+            profile=profile,
+            labels=labels,
+            dirty=True,
+            is_new=True,
+        )
 
     def _unique_profile_path(self, profile_name: str) -> Path:
         stem = re.sub(r"[^A-Za-z0-9_. -]+", "_", str(profile_name or "New Profile")).strip(" ._")
@@ -109,13 +188,16 @@ class SuiteProfileServiceMixin:
         stage_index: Optional[int] = None,
         trim_start: Optional[int] = None,
     ) -> Any:
-        return self.profile_edit_controller.apply_input(
+        result = self.profile_edit_controller.apply_input(
             edit,
             field,
             value,
             stage_index=stage_index,
             trim_start=trim_start,
-        ).value
+        )
+        if field == "__profile_name" and edit.is_new:
+            edit.profile_path = self._unique_profile_path(edit.profile.profile_name)
+        return result.value
 
     def apply_profile_storage_action(self, edit: ProfileEditState, stage_index: int, action: str) -> Any:
         result = self.profile_edit_controller.apply_stage_action(
@@ -177,6 +259,15 @@ class SuiteProfileServiceMixin:
     ) -> tuple[StageConfig, str]:
         return self.profile_editor.template_stage(profile, template_key, duration_seconds=duration_seconds)
 
+    def profile_stage_guided_allocation_fields(self, stage: StageConfig) -> List[str]:
+        return self.profile_editor.guided_allocation_fields(stage)
+
+    def profile_stage_guided_allocation_percent(self, stage: StageConfig, field: str) -> int:
+        return self.profile_editor.guided_allocation_percent(stage, field)
+
+    def apply_profile_stage_guided_allocation(self, stage: StageConfig, field: str, value: str) -> int:
+        return self.profile_editor.apply_guided_allocation_percent(stage, field, value)
+
     def build_profile_stage_modules(self, test_type: str, **options: Any) -> StageModules:
         return self.profile_editor.build_stage_modules(test_type, **options)
 
@@ -227,6 +318,14 @@ class SuiteProfileServiceMixin:
 
     def remove_profile_stage_from_edit(self, edit: ProfileEditState, index: int) -> List[str]:
         return self.profile_edit_controller.remove_stage_from_edit(edit, index).labels
+
+    def duplicate_profile_stage_in_edit(self, edit: ProfileEditState, index: int) -> int:
+        result = self.profile_edit_controller.duplicate_stage_in_edit(edit, index)
+        return int(result.value)
+
+    def move_profile_stage_in_edit(self, edit: ProfileEditState, index: int, offset: int) -> int:
+        result = self.profile_edit_controller.move_stage_in_edit(edit, index, offset)
+        return int(result.value)
 
     def toggle_profile_edit_stage_enabled(self, edit: ProfileEditState, index: int) -> bool:
         result = self.profile_edit_controller.apply_stage_action(

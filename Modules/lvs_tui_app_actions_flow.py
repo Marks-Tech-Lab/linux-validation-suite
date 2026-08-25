@@ -33,6 +33,7 @@ ACTION_BUTTONS: Tuple[Tuple[str, str], ...] = (
     ("dry-run", "Dry"),
     ("deps", "Deps"),
     ("new-profile", "New"),
+    ("copy-profile", "Copy"),
     ("setup", "Setup"),
     ("edit-profile", "Edit"),
     ("history", "History"),
@@ -50,6 +51,7 @@ ACTION_BUTTON_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
         ("dry-run", "Dry"),
         ("deps", "Deps"),
         ("new-profile", "New"),
+        ("copy-profile", "Copy"),
         ("setup", "Setup"),
         ("edit-profile", "Edit"),
     ),
@@ -158,6 +160,7 @@ GLOBAL_ACTION_BAR_ROWS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
         ("D", "Dry Run"),
         ("C", "Deps"),
         ("N", "New"),
+        ("B", "Copy"),
         ("M", "Edit"),
     ),
     (

@@ -10,6 +10,7 @@ and profile edit commit/cancel handling.
 from typing import Optional
 
 from Modules.lvs_tui_input_state import tui_input_state
+from Modules.lvs_profile_edit_view import profile_copy_selection_rows, profile_stage_summary_lines
 from Modules.lvs_tui_navigation_state import tui_navigation_reset
 from Modules.lvs_tui_picker_presentation import TuiPickerOpenPresentation, profile_edit_picker_open_presentation
 from Modules.lvs_tui_profile_edit_flow import (
@@ -68,9 +69,17 @@ class TuiProfileEditAdapterMixin:
             return
         item = self.profile_edit_items[index]
         kind = item.kind
+        if kind != "add_template":
+            self.pending_profile_template_key = None
+            self.pending_profile_template_stage = None
+            self.pending_profile_template_label = ""
+            self.pending_profile_template_allocation_fields = []
         self.profile_edit_discard_confirm = False
         if kind == "save":
             await self._save_profile_edit()
+            return
+        if kind == "save_as":
+            await self._begin_profile_copy_selection("save_as")
             return
         if kind == "name":
             self._begin_profile_name_input()
@@ -89,7 +98,29 @@ class TuiProfileEditAdapterMixin:
             await self._show_profile_edit(f"Strict threshold warning setting changed to: {value}")
             return
         if kind == "add_template":
-            await self._add_profile_stage_from_template(item.template_key or "cpu")
+            key = item.template_key or "cpu"
+            if self.pending_profile_template_key != key:
+                self.pending_profile_template_key = key
+                stage, label = self.service.create_profile_stage_from_template(self.profile_edit.profile, key)
+                self.pending_profile_template_stage = stage
+                self.pending_profile_template_label = label
+                self.pending_profile_template_allocation_fields = (
+                    self.service.profile_stage_guided_allocation_fields(stage)
+                )
+                if self.pending_profile_template_allocation_fields:
+                    self._begin_next_profile_template_allocation_input()
+                else:
+                    await self._show_pending_profile_template_review()
+                return
+            self.pending_profile_template_key = None
+            stage = self.pending_profile_template_stage
+            label = self.pending_profile_template_label
+            self.pending_profile_template_stage = None
+            self.pending_profile_template_label = ""
+            self.pending_profile_template_allocation_fields = []
+            if stage is not None:
+                self.profile_edit.labels = self.service.add_profile_stage_to_edit(self.profile_edit, stage, label)
+                await self._show_profile_edit(f"Added stage: {label}")
             return
         if kind in {"storage_target_mode", "storage_allow_system"} and item.index is not None:
             action = "storage_target_mode" if kind == "storage_target_mode" else "storage_allow_system"
@@ -101,6 +132,123 @@ class TuiProfileEditAdapterMixin:
             return
         if kind == "stage":
             self._set_detail(selected_stage_detail_text(self.service.profile_edit_summary_text(self.profile_edit)))
+
+    def _begin_next_profile_template_allocation_input(self) -> None:
+        stage = self.pending_profile_template_stage
+        if stage is None or not self.pending_profile_template_allocation_fields:
+            return
+        field = self.pending_profile_template_allocation_fields[0]
+        current = self.service.profile_stage_guided_allocation_percent(stage, field)
+        name = "RAM" if field == "memory" else "VRAM"
+        self._apply_input_state(tui_input_state(
+            f"__profile_template_{field}_allocation",
+            value=str(current),
+            placeholder=f"{name} allocation percent [{current}]",
+            detail=(
+                f"{name} allocation percent [{current}]. Enter keeps the template default; "
+                "valid values are clamped by the existing allocation policy."
+            ),
+        ))
+
+    async def _show_pending_profile_template_review(self) -> None:
+        stage = self.pending_profile_template_stage
+        if self.profile_edit is None or stage is None:
+            return
+        label = self.pending_profile_template_label
+        preview = "\n".join(
+            profile_stage_summary_lines(stage, label, len(self.profile_edit.profile.stages) + 1)
+        )
+        self._clear_setup_input()
+        await self._show_profile_edit(
+            "Stage Review\n\n"
+            + preview
+            + "\n\nPress Enter on the same Add Stage choice again to accept, or choose another action to cancel."
+        )
+
+    async def _begin_profile_copy_selection(self, mode: str) -> None:
+        if self.profile_edit is None:
+            return
+        self.profile_copy_selection = self.service.create_profile_copy_selection(self.profile_edit, mode=mode)
+        await self._show_profile_copy_selection()
+
+    async def _show_profile_copy_selection(self, detail: str = "") -> None:
+        selection = self.profile_copy_selection
+        if selection is None:
+            return
+        self.view_mode = "profile_copy"
+        self.query_one("#sidebar-title").update("Save As" if selection.mode == "save_as" else "Copy Profile")
+        labels = self.service.normalize_profile_labels(selection.source_edit.profile, selection.source_edit.labels)
+        rows = ["Continue", "Select all", "Select none", "Cancel"]
+        rows.extend(profile_copy_selection_rows(
+            selection.source_edit.profile,
+            labels,
+            selection.selected_stage_indices,
+        ))
+        explanation = (
+            "Save As uses the current in-memory edits to create an independent profile; "
+            "the original is not overwritten."
+            if selection.mode == "save_as"
+            else "Copy creates an independent profile; the source profile is not changed."
+        )
+        await self._replace_sidebar_labels(self.query_one("#items"), rows, selected_index=0, focus=True)
+        self._set_detail(
+            (detail + "\n\n" if detail else "")
+            + explanation
+            + " All stages start selected. Toggle stages, then Continue. "
+            "Source order and all selected settings are preserved."
+        )
+
+    async def _activate_profile_copy_item(self, index: int) -> None:
+        selection = self.profile_copy_selection
+        if selection is None:
+            return
+        if index == 0:
+            if not selection.selected_stage_indices:
+                await self._show_profile_copy_selection("Select at least one stage to continue.")
+                return
+            self._apply_input_state(tui_input_state(
+                "__profile_copy_name",
+                value="",
+                placeholder="New profile name",
+                detail="Enter a new profile name. The destination will remain unsaved and editable.",
+            ))
+            return
+        if index == 1:
+            self.service.set_all_profile_copy_stages(selection, True)
+        elif index == 2:
+            self.service.set_all_profile_copy_stages(selection, False)
+        elif index == 3:
+            await self._cancel_profile_copy_selection()
+            return
+        else:
+            self.service.toggle_profile_copy_stage(selection, index - 4)
+        await self._show_profile_copy_selection()
+
+    async def _cancel_profile_copy_selection(self) -> None:
+        selection = self.profile_copy_selection
+        mode = selection.mode if selection is not None else "save_as"
+        self.profile_copy_selection = None
+        if mode == "copy":
+            self.profile_edit = None
+            await self.action_show_profiles()
+        else:
+            await self._show_profile_edit("Save As cancelled; the source is unchanged.")
+
+    async def _duplicate_selected_profile_stage(self) -> None:
+        index = self._selected_profile_edit_stage_index()
+        if self.profile_edit is None or index is None:
+            self._set_detail("Select a stage row first.")
+            return
+        self.service.duplicate_profile_stage_in_edit(self.profile_edit, index)
+        await self._show_profile_edit(f"Duplicated stage {index + 1} adjacent to its source.")
+
+    async def _move_selected_profile_stage(self, direction: str) -> None:
+        index = self._selected_profile_edit_stage_index()
+        if self.profile_edit is None or index is None:
+            self._set_detail("Select a stage row first.")
+            return
+        self.service.move_profile_stage_in_edit(self.profile_edit, index, -1 if direction == "up" else 1)
+        await self._show_profile_edit(f"Moved stage {direction}.")
 
     def _selected_profile_edit_stage_index(self) -> Optional[int]:
         return selected_profile_edit_stage_index(
@@ -284,6 +432,35 @@ class TuiProfileEditAdapterMixin:
         )
 
     async def _commit_profile_edit_input(self, field: str, value: str) -> None:
+        if field.startswith("__profile_template_") and field.endswith("_allocation"):
+            stage = self.pending_profile_template_stage
+            allocation_field = field.removeprefix("__profile_template_").removesuffix("_allocation")
+            if stage is None:
+                self._clear_setup_input()
+                return
+            self.service.apply_profile_stage_guided_allocation(stage, allocation_field, value)
+            if self.pending_profile_template_allocation_fields:
+                self.pending_profile_template_allocation_fields.pop(0)
+            self._clear_setup_input()
+            if self.pending_profile_template_allocation_fields:
+                self._begin_next_profile_template_allocation_input()
+            else:
+                await self._show_pending_profile_template_review()
+            return
+        if field == "__profile_copy_name":
+            selection = self.profile_copy_selection
+            if selection is None:
+                self._clear_setup_input()
+                return
+            try:
+                self.profile_edit = self.service.finish_profile_copy_selection(selection, value)
+                self.profile_copy_selection = None
+                self._clear_setup_input()
+                await self._show_profile_edit("Independent unsaved profile opened. Review its group and settings, then Save.")
+            except Exception as exc:
+                self._clear_setup_input()
+                await self._show_profile_copy_selection(str(exc))
+            return
         if self.profile_edit is None:
             self._clear_setup_input()
             return
