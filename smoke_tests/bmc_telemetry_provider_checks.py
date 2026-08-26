@@ -7,6 +7,7 @@ import csv
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -28,6 +29,8 @@ from Modules.lvs_telemetry_bmc import (
     bmc_sensor_identity,
     build_bmc_source_catalog,
     classify_bmc_component,
+    classify_bmc_status,
+    normalize_bmc_discrete_state,
     parse_ipmitool_sdr_elist,
     parse_ipmitool_sensor,
 )
@@ -126,7 +129,36 @@ def run_bmc_telemetry_provider_checks() -> None:
     assert "Bad Numeric" in by_label and by_label["Bad Numeric"].metric_class == ""
     static_discrete = parse_ipmitool_sensor("PSU Fault | 0x01 | discrete | ok | na | na | na | na | na | na")
     merged_discrete = append_static_bmc_discrete_sensors(parsed, static_discrete)
-    assert any(sensor.raw_label == "PSU Fault" and sensor.discrete_state == "0x01" for sensor in merged_discrete)
+    static_fault = next(sensor for sensor in merged_discrete if sensor.raw_label == "PSU Fault")
+    assert static_fault.discrete_state == "0x01"
+    assert static_fault.observation_mode == "static"
+    assert normalize_bmc_discrete_state("0x01") == "unknown"
+    assert normalize_bmc_discrete_state("State Deasserted") == "deasserted"
+    assert normalize_bmc_discrete_state("Asserted") == "asserted"
+    assert normalize_bmc_discrete_state("Presence detected") == "present"
+    assert classify_bmc_status("PSU1 Failure") == ("psu", "power_supply")
+    assert classify_bmc_status("PROCHOT_CPU") == ("cpu", "cpu_throttle")
+    assert classify_bmc_status("WATCHDOG2") == ("bmc", "watchdog")
+    assert classify_bmc_status("CPU1_ECC1") == ("memory", "ecc_memory")
+    assert classify_bmc_status("PowerUnit") == ("other_platform", "unknown")
+    duplicate_provenance = append_static_bmc_discrete_sensors(
+        parse_ipmitool_sdr_elist("PSU Fault | 72h | ok | 10.1 | State Deasserted"),
+        parse_ipmitool_sensor(
+            "PSU Fault | 0x01 | discrete | ok | na | na | na | na | na | na"
+        ),
+    )
+    assert [sensor.observation_mode for sensor in duplicate_provenance] == ["recurring", "static"]
+    duplicate_provenance_provider = BmcSnapshotProvider(enabled=False)
+    duplicate_provenance_provider._record_status_snapshot_locked(
+        BmcSnapshot(
+            "ipmi_bmc", "ipmitool sdr elist", "direct", "duplicate", 1.0, "ok", duplicate_provenance
+        )
+    )
+    duplicate_status = duplicate_provenance_provider.status_evidence()
+    assert [item["observation_mode"] for item in duplicate_status["start"]["sensors"]] == [
+        "recurring"
+    ]
+    duplicate_provenance_provider.close()
 
     cpu_thresholds = by_label["TEMP_CPU"].thresholds
     assert cpu_thresholds == {
@@ -192,6 +224,18 @@ def run_bmc_telemetry_provider_checks() -> None:
     assert [(item["key"], item["canonical_identity"]) for item in catalog] == [
         (item["key"], item["canonical_identity"]) for item in reordered
     ]
+    # Equivalent Full Sensor Records retain identical numeric semantics whether
+    # delivered by unqualified elist or the older elist-full command.
+    unqualified_numeric = parse_ipmitool_sdr_elist(SDR_TEXT)
+    full_numeric = parse_ipmitool_sdr_elist(SDR_TEXT)
+    assert unqualified_numeric == full_numeric
+    assert build_bmc_source_catalog(unqualified_numeric) == build_bmc_source_catalog(full_numeric)
+    compact_only = parse_ipmitool_sdr_elist(
+        "PSU Failure | 80h | ok | 10.1 | State Deasserted\n"
+        "Event Only | 81h | ns | 10.2 | No Reading"
+    )
+    assert build_bmc_source_catalog(compact_only) == ()
+    assert all(sensor.normalized_value is None and not sensor.metric_class for sensor in compact_only)
 
     duplicate_text = "\n".join(
         (
@@ -207,6 +251,140 @@ def run_bmc_telemetry_provider_checks() -> None:
     assert [source["key"] for source in duplicate_catalog] == [
         source["key"] for source in build_bmc_source_catalog(reversed(parse_ipmitool_sdr_elist(duplicate_text)))
     ]
+
+    # Evidence-only status tracking uses recurring SDR identity, ignores static
+    # sensor-table rows, and compares only successful observable snapshots.
+    status_provider = BmcSnapshotProvider(enabled=False)
+
+    def status_snapshot(text: str, captured_at: str, captured_monotonic: float) -> BmcSnapshot:
+        recurring = parse_ipmitool_sdr_elist(text)
+        static = parse_ipmitool_sensor(
+            "Static PSU Fault | 0x01 | discrete | ok | na | na | na | na | na | na"
+        )
+        return BmcSnapshot(
+            "ipmi_bmc",
+            "ipmitool sdr elist",
+            "direct",
+            captured_at,
+            captured_monotonic,
+            "ok",
+            append_static_bmc_discrete_sensors(recurring, static),
+        )
+
+    first_status = status_snapshot(
+        "PSU Failure | 80h | ok | 10.1 | State Deasserted\n"
+        "Unknown State | 81h | ok | 10.2 | 0x01\n"
+        "Omitted State | 84h | ok | 10.6 | State Asserted\n"
+        "Reset Identity | 85h | ok | 10.7 | State Deasserted\n"
+        "Collision | 82h | ok | 10.3 | State Deasserted\n"
+        "Collision | 82h | ok | 10.4 | State Asserted\n"
+        "Ambiguous | 83h | ok | 10.5 | State Deasserted\n"
+        "Ambiguous | 83h | ok | 10.5 | State Asserted",
+        "status-1",
+        1.0,
+    )
+    second_status = status_snapshot(
+        "Collision | 82h | ok | 10.4 | State Asserted\n"
+        "PSU Failure | 80h | ok | 10.1 | State Asserted\n"
+        "Unknown State | 81h | ok | 10.2 |  0X1  \n"
+        "Reset Identity | 85h | ok | 10.7 | State Deasserted\n"
+        "Reset Identity | 85h | ok | 10.7 | State Asserted\n"
+        "Collision | 82h | ok | 10.3 | State Deasserted",
+        "status-2",
+        61.0,
+    )
+    returned_status = status_snapshot(
+        "Unknown State | 81h | ok | 10.2 | 0x40\n"
+        "PSU Failure | 80h | ok | 10.1 | State Asserted\n"
+        "Reset Identity | 85h | ok | 10.7 | State Asserted",
+        "status-3",
+        121.0,
+    )
+    final_status = status_snapshot(
+        "Unknown State | 81h | ok | 10.2 | 0x40\n"
+        "PSU Failure | 80h | ok | 10.1 | State Asserted\n"
+        "Reset Identity | 85h | ok | 10.7 | State Deasserted",
+        "status-4",
+        181.0,
+    )
+    status_provider._record_status_snapshot_locked(first_status)
+    assert status_provider.status_evidence()["transitions"] == []
+    status_provider._record_status_snapshot_locked(second_status)
+    status_provider._record_status_snapshot_locked(second_status)
+    status_provider._record_status_snapshot_locked(returned_status)
+    assert not any(
+        item["raw_label"] == "Reset Identity"
+        for item in status_provider.status_evidence()["transitions"]
+    )
+    status_provider._record_status_snapshot_locked(final_status)
+    status_evidence = status_provider.status_evidence()
+    assert status_evidence["start"]["captured_at"] == "status-1"
+    assert status_evidence["end"]["captured_at"] == "status-4"
+    end_status_by_label = {item["raw_label"]: item for item in status_evidence["end"]["sensors"]}
+    assert end_status_by_label["Omitted State"]["raw_state"] == "State Asserted"
+    assert end_status_by_label["Omitted State"]["last_observed_at"] == "status-1"
+    assert not any(sensor["raw_label"] == "Static PSU Fault" for sensor in status_evidence["start"]["sensors"])
+    assert not any(sensor["raw_label"] == "Ambiguous" for sensor in status_evidence["start"]["sensors"])
+    assert len([sensor for sensor in status_evidence["start"]["sensors"] if sensor["raw_label"] == "Collision"]) == 2
+    transitions = status_evidence["transitions"]
+    assert len(transitions) == 3
+    assert transitions[0]["raw_label"] == "PSU Failure"
+    assert transitions[0]["previous_normalized_state"] == "deasserted"
+    assert transitions[0]["current_normalized_state"] == "asserted"
+    assert transitions[1]["raw_label"] == "Unknown State"
+    assert transitions[1]["previous_raw_state"] == "0X1"
+    assert transitions[1]["current_raw_state"] == "0x40"
+    assert transitions[1]["previous_normalized_state"] == "unknown"
+    assert transitions[1]["current_normalized_state"] == "unknown"
+    assert transitions[1]["previous_observed_at"] == "status-2"
+    assert transitions[2]["raw_label"] == "Reset Identity"
+    assert transitions[2]["previous_observed_at"] == "status-3"
+    assert transitions[2]["observed_at"] == "status-4"
+    mutable_evidence = status_provider.status_evidence()
+    mutable_evidence["transitions"][0]["canonical_identity"].append("caller mutation")
+    assert "caller mutation" not in status_provider.status_evidence()["transitions"][0]["canonical_identity"]
+    status_provider.close()
+
+    ambiguous_fallback = parse_ipmitool_sensor(
+        "Duplicate | State Deasserted | discrete | ok\n"
+        "Duplicate | State Asserted | discrete | ok"
+    )
+    ambiguous_provider = BmcSnapshotProvider(enabled=False)
+    ambiguous_provider._record_status_snapshot_locked(
+        BmcSnapshot("ipmi_bmc", "ipmitool sensor", "direct", "fallback", 1.0, "ok", ambiguous_fallback)
+    )
+    assert ambiguous_provider.status_evidence() == {}
+    ambiguous_provider.close()
+
+    static_only_provider = BmcSnapshotProvider(enabled=False)
+    static_only_provider._record_status_snapshot_locked(
+        BmcSnapshot(
+            "ipmi_bmc",
+            "ipmitool sdr elist full",
+            "direct",
+            "static-only",
+            1.0,
+            "ok",
+            tuple(replace(sensor, observation_mode="static") for sensor in ambiguous_fallback[:1]),
+        )
+    )
+    assert static_only_provider.status_evidence() == {}
+    static_only_provider.close()
+
+    numeric_only_provider = BmcSnapshotProvider(enabled=False)
+    numeric_only_provider._record_status_snapshot_locked(
+        BmcSnapshot(
+            "ipmi_bmc",
+            "ipmitool sdr elist",
+            "direct",
+            "numeric-only",
+            1.0,
+            "ok",
+            parse_ipmitool_sdr_elist("CPU Temp | 01h | ok | 3.1 | 40 degrees C"),
+        )
+    )
+    assert numeric_only_provider.status_evidence() == {}
+    numeric_only_provider.close()
 
     # The first refresh blocks in the worker while the caller stays immediate.
     release = threading.Event()
@@ -224,7 +402,7 @@ def run_bmc_telemetry_provider_checks() -> None:
         in_flight[0] += 1
         maximum_in_flight[0] = max(maximum_in_flight[0], in_flight[0])
         try:
-            if command_tuple[-3:] == ("sdr", "elist", "full"):
+            if command_tuple[-2:] == ("sdr", "elist"):
                 refresh_count[0] += 1
                 if refresh_count[0] == 1:
                     started.set()
@@ -260,6 +438,7 @@ def run_bmc_telemetry_provider_checks() -> None:
     release.set()
     first = _wait_for_snapshot(provider)
     assert first.access_mode == "direct"
+    assert commands[0][-2:] == ("sdr", "elist")
     assert sum(command[-1:] == ("sensor",) for command in commands) == 1
     first_values = provider.sample_values(0.0)
     assert first_values["bmc_temp_cpu_c"] == 42.0
@@ -295,19 +474,22 @@ def run_bmc_telemetry_provider_checks() -> None:
     clock[0] = 242.0
     stale_values = provider.sample_values(242.0)
     assert stale_values and all(value is None for value in stale_values.values())
+    provider_status = provider.status_evidence()
+    assert provider_status["transitions"] == []
+    assert any(item["raw_label"] == "PSU1 Status" for item in provider_status["end"]["sensors"])
     provider.close()
     assert provider._executor is None
 
-    # Unsupported elist-full falls back once to elist; total failure never
+    # Unsupported preferred elist falls back once to elist-full; total failure never
     # publishes an empty replacement snapshot.
     fallback_commands: list[tuple[str, ...]] = []
 
     def fallback_command(command, _timeout, _environment):
         command_tuple = tuple(command)
         fallback_commands.append(command_tuple)
-        if command_tuple[-3:] == ("sdr", "elist", "full"):
-            return BmcCommandResult(command_tuple, 1, stderr="Invalid command")
         if command_tuple[-2:] == ("sdr", "elist"):
+            return BmcCommandResult(command_tuple, 1, stderr="Invalid command")
+        if command_tuple[-3:] == ("sdr", "elist", "full"):
             return BmcCommandResult(command_tuple, 0, SDR_TEXT)
         return BmcCommandResult(command_tuple, 0, SENSOR_TEXT)
 
@@ -318,15 +500,15 @@ def run_bmc_telemetry_provider_checks() -> None:
         command_env=lambda: {},
     )
     fallback_snapshot = _wait_for_snapshot(fallback_provider)
-    assert fallback_snapshot.command == "ipmitool sdr elist"
-    assert fallback_commands[0][-3:] == ("sdr", "elist", "full")
-    assert fallback_commands[1][-2:] == ("sdr", "elist")
+    assert fallback_snapshot.command == "ipmitool sdr elist full"
+    assert fallback_commands[0][-2:] == ("sdr", "elist")
+    assert fallback_commands[1][-3:] == ("sdr", "elist", "full")
     fallback_provider.close()
 
     # Static threshold failure cannot invalidate a usable recurring SDR snapshot.
     def no_threshold_command(command, _timeout, _environment):
         command_tuple = tuple(command)
-        if command_tuple[-3:] == ("sdr", "elist", "full"):
+        if command_tuple[-2:] == ("sdr", "elist"):
             return BmcCommandResult(command_tuple, 0, SDR_TEXT)
         return BmcCommandResult(command_tuple, 1, stderr="threshold command unavailable")
 
@@ -431,6 +613,7 @@ def run_bmc_telemetry_provider_checks() -> None:
     )
     assert not unavailable.available
     assert unavailable.sample_values() == {}
+    assert unavailable.status_evidence() == {}
     unavailable.close()
     assert no_bmc_commands == []
 
@@ -618,14 +801,23 @@ def run_bmc_telemetry_provider_checks() -> None:
     artifact_release = threading.Event()
     artifact_started = threading.Event()
     artifact_commands: list[tuple[str, ...]] = []
+    artifact_clock = [0.0]
+    artifact_refresh_count = [0]
 
     def artifact_command(command, _timeout, _environment):
         command_tuple = tuple(command)
         artifact_commands.append(command_tuple)
-        if command_tuple[-3:] == ("sdr", "elist", "full"):
-            artifact_started.set()
-            artifact_release.wait(1.0)
-            return BmcCommandResult(command_tuple, 0, SDR_TEXT)
+        if command_tuple[-2:] == ("sdr", "elist"):
+            artifact_refresh_count[0] += 1
+            if artifact_refresh_count[0] == 1:
+                artifact_started.set()
+                artifact_release.wait(1.0)
+            state = "State Deasserted" if artifact_refresh_count[0] == 1 else "State Asserted"
+            return BmcCommandResult(
+                command_tuple,
+                0,
+                f"{SDR_TEXT}\nPSU Failure | 80h | ok | 10.1 | {state}",
+            )
         if command_tuple[-1:] == ("sensor",):
             return BmcCommandResult(command_tuple, 0, SENSOR_TEXT)
         return BmcCommandResult(command_tuple, 1, stderr="unsupported")
@@ -635,6 +827,8 @@ def run_bmc_telemetry_provider_checks() -> None:
         local_available=lambda: True,
         run_command=artifact_command,
         command_env=lambda: {},
+        monotonic=lambda: artifact_clock[0],
+        wall_clock=lambda: f"snapshot-{artifact_refresh_count[0]}",
     )
     assert artifact_started.wait(0.5)
     artifact_collector = TelemetryCollector(enable_bmc_provider=False)
@@ -644,6 +838,26 @@ def run_bmc_telemetry_provider_checks() -> None:
     artifact_release.set()
     _wait_for_snapshot(artifact_provider)
     artifact_collector.samples.append(Sample(1.0, artifact_collector._read_bmc_values(1.0)))
+    early_evidence = artifact_collector.normalized_hardware_evidence()
+    assert early_evidence["bmc_status"]["end"]["captured_at"] == "snapshot-1"
+    for expected_count, sample_time in ((2, 61.0), (3, 122.0)):
+        artifact_clock[0] = sample_time
+        artifact_provider.request_refresh(sample_time)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            artifact_provider.poll(sample_time)
+            status = artifact_provider.status_evidence()
+            if status.get("end", {}).get("captured_at") == f"snapshot-{expected_count}":
+                break
+            time.sleep(0.005)
+        else:
+            raise AssertionError("BMC status refresh did not complete")
+        artifact_collector.samples.append(
+            Sample(sample_time, artifact_collector._read_bmc_values(sample_time))
+        )
+    # Finalization may harvest completed work but must not schedule a fourth
+    # command merely because another refresh is due.
+    artifact_clock[0] = 200.0
 
     class ArtifactParser:
         def summarize(self, *_args):
@@ -660,7 +874,7 @@ def run_bmc_telemetry_provider_checks() -> None:
     try:
         with TemporaryDirectory(dir="/tmp") as temporary:
             run_dir = Path(temporary)
-            write_final_run_artifacts(
+            artifact_result = write_final_run_artifacts(
                 run_dir=run_dir,
                 manifest_payload={"profile_name": "BMC fixture"},
                 app_name="LVS",
@@ -691,13 +905,32 @@ def run_bmc_telemetry_provider_checks() -> None:
                 persisted_rows = list(csv.DictReader(handle))
             persisted_map = JsonStore.read(run_dir / "telemetry_source_map.json", {})
             persisted_extended = JsonStore.read(run_dir / "parsed_results_extended.json", {})
+            persisted_manifest = JsonStore.read(run_dir / "run_manifest.json", {})
             assert persisted_rows[0]["bmc_temp_cpu_c"] == ""
             assert persisted_rows[1]["bmc_temp_cpu_c"] == "42.0"
+            assert "PSU Failure" not in persisted_rows[1]
+            assert not any(key.startswith("bmc_psu_failure") for key in persisted_rows[1])
             assert persisted_map["fields"]["bmc_temp_cpu_c"]["provider"] == "ipmi_bmc"
             persisted_evidence = persisted_extended["normalized_hardware_evidence"]
             assert any(item["raw_label"] == "TEMP_CPU" for item in persisted_evidence["bmc_sensors"])
             assert any(item["label"] == "TEMP_CPU" for item in persisted_evidence["bmc_thermal_sensors"])
-            assert sum(command[-3:] == ("sdr", "elist", "full") for command in artifact_commands) == 1
+            status = persisted_evidence["bmc_status"]
+            start_states = {item["raw_label"]: item for item in status["start"]["sensors"]}
+            end_states = {item["raw_label"]: item for item in status["end"]["sensors"]}
+            assert start_states["PSU Failure"]["raw_state"] == "State Deasserted"
+            assert end_states["PSU Failure"]["raw_state"] == "State Asserted"
+            psu_transitions = [
+                item for item in status["transitions"] if item["raw_label"] == "PSU Failure"
+            ]
+            assert len(psu_transitions) == 1
+            assert psu_transitions[0]["previous_normalized_state"] == "deasserted"
+            assert psu_transitions[0]["current_normalized_state"] == "asserted"
+            assert psu_transitions[0]["previous_observed_at"] == "snapshot-1"
+            assert psu_transitions[0]["observed_at"] == "snapshot-2"
+            assert psu_transitions[0]["observation_semantics"] == "state_change_observed_by_snapshot"
+            assert persisted_manifest["events"] == []
+            assert artifact_result.all_events == []
+            assert sum(command[-2:] == ("sdr", "elist") for command in artifact_commands) == 3
             assert sum(command[-1:] == ("sensor",) for command in artifact_commands) == 1
     finally:
         artifact_collector.close()

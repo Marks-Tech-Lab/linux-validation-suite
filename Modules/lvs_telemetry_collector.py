@@ -72,7 +72,11 @@ from .lvs_telemetry_memory import (
     memory_usage_gib_from_meminfo,
     read_memory_temps,
 )
-from .lvs_telemetry_bmc import BmcSnapshotProvider
+from .lvs_telemetry_bmc import (
+    BmcSnapshotProvider,
+    bmc_snapshot_evidence,
+    bmc_thermal_compatibility,
+)
 from .lvs_telemetry_nvidia import (
     discover_nvidia_smi_gpus,
     read_nvidia_smi_gpu_metrics,
@@ -310,7 +314,8 @@ class TelemetryCollector:
         provider = getattr(self, "_bmc_provider", None)
         if provider is None:
             return
-        values = provider.sample_values()
+        completed_values = getattr(provider, "completed_values", None)
+        values = completed_values() if callable(completed_values) else provider.sample_values()
         catalog = provider.source_catalog()
         self._initialize_bmc_memory_aliases(catalog, values)
         field_names = {
@@ -387,10 +392,8 @@ class TelemetryCollector:
         return payload
 
     def normalized_hardware_evidence(self) -> Dict[str, Any]:
+        provider = getattr(self, "_bmc_provider", None)
         if self._normalized_hardware_evidence_cache is None:
-            provider = getattr(self, "_bmc_provider", None)
-            if provider is not None:
-                provider.poll()
             collector = HardwareEvidenceCollector(
                 cpu_core_topology=self._cpu_core_topology,
                 gpu_cards=self._discover_gpu_cards(),
@@ -401,6 +404,16 @@ class TelemetryCollector:
             evidence = collector.collect()
             evidence["operator_summary"] = format_hardware_evidence_summary(evidence)
             self._normalized_hardware_evidence_cache = evidence
+        if provider is not None:
+            snapshot = provider.snapshot_for_evidence()
+            self._normalized_hardware_evidence_cache["bmc_sensors"] = bmc_snapshot_evidence(snapshot)
+            self._normalized_hardware_evidence_cache["bmc_thermal_sensors"] = bmc_thermal_compatibility(snapshot)
+            status_evidence_method = getattr(provider, "status_evidence", None)
+            status_evidence = status_evidence_method() if callable(status_evidence_method) else {}
+            if status_evidence:
+                self._normalized_hardware_evidence_cache["bmc_status"] = status_evidence
+            else:
+                self._normalized_hardware_evidence_cache.pop("bmc_status", None)
         return self._normalized_hardware_evidence_cache
 
     def _process_is_root(self) -> bool:
@@ -529,7 +542,7 @@ class TelemetryCollector:
                 {
                     **source,
                     "kind": "ipmi_memory_temp",
-                    "path": str(source.get("command") or "ipmitool sdr elist full"),
+                    "path": str(source.get("command") or "ipmitool sdr elist"),
                     "key": alias_key,
                     "module_index": module_index,
                     "sensor_id": list(source.get("canonical_identity") or ()),

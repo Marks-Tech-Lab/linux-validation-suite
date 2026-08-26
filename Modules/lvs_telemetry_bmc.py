@@ -61,6 +61,7 @@ class BmcSensor:
     status: str = ""
     thresholds: Mapping[str, Optional[float]] = field(default_factory=dict)
     discrete_state: str = ""
+    observation_mode: str = "recurring"
 
     @property
     def identity(self) -> Tuple[Any, ...]:
@@ -93,6 +94,7 @@ class BmcSensor:
             "status": self.status,
             "thresholds": dict(self.thresholds),
             "discrete_state": self.discrete_state,
+            "observation_mode": self.observation_mode,
         }
         if any(value is not None for value in self.thresholds.values()):
             result["threshold_source"] = "ipmitool sensor"
@@ -411,14 +413,136 @@ def append_static_bmc_discrete_sensors(
 ) -> Tuple[BmcSensor, ...]:
     """Retain static discrete rows omitted by some ``sdr elist`` outputs."""
     result = list(sensors)
-    existing = {(sensor.normalized_label, sensor.metric_class) for sensor in result}
+    existing_static = {
+        (sensor.normalized_label, sensor.discrete_state)
+        for sensor in result
+        if sensor.observation_mode == "static" and not sensor.metric_class
+    }
     for sensor in static_sensors:
-        identity = (sensor.normalized_label, sensor.metric_class)
-        if sensor.metric_class or not sensor.discrete_state or identity in existing:
+        identity = (sensor.normalized_label, sensor.discrete_state)
+        if sensor.metric_class or not sensor.discrete_state or identity in existing_static:
             continue
-        result.append(sensor)
-        existing.add(identity)
+        result.append(replace(sensor, observation_mode="static"))
+        existing_static.add(identity)
     return tuple(result)
+
+
+def normalize_bmc_discrete_state(raw_state: str) -> str:
+    """Normalize only state wording that is explicit in ipmitool output."""
+    text = " ".join(str(raw_state or "").strip().lower().split())
+    if not text or text in _UNAVAILABLE:
+        return "unknown"
+    if re.search(r"\bdeasserted\b", text):
+        return "deasserted"
+    if re.search(r"\basserted\b", text):
+        return "asserted"
+    if text in {"present", "presence detected", "device present"}:
+        return "present"
+    if text in {"absent", "not present", "device absent"}:
+        return "absent"
+    if "redundancy lost" in text or text == "not redundant":
+        return "redundancy_lost"
+    if text in {"fully redundant", "redundancy ok", "redundant"}:
+        return "redundancy_ok"
+    return "unknown"
+
+
+def _discrete_state_comparison_key(raw_state: str) -> Tuple[str, str]:
+    normalized = normalize_bmc_discrete_state(raw_state)
+    if normalized != "unknown":
+        return "normalized", normalized
+    text = " ".join(str(raw_state or "").strip().lower().split())
+    hexadecimal = re.fullmatch(r"0x([0-9a-f]+)", text)
+    if hexadecimal:
+        return "raw_hex", f"0x{int(hexadecimal.group(1), 16):x}"
+    return "raw_text", text
+
+
+def classify_bmc_status(label: str) -> Tuple[str, str]:
+    """Return conservative component and event-role classifications."""
+    normalized = normalize_bmc_label(label)
+    tokens = set(normalized.split("_"))
+
+    if "watchdog" in normalized:
+        return "bmc", "watchdog"
+    if "prochot" in normalized:
+        return "cpu", "cpu_throttle"
+    if "thermtrip" in normalized or "thermal_trip" in normalized:
+        return ("cpu" if "cpu" in tokens else "other_platform"), "thermal"
+    if any(token.startswith("ecc") for token in tokens) or "memory_train" in normalized or "mem_hardware" in normalized:
+        return "memory", "ecc_memory" if any(token.startswith("ecc") for token in tokens) else "hardware_fault"
+    if re.search(r"(?:^|_)(?:dimm|memory|mem)(?:_|$)", normalized):
+        return "memory", "hardware_fault"
+    if re.search(r"(?:^|_)(?:psu\d*|power_supply\d*)(?:_|$)", normalized):
+        if "fan" in tokens or any(token.startswith("fan") for token in tokens):
+            return "psu", "fan"
+        if "temp" in tokens or "thermal" in tokens or "overtemperature" in normalized:
+            return "psu", "thermal"
+        if "detect" in tokens or "presence" in tokens:
+            return "psu", "presence"
+        return "psu", "power_supply"
+    if "redundancy" in normalized or "redundant" in tokens:
+        return "chassis_system", "redundancy"
+    if "backplane" in tokens or re.search(r"(?:^|_)hd\d+(?:_|$)", normalized):
+        return "storage_backplane", "presence"
+    if "fan" in tokens or any(token.startswith("fan") for token in tokens):
+        return "fan", "fan"
+    if "chassis" in tokens or "intrusion" in tokens:
+        return "chassis_system", "chassis"
+    if re.search(r"(?:^|_)cpu\d*(?:_|$)", normalized):
+        return "cpu", "hardware_fault"
+    if "vrm" in tokens or "vrm_mos" in normalized:
+        return "vrm", "hardware_fault"
+    if "hardware" in tokens or "fault" in tokens or "failure" in tokens:
+        return "other_platform", "hardware_fault"
+    return "other_platform", "unknown"
+
+
+def _observable_discrete_state(sensor: BmcSensor) -> bool:
+    state = " ".join(str(sensor.discrete_state or "").strip().split())
+    status = str(sensor.status or "").strip().lower()
+    return bool(
+        sensor.observation_mode == "recurring"
+        and not sensor.metric_class
+        and state
+        and state.lower() not in _UNAVAILABLE
+        and status not in {"na", "n/a", "ns", "nr", "disabled", "no reading", "not readable"}
+    )
+
+
+def _status_sensor_record(sensor: BmcSensor) -> Dict[str, Any]:
+    component, event_role = classify_bmc_status(sensor.raw_label)
+    return {
+        "provider": "ipmi_bmc",
+        "canonical_identity": list(sensor.identity),
+        "raw_label": sensor.raw_label,
+        "normalized_label": sensor.normalized_label,
+        "sensor_number": sensor.sensor_number,
+        "entity_id": sensor.entity_id,
+        "entity_instance": sensor.entity_instance,
+        "sensor_type": sensor.sensor_type,
+        "raw_state": sensor.discrete_state,
+        "normalized_state": normalize_bmc_discrete_state(sensor.discrete_state),
+        "status": sensor.status,
+        "component_class": component,
+        "event_role": event_role,
+        "confidence": sensor.confidence,
+        "observation_mode": sensor.observation_mode,
+    }
+
+
+def _refreshable_discrete_sensors(
+    snapshot: BmcSnapshot,
+) -> Tuple[Tuple[BmcSensor, ...], Tuple[Tuple[Any, ...], ...]]:
+    candidates = [sensor for sensor in snapshot.sensors if _observable_discrete_state(sensor)]
+    counts: Dict[Tuple[Any, ...], int] = {}
+    for sensor in candidates:
+        counts[sensor.identity] = counts.get(sensor.identity, 0) + 1
+    sensors = tuple(
+        sorted((sensor for sensor in candidates if counts.get(sensor.identity) == 1), key=bmc_sensor_identity)
+    )
+    ambiguous = tuple(sorted(identity for identity, count in counts.items() if count > 1))
+    return sensors, ambiguous
 
 
 def bmc_sensor_identity(sensor: BmcSensor) -> Tuple[Any, ...]:
@@ -618,6 +742,10 @@ class BmcSnapshotProvider:
         self._access_blocked = False
         self._command_variant: Tuple[str, ...] = ()
         self._thresholds: Tuple[BmcSensor, ...] = ()
+        self._status_start: Optional[BmcSnapshot] = None
+        self._status_end: Optional[BmcSnapshot] = None
+        self._status_last: Dict[Tuple[Any, ...], Tuple[BmcSensor, str, float]] = {}
+        self._status_transitions: List[Dict[str, Any]] = []
         self._closed = False
         self.available = bool(enabled and command_exists("ipmitool") and local_available())
         if self.available:
@@ -668,8 +796,8 @@ class BmcSnapshotProvider:
 
     def _refresh(self) -> Optional[BmcSnapshot]:
         variants = [self._command_variant] if self._command_variant else [
-            ("sdr", "elist", "full"),
             ("sdr", "elist"),
+            ("sdr", "elist", "full"),
             ("sensor",),
         ]
         parsed: Tuple[BmcSensor, ...] = ()
@@ -711,6 +839,60 @@ class BmcSnapshotProvider:
             sensors=parsed,
         )
 
+    @staticmethod
+    def _status_snapshot(snapshot: BmcSnapshot, sensors: Tuple[BmcSensor, ...]) -> BmcSnapshot:
+        return replace(snapshot, sensors=sensors)
+
+    def _record_status_snapshot_locked(self, snapshot: BmcSnapshot) -> None:
+        sensors, ambiguous_identities = _refreshable_discrete_sensors(snapshot)
+        for identity in ambiguous_identities:
+            self._status_last.pop(identity, None)
+        if not sensors:
+            return
+        status_snapshot = self._status_snapshot(snapshot, sensors)
+        if self._status_start is None:
+            self._status_start = status_snapshot
+        self._status_end = status_snapshot
+        for sensor in sensors:
+            previous = self._status_last.get(sensor.identity)
+            if previous is not None:
+                previous_sensor, previous_at, previous_monotonic = previous
+                previous_normalized = normalize_bmc_discrete_state(previous_sensor.discrete_state)
+                current_normalized = normalize_bmc_discrete_state(sensor.discrete_state)
+                if _discrete_state_comparison_key(
+                    previous_sensor.discrete_state
+                ) != _discrete_state_comparison_key(sensor.discrete_state):
+                    component, event_role = classify_bmc_status(sensor.raw_label)
+                    self._status_transitions.append(
+                        {
+                            "provider": "ipmi_bmc",
+                            "canonical_identity": list(sensor.identity),
+                            "raw_label": sensor.raw_label,
+                            "normalized_label": sensor.normalized_label,
+                            "sensor_number": sensor.sensor_number,
+                            "entity_id": sensor.entity_id,
+                            "entity_instance": sensor.entity_instance,
+                            "component_class": component,
+                            "event_role": event_role,
+                            "confidence": sensor.confidence,
+                            "previous_raw_state": previous_sensor.discrete_state,
+                            "previous_normalized_state": previous_normalized,
+                            "current_raw_state": sensor.discrete_state,
+                            "current_normalized_state": current_normalized,
+                            "previous_observed_at": previous_at,
+                            "observed_at": snapshot.captured_at,
+                            "previous_observed_monotonic": previous_monotonic,
+                            "observed_monotonic": snapshot.captured_monotonic,
+                            "native_refresh_interval_seconds": self.refresh_interval_seconds,
+                            "observation_semantics": "state_change_observed_by_snapshot",
+                        }
+                    )
+            self._status_last[sensor.identity] = (
+                sensor,
+                snapshot.captured_at,
+                snapshot.captured_monotonic,
+            )
+
     def request_refresh(self, now: Optional[float] = None) -> None:
         current = self._monotonic() if now is None else float(now)
         with self._lock:
@@ -723,7 +905,9 @@ class BmcSnapshotProvider:
             self._last_attempt = current
             self._future = self._executor.submit(self._refresh)
 
-    def poll(self, now: Optional[float] = None) -> Optional[BmcSnapshot]:
+    def poll(
+        self, now: Optional[float] = None, *, request_refresh: bool = True
+    ) -> Optional[BmcSnapshot]:
         current = self._monotonic() if now is None else float(now)
         completed: Optional[Future[Optional[BmcSnapshot]]] = None
         with self._lock:
@@ -738,6 +922,7 @@ class BmcSnapshotProvider:
             if candidate is not None:
                 with self._lock:
                     self._snapshot = candidate
+                    self._record_status_snapshot_locked(candidate)
                     if not self._catalog:
                         self._catalog = build_bmc_source_catalog(candidate.sensors)
                     else:
@@ -751,7 +936,8 @@ class BmcSnapshotProvider:
                             else source
                             for source in self._catalog
                         )
-        self.request_refresh(current)
+        if request_refresh:
+            self.request_refresh(current)
         return self.latest_snapshot(current)
 
     def latest_snapshot(self, now: Optional[float] = None) -> Optional[BmcSnapshot]:
@@ -782,9 +968,11 @@ class BmcSnapshotProvider:
             for source in catalog
         ]
 
-    def sample_values(self, now: Optional[float] = None) -> Dict[str, Optional[float]]:
+    def _sample_values(
+        self, now: Optional[float], *, request_refresh: bool
+    ) -> Dict[str, Optional[float]]:
         current = self._monotonic() if now is None else float(now)
-        snapshot = self.poll(current)
+        snapshot = self.poll(current, request_refresh=request_refresh)
         catalog = self.source_catalog()
         values: Dict[str, Optional[float]] = {str(source["key"]): None for source in catalog}
         if snapshot is None:
@@ -797,10 +985,65 @@ class BmcSnapshotProvider:
                 values[str(source["key"])] = sensor.normalized_value
         return values
 
+    def sample_values(self, now: Optional[float] = None) -> Dict[str, Optional[float]]:
+        return self._sample_values(now, request_refresh=True)
+
+    def completed_values(self, now: Optional[float] = None) -> Dict[str, Optional[float]]:
+        """Harvest completed work without scheduling a finalization refresh."""
+        return self._sample_values(now, request_refresh=False)
+
     def snapshot_for_evidence(self) -> Optional[BmcSnapshot]:
-        self.poll()
+        self.poll(request_refresh=False)
         with self._lock:
             return self._snapshot
+
+    @staticmethod
+    def _status_snapshot_evidence(
+        snapshot: Optional[BmcSnapshot],
+        observations: Optional[Sequence[Tuple[BmcSensor, str, float]]] = None,
+    ) -> Dict[str, Any]:
+        if snapshot is None:
+            return {}
+        if observations is None:
+            sensor_records = [_status_sensor_record(sensor) for sensor in snapshot.sensors]
+        else:
+            sensor_records = []
+            for sensor, observed_at, observed_monotonic in observations:
+                record = _status_sensor_record(sensor)
+                record["last_observed_at"] = observed_at
+                record["last_observed_monotonic"] = observed_monotonic
+                sensor_records.append(record)
+        return {
+            "captured_at": snapshot.captured_at,
+            "captured_monotonic": snapshot.captured_monotonic,
+            "command": snapshot.command,
+            "access_mode": snapshot.access_mode,
+            "sensors": sensor_records,
+        }
+
+    def status_evidence(self) -> Dict[str, Any]:
+        """Return immutable-snapshot-derived, evidence-only status history."""
+        self.poll(request_refresh=False)
+        with self._lock:
+            start = self._status_start
+            end = self._status_end
+            last_observations = sorted(
+                self._status_last.values(), key=lambda item: bmc_sensor_identity(item[0])
+            )
+            transitions = [
+                {**item, "canonical_identity": list(item["canonical_identity"])}
+                for item in self._status_transitions
+            ]
+        if start is None:
+            return {}
+        return {
+            "provider": "ipmi_bmc",
+            "native_refresh_interval_seconds": self.refresh_interval_seconds,
+            "observation_semantics": "snapshot_observed",
+            "start": self._status_snapshot_evidence(start),
+            "end": self._status_snapshot_evidence(end, last_observations),
+            "transitions": transitions,
+        }
 
     def close(self) -> None:
         with self._lock:
