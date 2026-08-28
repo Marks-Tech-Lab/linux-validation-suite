@@ -38,6 +38,7 @@ from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
 from smoke_tests.bmc_telemetry_provider_checks import run_bmc_telemetry_provider_checks
+from smoke_tests.standalone_report_checks import run_standalone_report_checks
 from smoke_tests.output_contract_checks import (
     DEPENDENCY_CHECK_IDENTITY_FIELDS,
     QA_BATCH_REQUIRED_FIELDS,
@@ -1012,6 +1013,8 @@ def test_output_contract_index_and_casing_policy() -> None:
         "parsed_results_extended.json",
         "run_manifest.json",
         "dependency_check.json",
+        "lvs_report_data.json",
+        "result_report.html",
         "public_support_summary.json",
         "migration_manifest.json",
         "hardware_result_validation_matrix.json",
@@ -1026,6 +1029,7 @@ def test_output_contract_index_and_casing_policy() -> None:
         "`linux_validation_suite.run_manifest` v1",
         "`linux_validation_suite.dependency_check` v1",
         "`linux_validation_suite.telemetry_source_map` v1",
+        "`linux_validation_suite.report_data` v1",
     ):
         assert_true(policy in document, f"output casing policy documented: {policy}")
 
@@ -27009,6 +27013,7 @@ def main() -> int:
         run_profile_authoring_ux_checks,
         run_platform_sensor_telemetry_checks,
         run_bmc_telemetry_provider_checks,
+        run_standalone_report_checks,
         test_google_drive_not_ready_manifest,
         test_fresh_user_settings_bootstrap,
         test_dependency_report_summary_with_injected_telemetry,

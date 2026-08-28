@@ -32,6 +32,7 @@ The supported root entrypoints are:
 | `Modules/linux_validation_suite_service.py` | Public integration API | Shared application service for TUI, QA, and future frontends. |
 | `python -m Modules.lvs_local_migration` | Public operator command | Public support export plus guarded private migration and restore workflows. |
 | `python -m Modules.lvs_hardware_matrix_state` | Public maintainer command | Local retained-result hardware matrix state maintenance. |
+| `python -m Modules.lvs_report <run-directory>` | Public operator command | Builds portable report data and a standalone HTML report from an existing run directory. |
 
 `lvs_local_migration.py` and `lvs_hardware_matrix_state.py` are documented
 `python -m` entrypoints. They must not be moved without executable legacy
@@ -216,12 +217,13 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_result_comparison.py`, `lvs_result_overview_reports.py` | Internal | Compare completed results and build overview text. |
 | `lvs_pre_import_sanity.py` | Internal facade | Performs frontend-neutral importer-readiness checks. |
 | `lvs_report_helpers.py`, `lvs_summary_text.py` | Internal contract | Build compatibility report summaries and human-readable run summaries. |
+| `lvs_report.py`, `lvs_report_data.py`, `lvs_report_html.py` | Public command with internal compiler/rendering | Compile portable report data and render a self-contained offline report without touching live execution. |
 | `lvs_compat_exporter.py`, `lvs_compat_export_builder.py` | Compatibility contract | Coordinate legacy-compatible export construction. |
 | `lvs_compat_export_context.py`, `lvs_compat_export_envelope.py`, `lvs_compat_export_metadata.py` | Compatibility contract | Build export context, identity envelope, and metadata. |
 | `lvs_compat_export_gpu.py`, `lvs_compat_export_hardware.py` | Compatibility contract | Build GPU and hardware compatibility sections. |
 | `lvs_compat_export_helpers.py`, `lvs_compat_export_finalizer.py` | Compatibility contract | Supply shared classification helpers and final composition. |
 | `lvs_export_contract.py` | Compatibility contract | Defines compatibility export contract identifiers and versions. |
-| `lvs_output_contract_identity.py` | Internal contract | Defines and stamps formal identity fields for run manifests, dependency checks, and telemetry source maps. |
+| `lvs_output_contract_identity.py` | Internal contract | Defines and stamps formal identity fields for run manifests, dependency checks, telemetry source maps, and portable report data. |
 | `lvs_post_run.py` | Internal | Coordinates post-run metadata, wall wattage, and optional upload. |
 
 ### Diagnostics and support

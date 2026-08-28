@@ -63,6 +63,8 @@ read-only, normalized health values and source/status notes; raw `smartctl` or
 | `pre_import_sanity.json`, `pre_import_sanity_batch.json` | Mixed compatibility artifact | Snake_case workflow envelopes embedding validation or comparison payloads. |
 | `results_inventory.json`, `artifact_details.json` | Mixed compatibility artifact | Snake_case inventory envelopes that may summarize fields from mixed source artifacts. |
 | `result_comparison_vs_*.json` | Mixed compatibility artifact | Snake_case comparison envelope containing normalized summaries derived from legacy results and dynamic stage/device labels. |
+| `lvs_report_data.json` | Mixed compatibility artifact | Versioned `linux_validation_suite.report_data` v1 envelope compiled manually from an existing result directory. LVS-owned fields use snake_case; embedded recorded hardware inventory and portable run metadata may retain their established source keys. It contains run, component, stage-summary, reference, provenance, and normalized analysis-window data without embedded raw samples. |
+| `result_report.html` | Text/CSV companion | Self-contained offline HTML rendered from `lvs_report_data.json`; it is a derived manual report and does not replace canonical run evidence. |
 | `dependency_check.txt`, `dependency_check_summary.txt`, profile/diagnostic/preflight summaries, validation/pre-import reports, inventories, artifact details, and comparisons | Text/CSV companion | Human-readable companions to the corresponding JSON artifacts. |
 
 `telemetry_capabilities.json` and `extended_results.json` are recognized by
