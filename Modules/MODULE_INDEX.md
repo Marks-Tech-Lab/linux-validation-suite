@@ -217,7 +217,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_result_comparison.py`, `lvs_result_overview_reports.py` | Internal | Compare completed results and build overview text. |
 | `lvs_pre_import_sanity.py` | Internal facade | Performs frontend-neutral importer-readiness checks. |
 | `lvs_report_helpers.py`, `lvs_summary_text.py` | Internal contract | Build compatibility report summaries and human-readable run summaries. |
-| `lvs_report.py`, `lvs_report_data.py`, `lvs_report_html.py` | Public command with internal compiler/rendering | Compile portable report data and render a self-contained offline report without touching live execution. |
+| `lvs_report.py`, `lvs_report_data.py`, `lvs_chart_data.py`, `lvs_report_html.py` | Public command with internal compilers/rendering | Compile portable report data plus non-authoritative graph-ready samples and render a self-contained offline report without touching live execution. |
 | `lvs_compat_exporter.py`, `lvs_compat_export_builder.py` | Compatibility contract | Coordinate legacy-compatible export construction. |
 | `lvs_compat_export_context.py`, `lvs_compat_export_envelope.py`, `lvs_compat_export_metadata.py` | Compatibility contract | Build export context, identity envelope, and metadata. |
 | `lvs_compat_export_gpu.py`, `lvs_compat_export_hardware.py` | Compatibility contract | Build GPU and hardware compatibility sections. |

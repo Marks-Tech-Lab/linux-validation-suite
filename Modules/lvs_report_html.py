@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import html
+import json
 import re
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -152,6 +154,21 @@ def _system_identity(hardware: Dict[str, Any], components: Optional[Dict[str, Di
         ("BIOS", _value_from(bios, ("FullName", "Version", "BiosVersion", "Name", "version"))),
         ("Operating system", _value_from(operating_system, ("PrettyName", "Name", "Distribution", "name"))),
     ]
+    topology = cpu.get("Topology", {}) if isinstance(cpu.get("Topology"), dict) else {}
+    aggregate = topology.get("Aggregate", {}) if isinstance(topology.get("Aggregate"), dict) else {}
+    total_cores = aggregate.get("PhysicalCoreCount") or topology.get("PhysicalCoreCount")
+    performance_cores = aggregate.get("PCoreCount")
+    efficiency_cores = aggregate.get("ECoreCount")
+    unknown_cores = aggregate.get("UnknownCoreTypeCount")
+    if total_cores not in (None, "") and any(value not in (None, "", 0) for value in (performance_cores, efficiency_cores, unknown_cores)):
+        parts = [f"{total_cores} total"]
+        if performance_cores not in (None, "", 0):
+            parts.append(f"{performance_cores} performance")
+        if efficiency_cores not in (None, "", 0):
+            parts.append(f"{efficiency_cores} efficiency")
+        if unknown_cores not in (None, "", 0):
+            parts.append(f"{unknown_cores} unclassified")
+        system_rows.append(("Cores", " · ".join(parts)))
 
     total_label = "OS-reported memory" if memory.get("TotalPhysicalMemoryGB") not in (None, "") else "Total"
     memory_rows: List[tuple[str, str]] = [(total_label, _memory_total(memory))]
@@ -331,6 +348,37 @@ def _short_component_label(component_id: str) -> str:
     return component_id.replace(":", " ").replace("_", " ").title()
 
 
+def _metric_component_label(metric: Dict[str, Any]) -> str:
+    display_label = str(metric.get("display_label") or "").strip()
+    if display_label:
+        return display_label
+    return _short_component_label(str(metric.get("component_id") or ""))
+
+
+def _core_group_label(core_class: str, count: int) -> str:
+    if core_class == "performance":
+        return f"Performance cores ({count})"
+    if core_class == "efficiency":
+        return f"Efficiency cores ({count})"
+    if core_class == "unknown":
+        return f"Unclassified cores ({count})"
+    return f"CPU cores ({count})"
+
+
+def _storage_temperature_name(metric: Dict[str, Any]) -> str:
+    """Name a storage thermal domain only when retained metadata does so."""
+    field = str(metric.get("field") or "").lower()
+    source_label = str(metric.get("source_label") or "").strip().lower()
+    if re.search(r"(?:^|[\s:_-])controller(?:\s+temperature)?$", source_label):
+        return "Controller temperature"
+    if re.search(r"(?:^|[\s:_-])nand(?:\s+temperature)?$", source_label):
+        return "NAND temperature"
+    sensor = re.search(r"_sensor_(\d+)_", field)
+    if sensor:
+        return f"Sensor {sensor.group(1)} temperature"
+    return "Composite temperature"
+
+
 def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[str, Any]]) -> str:
     field = str(metric.get("field") or "")
     component_id = str(metric.get("component_id") or "")
@@ -349,7 +397,7 @@ def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[st
             return "CPU package power"
     if component_id.startswith("gpu:"):
         if metric_class == "temperature":
-            domain = "memory" if "memory" in field else "hotspot" if "hotspot" in field else "GPU"
+            domain = "memory" if "memory" in field else "hotspot" if any(token in field for token in ("hotspot", "junction")) else "GPU"
             return f"{component} {domain} temperature"
         if metric_class == "clock":
             return f'{component} {"memory" if "memory" in field else "core"} clock'
@@ -362,13 +410,13 @@ def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[st
     if component_id.startswith("memory_module:") and metric_class == "temperature":
         return f"{component} temperature"
     if component_id.startswith("storage:") and metric_class == "temperature":
-        sensor = re.search(r"_sensor_(\d+)_", field)
-        return f"{component} sensor {sensor.group(1)} temperature" if sensor else f"{component} composite temperature"
+        return f"{component} {_storage_temperature_name(metric).lower()}"
     if component_id == "memory:system" and metric_class in {"memory_usage", "other_numeric"}:
         return "System memory used"
     names = {
         "temperature": "temperature", "clock": "clock", "power": "power", "voltage": "voltage",
         "current": "current", "percentage": "utilization", "rotational": "fan speed",
+        "fan_speed": "fan speed", "fan_duty": "fan duty",
         "memory_usage": "memory usage", "counter": "counter",
     }
     return f"{component} {names.get(metric_class, metric_class.replace('_', ' '))}"
@@ -406,18 +454,12 @@ def _metric_name(metric: Dict[str, Any]) -> str:
     component_id = str(metric.get("component_id") or "")
     metric_class = str(metric.get("metric_class") or "metric")
     if metric_class == "temperature":
-        if "hotspot" in field:
+        if "hotspot" in field or "junction" in field:
             return "Hotspot temperature"
         if "memory" in field and str(metric.get("component_id") or "").startswith("gpu:"):
             return "Memory temperature"
-        sensor = re.search(r"_sensor_(\d+)_", field)
-        if sensor:
-            return f"Sensor {sensor.group(1)} temperature"
-        if component_id.startswith("storage:") and (
-            "composite" in str(metric.get("source_label") or "").lower()
-            or re.fullmatch(r"storage_drive_\d+_temp_c", field)
-        ):
-            return "Composite temperature"
+        if component_id.startswith("storage:"):
+            return _storage_temperature_name(metric)
         return "Temperature"
     if metric_class == "clock":
         return "Memory clock" if "memory" in field else "Clock"
@@ -427,7 +469,8 @@ def _metric_name(metric: Dict[str, Any]) -> str:
         return "Used memory (compatibility GB field)" if field.endswith("_gb") else "Used memory"
     named = {
         "power": "Power", "voltage": "Voltage", "current": "Current",
-        "percentage": "Utilization", "rotational": "Fan speed",
+        "percentage": "Utilization", "rotational": "Fan speed", "fan_speed": "Fan speed",
+        "fan_duty": "Fan duty",
         "memory_usage": "Memory usage", "counter": "Counter",
     }.get(metric_class)
     if named:
@@ -572,7 +615,7 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
 def _metric_rows(metrics: List[Dict[str, Any]]) -> str:
     return "".join(
         '<div class="full-metric-row">'
-        f'<div class="full-metric-cell component" title="Report ID: {_escape(metric.get("component_id"))}"><strong>{_escape(_short_component_label(str(metric.get("component_id") or "")))}</strong></div>'
+        f'<div class="full-metric-cell component" title="Report ID: {_escape(metric.get("component_id"))}"><strong>{_escape(_metric_component_label(metric))}</strong></div>'
         f'<div class="full-metric-cell metric"><strong>{_escape(_metric_name(metric))}</strong>'
         f'<small title="Raw telemetry field">{_escape(metric.get("field"))}</small></div>'
         f'<div class="full-metric-cell num">{_metric_number(metric, "minimum")}</div>'
@@ -625,10 +668,25 @@ def _metric_table(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) 
         if group_metrics:
             groups.append(f'<div class="full-metric-group-label">{_escape(group_name)}</div>{_metric_rows(group_metrics)}')
         if group_name == "CPU" and core_metrics:
-            core_count = len({str(item.get("component_id")) for item in core_metrics})
-            groups.append(
-                f'<details class="metric-subgroup nested-disclosure"><summary>CPU cores ({core_count})</summary>{_metric_grid(core_metrics, include_header=False)}</details>'
-            )
+            by_class: Dict[str, List[Dict[str, Any]]] = {}
+            for item in core_metrics:
+                by_class.setdefault(str(item.get("core_class") or "unknown"), []).append(item)
+            has_core_class = any(item.get("core_class") for item in core_metrics)
+            classified = [name for name in by_class if name != "unknown"]
+            if not has_core_class or (len(classified) <= 1 and "unknown" not in by_class):
+                core_count = len({str(item.get("component_id")) for item in core_metrics})
+                groups.append(
+                    f'<details class="metric-subgroup nested-disclosure"><summary>CPU cores ({core_count})</summary>{_metric_grid(core_metrics, include_header=False)}</details>'
+                )
+            else:
+                for core_class in ("performance", "efficiency", "unknown"):
+                    class_metrics = by_class.get(core_class, [])
+                    if not class_metrics:
+                        continue
+                    core_count = len({str(item.get("component_id")) for item in class_metrics})
+                    groups.append(
+                        f'<details class="metric-subgroup nested-disclosure"><summary>{_escape(_core_group_label(core_class, core_count))}</summary>{_metric_grid(class_metrics, include_header=False)}</details>'
+                    )
     bmc_metrics = [item for item in regular if _metric_group(str(item.get("component_id") or "")) == "BMC / IPMI"]
     if bmc_metrics:
         bmc_count = len({str(item.get("component_id") or "") for item in bmc_metrics})
@@ -789,8 +847,10 @@ def _telemetry_field_rows(component: Dict[str, Any], series_by_field: Dict[str, 
     for field in component.get("telemetry_fields", []):
         series = series_by_field.get(str(field), {"field": field, "component_id": component_id})
         metric_name = _metric_name(series)
-        metric_phrase = metric_name if metric_name.startswith("VRAM") else metric_name[:1].lower() + metric_name[1:]
-        label = metric_name if component_id == "memory:system" else f'{_short_component_label(component_id)} {metric_phrase}'
+        preserve_prefix = metric_name.startswith(("VRAM", "NAND", "VDD", "SOC", "RPM"))
+        metric_phrase = metric_name if preserve_prefix else metric_name[:1].lower() + metric_name[1:]
+        component_label = str(component.get("display_label") or component.get("label") or "").strip() or _short_component_label(component_id)
+        label = metric_name if component_id == "memory:system" else f'{component_label} {metric_phrase}'
         source = str(series.get("source_label") or identity.get("label") or "")
         provider = str(series.get("provider") or _value_from(identity, ("provider", "kind")))
         provider_source = " · ".join(filter(None, (provider, source))) or "—"
@@ -853,10 +913,24 @@ def _advanced_telemetry_mapping(
     other = [item for item in components if id(item) not in assigned]
     groups = []
     if cpu or cores:
-        ordered_cores = sorted(
-            cores, key=lambda item: int(str(item.get("component_id") or "0").rsplit(":", 1)[-1])
-        )
-        groups.append(("CPU", _telemetry_table([*cpu, *ordered_cores], series_by_field)))
+        core_sections = []
+        ordered_cores = sorted(cores, key=lambda item: int(str(item.get("component_id") or "0").rsplit(":", 1)[-1]))
+        by_class: Dict[str, List[Dict[str, Any]]] = {}
+        for item in ordered_cores:
+            by_class.setdefault(str(item.get("core_class") or "unknown"), []).append(item)
+        has_core_class = any(item.get("core_class") for item in ordered_cores)
+        classified = [name for name in by_class if name != "unknown"]
+        if not has_core_class or (len(classified) <= 1 and "unknown" not in by_class):
+            if ordered_cores:
+                core_sections.append(_telemetry_table(ordered_cores, series_by_field))
+        else:
+            for core_class in ("performance", "efficiency", "unknown"):
+                class_cores = by_class.get(core_class, [])
+                if class_cores:
+                    core_sections.append(
+                        f'<h3>{_escape(_core_group_label(core_class, len(class_cores)))}</h3>{_telemetry_table(class_cores, series_by_field)}'
+                    )
+        groups.append(("CPU", "".join([_telemetry_table(cpu, series_by_field), *core_sections])))
     groups.extend((_short_component_label(str(item.get("component_id") or "")), _telemetry_table([item], series_by_field)) for item in gpus)
     if memory:
         groups.append(("Memory telemetry", _telemetry_table(memory, series_by_field)))
@@ -912,7 +986,89 @@ def _reference_tables(
     </details>'''
 
 
-def render_report_html(report: Dict[str, Any]) -> str:
+def _telemetry_explorer(chart_data: Optional[Dict[str, Any]]) -> str:
+    payload = chart_data if isinstance(chart_data, dict) else {
+        "available": False, "unavailable_reason": "raw_telemetry_absent", "stages": [],
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.b64encode(canonical).decode("ascii")
+    stages = payload.get("stages", []) if isinstance(payload.get("stages"), list) else []
+    first_chartable = next(
+        (str(stage.get("stage_id")) for stage in stages if isinstance(stage, dict) and stage.get("series")),
+        "",
+    )
+    options = "".join(
+        f'<option value="{_escape(stage.get("stage_id"))}"{" selected" if str(stage.get("stage_id")) == first_chartable else ""}>{_escape(stage.get("label"))}</option>'
+        for stage in stages if isinstance(stage, dict)
+    )
+    initial = "Loading telemetry graph…" if first_chartable else "No chartable telemetry is available for this stage."
+    if not payload.get("available"):
+        initial = "No raw telemetry is available for this run."
+    placeholder = "" if first_chartable else '<option value="" selected>Select a stage…</option>'
+    disabled = "" if payload.get("available") else " disabled"
+    return f'''<section class="panel telemetry-explorer" aria-labelledby="telemetry-heading">
+      <h2 id="telemetry-heading">Telemetry explorer</h2>
+      <div class="chart-stage-controls">
+        <label for="telemetry-stage">Stage</label>
+        <select id="telemetry-stage"{disabled}>{placeholder}{options}</select>
+      </div>
+      <p id="telemetry-stage-description" class="chart-stage-description" hidden></p>
+      <div id="telemetry-workspace" hidden>
+        <div class="chart-metric-controls"><label for="telemetry-metric">Metric</label><select id="telemetry-metric"></select></div>
+        <div id="telemetry-series" class="chart-series-controls"></div>
+        <p id="telemetry-window-note" class="chart-window-note"></p>
+      </div>
+      <div class="chart-frame">
+        <canvas id="telemetry-canvas" aria-label="Selected telemetry line graph"></canvas>
+        <div id="telemetry-empty" class="chart-empty-state" role="status">{_escape(initial)}</div>
+        <div id="telemetry-tooltip" class="chart-tooltip" hidden></div>
+      </div>
+      <div id="telemetry-legend" class="chart-legend" aria-label="Selected telemetry series"></div>
+    </section>
+    <script id="lvs-chart-data" type="application/json" data-encoding="base64">{encoded}</script>'''
+
+
+def _chart_script() -> str:
+    return r'''(function(){
+var payloadNode=document.getElementById('lvs-chart-data'),payload=null;
+try{var bytes=Uint8Array.from(atob(payloadNode.textContent.trim()),function(c){return c.charCodeAt(0);});payload=JSON.parse(new TextDecoder().decode(bytes));}catch(error){payload=null;}
+var stageSelect=document.getElementById('telemetry-stage'),stageDescription=document.getElementById('telemetry-stage-description'),workspace=document.getElementById('telemetry-workspace'),metricSelect=document.getElementById('telemetry-metric'),seriesNode=document.getElementById('telemetry-series'),notice=document.getElementById('telemetry-window-note'),canvas=document.getElementById('telemetry-canvas'),emptyNode=document.getElementById('telemetry-empty'),tooltip=document.getElementById('telemetry-tooltip'),legend=document.getElementById('telemetry-legend');
+if(!payload||!Array.isArray(payload.stages)){emptyNode.textContent='Telemetry data could not be read.';return;}
+var context=canvas.getContext('2d'),stage=null,selected=new Set(),hovered=null,mouseX=null,mouseY=null,palette=['#2563eb','#dc2626','#15803d','#9333ea','#c2410c','#0891b2','#be185d','#4f46e5'];
+function stageById(id){return payload.stages.find(function(item){return item.stage_id===id;});}
+function familySeries(){return stage?stage.series.filter(function(item){return item.metric_family===metricSelect.value;}):[];}
+function decoded(item){if(item.encoding==='plateau_runs'){var points=[];(item.data.runs||[]).forEach(function(run){points.push([+run[0],+run[2]]);if(run[1]!==run[0])points.push([+run[1],+run[2]]);});return {points:points,step:true};}return {points:(item.data.t||[]).map(function(t,index){return [+t,+item.data.v[index]];}),step:false};}
+function targetMatches(item,target){var component=item.component_id||'';if(target==='cpu')return component.indexOf('cpu:')===0;if(target==='gpu')return component.indexOf('gpu:')===0;if(target==='memory')return component.indexOf('memory')===0;if(target==='storage')return component.indexOf('storage:')===0;return false;}
+function defaultSeries(items){selected.clear();var primary=items.filter(function(item){return item.primary;}),choice=primary.find(function(item){return targetMatches(item,stage.workload_component_class);})||primary[0];if(choice)selected.add(choice.series_id);}
+function setFamily(){var items=familySeries();defaultSeries(items);renderSelectors(items);draw();}
+function setEmpty(message){emptyNode.textContent=message;emptyNode.hidden=false;tooltip.hidden=true;legend.replaceChildren();legend.dataset.series='';context.clearRect(0,0,canvas.width,canvas.height);}
+function chartableStages(){return payload.stages.filter(function(item){return item&&Array.isArray(item.series)&&item.series.length;});}
+function loadStage(resolved){stage=resolved;selected.clear();stageDescription.textContent=stage.description||'';stageDescription.hidden=!stage.description;metricSelect.replaceChildren();stage.families.forEach(function(family){var option=document.createElement('option');option.value=option.textContent=family;metricSelect.appendChild(option);});metricSelect.value=stage.families.indexOf('Temperature')>=0?'Temperature':stage.families[0];var startTrim=+stage.trim_start_seconds||0,endTrim=+stage.trim_end_seconds||0;notice.textContent=startTrim||endTrim?'Showing normalized analysis window · '+formatTrim(startTrim)+' trimmed from start · '+formatTrim(endTrim)+' trimmed from end':'Showing full analyzed stage';workspace.hidden=false;setFamily();}
+function syncExplorerFromStageSelect(){var resolved=stageById(stageSelect.value),chartable=chartableStages();if(!resolved||!Array.isArray(resolved.series)||!resolved.series.length)resolved=chartable[0]||null;if(resolved){stageSelect.value=resolved.stage_id;loadStage(resolved);return;}stage=null;selected.clear();workspace.hidden=true;stageDescription.hidden=true;setEmpty(payload&&payload.available?'No chartable telemetry is available for this stage.':'No raw telemetry is available for this run.');}
+function formatTrim(value){return Number.isInteger(value)?value+'s':value.toFixed(2).replace(/0+$/,'').replace(/\.$/,'')+'s';}
+function conciseLabel(item,items){if(item.selector_label)return item.selector_label;if(item.advanced_group==='cpu_cores')return item.display_label||item.component_label||('Core '+item.core_index);var component=item.component_label,metric=item.metric_label,same=items.filter(function(candidate){return candidate.component_id===item.component_id;});if(same.length===1)return component;if(metric==='Temperature'||metric==='Power'||metric==='Utilization'||metric==='Clock')return component+(metric==='Clock'&&same.some(function(candidate){return candidate.metric_label==='VRAM clock';})?' core':'');if(metric==='Fan speed'||metric==='Fan duty')return component+' fan';if(metric==='VRAM temperature'||metric==='VRAM clock'||metric==='VRAM utilization'||metric==='VRAM used')return component+' VRAM';if(metric==='Hotspot temperature')return component+' hotspot';if(metric==='Composite temperature')return component+' composite';var sensor=metric.match(/^Sensor (\d+)/);if(sensor)return component+' sensor '+sensor[1];return component+' '+metric.toLowerCase();}
+function selector(item,items){var label=conciseLabel(item,items),row=document.createElement('label');row.className='chart-series-row'+(selected.has(item.series_id)?' selected':'');row.tabIndex=0;row.dataset.seriesId=item.series_id;var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.series_id);checkbox.setAttribute('aria-label',label);var text=document.createElement('span');text.textContent=label;row.append(checkbox,text);checkbox.addEventListener('change',function(){if(checkbox.checked)selected.add(item.series_id);else selected.delete(item.series_id);row.classList.toggle('selected',checkbox.checked);draw();});row.addEventListener('keydown',function(event){if(event.target===row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();checkbox.click();}});row.addEventListener('mouseenter',function(){hovered=item.series_id;draw();});row.addEventListener('mouseleave',function(){hovered=null;draw();});return row;}
+function coreGroupLabel(coreClass,count){if(coreClass==='performance')return 'Performance cores ('+count+')';if(coreClass==='efficiency')return 'Efficiency cores ('+count+')';if(coreClass==='unknown')return 'Unclassified cores ('+count+')';return 'CPU cores ('+count+')';}
+function setCoreGroupSelection(cores,checked,coreList){cores.forEach(function(item){if(checked)selected.add(item.series_id);else selected.delete(item.series_id);});coreList.querySelectorAll('.chart-series-row').forEach(function(row){var active=selected.has(row.dataset.seriesId),checkbox=row.querySelector('input');row.classList.toggle('selected',active);if(checkbox)checkbox.checked=active;});draw();}
+function coreAction(label,cores,checked,coreList){var button=document.createElement('button');button.type='button';button.className='chart-core-action';button.textContent=label;button.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();setCoreGroupSelection(cores,checked,coreList);});button.addEventListener('keydown',function(event){event.stopPropagation();});return button;}
+function appendCoreGroup(body,cores,items,title){var coreDetails=document.createElement('details');coreDetails.className='chart-core-series';var coreSummary=document.createElement('summary'),summaryTitle=document.createElement('span'),actions=document.createElement('span');summaryTitle.textContent=title;summaryTitle.className='chart-core-title';actions.className='chart-core-actions';var coreList=document.createElement('div');coreList.className='chart-series-list';actions.append(coreAction('Select all',cores,true,coreList),document.createTextNode(' · '),coreAction('Clear',cores,false,coreList));coreSummary.append(summaryTitle,actions);cores.forEach(function(item){coreList.appendChild(selector(item,items));});coreDetails.append(coreSummary,coreList);body.appendChild(coreDetails);}
+function renderSelectors(items){seriesNode.replaceChildren();var primary=items.filter(function(item){return item.primary;}),advanced=items.filter(function(item){return !item.primary;}),primaryWrap=document.createElement('div');primaryWrap.className='chart-series-list';primary.forEach(function(item){primaryWrap.appendChild(selector(item,items));});seriesNode.appendChild(primaryWrap);if(!advanced.length)return;var details=document.createElement('details');details.className='chart-advanced-series';var summary=document.createElement('summary');summary.textContent='Advanced series';var body=document.createElement('div');body.className='chart-advanced-body',cores=advanced.filter(function(item){return item.advanced_group==='cpu_cores';}).sort(function(left,right){return left.core_index-right.core_index;}),other=advanced.filter(function(item){return item.advanced_group!=='cpu_cores';});if(cores.length){var byClass={},classes=[];cores.forEach(function(item){var key=item.core_class||'unknown';if(!byClass[key]){byClass[key]=[];classes.push(key);}byClass[key].push(item);});var hasCoreClass=cores.some(function(item){return item.core_class;}),known=classes.filter(function(key){return key!=='unknown';});if(!hasCoreClass||(known.length<=1&&classes.indexOf('unknown')<0)){appendCoreGroup(body,cores,items,'CPU cores ('+cores.length+')');}else{['performance','efficiency','unknown'].forEach(function(key){if(byClass[key])appendCoreGroup(body,byClass[key],items,coreGroupLabel(key,byClass[key].length));});}}if(other.length){var otherList=document.createElement('div');otherList.className='chart-series-list';other.forEach(function(item){otherList.appendChild(selector(item,items));});body.appendChild(otherList);}details.append(summary,body);seriesNode.appendChild(details);}
+function colorFor(id,items){var index=items.findIndex(function(item){return item.series_id===id;});return palette[(index<0?0:index)%palette.length];}
+function renderLegend(items,allItems){var signature=items.map(function(item){return item.series_id;}).join('|');if(legend.dataset.series!==signature){legend.replaceChildren();items.forEach(function(item){var entry=document.createElement('span');entry.className='chart-legend-item';entry.dataset.seriesId=item.series_id;var swatch=document.createElement('i');swatch.style.background=colorFor(item.series_id,items);entry.append(swatch,document.createTextNode(conciseLabel(item,allItems)));entry.addEventListener('mouseenter',function(){hovered=item.series_id;draw();});entry.addEventListener('mouseleave',function(){hovered=null;draw();});legend.appendChild(entry);});legend.dataset.series=signature;}legend.querySelectorAll('.chart-legend-item').forEach(function(entry){entry.classList.toggle('deemphasized',Boolean(hovered&&entry.dataset.seriesId!==hovered));entry.classList.toggle('emphasized',entry.dataset.seriesId===hovered);});}
+function formatElapsed(seconds,precise){seconds=Math.max(0,seconds);var whole=Math.floor(seconds),hours=Math.floor(whole/3600),minutes=Math.floor((whole%3600)/60),secs=precise?(seconds%60).toFixed(1).padStart(4,'0'):String(whole%60).padStart(2,'0');return hours?hours+':'+String(minutes).padStart(2,'0')+':'+secs:String(minutes).padStart(2,'0')+':'+secs;}
+function nearest(item,time){if(item.encoding==='plateau_runs'){var runs=item.data.runs||[],answer=null;for(var i=0;i<runs.length;i++){if(time>=+runs[i][0])answer=runs[i];else break;}if(!answer&&runs.length)answer=runs[0];return answer?{t:Math.min(Math.max(time,+answer[0]),+answer[1]),v:+answer[2]}:null;}var times=item.data.t||[],values=item.data.v||[],best=-1,distance=Infinity;for(var j=0;j<times.length;j++){var candidate=Math.abs(+times[j]-time);if(candidate<distance){distance=candidate;best=j;}}return best>=0?{t:+times[best],v:+values[best]}:null;}
+function niceStep(range,targetTicks){var rough=Math.max(range,Number.EPSILON)/targetTicks,power=Math.pow(10,Math.floor(Math.log10(rough))),fraction=rough/power,nice=fraction<1.5?1:fraction<3?2:fraction<7?5:10;return nice*power;}
+function axisScale(family,minimum,maximum){if(family==='Utilization'&&minimum>=0&&maximum<=100)return {minimum:0,maximum:100,step:20};var spread=maximum-minimum,expand=spread?spread*.08:Math.max(Math.abs(minimum)*.05,1),paddedMinimum=minimum-expand,paddedMaximum=maximum+expand,step=niceStep(paddedMaximum-paddedMinimum,5),lower=Math.floor(paddedMinimum/step)*step,upper=Math.ceil(paddedMaximum/step)*step,nonnegative=['Power','Memory / VRAM','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'].indexOf(family)>=0;if(nonnegative&&minimum>=0&&lower<0){lower=0;step=niceStep(Math.max(maximum-lower,1),5);upper=Math.ceil(maximum/step)*step;}if(upper<=lower)upper=lower+step;return {minimum:lower,maximum:upper,step:step};}
+function tooltipColumnCount(count,width,height){var rows=Math.max(5,Math.floor((height-68)/21)),needed=Math.max(1,Math.ceil(count/rows)),allowed=width>=1100?5:width>=820?4:width>=580?3:width>=390?2:1;return Math.min(needed,allowed);}
+function positionTooltip(width,height){tooltip.style.left='0px';tooltip.style.top='0px';var tooltipWidth=tooltip.offsetWidth,tooltipHeight=tooltip.offsetHeight,x=mouseX+12,y=mouseY+12;if(x+tooltipWidth>width-8)x=mouseX-tooltipWidth-12;if(y+tooltipHeight>height-8)y=mouseY-tooltipHeight-12;tooltip.style.left=Math.max(8,Math.min(x,width-tooltipWidth-8))+'px';tooltip.style.top=Math.max(8,Math.min(y,height-tooltipHeight-8))+'px';}
+function draw(){if(!stage||workspace.hidden)return;var ratio=window.devicePixelRatio||1,width=Math.max(300,canvas.clientWidth),height=Math.max(280,canvas.clientHeight);if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(height*ratio)){canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);}context.setTransform(ratio,0,0,ratio,0,0);context.clearRect(0,0,width,height);var allItems=familySeries(),items=allItems.filter(function(item){return selected.has(item.series_id);});if(!items.length){setEmpty('Select one or more series to display.');return;}emptyNode.hidden=true;renderLegend(items,allItems);var decodedItems=items.map(function(item){return {item:item,decoded:decoded(item)};}),values=[];decodedItems.forEach(function(entry){entry.decoded.points.forEach(function(point){values.push(point[1]);});});var rawMinimum=Math.min.apply(null,values),rawMaximum=Math.max.apply(null,values),scale=axisScale(metricSelect.value,rawMinimum,rawMaximum),yMin=scale.minimum,yMax=scale.maximum,duration=Math.max(+stage.analysis_duration_seconds||0,1),left=62,right=18,top=18,bottom=38,plotW=width-left-right,plotH=height-top-bottom,x=function(t){return left+(t/duration)*plotW;},y=function(v){return top+(yMax-v)/(yMax-yMin)*plotH;};context.font='12px system-ui';context.lineWidth=1;context.textAlign='right';context.textBaseline='middle';for(var value=yMin,tick=0;value<=yMax+scale.step*.001&&tick<20;value+=scale.step,tick++){var yy=y(value);context.strokeStyle='#e3e7ee';context.beginPath();context.moveTo(left,yy);context.lineTo(width-right,yy);context.stroke();context.fillStyle='#6b7280';context.fillText(formatValue(value),left-8,yy);}context.textAlign='center';context.textBaseline='top';for(var xt=0;xt<=5;xt++){var elapsed=duration*xt/5,xx=x(elapsed);context.fillStyle='#6b7280';context.fillText(formatElapsed(elapsed,false),xx,height-bottom+9);}context.save();context.translate(14,top+plotH/2);context.rotate(-Math.PI/2);context.textAlign='center';context.fillStyle='#6b7280';context.fillText(items[0].display_unit,0,0);context.restore();decodedItems.forEach(function(entry){var points=entry.decoded.points;if(!points.length)return;context.globalAlpha=hovered&&hovered!==entry.item.series_id?0.22:1;context.strokeStyle=colorFor(entry.item.series_id,items);context.lineWidth=hovered===entry.item.series_id?3:1.8;context.beginPath();context.moveTo(x(points[0][0]),y(points[0][1]));for(var p=1;p<points.length;p++){if(entry.decoded.step)context.lineTo(x(points[p][0]),y(points[p-1][1]));context.lineTo(x(points[p][0]),y(points[p][1]));}context.stroke();});context.globalAlpha=1;if(mouseX!==null&&mouseX>=left&&mouseX<=width-right){context.strokeStyle='#667085';context.setLineDash([3,3]);context.beginPath();context.moveTo(mouseX,top);context.lineTo(mouseX,top+plotH);context.stroke();context.setLineDash([]);var elapsed=(mouseX-left)/plotW*duration,entries=[];items.forEach(function(item){var point=nearest(item,elapsed);if(point)entries.push('<div class="chart-tooltip-entry"><span>'+escapeText(conciseLabel(item,allItems))+'</span><b>'+formatValue(point.v)+' '+escapeText(item.display_unit)+'</b></div>');});var columns=tooltipColumnCount(entries.length,width,height);tooltip.style.setProperty('--tooltip-columns',columns);tooltip.style.width=Math.min(width-16,Math.max(230,columns*190))+'px';tooltip.innerHTML='<strong>'+formatElapsed(elapsed,true)+'</strong><div class="chart-tooltip-values">'+entries.join('')+'</div>';tooltip.hidden=false;tooltip.classList.toggle('scrollable',tooltip.scrollHeight>tooltip.clientHeight+1);positionTooltip(width,height);}else tooltip.hidden=true;}
+function formatValue(value){var absolute=Math.abs(value);return (absolute>=100?value.toFixed(0):absolute>=10?value.toFixed(1):value.toFixed(2)).replace(/\.00$/,'').replace(/(\.\d)0$/,'$1');}
+function escapeText(text){var node=document.createElement('span');node.textContent=text;return node.innerHTML;}
+stageSelect&&stageSelect.addEventListener('change',syncExplorerFromStageSelect);metricSelect&&metricSelect.addEventListener('change',setFamily);canvas&&canvas.addEventListener('mousemove',function(event){var rect=canvas.getBoundingClientRect();mouseX=event.clientX-rect.left;mouseY=event.clientY-rect.top;draw();});canvas&&canvas.addEventListener('mouseleave',function(event){if(event.relatedTarget===tooltip||tooltip.contains(event.relatedTarget))return;mouseX=null;mouseY=null;draw();});tooltip&&tooltip.addEventListener('mouseleave',function(event){if(event.relatedTarget===canvas)return;mouseX=null;mouseY=null;draw();});window.addEventListener('resize',function(){window.requestAnimationFrame(draw);});window.addEventListener('pageshow',syncExplorerFromStageSelect);if(window.ResizeObserver)new ResizeObserver(draw).observe(canvas);syncExplorerFromStageSelect();
+})();'''
+
+
+def render_report_html(report: Dict[str, Any], chart_data: Optional[Dict[str, Any]] = None) -> str:
     """Return safe, dependency-free HTML for one report-data payload."""
     run = report.get("run", {}) if isinstance(report.get("run"), dict) else {}
     review = report.get("review", {}) if isinstance(report.get("review"), dict) else {}
@@ -931,6 +1087,8 @@ def render_report_html(report: Dict[str, Any]) -> str:
         f'<p class="description">{_escape(run_description)}</p>'
         if run_description and _normalized_text(run_description) != _normalized_text(title) else ""
     )
+    telemetry_explorer = _telemetry_explorer(chart_data)
+    chart_script = _chart_script()
     css = """
 :root{color-scheme:light;--bg-page:#f3f5f8;--bg-surface:#fff;--bg-surface-muted:#f7f8fa;--border:#e3e7ee;--border-strong:#cbd2dd;--text:#1c2430;--text-muted:#6b7280;--primary:#2563eb;--success:#157347;--success-soft:#e7f6ec;--warning:#92610a;--warning-soft:#fdf3dd;--danger:#b42318;--danger-soft:#fbeaea;--info-soft:#eef1f6;--radius-sm:6px;--radius-md:10px}*{box-sizing:border-box}body{margin:0;background:var(--bg-page);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{width:min(1580px,calc(100% - 36px));margin:18px auto 48px}.topbar{margin-bottom:10px}h1{font-size:24px;margin:2px 0 3px}h2{font-size:17px;margin:0 0 8px}h3{font-size:14px;margin:0 0 6px}.description{color:var(--text-muted);max-width:900px;margin:0}.eyebrow{text-transform:uppercase;letter-spacing:.07em;font-size:11px;color:var(--text-muted);font-weight:700}.panel,.result-tile,.stage-card,.review-card{background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md);box-shadow:0 1px 2px rgba(16,24,40,.06),0 1px 1px rgba(16,24,40,.04)}.panel{padding:13px 16px;margin-bottom:10px}.summary-grid{display:grid;grid-template-columns:minmax(280px,.72fr) minmax(0,1.28fr);gap:10px;margin-bottom:10px}.result-tile{padding:13px 16px;border-top:4px solid var(--border-strong)}.result-tile.pass{border-top-color:var(--success)}.result-tile.warning{border-top-color:var(--warning)}.result-tile.fail{border-top-color:var(--danger)}.result-value{display:flex;align-items:center;gap:10px;font-size:24px;font-weight:700;margin:3px 0}.run-meta{display:flex;flex-wrap:wrap;gap:5px 14px;color:var(--text-muted);font-size:.9em}.identity-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin-bottom:10px;align-items:start;background:var(--bg-surface);border:1px solid var(--border);border-radius:var(--radius-md)}.identity-card{padding:10px 14px;border:0;border-left:1px solid var(--border);border-radius:0;background:transparent;box-shadow:none}.identity-card:first-child{border-left:0}.identity-card h3{text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--text-muted)}.identity{display:grid;grid-template-columns:128px minmax(0,1fr);gap:5px 10px;margin:0}.identity dt{color:var(--text-muted);font-weight:600}.identity dd{margin:0;min-width:0;overflow-wrap:anywhere}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:1px 9px;font-size:.82em;font-weight:600;background:var(--info-soft);color:var(--text-muted);white-space:nowrap}.badge.pass{background:var(--success-soft);color:var(--success)}.badge.warning{background:var(--warning-soft);color:var(--warning)}.badge.fail{background:var(--danger-soft);color:var(--danger)}.badge.info,.badge.aborted,.badge.unknown{background:var(--info-soft);color:var(--text-muted)}.review-clean{display:inline-flex;align-items:baseline;gap:10px;margin:0 0 8px;padding:5px 10px;border:1px solid var(--border);border-left:3px solid var(--success);border-radius:var(--radius-sm);background:var(--bg-surface);font-size:.9em}.review-clean span{color:var(--text-muted)}.review-card{padding:12px 16px;margin:6px 0 10px;border-left:4px solid var(--border-strong)}.review-card.warning{border-left-color:var(--warning)}.review-card.fail{border-left-color:var(--danger)}.review-card.info{border-left-color:var(--primary)}.review-primary{display:flex;gap:8px;align-items:center;margin-top:3px}.additional-findings{list-style:none;padding:0;margin:7px 0 0}.additional-findings li{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-top:1px solid var(--border)}.evidence-details{margin-top:7px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:14px 0 6px}.section-heading h2{margin:0}.section-note{color:var(--text-muted);font-size:.85em}.stage-evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin:6px 0 10px}.stage-evidence-card{border:1px solid var(--border);border-left:3px solid var(--border-strong);border-radius:var(--radius-sm);padding:8px 12px;background:var(--bg-surface)}.stage-evidence-card.status-warning{border-left-color:var(--warning)}.stage-evidence-card.status-fail{border-left-color:var(--danger)}.stage-evidence-card h3{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.stage-evidence-card ul{margin:3px 0 0 17px;padding:0;font-size:.92em}.stage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:12px;margin:6px 0 10px;align-items:start}.stage-card{padding:10px 14px;border-left:4px solid var(--border-strong)}.stage-card.status-pass{border-left-color:var(--success)}.stage-card.status-warning{border-left-color:var(--warning)}.stage-card.status-fail{border-left-color:var(--danger)}.stage-heading{margin-bottom:2px}.stage-heading h3{font-size:15px;margin:1px 0;line-height:1.25}.stage-description{margin:1px 0 5px;color:var(--text-muted);font-size:.86em}.stage-meta{display:flex;justify-content:space-between;align-items:center;gap:10px;color:var(--text-muted);font-size:.85em;margin:0 0 7px}.component-metric-grid{font-size:.9em}.component-metric-head,.component-metric-row{display:grid;grid-template-columns:30fr 22fr 26fr 22fr;gap:6px 8px;align-items:stretch}.component-metric-head{color:var(--text-muted);font-size:.82em;font-weight:600;padding:0 4px 2px}.component-metric-row{margin-top:6px}.component-name,.metric-cell{display:flex;align-items:center;min-width:0;min-height:34px;background:var(--bg-surface-muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px}.metric-cell{justify-content:flex-end;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.no-stage-metrics{padding-top:6px}.detail-disclosure,.secondary-disclosure,.nested-disclosure{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--bg-surface);margin:10px 0;box-shadow:0 1px 2px rgba(16,24,40,.06),0 1px 1px rgba(16,24,40,.04)}.detail-disclosure>summary,.secondary-disclosure>summary,.nested-disclosure>summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:.9em;font-weight:600}.detail-disclosure>summary::-webkit-details-marker,.secondary-disclosure>summary::-webkit-details-marker,.nested-disclosure>summary::-webkit-details-marker{display:none}.detail-disclosure>summary:before,.secondary-disclosure>summary:before,.nested-disclosure>summary:before{content:"▸";display:inline-block;width:16px;color:var(--text-muted)}.detail-disclosure[open]>summary:before,.secondary-disclosure[open]>summary:before,.nested-disclosure[open]>summary:before{content:"▾"}.detail-disclosure[open]>summary,.secondary-disclosure[open]>summary,.nested-disclosure[open]>summary{border-bottom:1px solid var(--border)}.secondary-disclosure{background:var(--bg-surface-muted);box-shadow:none}.secondary-disclosure>summary{color:var(--text-muted);font-size:.88em}.nested-disclosure{margin:6px 0;border-radius:var(--radius-sm);box-shadow:none}.nested-disclosure>summary{padding:7px 10px;font-size:.86em}.stage-metrics{margin:8px 0 0}.stage-metric-groups{padding:8px 10px}.metric-section{margin:0 0 9px}.metric-section h4{margin:0 0 2px;color:var(--text-muted);font-size:.78em;text-transform:uppercase;letter-spacing:.05em}.full-metric-grid{padding:0;font-size:.9em;overflow:auto}.full-metric-head,.full-metric-row{display:grid;grid-template-columns:28fr 20fr 17.34fr 17.33fr 17.33fr;gap:6px 8px;min-width:620px}.full-metric-head{color:var(--text-muted);font-size:.82em;font-weight:600;padding:0 4px 2px}.full-metric-row{margin-top:6px}.full-metric-cell{display:flex;flex-direction:column;justify-content:center;min-width:0;min-height:34px;padding:6px 10px;background:var(--bg-surface-muted);border:1px solid var(--border);border-radius:var(--radius-sm)}.full-metric-cell.num{align-items:flex-end;font-variant-numeric:tabular-nums;white-space:nowrap}.full-metric-cell small,.mapping-note{display:block;color:var(--text-muted);font-size:.8em;font-weight:400;overflow-wrap:anywhere}.metric-subgroup>.full-metric-grid{padding:8px}.component-key-list{margin:0;padding:8px 14px}.component-key-group{display:grid;grid-template-columns:128px minmax(0,1fr);gap:10px;border-top:1px solid var(--border);padding:6px 0}.component-key-group:first-child{border-top:0}.component-key-group dt{color:var(--text-muted);font-size:.78em;font-weight:700;text-transform:uppercase;letter-spacing:.05em}.component-key-group dd{margin:0}.component-key-group ul{list-style:none;margin:0;padding:0}.component-key-group li{display:grid;grid-template-columns:180px minmax(0,1fr);gap:10px;padding:3px 0}.component-key-group li strong{font-weight:600}.component-key-group li span{min-width:0;overflow-wrap:anywhere}.advanced-telemetry-mapping{margin:0 10px 10px;background:var(--bg-surface)}.advanced-group-list{padding:4px 10px 8px}.telemetry-group{background:var(--bg-surface-muted)}.telemetry-group-body{padding:2px 10px 7px}.telemetry-component{background:var(--bg-surface)}.telemetry-subgroup{background:var(--bg-surface)}.telemetry-field-list{list-style:none;margin:0;padding:6px 10px}.telemetry-field-list li{padding:4px 0;border-top:1px solid var(--border)}.telemetry-field-list li:first-child{border-top:0}.telemetry-field-list small{display:block;color:var(--text-muted);font-size:.82em;overflow-wrap:anywhere}.disclosure-body{padding:10px 14px}.disclosure-body h3{margin-top:10px}.disclosure-body h3:first-child{margin-top:0}.evidence-details .table-wrap{padding:0 10px 10px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:.86em}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);vertical-align:top}th{background:var(--bg-surface-muted);color:var(--text-muted);font-weight:600}td small{display:block;color:var(--text-muted);margin-top:2px}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;color:#475467}.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.muted{color:var(--text-muted)}.compact{margin:4px 0}.telemetry-placeholder{background:var(--bg-surface-muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;color:var(--text-muted)}footer{color:var(--text-muted);font-size:.85em;text-align:center;margin-top:18px}@media(max-width:1100px){.identity-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.identity-card:nth-child(3){border-left:0;border-top:1px solid var(--border)}}@media(max-width:760px){.shell{width:min(100% - 20px,1580px);margin-top:12px}.summary-grid{display:block}.result-tile{margin-bottom:10px}.identity-grid{grid-template-columns:1fr}.identity-card,.identity-card:nth-child(3){border-left:0;border-top:1px solid var(--border)}.identity-card:first-child{border-top:0}.identity{grid-template-columns:105px minmax(0,1fr)}.component-metric-head,.component-metric-row{grid-template-columns:28fr 22fr 28fr 22fr;gap:4px}.component-name,.metric-cell{padding:6px}.review-primary{align-items:flex-start}.review-clean{display:flex;flex-direction:column;gap:1px}.section-heading{display:block}.section-note{display:block;margin-top:2px}.component-key-group{grid-template-columns:1fr}.component-key-group li{grid-template-columns:130px minmax(0,1fr)}}
 """
@@ -939,6 +1097,12 @@ html,body{max-width:100%;min-width:0}.shell{width:calc(100% - 48px);max-width:16
 """
     css += """
 .summary-grid{align-items:stretch}.summary-grid>.result-tile,.summary-grid>.run-details{height:100%;margin-bottom:0}.result-tile{border:1px solid var(--border-strong);background:var(--info-soft)}.result-tile.pass{background:var(--success-soft);border-color:#b7dfc5}.result-tile.warning{background:var(--warning-soft);border-color:#ead59c}.result-tile.fail{background:var(--danger-soft);border-color:#efc2c2}.result-tile.aborted,.result-tile.unknown{background:var(--info-soft);border-color:var(--border-strong)}.result-value{display:block;font-size:26px;line-height:1.15;font-weight:750;margin:4px 0;color:var(--text)}.result-tile.pass .result-value{color:var(--success)}.result-tile.warning .result-value{color:var(--warning)}.result-tile.fail .result-value{color:var(--danger)}.run-details{background:var(--bg-surface);border-color:var(--border)}@media(max-width:760px){.summary-grid>.result-tile,.summary-grid>.run-details{height:auto}.summary-grid>.result-tile{margin-bottom:10px}}
+"""
+    css += """
+.chart-stage-controls,.chart-metric-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.chart-stage-controls label,.chart-metric-controls label{font-size:.86em;font-weight:650;color:var(--text-muted)}.chart-stage-controls select{min-width:min(520px,100%)}.chart-stage-controls select,.chart-metric-controls select,.chart-stage-controls button{max-width:100%;font:inherit;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--bg-surface);color:var(--text);padding:6px 9px}.chart-stage-controls button{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:650;cursor:pointer}.chart-stage-controls button:disabled{opacity:.55;cursor:default}.telemetry-state{margin:10px 0 0;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface-muted);color:var(--text-muted)}#telemetry-workspace{margin-top:11px}.chart-series-controls{min-width:0;margin:9px 0}.chart-series-list{display:flex;min-width:0;max-width:100%;flex-wrap:wrap;gap:6px}.chart-series-row{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:5px 9px;border:1px solid var(--border);border-radius:999px;background:var(--bg-surface);color:var(--text-muted);cursor:pointer;user-select:none}.chart-series-row:hover{border-color:var(--primary)}.chart-series-row.selected{border-color:#93b4ef;background:#eef4ff;color:#163d82}.chart-series-row:focus-visible,.chart-series-row input:focus-visible,.chart-stage-controls select:focus-visible,.chart-metric-controls select:focus-visible,.chart-stage-controls button:focus-visible,.chart-core-action:focus-visible{outline:3px solid rgba(37,99,235,.24);outline-offset:2px}.chart-series-row input{margin:0;accent-color:var(--primary)}.chart-advanced-series{margin-top:7px}.chart-advanced-series>summary{width:max-content;max-width:100%;cursor:pointer;color:var(--text-muted);font-size:.86em;font-weight:650}.chart-advanced-series>.chart-series-list{margin-top:7px}.chart-window-note{margin:8px 0;color:var(--text-muted);font-size:.84em}.chart-frame{position:relative;width:100%;min-width:0;height:360px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fff;overflow:hidden}.chart-frame canvas{display:block;width:100%;height:100%}.chart-tooltip{position:absolute;z-index:2;box-sizing:border-box;min-width:210px;max-width:calc(100% - 16px);max-height:calc(100% - 16px);overflow:auto;padding:8px 10px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:rgba(255,255,255,.96);box-shadow:0 4px 12px rgba(16,24,40,.14);pointer-events:none;font-size:.82em}.chart-tooltip.scrollable{pointer-events:auto}.chart-tooltip strong{display:block;margin-bottom:5px}.chart-tooltip-values{display:grid;grid-template-columns:repeat(var(--tooltip-columns,1),minmax(0,1fr));gap:3px 14px}.chart-tooltip-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;min-width:0}.chart-tooltip-entry span{min-width:0;overflow-wrap:anywhere}.chart-tooltip-entry b{text-align:right;white-space:nowrap;font-weight:650}.chart-legend{display:flex;min-width:0;max-width:100%;flex-wrap:wrap;gap:5px 13px;margin-top:8px;color:var(--text-muted);font-size:.82em}.chart-legend-item{display:inline-flex;min-width:0;max-width:100%;align-items:center;gap:5px;overflow-wrap:anywhere;cursor:default}.chart-legend-item i{display:inline-block;width:16px;min-width:16px;height:3px;border-radius:2px}@media(max-width:680px){.chart-stage-controls{align-items:stretch}.chart-stage-controls label{width:100%}.chart-stage-controls select{min-width:0;flex:1 1 220px}.chart-frame{height:310px}.chart-series-row{width:100%;border-radius:var(--radius-sm)}}
+"""
+    css += """
+.chart-stage-description{margin:6px 0 0;color:var(--text-muted);font-size:.84em}.chart-empty-state{position:absolute;inset:0;display:grid;place-items:center;padding:20px;text-align:center;color:var(--text-muted);background:var(--bg-surface-muted)}.chart-advanced-body{min-width:0;margin-top:7px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-surface-muted)}.chart-core-series{min-width:0;margin-bottom:8px}.chart-core-series>summary{min-width:0;cursor:pointer;color:var(--text);font-size:.86em;font-weight:650}.chart-core-title{overflow-wrap:anywhere}.chart-core-actions{float:right;display:inline-flex;align-items:center;gap:4px;margin-left:12px;font-weight:400}.chart-core-action{border:0;background:none;color:var(--primary);font:inherit;font-weight:650;padding:0 2px;cursor:pointer}.chart-core-action:hover{text-decoration:underline}.chart-core-series>.chart-series-list{clear:both;margin-top:7px}.chart-advanced-body>.chart-series-list+.chart-series-list{margin-top:7px}.chart-legend-item{transition:opacity .12s ease}.chart-legend-item.deemphasized{opacity:.28}.chart-legend-item.emphasized{color:var(--text);font-weight:650}
 """
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{_escape(title)} — LVS report</title><style>{css}</style></head>
@@ -952,9 +1116,10 @@ html,body{max-width:100%;min-width:0}.shell{width:calc(100% - 48px);max-width:16
   <div class="section-heading"><h2>Review summary</h2></div>{_review_summary(review)}
   {stage_evidence}
   <div class="section-heading"><h2>Stage overview</h2><span class="section-note">Primary per-stage temperatures, clocks, and power</span></div><div class="stage-grid" aria-live="polite">{stage_cards}{stage_details}</div>
-  <section class="panel telemetry-explorer"><h2>Telemetry explorer</h2><div class="telemetry-placeholder"><strong>Interactive stage telemetry</strong><br>Available in a later report version.</div></section>
+  {telemetry_explorer}
   {_component_mapping(components_list, hardware)}
   {_reference_tables(report.get("hardware_references", {}), components_list, report.get("chart_catalog", {}), stages)}
   <footer>Report generated by {_escape(report.get("generator", {}).get("name") or "Linux Validation Suite")} {_escape(report.get("generator", {}).get("version") or "")} · Report data contract v{_escape(report.get("contract_version"))}</footer>
 <script>(function(){{var grid=document.querySelector('.stage-grid');var cards=[].slice.call(document.querySelectorAll('.stage-card'));var buttons=[].slice.call(document.querySelectorAll('.stage-detail-toggle'));var panels=[].slice.call(document.querySelectorAll('.stage-detail-panel'));var selected=null;function place(panel,card){{var top=card.offsetTop;var row=cards.filter(function(item){{return item.offsetTop===top;}});var last=row[row.length-1]||card;last.insertAdjacentElement('afterend',panel);}}function closeAll(){{selected=null;panels.forEach(function(panel){{panel.hidden=true;}});cards.forEach(function(card){{card.classList.remove('active');}});buttons.forEach(function(button){{button.setAttribute('aria-expanded','false');button.textContent='Show full min/avg/max metrics';}});}}function open(button,panel){{var card=button.closest('.stage-card');selected={{button:button,panel:panel,card:card}};place(panel,card);panel.hidden=false;card.classList.add('active');button.setAttribute('aria-expanded','true');button.textContent='Hide full min/avg/max metrics';}}buttons.forEach(function(button){{button.addEventListener('click',function(){{var panel=document.getElementById(button.getAttribute('data-stage-detail'));var wasOpen=panel&&!panel.hidden;closeAll();if(panel&&!wasOpen){{open(button,panel);}}}});}});document.querySelectorAll('.stage-detail-close').forEach(function(button){{button.addEventListener('click',closeAll);}});var resizeFrame;window.addEventListener('resize',function(){{if(!selected)return;cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(function(){{place(selected.panel,selected.card);}});}});}})();</script>
+<script>{chart_script}</script>
 </main></body></html>'''

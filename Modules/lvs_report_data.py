@@ -141,7 +141,19 @@ def _finding(event: Dict[str, Any], *, stage: Optional[Dict[str, Any]] = None) -
 def _metric_semantics(field: str, source: Dict[str, Any]) -> Tuple[str, str]:
     metric = str(source.get("metric") or source.get("metric_class") or field).lower()
     normalized_units = str(source.get("normalized_units") or "").lower()
-    combined = f"{field} {metric} {normalized_units}"
+    query_field = str(source.get("query_field") or "").lower()
+    combined = f"{field} {metric} {query_field} {normalized_units}"
+    if any(
+        token in f"{field} {metric} {query_field}"
+        for token in ("throttle", "reason", "status", "alarm", "fault", "warning", "critical")
+    ):
+        return "status", ""
+    if "fan" in combined or "pwm" in combined or "rpm" in combined or "rotational" in combined:
+        if "percent" in combined or normalized_units == "%":
+            return "fan_duty", "percent"
+        return "fan_speed", "rpm"
+    if "percent" in combined or normalized_units == "%" or "utilization" in combined or "busy" in combined:
+        return "percentage", "percent"
     if "temp" in combined or "temperature" in combined or normalized_units == "c":
         return "temperature", "c"
     if "clock" in combined or "frequency" in combined:
@@ -152,13 +164,9 @@ def _metric_semantics(field: str, source: Dict[str, Any]) -> Tuple[str, str]:
         return "voltage", "v"
     if "current" in combined or normalized_units == "a":
         return "current", "a"
-    if "rpm" in combined or "rotational" in combined:
-        return "rotational", "rpm"
-    if "percent" in combined or "utilization" in combined or "busy" in combined:
-        return "percentage", "percent"
     if "gib" in combined:
         return "memory_usage", "gib"
-    if re.search(r"(?:^|_)gb(?:$|_)", combined):
+    if re.search(r"(?:^|_)gb(?:$|_|\b)", combined):
         return "memory_usage", "gb"
     if "count" in combined or "error" in combined:
         return "counter", "count"
@@ -240,6 +248,39 @@ def _identity(source: Dict[str, Any]) -> Dict[str, Any]:
     return {key: source[key] for key in allowed if source.get(key) not in (None, "", [], {})}
 
 
+def _core_presentation(index: int, raw_class: str, source: str) -> Dict[str, Any]:
+    normalized = raw_class.strip().lower()
+    if normalized in {"p", "p-core"}:
+        core_class, core_class_label, prefix = "performance", "Performance core", "P-Core"
+    elif normalized in {"performance", "performance core"}:
+        core_class, core_class_label, prefix = "performance", "Performance core", "Performance core"
+    elif normalized in {"e", "e-core"}:
+        core_class, core_class_label, prefix = "efficiency", "Efficiency core", "E-Core"
+    elif normalized in {"efficiency", "efficient", "efficiency core"}:
+        core_class, core_class_label, prefix = "efficiency", "Efficiency core", "Efficiency core"
+    else:
+        core_class, core_class_label, prefix = "unknown", "Unclassified core", "Core"
+    return {
+        "core_index": index,
+        "core_class": core_class,
+        "core_class_label": core_class_label,
+        "display_label": f"{prefix} {index}",
+        "core_type_source": source,
+    }
+
+
+def _core_presentation_from_source(index: int, source: Dict[str, Any]) -> Dict[str, Any]:
+    text = " ".join(str(source.get(key) or "") for key in ("label", "raw_label", "source"))
+    match = re.search(r"\b([PE])-Core\s+\d+\b", text, re.IGNORECASE)
+    if match:
+        return _core_presentation(index, match.group(1), "telemetry_source_label")
+    if re.search(r"\bPerformance\s+Core\s+\d+\b", text, re.IGNORECASE):
+        return _core_presentation(index, "performance", "telemetry_source_label")
+    if re.search(r"\bEfficiency\s+Core\s+\d+\b", text, re.IGNORECASE):
+        return _core_presentation(index, "efficiency", "telemetry_source_label")
+    return {}
+
+
 def _hardware_maps(source_map: Dict[str, Any], system_info: Dict[str, Any]) -> Dict[str, Any]:
     hardware = system_info.get("Hardware", {}) if isinstance(system_info.get("Hardware"), dict) else {}
     gpu_inventory = hardware.get("Gpu", []) if isinstance(hardware.get("Gpu"), list) else []
@@ -254,7 +295,28 @@ def _hardware_maps(source_map: Dict[str, Any], system_info: Dict[str, Any]) -> D
         int(item.get("drive_index", 0) or 0): item
         for item in source_map.get("storage_link_map", []) if isinstance(item, dict)
     }
-    return {"gpu": gpu, "storage": storage}
+    core_presentation: Dict[int, Dict[str, Any]] = {}
+    cpu = hardware.get("Cpu", {}) if isinstance(hardware.get("Cpu"), dict) else {}
+    topology = cpu.get("Topology", {}) if isinstance(cpu.get("Topology"), dict) else {}
+    packages = topology.get("Packages", []) if isinstance(topology.get("Packages"), list) else []
+    for package in packages:
+        if not isinstance(package, dict):
+            continue
+        logical_cpus = package.get("LogicalCpus", []) if isinstance(package.get("LogicalCpus"), list) else []
+        for logical in logical_cpus:
+            if not isinstance(logical, dict):
+                continue
+            cpu_id = _finite_number(logical.get("CpuId"))
+            if cpu_id is None:
+                continue
+            source = str(logical.get("CoreTypeClassificationSource") or "")
+            evidence = logical.get("CoreTypeEvidence", {}) if isinstance(logical.get("CoreTypeEvidence"), dict) else {}
+            core_presentation[int(cpu_id)] = _core_presentation(
+                int(cpu_id),
+                str(logical.get("CoreType") or logical.get("CoreClass") or ""),
+                source or str(evidence.get("evidence_source") or ""),
+            )
+    return {"gpu": gpu, "storage": storage, "cpu_core_presentation": core_presentation}
 
 
 def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], system_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
@@ -268,6 +330,10 @@ def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], sys
         source = field_records.get(field, {}) if isinstance(field_records.get(field), dict) else {}
         metric_class, unit = _metric_semantics(field, source)
         component_id, component_class = _component_id(field, source)
+        core_index = _source_index(field, source, "cpu_index", r"cpu_core_(\d+)_") if component_class == "cpu_core" else None
+        core_presentation = maps.get("cpu_core_presentation", {}).get(core_index, {}) if core_index is not None else {}
+        if not core_presentation and core_index is not None:
+            core_presentation = _core_presentation_from_source(core_index, source)
         context = {
             "field": field,
             "component_id": component_id,
@@ -278,7 +344,6 @@ def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], sys
             "source_label": str(source.get("label") or source.get("raw_label") or field),
             "source": source,
         }
-        field_context[field] = context
         component = components.setdefault(component_id, {
             "component_id": component_id,
             "component_class": component_class,
@@ -286,6 +351,18 @@ def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], sys
             "identity": _identity(source),
             "telemetry_fields": [],
         })
+        if not core_presentation and component.get("core_class"):
+            core_presentation = {
+                key: component[key] for key in (
+                    "core_index", "core_class", "core_class_label", "display_label", "core_type_source",
+                ) if key in component
+            }
+        if core_presentation:
+            context.update(core_presentation)
+        field_context[field] = context
+        if core_presentation:
+            component.update(core_presentation)
+            component["label"] = str(core_presentation.get("display_label") or component["label"])
         component["telemetry_fields"].append(field)
     for component in components.values():
         component["telemetry_fields"] = sorted(set(component["telemetry_fields"]))
@@ -434,6 +511,9 @@ def _raw_stage_metrics(stage: Dict[str, Any], telemetry_rows: List[Tuple[float, 
             metric["provider"] = context["provider"]
         if context["source_label"]:
             metric["source_label"] = context["source_label"]
+        for key in ("core_index", "core_class", "core_class_label", "display_label", "core_type_source"):
+            if context.get(key) not in (None, ""):
+                metric[key] = context[key]
         metrics.append(metric)
     return metrics
 

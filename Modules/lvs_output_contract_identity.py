@@ -20,6 +20,9 @@ TELEMETRY_SOURCE_MAP_KIND = "telemetry_source_map"
 REPORT_DATA_CONTRACT_ID = "linux_validation_suite.report_data"
 REPORT_DATA_KIND = "report_data"
 
+CHART_DATA_CONTRACT_ID = "linux_validation_suite.chart_data"
+CHART_DATA_KIND = "chart_data"
+
 
 def stamp_contract_identity(payload: Dict[str, Any], *, contract_id: str, kind: str) -> Dict[str, Any]:
     """Set the formal identity of an LVS-owned standalone artifact."""

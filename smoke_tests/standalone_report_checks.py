@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import json
@@ -16,7 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from Modules.lvs_output_contract_identity import CONTRACT_VERSION, REPORT_DATA_CONTRACT_ID, REPORT_DATA_KIND
+from Modules.lvs_chart_data import (
+    FULL_SAMPLE_LIMIT, PLOTTED_POINT_BUDGET, canonical_chart_json,
+    compile_chart_data, decode_series_points, encode_series, extrema_reduce,
+)
+from Modules.lvs_output_contract_identity import (
+    CHART_DATA_CONTRACT_ID, CHART_DATA_KIND, CONTRACT_VERSION,
+    REPORT_DATA_CONTRACT_ID, REPORT_DATA_KIND,
+)
 from Modules.lvs_report import generate_report
 from Modules.lvs_report_data import compile_report_data, evaluate_clock_context, evaluate_temperature_context
 from Modules.lvs_report_html import (
@@ -44,15 +52,35 @@ def _source_map() -> Dict[str, Any]:
             "cpu_clock_mhz": {"category": "cpu", "metric": "clock_mhz", "kind": "cpufreq", "provider": "cpufreq", "label": "CPU clock"},
             "cpu_power_w": {"category": "cpu", "metric": "power_w", "kind": "rapl", "provider": "rapl", "label": "CPU package power"},
             "cpu_package_0_temp_c": {"category": "cpu_package", "package_id": 0, "metric": "temperature_c", "kind": "coretemp", "provider": "coretemp", "label": "CPU package 0"},
-            "cpu_core_0_clock_mhz": {"category": "cpu_core", "cpu_index": 0, "metric": "clock_mhz", "kind": "cpufreq", "provider": "cpufreq", "label": "CPU 0 clock"},
+            "cpu_core_0_clock_mhz": {"category": "cpu_core", "cpu_index": 0, "metric": "clock_mhz", "kind": "cpufreq", "provider": "cpufreq", "label": "P-Core 0 Clock"},
+            "cpu_core_2_clock_mhz": {"category": "cpu_core", "cpu_index": 2, "metric": "clock_mhz", "kind": "cpufreq", "provider": "cpufreq", "label": "P-Core 2 Clock"},
+            "cpu_core_10_clock_mhz": {"category": "cpu_core", "cpu_index": 10, "metric": "clock_mhz", "kind": "cpufreq", "provider": "cpufreq", "label": "E-Core 10 Clock"},
+            "cpu_core_0_utilization_percent": {"category": "cpu_core", "cpu_index": 0, "metric": "utilization_percent", "kind": "psutil", "provider": "psutil", "label": "CPU 0 utilization"},
+            "cpu_core_2_utilization_percent": {"category": "cpu_core", "cpu_index": 2, "metric": "utilization_percent", "kind": "psutil", "provider": "psutil", "label": "CPU 2 utilization"},
+            "cpu_core_10_utilization_percent": {"category": "cpu_core", "cpu_index": 10, "metric": "utilization_percent", "kind": "psutil", "provider": "psutil", "label": "CPU 10 utilization"},
             "gpu_0_temp_c": {"category": "gpu", "metric": "temperature_c", "gpu_index": 0, "provider": "amdgpu", "label": "GPU edge", "path": "/sys/gpu/temp1_input"},
             "gpu_0_temp_hotspot_c": {"category": "gpu", "metric": "temperature_c", "gpu_index": 0, "provider": "amdgpu", "label": "GPU hotspot"},
             "gpu_0_clock_mhz": {"category": "gpu", "metric": "clock_mhz", "gpu_index": 0, "provider": "amdgpu", "label": "GPU core clock"},
             "gpu_0_power_w": {"category": "gpu", "metric": "power_w", "gpu_index": 0, "provider": "amdgpu", "label": "GPU power"},
+            "gpu_0_memory_clock_mhz": {"category": "gpu", "metric": "memory_clock_mhz", "gpu_index": 0, "provider": "amdgpu", "label": "GPU memory clock"},
+            "gpu_0_voltage_v": {"category": "gpu", "metric": "voltage_v", "gpu_index": 0, "provider": "amdgpu", "label": "GPU voltage"},
+            "gpu_0_utilization_percent": {"category": "gpu", "metric": "utilization_percent", "gpu_index": 0, "provider": "amdgpu", "label": "GPU utilization"},
+            "gpu_0_vram_used_gb": {"category": "gpu", "metric": "vram_used_gb", "gpu_index": 0, "provider": "amdgpu", "label": "GPU VRAM used"},
+            "gpu_0_throttle_applications_clocks": {"category": "gpu", "metric": "throttle_applications_clocks", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU applications clocks setting", "query_field": "clocks_event_reasons.applications_clocks_setting", "evidence_only": True},
+            "gpu_0_throttle_hw_slowdown": {"category": "gpu", "metric": "throttle_hw_slowdown", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU hardware slowdown", "query_field": "clocks_event_reasons.hw_slowdown", "evidence_only": True},
+            "gpu_0_throttle_hw_thermal": {"category": "gpu", "metric": "throttle_hw_thermal", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU hardware thermal slowdown", "query_field": "clocks_event_reasons.hw_thermal_slowdown", "evidence_only": True},
+            "gpu_0_throttle_idle": {"category": "gpu", "metric": "throttle_idle", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU idle", "query_field": "clocks_event_reasons.gpu_idle", "evidence_only": True},
+            "gpu_0_throttle_sw_thermal": {"category": "gpu", "metric": "throttle_sw_thermal", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU software thermal slowdown", "query_field": "clocks_event_reasons.sw_thermal_slowdown", "evidence_only": True},
+            "gpu_0_throttle_sync_boost": {"category": "gpu", "metric": "throttle_sync_boost", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU sync boost", "query_field": "clocks_event_reasons.sync_boost", "evidence_only": True},
+            "gpu_0_throttle_hw_power_brake": {"category": "gpu", "metric": "throttle_hw_power_brake", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU hardware power brake slowdown", "query_field": "clocks_event_reasons.hw_power_brake_slowdown", "evidence_only": True},
+            "gpu_0_throttle_sw_power_cap": {"category": "gpu", "metric": "throttle_sw_power_cap", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU software power cap", "query_field": "clocks_event_reasons.sw_power_cap", "evidence_only": True},
             "gpu_1_temp_c": {"category": "gpu", "metric": "temperature_c", "gpu_index": 1, "provider": "amdgpu", "label": "GPU 2 edge"},
             "storage_drive_0_temp_c": {"category": "storage", "metric": "temperature_c", "drive_index": 0, "provider": "nvme_hwmon", "label": "NVMe composite", "path": "/sys/nvme/temp1_input"},
             "memory_module_0_temp_c": {"category": "memory_module", "metric": "temperature_c", "module_index": 0, "provider": "spd5118", "label": "DIMM 0", "path": "/sys/dimm/temp1_input"},
+            "memory_used_gb": {"category": "memory", "metric": "memory_used_gb", "provider": "procfs", "label": "memory_used_gb"},
             "bmc_memory_power_w": {"category": "bmc", "metric": "power_w", "provider": "ipmi_bmc", "component_classification": "memory_rail", "component_locator": "memory", "raw_label": "Memory_Power", "normalized_units": "w"},
+            "gpu_0_fan_percent": {"category": "gpu", "metric": "fan_percent", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU fan speed", "query_field": "fan.speed"},
+            "gpu_0_power_limit_percent": {"category": "gpu", "metric": "power_limit_percent", "gpu_index": 0, "provider": "nvidia_smi", "kind": "nvidia_smi", "label": "GPU power limit", "query_field": "power.limit"},
         },
     }
 
@@ -140,12 +168,12 @@ def _build_fixture(root: Path, *, native: str = "pass", storage_hot: bool = Fals
     if raw:
         fields = ["timestamp", *_source_map()["fields"].keys()]
         rows = [
-            [105, 20, 1000, 30, 20, 900, 25, 35, 500, 10, 28, 30, 0, 0],
-            [115, 50, 4000, 80, 50, 3900, 55, 75, 1800, 120, 58, 60, 45, 65],
-            [150, "", 4200, 90, "", 4100, 58, 78, 1900, 130, 62, 72 if storage_hot else 65, 46, 66],
-            [185, 80, 4500, 110, 80, 4400, 62, 82, 2100, 140, 65, 68, 48, 67],
-            [220, 75, 2000, 70, 75, 1900, 90, 100, 2200, 150, 80, 55, 47, 68],
-            [280, 70, 1800, 60, 70, 1700, 85, 95, 2000, 145, 78, 54, 46, 67],
+            [105, 20, 1000, 30, 20, 900, 800, 700, 2, 3, 4, 25, 35, 500, 10, 5000, 0.90, 5, 1.0, 0, 0, 0, 1, 0, 0, 0, 0, 28, 30, 12, 0, 0, 20, 90],
+            [115, 50, 4000, 80, 50, 3900, 3800, 3700, 20, 25, 30, 55, 75, 1800, 120, 9500, 0.95, 75, 2.0, 0, 0, 0, 0, 0, 0, 0, 1, 58, 60, 13, 45, 65, 25, 100],
+            [150, "", 4200, 90, "", 4100, 4050, 3950, 50, 55, 60, 58, 78, 1900, 130, 9700, 1.00, 80, 3.0, 0, 0, 1, 0, 0, 0, 0, 1, 62, 72 if storage_hot else 65, 14, 46, 66, 30, 100],
+            [185, 80, 4500, 110, 80, 4400, 4350, 4250, 75, 80, 85, 62, 82, 2100, 140, 9800, 1.05, 85, 4.0, 0, 1, 0, 0, 0, 0, 0, 0, 65, 68, 15, 48, 67, 40, 95],
+            [220, 75, 2000, 70, 75, 1900, 1850, 1750, 10, 15, 20, 90, 100, 2200, 150, 9900, 1.10, 90, 5.0, 0, 0, 0, 0, 1, 1, 0, 0, 80, 55, 16, 47, 68, 50, 90],
+            [280, 70, 1800, 60, 70, 1700, 1650, 1550, 8, 9, 10, 85, 95, 2000, 145, 9400, 1.00, 70, 6.0, 0, 0, 0, 1, 0, 0, 1, 0, 78, 54, 17, 46, 67, 45, 90],
         ]
         with (root / "raw_telemetry.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -156,7 +184,38 @@ def _build_fixture(root: Path, *, native: str = "pass", storage_hot: bool = Fals
 def _hashes(root: Path) -> Dict[str, str]:
     return {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in root.iterdir() if path.is_file() and path.name not in {"lvs_report_data.json", "result_report.html"}
+        for path in root.iterdir() if path.is_file() and path.name not in {"lvs_report_data.json", "lvs_chart_data.json", "result_report.html"}
+    }
+
+
+def _synthetic_dense_core_chart(core_count: int, *, heterogeneous: bool) -> Dict[str, Any]:
+    series = []
+    for index in range(core_count):
+        core_class = None
+        prefix = "Core"
+        if heterogeneous:
+            core_class = "performance" if index < max(1, core_count // 3) else "efficiency"
+            prefix = "P-Core" if core_class == "performance" else "E-Core"
+        label = f"{prefix} {index}"
+        series.append({
+            "series_id": f"cpu_core_{index}_utilization_percent",
+            "field": f"cpu_core_{index}_utilization_percent",
+            "component_id": f"cpu:core:{index}", "component_label": label,
+            "display_label": label, "selector_label": label,
+            "metric_family": "Utilization", "metric_label": "Utilization",
+            "display_unit": "%", "source_unit": "percent", "primary": False,
+            "advanced_group": "cpu_cores", "core_index": index,
+            "core_class": core_class, "core_class_label": core_class,
+            "encoding": "points", "data": {"t": [0, 1], "v": [0, 1]},
+        })
+    return {
+        "contract_id": CHART_DATA_CONTRACT_ID, "contract_version": 1,
+        "kind": CHART_DATA_KIND, "available": True, "stages": [{
+            "stage_id": "cpu_stage", "index": 0, "label": "Stage 1 — CPU workload",
+            "description": "", "families": ["Utilization"], "series": series,
+            "analysis_duration_seconds": 1, "trim_start_seconds": 0,
+            "trim_end_seconds": 0, "workload_component_class": "cpu",
+        }],
     }
 
 
@@ -172,7 +231,218 @@ def _write_boundary_telemetry(root: Path) -> None:
         ])
 
 
+def _run_chart_data_checks() -> None:
+    short = encode_series([(0.0, 0.0), (2.0, 1.0)])
+    assert short["encoding"] == "points" and short["data"]["v"][0] == 0
+    assert short["original_sample_count"] == short["plotted_point_count"] == 2
+
+    plateau_points = [(float(index * 2), 550.0 if index < 1000 else 800.0) for index in range(FULL_SAMPLE_LIMIT + 101)]
+    plateau = encode_series(plateau_points)
+    assert plateau["encoding"] == "plateau_runs" and plateau["reduction"]["method"] == "exact_constant_runs"
+    assert plateau["data"]["runs"] == [[0, 1998, 550], [2000, 4000, 800]]
+    assert decode_series_points(plateau) == [(0.0, 550.0), (1998.0, 550.0), (2000.0, 800.0), (4000.0, 800.0)]
+
+    changing = [(float(index), float((index * 37) % 101)) for index in range(5000)]
+    changing[2222] = (2222.0, 999.0)
+    changing[3333] = (3333.0, -99.0)
+    reduced = extrema_reduce(changing, 400)
+    assert changing[0] in reduced and changing[-1] in reduced
+    assert changing[2222] in reduced and changing[3333] in reduced
+    assert reduced == sorted(reduced) and len(reduced) <= 400
+    encoded = encode_series(changing, full_sample_limit=100, point_budget=400)
+    assert encoded["encoding"] == "extrema_buckets" and encoded["original_sample_count"] == 5000
+    assert encoded["plotted_point_count"] == len(reduced)
+    assert encode_series(changing, full_sample_limit=100, point_budget=400) == encoded
+
+    with TemporaryDirectory(prefix="lvs_chart_contract_") as temporary:
+        root = Path(temporary)
+        fields = [
+            "timestamp", "cpu_temp_c", "gpu_0_vram_used_gib", "gpu_0_vram_used_gb",
+            "cpu_core_0_clock_mhz", "cpu_core_2_clock_mhz", "cpu_core_10_clock_mhz",
+            "cpu_core_0_utilization_percent", "cpu_core_2_utilization_percent", "cpu_core_10_utilization_percent",
+            "gpu_0_temp_memory_c", "gpu_0_memory_clock_mhz", "gpu_0_memory_busy_percent",
+            "gpu_0_vddgfx_v", "gpu_0_memory_voltage_v", "gpu_0_utilization_percent", "gpu_0_fan_percent", "gpu_0_power_limit_percent",
+            "gpu_0_throttle_applications_clocks", "gpu_0_throttle_hw_thermal",
+            "gpu_0_throttle_hw_power_brake", "gpu_0_throttle_sw_power_cap", "gpu_0_throttle_voltage_reliability",
+            "gpu_0_temp_core_c", "gpu_0_temp_hotspot_c",
+            "storage_drive_0_temp_c", "storage_drive_0_sensor_1_temp_c",
+            "storage_drive_0_sensor_2_temp_c", "storage_drive_0_sensor_3_temp_c",
+            "bmc_temp_c", "bmc_voltage_v", "bmc_current_a",
+            "bmc_memory_power_w", "bmc_fan_rpm", "bmc_percentage", "bmc_status",
+        ]
+        with (root / "raw_telemetry.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for timestamp in (9.999, 10, 15, 20, 20.001, 30, 40):
+                value = max(0.0, timestamp - 10)
+                writer.writerow({
+                    "timestamp": timestamp, "cpu_temp_c": 50 + value,
+                    "gpu_0_vram_used_gib": value, "gpu_0_vram_used_gb": value,
+                    "cpu_core_0_clock_mhz": 1000 + value,
+                    "cpu_core_2_clock_mhz": 1200 + value,
+                    "cpu_core_10_clock_mhz": 1400 + value,
+                    "cpu_core_0_utilization_percent": value,
+                    "cpu_core_2_utilization_percent": value + 1,
+                    "cpu_core_10_utilization_percent": value + 2,
+                    "gpu_0_temp_memory_c": "nan" if timestamp == 15 else 60 + value,
+                    "gpu_0_memory_clock_mhz": 1000 + value,
+                    "gpu_0_memory_busy_percent": value,
+                    "gpu_0_vddgfx_v": 0.9,
+                    "gpu_0_memory_voltage_v": 1.35,
+                    "gpu_0_utilization_percent": value,
+                    "gpu_0_fan_percent": 45,
+                    "gpu_0_power_limit_percent": 90,
+                    "gpu_0_throttle_applications_clocks": 0,
+                    "gpu_0_throttle_hw_thermal": 0,
+                    "gpu_0_throttle_hw_power_brake": 0,
+                    "gpu_0_throttle_sw_power_cap": 1 if timestamp == 20 else 0,
+                    "gpu_0_throttle_voltage_reliability": 0,
+                    "gpu_0_temp_core_c": 60 + value,
+                    "gpu_0_temp_hotspot_c": 70 + value,
+                    "storage_drive_0_temp_c": 40 + value,
+                    "storage_drive_0_sensor_1_temp_c": 41 + value,
+                    "storage_drive_0_sensor_2_temp_c": 42 + value,
+                    "storage_drive_0_sensor_3_temp_c": 43 + value,
+                    "bmc_temp_c": 30 + value, "bmc_voltage_v": 12,
+                    "bmc_current_a": 4, "bmc_memory_power_w": 100 + value,
+                    "bmc_fan_rpm": 1200, "bmc_percentage": 50, "bmc_status": 1,
+                })
+        catalog = [
+            {"field": "cpu_temp_c", "component_id": "cpu:aggregate", "metric_class": "temperature", "unit": "c", "provider": "hwmon", "source": "cpu"},
+            {"field": "cpu_core_0_clock_mhz", "component_id": "cpu:core:0", "metric_class": "clock", "unit": "mhz", "provider": "cpufreq", "source": "cpu0"},
+            {"field": "cpu_core_2_clock_mhz", "component_id": "cpu:core:2", "metric_class": "clock", "unit": "mhz", "provider": "cpufreq", "source": "cpu2"},
+            {"field": "cpu_core_10_clock_mhz", "component_id": "cpu:core:10", "metric_class": "clock", "unit": "mhz", "provider": "cpufreq", "source": "cpu10"},
+            {"field": "cpu_core_0_utilization_percent", "component_id": "cpu:core:0", "metric_class": "percentage", "unit": "percent", "provider": "psutil", "source": "cpu0"},
+            {"field": "cpu_core_2_utilization_percent", "component_id": "cpu:core:2", "metric_class": "percentage", "unit": "percent", "provider": "psutil", "source": "cpu2"},
+            {"field": "cpu_core_10_utilization_percent", "component_id": "cpu:core:10", "metric_class": "percentage", "unit": "percent", "provider": "psutil", "source": "cpu10"},
+            {"field": "gpu_0_vram_used_gib", "component_id": "gpu:0", "metric_class": "memory_usage", "unit": "gib", "provider": "gpu", "source": "vram"},
+            {"field": "gpu_0_vram_used_gb", "component_id": "gpu:0", "metric_class": "other_numeric", "unit": "", "provider": "gpu", "source": "vram"},
+            {"field": "gpu_0_temp_memory_c", "component_id": "gpu:0", "metric_class": "temperature", "unit": "c", "provider": "gpu", "source": "memory"},
+            {"field": "gpu_0_memory_clock_mhz", "component_id": "gpu:0", "metric_class": "clock", "unit": "mhz", "provider": "gpu", "source": "mclk"},
+            {"field": "gpu_0_memory_busy_percent", "component_id": "gpu:0", "metric_class": "percentage", "unit": "percent", "provider": "gpu", "source": "busy"},
+            {"field": "gpu_0_vddgfx_v", "component_id": "gpu:0", "metric_class": "voltage", "unit": "v", "provider": "gpu", "source": "vddgfx"},
+            {"field": "gpu_0_memory_voltage_v", "component_id": "gpu:0", "metric_class": "voltage", "unit": "v", "provider": "gpu", "source": "memory voltage"},
+            {"field": "gpu_0_utilization_percent", "component_id": "gpu:0", "metric_class": "percentage", "unit": "percent", "provider": "gpu", "source": "utilization"},
+            {"field": "gpu_0_fan_percent", "component_id": "gpu:0", "metric_class": "fan_speed", "unit": "percent", "provider": "gpu", "source": "fan.speed"},
+            {"field": "gpu_0_power_limit_percent", "component_id": "gpu:0", "metric_class": "percentage", "unit": "percent", "provider": "gpu", "source": "power.limit"},
+            {"field": "gpu_0_throttle_applications_clocks", "component_id": "gpu:0", "metric_class": "status", "unit": "", "provider": "nvidia_smi", "source": "clocks_event_reasons.applications_clocks_setting"},
+            {"field": "gpu_0_throttle_hw_thermal", "component_id": "gpu:0", "metric_class": "status", "unit": "", "provider": "nvidia_smi", "source": "clocks_event_reasons.hw_thermal_slowdown"},
+            {"field": "gpu_0_throttle_hw_power_brake", "component_id": "gpu:0", "metric_class": "status", "unit": "", "provider": "nvidia_smi", "source": "clocks_event_reasons.hw_power_brake_slowdown"},
+            {"field": "gpu_0_throttle_sw_power_cap", "component_id": "gpu:0", "metric_class": "status", "unit": "", "provider": "nvidia_smi", "source": "clocks_event_reasons.sw_power_cap"},
+            {"field": "gpu_0_throttle_voltage_reliability", "component_id": "gpu:0", "metric_class": "status", "unit": "", "provider": "nvidia_smi", "source": "clocks_event_reasons.sw_voltage_reliability"},
+            {"field": "gpu_0_temp_core_c", "component_id": "gpu:0", "metric_class": "temperature", "unit": "c", "provider": "gpu", "source": "core", "source_label": "GPU edge"},
+            {"field": "gpu_0_temp_hotspot_c", "component_id": "gpu:0", "metric_class": "temperature", "unit": "c", "provider": "gpu", "source": "hotspot"},
+            {"field": "storage_drive_0_temp_c", "component_id": "storage:0", "metric_class": "temperature", "unit": "c", "provider": "storage_temp", "source": "temp1", "source_label": "NVMe Composite"},
+            {"field": "storage_drive_0_sensor_1_temp_c", "component_id": "storage:0", "metric_class": "temperature", "unit": "c", "provider": "storage_temp_secondary", "source": "temp2", "source_label": "NVMe Sensor 1"},
+            {"field": "storage_drive_0_sensor_2_temp_c", "component_id": "storage:0", "metric_class": "temperature", "unit": "c", "provider": "storage_temp_secondary", "source": "temp3", "source_label": "NVMe Sensor 2"},
+            {"field": "storage_drive_0_sensor_3_temp_c", "component_id": "storage:0", "metric_class": "temperature", "unit": "c", "provider": "storage_temp_secondary", "source": "temp4", "source_label": "NVMe Controller"},
+            {"field": "bmc_temp_c", "component_id": "bmc:thermal", "metric_class": "temperature", "unit": "c", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_voltage_v", "component_id": "bmc:rail", "metric_class": "voltage", "unit": "v", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_current_a", "component_id": "bmc:rail", "metric_class": "current", "unit": "a", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_memory_power_w", "component_id": "bmc:memory", "metric_class": "power", "unit": "w", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_fan_rpm", "component_id": "bmc:fan", "metric_class": "fan_speed", "unit": "rpm", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_percentage", "component_id": "bmc:misc", "metric_class": "percentage", "unit": "percent", "provider": "ipmi", "source": "bmc"},
+            {"field": "bmc_status", "component_id": "bmc:status", "metric_class": "discrete", "unit": "", "provider": "ipmi", "source": "bmc"},
+        ]
+        windows = [
+            {"stage_id": "one", "started_monotonic": 0, "ended_monotonic": 25, "trim_start_seconds": 10, "trim_end_seconds": 5, "analysis_started_monotonic": 10, "analysis_ended_monotonic": 20, "analysis_duration_seconds": 10, "analysis_window_valid": True, "normalization_sources": {"trim_start_seconds": "recorded", "trim_end_seconds": "recorded"}, "metric_window_semantics": "normalized_analysis_window"},
+            {"stage_id": "two", "started_monotonic": 30, "ended_monotonic": 40, "trim_start_seconds": 0, "trim_end_seconds": 0, "analysis_started_monotonic": 30, "analysis_ended_monotonic": 40, "analysis_duration_seconds": 10, "analysis_window_valid": True, "normalization_sources": {"trim_start_seconds": "zero_default", "trim_end_seconds": "zero_default"}, "metric_window_semantics": "normalized_analysis_window"},
+        ]
+        report = {
+            "contract_id": REPORT_DATA_CONTRACT_ID, "contract_version": 1,
+            "chart_catalog": {"series": catalog, "stage_windows": windows},
+            "stages": [
+                {"stage_id": "one", "index": 0, "display_name": "One"},
+                {"stage_id": "two", "index": 1, "display_name": "Two"},
+            ],
+            "components": [
+                {"component_id": "cpu:aggregate", "label": "CPU"},
+                {"component_id": "gpu:0", "label": "GPU"},
+                {"component_id": "storage:0", "label": "Storage"},
+                {"component_id": "bmc:memory", "label": "Memory rail"},
+            ],
+        }
+        chart = compile_chart_data(root, report)
+        assert chart["contract_id"] == CHART_DATA_CONTRACT_ID and chart["contract_version"] == CONTRACT_VERSION
+        assert chart["kind"] == CHART_DATA_KIND and chart["authority"] == "derived_visualization_only"
+        assert chart["window_inclusion"] == "analysis_start <= timestamp <= analysis_end"
+        assert len(chart["stages"]) == 2 and chart["stages"][0]["analysis_started_monotonic"] == 10
+        first = {series["field"]: series for series in chart["stages"][0]["series"]}
+        assert "gpu_0_vram_used_gib" in first and "gpu_0_vram_used_gb" not in first
+        for field in ("gpu_0_vram_used_gib", "gpu_0_temp_memory_c", "gpu_0_memory_clock_mhz", "gpu_0_memory_busy_percent"):
+            assert first[field]["primary"]
+        assert first["gpu_0_temp_memory_c"]["metric_label"] == "VRAM temperature"
+        assert first["gpu_0_memory_clock_mhz"]["metric_label"] == "VRAM clock" and first["gpu_0_memory_clock_mhz"]["display_unit"] == "GHz"
+        assert first["gpu_0_memory_busy_percent"]["metric_label"] == "VRAM utilization"
+        assert first["gpu_0_vddgfx_v"]["metric_family"] == "Voltage" and first["gpu_0_vddgfx_v"]["display_unit"] == "V"
+        assert first["gpu_0_vddgfx_v"]["primary"] and first["gpu_0_vddgfx_v"]["selector_label"] == "GPU 1 core"
+        assert not first["gpu_0_memory_voltage_v"]["primary"]
+        assert first["gpu_0_memory_voltage_v"]["selector_label"] == "GPU 1 memory voltage"
+        assert not any(series["field"].startswith("cpu_") and series["metric_family"] == "Voltage" for series in first.values())
+        assert first["gpu_0_utilization_percent"]["metric_family"] == "Utilization" and first["gpu_0_utilization_percent"]["display_unit"] == "%"
+        assert first["gpu_0_fan_percent"]["metric_family"] == "Fan duty" and first["gpu_0_fan_percent"]["display_unit"] == "%"
+        assert first["gpu_0_fan_percent"]["primary"]
+        assert first["gpu_0_power_limit_percent"]["metric_family"] == "Percentage"
+        assert first["gpu_0_fan_percent"]["metric_family"] != "Utilization"
+        assert first["gpu_0_utilization_percent"]["selector_label"] == "GPU 1 core"
+        assert first["gpu_0_memory_busy_percent"]["selector_label"] == "GPU 1 VRAM"
+        assert not any("throttle" in field for field in first)
+        for stage in chart["stages"]:
+            for family in stage["families"]:
+                labels = [series["selector_label"] for series in stage["series"] if series["metric_family"] == family]
+                assert len(labels) == len(set(labels))
+        assert first["gpu_0_temp_hotspot_c"]["primary"] and not first["bmc_memory_power_w"]["primary"]
+        gpu_temperatures = [
+            first[field] for field in ("gpu_0_temp_core_c", "gpu_0_temp_hotspot_c", "gpu_0_temp_memory_c")
+        ]
+        assert all(series["primary"] for series in gpu_temperatures)
+        assert [series["selector_label"] for series in gpu_temperatures] == ["GPU 1 core", "GPU 1 hotspot", "GPU 1 VRAM"]
+        assert len({series["selector_label"] for series in gpu_temperatures}) == 3
+        assert first["storage_drive_0_temp_c"]["primary"]
+        assert first["storage_drive_0_temp_c"]["metric_label"] == "Composite temperature"
+        for field in ("storage_drive_0_sensor_1_temp_c", "storage_drive_0_sensor_2_temp_c", "storage_drive_0_sensor_3_temp_c"):
+            assert not first[field]["primary"]
+        assert first["storage_drive_0_sensor_1_temp_c"]["metric_label"] == "Sensor 1 temperature"
+        assert first["storage_drive_0_sensor_2_temp_c"]["metric_label"] == "Sensor 2 temperature"
+        assert first["storage_drive_0_sensor_3_temp_c"]["metric_label"] == "Controller temperature"
+        assert "controller" not in first["storage_drive_0_temp_c"]["metric_label"].lower()
+        assert "controller" not in first["storage_drive_0_sensor_1_temp_c"]["metric_label"].lower()
+        assert "nand" not in first["storage_drive_0_sensor_2_temp_c"]["metric_label"].lower()
+        clock_cores = [series for series in chart["stages"][0]["series"] if series["metric_family"] == "Clock" and series["advanced_group"] == "cpu_cores"]
+        util_cores = [series for series in chart["stages"][0]["series"] if series["metric_family"] == "Utilization" and series["advanced_group"] == "cpu_cores"]
+        assert [series["core_index"] for series in clock_cores] == [0, 2, 10]
+        assert [series["core_index"] for series in util_cores] == [0, 2, 10]
+        assert all(not series["primary"] for series in clock_cores + util_cores)
+        assert all(series["core_class"] is None for series in clock_cores + util_cores)
+        assert all(series["display_label"].startswith("CPU core ") for series in clock_cores + util_cores)
+        assert "effective" not in canonical_chart_json(chart).lower()
+        assert "bmc_status" not in first
+        assert {first[field]["metric_family"] for field in ("bmc_temp_c", "bmc_voltage_v", "bmc_current_a", "bmc_memory_power_w", "bmc_fan_rpm", "bmc_percentage")} == {"Temperature", "Voltage", "Current", "Power", "Fan speed", "Percentage"}
+        vram = first["gpu_0_vram_used_gib"]
+        assert vram["data"]["t"] == [0, 5, 10] and vram["data"]["v"][0] == 0
+        assert first["gpu_0_temp_memory_c"]["original_sample_count"] == 2
+        second = chart["stages"][1]["series"][0]
+        assert second["data"]["t"][0] == 0 and second["data"]["t"][-1] == 10
+        assert canonical_chart_json(chart) == canonical_chart_json(compile_chart_data(root, report))
+        without_hotspot = {
+            **report,
+            "chart_catalog": {
+                **report["chart_catalog"],
+                "series": [item for item in catalog if item["field"] != "gpu_0_temp_hotspot_c"],
+            },
+        }
+        assert not any(
+            series["field"] == "gpu_0_temp_hotspot_c"
+            for stage in compile_chart_data(root, without_hotspot)["stages"]
+            for series in stage["series"]
+        )
+        (root / "raw_telemetry.csv").unlink()
+        unavailable = compile_chart_data(root, report)
+        assert not unavailable["available"] and unavailable["unavailable_reason"] == "raw_telemetry_absent"
+
+
 def run_standalone_report_checks() -> None:
+    _run_chart_data_checks()
     with TemporaryDirectory(prefix="lvs_report_smoke_") as temporary:
         root = Path(temporary)
         _build_fixture(root)
@@ -197,6 +467,22 @@ def run_standalone_report_checks() -> None:
         }
         assert first["metric_summary_source"] == "raw_telemetry"
         assert first["metric_window_semantics"] == "normalized_analysis_window"
+        core_components = {
+            component["component_id"]: component for component in report["components"]
+            if str(component.get("component_id") or "").startswith("cpu:core:")
+        }
+        assert core_components["cpu:core:0"]["display_label"] == "P-Core 0"
+        assert core_components["cpu:core:2"]["core_class"] == "performance"
+        assert core_components["cpu:core:10"]["display_label"] == "E-Core 10"
+        assert core_components["cpu:core:10"]["core_class"] == "efficiency"
+        assert {field for component in core_components.values() for field in component["telemetry_fields"]} >= {
+            "cpu_core_0_clock_mhz", "cpu_core_2_clock_mhz", "cpu_core_10_clock_mhz",
+            "cpu_core_0_utilization_percent", "cpu_core_2_utilization_percent", "cpu_core_10_utilization_percent",
+        }
+        core_metrics = [metric for metric in first["metrics"] if str(metric.get("component_id") or "").startswith("cpu:core:")]
+        assert {metric["field"] for metric in core_metrics} >= {"cpu_core_0_clock_mhz", "cpu_core_10_utilization_percent"}
+        assert any(metric.get("display_label") == "P-Core 0" for metric in core_metrics)
+        assert any(metric.get("display_label") == "E-Core 10" for metric in core_metrics)
         assert report["stages"][1]["analysis_started_monotonic"] == 200
         assert report["stages"][1]["analysis_ended_monotonic"] == 300
         assert report["stages"][1]["analysis_duration_seconds"] == 100
@@ -222,6 +508,27 @@ def run_standalone_report_checks() -> None:
             {"field", "component_id", "metric_class", "unit", "source_label", "provider", "source"}.issubset(series)
             for series in report["chart_catalog"]["series"]
         )
+        catalog_by_field = {series["field"]: series for series in report["chart_catalog"]["series"]}
+        for field in (
+            "gpu_0_throttle_applications_clocks", "gpu_0_throttle_hw_slowdown",
+            "gpu_0_throttle_hw_thermal", "gpu_0_throttle_idle",
+            "gpu_0_throttle_sw_thermal", "gpu_0_throttle_sync_boost",
+            "gpu_0_throttle_hw_power_brake", "gpu_0_throttle_sw_power_cap",
+        ):
+            assert catalog_by_field[field]["metric_class"] == "status"
+            assert catalog_by_field[field]["unit"] == ""
+        assert catalog_by_field["gpu_0_clock_mhz"]["metric_class"] == "clock"
+        assert catalog_by_field["gpu_0_memory_clock_mhz"]["metric_class"] == "clock"
+        assert catalog_by_field["gpu_0_temp_c"]["metric_class"] == "temperature"
+        assert catalog_by_field["gpu_0_power_w"]["metric_class"] == "power"
+        assert catalog_by_field["gpu_0_voltage_v"]["metric_class"] == "voltage"
+        assert catalog_by_field["gpu_0_utilization_percent"]["metric_class"] == "percentage"
+        assert catalog_by_field["memory_used_gb"]["metric_class"] == "memory_usage"
+        assert catalog_by_field["gpu_0_vram_used_gb"]["metric_class"] == "memory_usage"
+        assert catalog_by_field["gpu_0_fan_percent"]["metric_class"] == "fan_duty"
+        assert catalog_by_field["gpu_0_fan_percent"]["unit"] == "percent"
+        assert catalog_by_field["gpu_0_power_limit_percent"]["metric_class"] == "percentage"
+        assert catalog_by_field["gpu_0_power_limit_percent"]["unit"] == "percent"
         first_chart_window = report["chart_catalog"]["stage_windows"][0]
         assert first_chart_window == {
             "stage_id": "cpu_stage",
@@ -483,18 +790,58 @@ def run_standalone_report_checks() -> None:
         assert clock["evaluation"] == "informational_only" and clock["warning"] is False
 
         source_hashes = _hashes(root)
-        data_path, html_path = generate_report(root, generated_at="fixed")
-        assert data_path.name == "lvs_report_data.json" and html_path.name == "result_report.html"
+        data_path, chart_path, html_path = generate_report(root, generated_at="fixed")
+        assert data_path.name == "lvs_report_data.json" and chart_path.name == "lvs_chart_data.json" and html_path.name == "result_report.html"
         persisted = json.loads(data_path.read_text(encoding="utf-8"))
+        persisted_chart = json.loads(chart_path.read_text(encoding="utf-8"))
         html_text = html_path.read_text(encoding="utf-8")
+        assert not any(
+            "throttle" in series.get("field", "")
+            for stage in persisted_chart["stages"]
+            for series in stage["series"]
+        )
+        for stage in persisted_chart["stages"]:
+            for family in stage["families"]:
+                labels = [series["selector_label"] for series in stage["series"] if series["metric_family"] == family]
+                assert len(labels) == len(set(labels))
+        persisted_first = {series["field"]: series for series in persisted_chart["stages"][0]["series"]}
+        assert persisted_first["gpu_0_fan_percent"]["metric_family"] == "Fan duty"
+        assert persisted_first["gpu_0_fan_percent"]["primary"]
+        assert persisted_first["gpu_0_voltage_v"]["metric_family"] == "Voltage"
+        assert persisted_first["gpu_0_voltage_v"]["primary"]
+        assert persisted_first["gpu_0_voltage_v"]["selector_label"] == "GPU 1"
+        assert not any(
+            series["metric_family"] == "Voltage" and series["component_id"].startswith("cpu:")
+            for series in persisted_first.values()
+        )
+        assert persisted_first["gpu_0_power_limit_percent"]["metric_family"] == "Percentage"
+        assert persisted_first["gpu_0_utilization_percent"]["selector_label"] == "GPU 1"
+        assert "Throttle applications clocks" in html_text
+        throttle_cell = html_text[html_text.index("Throttle applications clocks"):html_text.index("gpu_0_throttle_applications_clocks")]
+        assert "Hz" not in throttle_cell and "Clock" not in throttle_cell
+        chart_core_series = [
+            series for series in persisted_chart["stages"][0]["series"]
+            if series.get("advanced_group") == "cpu_cores"
+        ]
+        assert {series["field"] for series in chart_core_series} >= {"cpu_core_0_clock_mhz", "cpu_core_10_utilization_percent"}
+        assert {series.get("core_class") for series in chart_core_series} == {"performance", "efficiency"}
+        assert {series.get("display_label") for series in chart_core_series} >= {"P-Core 0", "P-Core 2", "E-Core 10"}
+        assert all(not series["primary"] for series in chart_core_series)
+        payload_match = re.search(r'<script id="lvs-chart-data" type="application/json" data-encoding="base64">([^<]+)</script>', html_text)
+        assert payload_match and json.loads(base64.b64decode(payload_match.group(1))) == persisted_chart
+        assert canonical_chart_json(persisted_chart) + "\n" == chart_path.read_text(encoding="utf-8")
+        assert persisted_chart["contract_id"] == CHART_DATA_CONTRACT_ID
+        assert persisted_chart["kind"] == CHART_DATA_KIND and persisted_chart["contract_version"] == 1
         generate_report(root)
         deterministic_data = data_path.read_bytes()
+        deterministic_chart = chart_path.read_bytes()
         deterministic_html = html_path.read_bytes()
         assert json.loads(deterministic_data)["generated_at"] is None
         generate_report(root)
         assert data_path.read_bytes() == deterministic_data
+        assert chart_path.read_bytes() == deterministic_chart
         assert html_path.read_bytes() == deterministic_html
-        assert not list(root.glob(".lvs_report_*.tmp")) and not list(root.glob(".result_report.*.tmp"))
+        assert not list(root.glob(".*.tmp"))
         for heading in ("System identity", "Review summary", "Stage overview", "Component mapping", "Hardware references and advanced details", "Telemetry explorer"):
             assert heading in html_text
         assert html_text.index("Stage overview") < html_text.index("Telemetry explorer") < html_text.index("Component mapping")
@@ -563,17 +910,19 @@ def run_standalone_report_checks() -> None:
         assert stage_overview.count('class="full-metric-head"') == len(report["stages"])
         assert 'class="full-metric-group-label">CPU</div>' in stage_overview
         assert 'class="full-metric-group-label">GPU 1</div>' in stage_overview
-        assert 'class="metric-subgroup nested-disclosure"><summary>CPU cores (1)</summary>' in stage_overview
+        assert 'class="metric-subgroup nested-disclosure"><summary>Performance cores (2)</summary>' in stage_overview
+        assert 'class="metric-subgroup nested-disclosure"><summary>Efficiency cores (1)</summary>' in stage_overview
         assert 'class="full-metric-group-label">BMC / IPMI</div>' in stage_overview
         first_detail = stage_overview[
             stage_overview.index('id="stage-detail-0"'):
             stage_overview.index('id="stage-detail-1"')
         ]
-        assert first_detail.index('>CPU</div>') < first_detail.index('CPU cores (1)') < first_detail.index('>GPU 1</div>')
+        assert first_detail.index('>CPU</div>') < first_detail.index('Performance cores (2)') < first_detail.index('Efficiency cores (1)') < first_detail.index('>GPU 1</div>')
         assert first_detail.index('>GPU 1</div>') < first_detail.index('>Memory</div>') < first_detail.index('>Storage</div>')
         assert first_detail.index('>Storage</div>') < first_detail.index('>BMC / IPMI</div>')
-        assert "CPU cores (1)</summary><div class=\"full-metric-grid\"><div class=\"full-metric-head\"" not in stage_overview
-        assert "CPU cores (1)</summary>" in stage_overview
+        assert "Performance cores (2)</summary><div class=\"full-metric-grid\"><div class=\"full-metric-head\"" not in stage_overview
+        assert "P-Core 0" in stage_overview and "P-Core 2" in stage_overview and "E-Core 10" in stage_overview
+        assert "CPU Core 10" not in stage_overview
         assert "<details open" not in stage_overview
         assert html_text.count("Hide full min/avg/max metrics") == 1
         assert _clock_range({"minimum": 550, "maximum": 550, "unit": "mhz", "field": "cpu_clock_mhz"}) == "550 MHz"
@@ -601,12 +950,14 @@ def run_standalone_report_checks() -> None:
         assert 'class="telemetry-component nested-disclosure"' not in advanced_mapping
         assert "<details open" not in advanced_mapping
         assert "CPU Core 0</summary>" not in advanced_mapping and "Board sensor 1</summary>" not in advanced_mapping
+        assert "Performance cores (2)" in advanced_mapping and "Efficiency cores (1)" in advanced_mapping
+        assert "P-Core 0 clock" in advanced_mapping and "E-Core 10 clock" in advanced_mapping
         assert "cpu_package_0_temp_c" in advanced_mapping and "gpu_0_temp_hotspot_c" in advanced_mapping
         assert '<strong>CPU</strong>' in html_text and "CPU package 0" in html_text and "Temperature" in html_text
         assert "gpu_0_temp_hotspot_c" in html_text and "bmc_memory_power_w" in html_text
         for duplicated_label in ("GPU 1 GPU temperature", "GPU 2 GPU temperature", "DIMM 1 DIMM 1 temperature", "Storage 1 Storage 1 temperature"):
             assert duplicated_label not in html_text
-        assert 'class="metric-subgroup nested-disclosure"><summary>CPU cores (1)</summary>' in stage_overview
+        assert 'class="metric-subgroup nested-disclosure"><summary>Performance cores (2)</summary>' in stage_overview
         expected_fields = {field for component in report["components"] for field in component.get("telemetry_fields", [])}
         assert all(field in advanced_mapping for field in expected_fields)
         assert "&lt;/script&gt;&lt;img" in html_text and "<img src=x" not in html_text
@@ -614,9 +965,91 @@ def run_standalone_report_checks() -> None:
             **report,
             "run": {**report["run"], "profile_name": 'Quoted "profile"'},
         })
-        assert html_text.lower().count("<script") == 1
+        topology_html = render_report_html({
+            **report,
+            "hardware": {
+                **report["hardware"],
+                "cpu": {
+                    **report["hardware"]["cpu"],
+                    "Topology": {"Aggregate": {"PhysicalCoreCount": 3, "PCoreCount": 2, "ECoreCount": 1, "UnknownCoreTypeCount": 0}},
+                },
+            },
+        })
+        assert "<dt>Cores</dt><dd>3 total · 2 performance · 1 efficiency</dd>" in topology_html
+        assert "<dt>Cores</dt>" not in html_text
+        assert html_text.lower().count("<script") == 3
         assert "http://" not in html_text and "https://" not in html_text
-        assert "Interactive stage telemetry" in html_text and "canvas" not in html_text.lower()
+        assert '<canvas id="telemetry-canvas"' in html_text
+        assert '<option value="" selected>Select a stage…</option>' not in html_text
+        assert '<option value="cpu_stage" selected>Stage 1 — CPU workload</option>' in html_text
+        assert "Loading telemetry graph…" in html_text
+        assert "Select a stage above to view its telemetry graph." not in html_text
+        assert '<button id="telemetry-view"' not in html_text and ">View<" not in html_text
+        assert "stageSelect&&stageSelect.addEventListener('change',syncExplorerFromStageSelect)" in html_text
+        assert "window.addEventListener('pageshow',syncExplorerFromStageSelect)" in html_text
+        assert "syncExplorerFromStageSelect();" in html_text
+        assert "function syncExplorerFromStageSelect()" in html_text
+        assert "var resolved=stageById(stageSelect.value),chartable=chartableStages()" in html_text
+        assert "if(resolved){stageSelect.value=resolved.stage_id;loadStage(resolved);return;}" in html_text
+        assert "chart-frame" in html_text and "chart-empty-state" in html_text
+        assert "Stage 1 — CPU &lt;load&gt;" in html_text
+        assert "Stage 1 — CPU &lt;load&gt; —" not in html_text
+        assert "function defaultSeries(items){selected.clear()" in html_text
+        assert "if(choice)selected.add(choice.series_id);" in html_text
+        assert "slice(0,3)" not in html_text
+        assert "chart.js" not in html_text.lower()
+        for behavior in (
+            "chart-series-row", "Advanced series", "Performance cores (", "Efficiency cores (", "advanced_group==='cpu_cores'",
+            "selected.add", "mouseenter", "deemphasized", "emphasized",
+            "context.setLineDash([3,3])", "telemetry-tooltip", "Showing normalized analysis window",
+            "Select one or more series to display.", "No chartable telemetry is available for this stage.",
+            "ResizeObserver",
+        ):
+            assert behavior in html_text
+        for behavior in (
+            "function setCoreGroupSelection(cores,checked,coreList)",
+            "coreAction('Select all',cores,true,coreList)",
+            "coreAction('Clear',cores,false,coreList)",
+            "event.preventDefault();event.stopPropagation()",
+            "function tooltipColumnCount(count,width,height)",
+            "function positionTooltip(width,height)",
+            "entries.join('')", "max-height:calc(100% - 16px)",
+            "grid-template-columns:repeat(var(--tooltip-columns,1),minmax(0,1fr))",
+            "Math.max(8,Math.min(x,width-tooltipWidth-8))",
+            ".chart-legend{display:flex;min-width:0;max-width:100%;flex-wrap:wrap",
+        ):
+            assert behavior in html_text
+        assert "entries.slice" not in html_text and "items.slice" not in html_text
+        assert "cores.forEach(function(item){if(checked)selected.add(item.series_id);else selected.delete(item.series_id);})" in html_text
+        assert "coreDetails.addEventListener('toggle'" not in html_text
+        for core_count, heterogeneous in ((24, True), (64, False), (128, True)):
+            dense_html = render_report_html(report, _synthetic_dense_core_chart(core_count, heterogeneous=heterogeneous))
+            dense_match = re.search(r'<script id="lvs-chart-data" type="application/json" data-encoding="base64">([^<]+)</script>', dense_html)
+            assert dense_match
+            dense_payload = json.loads(base64.b64decode(dense_match.group(1)))
+            dense_series = dense_payload["stages"][0]["series"]
+            assert len(dense_series) == core_count
+            assert len({series["selector_label"] for series in dense_series}) == core_count
+            assert all(not series["primary"] and series["advanced_group"] == "cpu_cores" for series in dense_series)
+            assert "Select all" in dense_html and "Clear" in dense_html
+            assert ".chart-series-list{display:flex;min-width:0;max-width:100%;flex-wrap:wrap" in dense_html
+        homogeneous = _synthetic_dense_core_chart(64, heterogeneous=False)["stages"][0]["series"]
+        assert all(series["core_class"] is None for series in homogeneous)
+        heterogeneous = _synthetic_dense_core_chart(24, heterogeneous=True)["stages"][0]["series"]
+        assert {series["core_class"] for series in heterogeneous} == {"performance", "efficiency"}
+        assert "function niceStep(range,targetTicks)" in html_text
+        assert "function axisScale(family,minimum,maximum)" in html_text
+        assert "family==='Utilization'&&minimum>=0&&maximum<=100" in html_text
+        assert "return {minimum:0,maximum:100,step:20}" in html_text
+        assert "'Power','Memory / VRAM','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'" in html_text
+        assert "nonnegative&&minimum>=0&&lower<0" in html_text
+        assert "Temperature" not in html_text[html_text.index("nonnegative=["):html_text.index("].indexOf(family)>=")]
+        assert "component+' VRAM'" in html_text and "component+' hotspot'" in html_text
+        unavailable_html = render_report_html(report, {"available": False, "unavailable_reason": "raw_telemetry_absent", "stages": []})
+        assert "No raw telemetry is available for this run." in unavailable_html
+        assert '<option value="" selected>Select a stage…</option>' in unavailable_html
+        assert "canvas.addEventListener('click'" not in html_text
+        assert "fetch(" not in html_text and "XMLHttpRequest" not in html_text
         assert "<svg" not in html_text.lower() and "new chart" not in html_text.lower()
         topbar = html_text[html_text.index('<header class="topbar">'):html_text.index("</header>")]
         assert "badge" not in topbar
@@ -641,7 +1074,7 @@ def run_standalone_report_checks() -> None:
             assert forbidden_html not in html_text
         generate_report(root, generated_at="fixed")
         assert _hashes(root) == source_hashes
-        assert {path.name for path in root.iterdir() if path.is_file()} == set(source_hashes) | {"lvs_report_data.json", "result_report.html"}
+        assert {path.name for path in root.iterdir() if path.is_file()} == set(source_hashes) | {"lvs_report_data.json", "lvs_chart_data.json", "result_report.html"}
 
         telemetry_dimms = [
             {"component_id": "memory_module:0", "component_class": "memory_module", "label": "DIMM 0"},
@@ -727,6 +1160,27 @@ def run_standalone_report_checks() -> None:
         assert grouped_html.index("CPU cores (1)") < grouped_html.index(">Storage</div>")
         assert "bmc_fan_0_rpm" in grouped_html[grouped_html.index(">BMC / IPMI</div>"):grouped_html.index("Platform sensors (1)")]
 
+        incomplete_html = _metric_table({
+            "index": 0, "display_label": "Incomplete cores", "native_outcome": "pass",
+            "metrics": [
+                {"field": "cpu_core_0_clock_mhz", "component_id": "cpu:core:0", "metric_class": "clock", "unit": "mhz", "display_label": "P-Core 0", "core_class": "performance", "sample_count": 1, "minimum": 1, "average": 1, "maximum": 1},
+                {"field": "cpu_core_1_clock_mhz", "component_id": "cpu:core:1", "metric_class": "clock", "unit": "mhz", "display_label": "Core 1", "sample_count": 1, "minimum": 1, "average": 1, "maximum": 1},
+            ],
+        }, {})
+        assert "Performance cores (1)" in incomplete_html and "Unclassified cores (1)" in incomplete_html
+        assert "P-Core 0" in incomplete_html and "Core 1" in incomplete_html
+
+        generic_heterogeneous_html = _metric_table({
+            "index": 0, "display_label": "Generic heterogeneous cores", "native_outcome": "pass",
+            "metrics": [
+                {"field": "cpu_core_0_clock_mhz", "component_id": "cpu:core:0", "metric_class": "clock", "unit": "mhz", "display_label": "Performance core 0", "core_class": "performance", "sample_count": 1, "minimum": 1, "average": 1, "maximum": 1},
+                {"field": "cpu_core_1_clock_mhz", "component_id": "cpu:core:1", "metric_class": "clock", "unit": "mhz", "display_label": "Efficiency core 1", "core_class": "efficiency", "sample_count": 1, "minimum": 1, "average": 1, "maximum": 1},
+            ],
+        }, {})
+        assert "Performance cores (1)" in generic_heterogeneous_html and "Efficiency cores (1)" in generic_heterogeneous_html
+        assert "Performance core 0" in generic_heterogeneous_html and "Efficiency core 1" in generic_heterogeneous_html
+        assert "P-Core 0" not in generic_heterogeneous_html and "E-Core 1" not in generic_heterogeneous_html
+
         advanced_components = [
             {"component_id": "unclassified:0", "component_class": "unknown", "telemetry_fields": ["other_value"]},
             {"component_id": "device:board:0", "component_class": "board", "telemetry_fields": ["board_0_temp_c"]},
@@ -761,7 +1215,36 @@ def run_standalone_report_checks() -> None:
         storage_sensor = {**storage_metric, "field": "storage_drive_0_sensor_2_temp_c", "source_label": "NVMe Sensor 2"}
         storage_html = _metric_table({"index": 0, "display_label": "Storage", "native_outcome": "pass", "metrics": [storage_metric, storage_sensor]}, {})
         assert "Composite temperature" in storage_html and "Sensor 2 temperature" in storage_html
+        assert "Controller temperature" not in storage_html and "NAND temperature" not in storage_html
         assert "Storage 1 Storage" not in storage_html
+        explicit_controller = {
+            **storage_sensor,
+            "field": "storage_drive_0_sensor_3_temp_c",
+            "source_label": "NVMe Controller",
+        }
+        explicit_nand = {
+            **storage_sensor,
+            "field": "storage_drive_0_sensor_4_temp_c",
+            "source_label": "NVMe NAND temperature",
+        }
+        explicit_storage_html = _metric_table({
+            "index": 0, "display_label": "Storage", "native_outcome": "pass",
+            "metrics": [storage_metric, explicit_controller, explicit_nand],
+        }, {})
+        assert "Composite temperature" in explicit_storage_html
+        assert "Controller temperature" in explicit_storage_html and "NAND temperature" in explicit_storage_html
+        mapping_html = _advanced_telemetry_mapping(
+            [{
+                "component_id": "storage:0", "component_class": "storage", "label": "NVMe Test",
+                "telemetry_fields": [metric["field"] for metric in (storage_metric, storage_sensor, explicit_controller, explicit_nand)],
+            }],
+            {"series": [storage_metric, storage_sensor, explicit_controller, explicit_nand]},
+            [{"metrics": [storage_metric, storage_sensor, explicit_controller, explicit_nand]}],
+        )
+        assert "NVMe Test composite temperature" in mapping_html
+        assert "NVMe Test sensor 2 temperature" in mapping_html
+        assert "NVMe Test controller temperature" in mapping_html
+        assert "NVMe Test NAND temperature" in mapping_html
 
         duplicate_description = json.loads(json.dumps(report))
         duplicate_description["run"]["description"] = "  " + duplicate_description["run"]["profile_name"].upper() + "!  "

@@ -1014,6 +1014,7 @@ def test_output_contract_index_and_casing_policy() -> None:
         "run_manifest.json",
         "dependency_check.json",
         "lvs_report_data.json",
+        "lvs_chart_data.json",
         "result_report.html",
         "public_support_summary.json",
         "migration_manifest.json",
