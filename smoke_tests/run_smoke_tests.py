@@ -39,6 +39,7 @@ from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_che
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
 from smoke_tests.direct_hwmon_telemetry_checks import run_direct_hwmon_telemetry_checks
 from smoke_tests.live_tui_telemetry_checks import run_live_tui_telemetry_checks
+from smoke_tests.new_telemetry_report_integration_checks import run_new_telemetry_report_integration_checks
 from smoke_tests.bmc_telemetry_provider_checks import run_bmc_telemetry_provider_checks
 from smoke_tests.standalone_report_checks import run_standalone_report_checks
 from smoke_tests.output_contract_checks import (
@@ -27017,6 +27018,7 @@ def main() -> int:
         run_platform_sensor_telemetry_checks,
         run_direct_hwmon_telemetry_checks,
         run_live_tui_telemetry_checks,
+        run_new_telemetry_report_integration_checks,
         run_bmc_telemetry_provider_checks,
         run_standalone_report_checks,
         test_google_drive_not_ready_manifest,

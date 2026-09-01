@@ -244,6 +244,8 @@ def _identity(source: Dict[str, Any]) -> Dict[str, Any]:
         "provider", "kind", "label", "raw_label", "normalized_label", "card", "slot",
         "vendor", "driver", "device_name", "block_name", "component_locator",
         "sensor_number", "entity_id", "entity_instance", "sensor_type", "confidence",
+        "semantic_classification", "source_scope", "measurement_semantics",
+        "stable_device_locator", "channel",
     )
     return {key: source[key] for key in allowed if source.get(key) not in (None, "", [], {})}
 
@@ -343,6 +345,11 @@ def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], sys
             "provider": str(source.get("provider") or source.get("kind") or ""),
             "source_label": str(source.get("label") or source.get("raw_label") or field),
             "source": source,
+            "semantic_subtype": str(source.get("semantic_classification") or ""),
+            "source_scope": str(source.get("source_scope") or ""),
+            "measurement_semantics": str(source.get("measurement_semantics") or ""),
+            "stable_device_locator": str(source.get("stable_device_locator") or ""),
+            "channel": source.get("channel"),
         }
         component = components.setdefault(component_id, {
             "component_id": component_id,
@@ -512,6 +519,12 @@ def _raw_stage_metrics(stage: Dict[str, Any], telemetry_rows: List[Tuple[float, 
         if context["source_label"]:
             metric["source_label"] = context["source_label"]
         for key in ("core_index", "core_class", "core_class_label", "display_label", "core_type_source"):
+            if context.get(key) not in (None, ""):
+                metric[key] = context[key]
+        for key in (
+            "semantic_subtype", "source_scope", "measurement_semantics",
+            "stable_device_locator", "channel",
+        ):
             if context.get(key) not in (None, ""):
                 metric[key] = context[key]
         metrics.append(metric)
@@ -1160,8 +1173,9 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             entry["contract_version"] = payload.get("contract_version")
         provenance_artifacts.append(entry)
 
-    chart_series = [
-        {
+    chart_series = []
+    for field, context in sorted(field_context.items()):
+        item = {
             "field": field,
             "component_id": context["component_id"],
             "metric_class": context["metric_class"],
@@ -1170,8 +1184,13 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "provider": context["provider"],
             "source": str(context["source"].get("source") or context["source"].get("path") or ""),
         }
-        for field, context in sorted(field_context.items())
-    ]
+        for key in (
+            "semantic_subtype", "source_scope", "measurement_semantics",
+            "stable_device_locator", "channel",
+        ):
+            if context.get(key) not in (None, ""):
+                item[key] = context[key]
+        chart_series.append(item)
     payload: Dict[str, Any] = {
         "generated_at": generated_at,
         "generator": {"name": APP_NAME, "version": APP_VERSION, "module": "Modules.lvs_report"},

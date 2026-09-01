@@ -260,6 +260,7 @@ def _component_label(component_id: str, components: Mapping[str, Mapping[str, An
 def _metric_label(series: Mapping[str, Any], family: str) -> str:
     field = str(series.get("field") or "").lower()
     provider = str(series.get("provider") or "").lower()
+    semantic = str(series.get("semantic_subtype") or "").lower()
     if family == "Temperature":
         if "hotspot" in field or "junction" in field:
             return "Hotspot temperature"
@@ -288,16 +289,31 @@ def _metric_label(series: Mapping[str, Any], family: str) -> str:
     if family == "Memory / VRAM":
         return "VRAM used" if field.startswith("gpu_") else "Used memory"
     if family == "Fan speed":
-        return "Fan speed"
+        return {
+            "cpu_fan": "CPU fan", "system_fan": "System fan",
+            "pump": "Pump", "gpu_fan": "GPU fan", "psu_fan": "PSU fan",
+        }.get(semantic, "Fan speed")
     if family == "Fan duty":
         return "Fan duty"
     if family == "Voltage":
+        semantic_labels = {
+            "cpu_vcore": "CPU Vcore", "cpu_soc": "CPU SoC",
+            "cpu_vddp": "CPU VDDP", "dram": "DRAM",
+            "motherboard_12v": "+12V", "motherboard_5v": "+5V",
+            "motherboard_3v3": "+3.3V", "other_voltage_rail": "Voltage rail",
+        }
+        if semantic in semantic_labels:
+            if semantic == "other_voltage_rail":
+                return str(series.get("source_label") or semantic_labels[semantic])
+            return semantic_labels[semantic]
         if any(token in field for token in ("memory", "vram")):
             return "Memory voltage"
         if "vddnb" in field:
-            return "VDDNB voltage"
+            return "VDDNB"
+        if "vddgfx" in field:
+            return "VDDGFX"
         if "soc" in field:
-            return "SOC voltage"
+            return "CPU SoC"
         return "Voltage"
     return family
 
@@ -308,6 +324,31 @@ def _selector_label(series: Mapping[str, Any], family_items: Sequence[Mapping[st
         return str(series.get("display_label") or series.get("component_label") or f"Core {series.get('core_index')}")
     component = str(series.get("component_label") or "")
     metric = str(series.get("metric_label") or "")
+    semantic = str(series.get("semantic_subtype") or "")
+    field = str(series.get("field") or "")
+    if family_items and semantic:
+        semantic_match = re.search(rf"{re.escape(semantic)}_(\d+)_", field)
+        semantic_index = int(semantic_match.group(1)) if semantic_match else 0
+        if semantic == "cpu_fan":
+            return "CPU fan" if semantic_index == 0 else f"CPU fan {semantic_index + 1}"
+        if semantic == "system_fan":
+            return f"System fan {semantic_index + 1}"
+        if semantic == "pump":
+            return "Pump" if semantic_index == 0 else f"Pump {semantic_index + 1}"
+        if semantic == "gpu_fan":
+            gpu_match = re.fullmatch(r"gpu_(\d+)_fan_(\d+)_rpm", field)
+            if gpu_match:
+                return f"GPU {int(gpu_match.group(1)) + 1} fan {int(gpu_match.group(2)) + 1}"
+            return "GPU fan" if semantic_index == 0 else f"GPU fan {semantic_index + 1}"
+        if semantic == "psu_fan":
+            return "PSU fan" if semantic_index == 0 else f"PSU fan {semantic_index + 1}"
+        if semantic == "cpu_vcore":
+            return "CPU Vcore" if semantic_index == 0 else f"CPU Vcore {semantic_index + 1}"
+        if semantic in {
+            "cpu_soc", "cpu_vddp", "dram", "motherboard_12v", "motherboard_5v",
+            "motherboard_3v3", "other_voltage_rail",
+        }:
+            return metric
     component_items = [item for item in family_items if item.get("component_id") == series.get("component_id")]
     if len(component_items) == 1:
         return component
@@ -325,10 +366,12 @@ def _selector_label(series: Mapping[str, Any], family_items: Sequence[Mapping[st
         return f"{component} power"
     if metric == "Voltage":
         return f"{component} core"
-    if metric == "VDDNB voltage":
+    if metric == "VDDNB":
         return f"{component} VDDNB"
-    if metric == "SOC voltage":
-        return f"{component} SOC"
+    if metric == "VDDGFX":
+        return f"{component} VDDGFX"
+    if metric == "CPU SoC":
+        return "CPU SoC"
     if metric in {"VRAM temperature", "VRAM clock", "VRAM utilization", "VRAM used"}:
         return f"{component} VRAM"
     if metric == "Hotspot temperature":
@@ -345,9 +388,15 @@ def _apply_selector_labels(series: List[Dict[str, Any]]) -> None:
     """Attach deterministic visible labels and fail-safe disambiguators."""
     for family in FAMILY_ORDER:
         family_items = [item for item in series if item.get("metric_family") == family]
+        candidates = [_selector_label(item, family_items) for item in family_items]
+        totals = {label: candidates.count(label) for label in set(candidates)}
         used: Dict[str, int] = {}
-        for item in family_items:
-            label = _selector_label(item, family_items)
+        for item, candidate in zip(family_items, candidates):
+            label = candidate
+            if totals[candidate] > 1:
+                provider = str(item.get("provider") or "").strip()
+                if provider:
+                    label = f"{candidate} · {provider}"
             count = used.get(label, 0)
             used[label] = count + 1
             if count:
@@ -363,7 +412,10 @@ def _is_primary_voltage(series: Mapping[str, Any]) -> bool:
     if any(token in field for token in secondary_tokens):
         return False
     if component == "cpu:aggregate":
-        return bool(re.fullmatch(r"cpu_(?:package_|core_)?voltage_v", field))
+        return bool(
+            re.fullmatch(r"cpu_(?:package_|core_)?voltage_v", field)
+            or re.fullmatch(r"cpu_vcore_0_v", field)
+        )
     if component.startswith("gpu:"):
         return bool(re.fullmatch(r"gpu_\d+_(?:voltage|core_voltage|vddgfx)_v", field))
     # BMC/PSU voltages stay diagnostic unless retained metadata explicitly marks
@@ -379,7 +431,10 @@ def _is_primary(series: Mapping[str, Any], metric_label: str) -> bool:
     provider = str(series.get("provider") or "").lower()
     if component.startswith("cpu:core:"):
         return False
-    if metric_label in {"Voltage", "Memory voltage", "VDDNB voltage", "SOC voltage"}:
+    if str(series.get("metric_family") or "") == "Voltage" or metric_label in {
+        "Voltage", "Memory voltage", "VDDNB", "VDDGFX", "CPU Vcore", "CPU SoC",
+        "CPU VDDP", "DRAM", "+12V", "+5V", "+3.3V", "Voltage rail",
+    }:
         return _is_primary_voltage(series)
     if component.startswith("device:") or component.startswith("bmc:") or provider.startswith(("bmc", "ipmi")):
         return False
@@ -391,6 +446,10 @@ def _is_primary(series: Mapping[str, Any], metric_label: str) -> bool:
         return provider == "storage_temp" and "sensor_" not in field
     if metric_label in {"Fan speed", "Fan duty"}:
         return component.startswith(("gpu:", "bmc:"))
+    if str(series.get("semantic_subtype") or "") in {
+        "cpu_fan", "system_fan", "pump", "gpu_fan",
+    }:
+        return True
     if metric_label in {"Current", "Percentage"}:
         return False
     return component.startswith(("cpu:", "gpu:", "memory_module:", "memory:system"))
@@ -494,7 +553,7 @@ def compile_chart_data(
                 primary = _is_primary(item, metric_label)
                 core_match = re.fullmatch(r"cpu:core:(\d+)", component_id)
                 component_meta = components.get(component_id, {})
-                chart_series.append({
+                chart_item = {
                     "series_id": field, "component_id": component_id,
                     "component_label": component_label, "field": field,
                     "label": f"{component_label} — {metric_label}", "display_label": component_label,
@@ -510,7 +569,14 @@ def compile_chart_data(
                     "source_label": str(item.get("source_label") or ""),
                     "source": str(item.get("source") or ""),
                     **encoded,
-                })
+                }
+                for key in (
+                    "semantic_subtype", "source_scope", "measurement_semantics",
+                    "stable_device_locator", "channel",
+                ):
+                    if item.get(key) not in (None, ""):
+                        chart_item[key] = item[key]
+                chart_series.append(chart_item)
             _apply_selector_labels(chart_series)
             chart_series.sort(key=_series_order)
             families = [family for family in FAMILY_ORDER if any(item["metric_family"] == family for item in chart_series)]

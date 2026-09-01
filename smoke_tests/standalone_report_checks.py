@@ -375,7 +375,7 @@ def _run_chart_data_checks() -> None:
         assert first["gpu_0_memory_clock_mhz"]["metric_label"] == "VRAM clock" and first["gpu_0_memory_clock_mhz"]["display_unit"] == "GHz"
         assert first["gpu_0_memory_busy_percent"]["metric_label"] == "VRAM utilization"
         assert first["gpu_0_vddgfx_v"]["metric_family"] == "Voltage" and first["gpu_0_vddgfx_v"]["display_unit"] == "V"
-        assert first["gpu_0_vddgfx_v"]["primary"] and first["gpu_0_vddgfx_v"]["selector_label"] == "GPU 1 core"
+        assert first["gpu_0_vddgfx_v"]["primary"] and first["gpu_0_vddgfx_v"]["selector_label"] == "GPU 1 VDDGFX"
         assert not first["gpu_0_memory_voltage_v"]["primary"]
         assert first["gpu_0_memory_voltage_v"]["selector_label"] == "GPU 1 memory voltage"
         assert not any(series["field"].startswith("cpu_") and series["metric_family"] == "Voltage" for series in first.values())

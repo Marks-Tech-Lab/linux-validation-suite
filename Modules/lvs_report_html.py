@@ -379,11 +379,46 @@ def _storage_temperature_name(metric: Dict[str, Any]) -> str:
     return "Composite temperature"
 
 
+def _semantic_metric_name(metric: Dict[str, Any]) -> str:
+    """Name direct cooling/rail metrics from retained semantic metadata."""
+    field = str(metric.get("field") or "").lower()
+    semantic = str(metric.get("semantic_subtype") or "").lower()
+    match = re.search(rf"{re.escape(semantic)}_(\d+)_", field) if semantic else None
+    index = int(match.group(1)) if match else 0
+    if semantic == "cpu_fan":
+        return "CPU fan" if index == 0 else f"CPU fan {index + 1}"
+    if semantic == "system_fan":
+        return f"System fan {index + 1}"
+    if semantic == "pump":
+        return "Pump" if index == 0 else f"Pump {index + 1}"
+    if semantic == "gpu_fan":
+        gpu_match = re.fullmatch(r"gpu_(\d+)_fan_(\d+)_rpm", field)
+        if gpu_match:
+            return f"GPU {int(gpu_match.group(1)) + 1} fan {int(gpu_match.group(2)) + 1}"
+        return "GPU fan" if index == 0 else f"GPU fan {index + 1}"
+    if semantic == "psu_fan":
+        return "PSU fan" if index == 0 else f"PSU fan {index + 1}"
+    voltage_labels = {
+        "cpu_vcore": "CPU Vcore", "cpu_soc": "CPU SoC", "cpu_vddp": "CPU VDDP",
+        "dram": "DRAM", "motherboard_12v": "+12V", "motherboard_5v": "+5V",
+        "motherboard_3v3": "+3.3V",
+    }
+    if semantic in voltage_labels:
+        label = voltage_labels[semantic]
+        return label if index == 0 else f"{label} {index + 1}"
+    if semantic == "other_voltage_rail":
+        return str(metric.get("source_label") or "Voltage rail")
+    return ""
+
+
 def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[str, Any]]) -> str:
     field = str(metric.get("field") or "")
     component_id = str(metric.get("component_id") or "")
     metric_class = str(metric.get("metric_class") or "metric")
     component = _short_component_label(component_id)
+    semantic_name = _semantic_metric_name(metric)
+    if semantic_name:
+        return semantic_name
     if component_id.startswith("cpu:"):
         if metric_class == "temperature":
             if component_id.startswith("cpu:core:"):
@@ -403,6 +438,11 @@ def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[st
             return f'{component} {"memory" if "memory" in field else "core"} clock'
         if metric_class == "power":
             return f"{component} power"
+        if metric_class == "voltage":
+            if "vddgfx" in field:
+                return f"{component} VDDGFX"
+            if "vddnb" in field:
+                return f"{component} VDDNB"
         if metric_class == "percentage":
             return f"{component} memory-busy utilization" if "memory_busy" in field else f"{component} utilization"
         if metric_class in {"memory_usage", "other_numeric"} and "vram_used" in field:
@@ -453,6 +493,9 @@ def _metric_name(metric: Dict[str, Any]) -> str:
     field = str(metric.get("field") or "").lower()
     component_id = str(metric.get("component_id") or "")
     metric_class = str(metric.get("metric_class") or "metric")
+    semantic_name = _semantic_metric_name(metric)
+    if semantic_name:
+        return semantic_name
     if metric_class == "temperature":
         if "hotspot" in field or "junction" in field:
             return "Hotspot temperature"
@@ -463,6 +506,11 @@ def _metric_name(metric: Dict[str, Any]) -> str:
         return "Temperature"
     if metric_class == "clock":
         return "Memory clock" if "memory" in field else "Clock"
+    if metric_class == "voltage" and component_id.startswith("gpu:"):
+        if "vddgfx" in field:
+            return "VDDGFX"
+        if "vddnb" in field:
+            return "VDDNB"
     if metric_class == "percentage":
         return "Memory-busy utilization" if "memory_busy" in field else "Utilization"
     if component_id == "memory:system" and field.startswith("memory_used_"):
