@@ -31,6 +31,7 @@ def execute_validation_run(
     run_dir: Optional[Path] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     operator_stop_source: str = "cli",
+    live_telemetry_callback: Optional[Callable[[Any], None]] = None,
 ) -> Path:
     preflight = orchestrator.dry_run(profile_path, profile, labels)
     if not preflight["runnable"]:
@@ -48,6 +49,7 @@ def execute_validation_run(
         runtime_environment=orchestrator.settings.runtime_environment,
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
         cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
+        live_snapshot_callback=live_telemetry_callback,
     )
     try:
         return _execute_validation_run_with_collector(

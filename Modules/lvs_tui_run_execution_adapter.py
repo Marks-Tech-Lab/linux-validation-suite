@@ -25,6 +25,9 @@ from Modules.lvs_tui_post_run_flow import (
 )
 from Modules.lvs_tui_run_presentation import (
     initial_run_active_presentation,
+    live_detail_content_width,
+    live_snapshot_detail_text,
+    live_snapshot_is_stale,
     locked_post_run_upload_text,
     locked_post_run_wall_wattage_text,
     locked_run_detail_text,
@@ -135,6 +138,8 @@ class TuiRunExecutionAdapterMixin:
         self.run_cancel_event.clear()
         profile = self.selected_profile
         self.run_live_lines = []
+        self.run_live_telemetry_snapshot = None
+        self.run_live_telemetry_detail = False
         self.run_live_profile_name = profile.name
         self.run_live_phase_line = ""
         self.run_status_tracker.reset()
@@ -255,6 +260,9 @@ class TuiRunExecutionAdapterMixin:
                 setup=self.run_setup,
                 output_callback=lambda line: self.call_from_thread(self._append_run_output_line, line),
                 progress_callback=lambda event: self.call_from_thread(self._append_run_progress_event, event),
+                live_telemetry_callback=lambda snapshot: self.call_from_thread(
+                    self._append_live_telemetry_snapshot, snapshot
+                ),
                 cancel_check=self.run_cancel_event.is_set,
                 operator_stop_source="tui",
             )
@@ -283,14 +291,45 @@ class TuiRunExecutionAdapterMixin:
         if update.is_progress:
             self._set_status(f"Run active | {update.status_text}")
         if self.run_in_progress:
-            self._set_detail(self._run_progress_text())
+            self._refresh_run_detail()
 
     def _append_run_progress_event(self, event: RunProgressEvent) -> None:
         self.run_status_tracker.update_event(event)
         self.run_live_phase_line = event.raw_line
         self._set_status(f"Run active | {self.run_status_tracker.status_text(96)}")
         if self.run_in_progress:
-            self._set_detail(self._run_progress_text())
+            self._refresh_run_detail()
+
+    def _append_live_telemetry_snapshot(self, snapshot) -> None:
+        self.run_live_telemetry_snapshot = snapshot
+        self._refresh_live_system_pane()
+        if self.run_in_progress and self.run_live_telemetry_detail:
+            self._refresh_run_detail()
+
+    def _refresh_run_detail(self) -> None:
+        snapshot = getattr(self, "run_live_telemetry_snapshot", None)
+        if getattr(self, "run_live_telemetry_detail", False) and snapshot is not None:
+            import time
+            terminal_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)
+            self._set_detail(
+                live_snapshot_detail_text(
+                    snapshot,
+                    stale=live_snapshot_is_stale(snapshot, time.monotonic()),
+                    content_width=live_detail_content_width(terminal_width),
+                )
+            )
+            return
+        self._set_detail(self._run_progress_text())
+
+    def action_telemetry_detail(self) -> None:
+        if not self.run_in_progress:
+            self._set_status("Live telemetry detail is available during a run")
+            return
+        self.run_live_telemetry_detail = not bool(getattr(self, "run_live_telemetry_detail", False))
+        self._set_status(
+            "Run active | telemetry detail" if self.run_live_telemetry_detail else "Run active | progress detail"
+        )
+        self._refresh_run_detail()
 
     def _run_progress_text(self) -> str:
         return run_progress_text(
@@ -330,6 +369,7 @@ class TuiRunExecutionAdapterMixin:
 
     def _finish_run_from_thread(self, text: str, result) -> None:
         self.run_in_progress = False
+        self.run_live_telemetry_detail = False
         self.run_cancel_requested = False
         self.run_cancel_event.clear()
         self.confirm_run = False

@@ -77,6 +77,7 @@ class RunLaunchCoordinator:
         progress_callback: Optional[Callable[[Any], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         operator_stop_source: str = "cli",
+        live_telemetry_callback: Optional[Callable[[Any], None]] = None,
     ) -> RunResult:
         return self.executor.run_profile_capture_output(
             profile_path,
@@ -87,6 +88,7 @@ class RunLaunchCoordinator:
             progress_callback=progress_callback,
             cancel_check=cancel_check,
             operator_stop_source=operator_stop_source,
+            live_telemetry_callback=live_telemetry_callback,
         )
 
     def run_prepared_capture(
@@ -97,6 +99,7 @@ class RunLaunchCoordinator:
         progress_callback: Optional[Callable[[Any], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         operator_stop_source: str = "cli",
+        live_telemetry_callback: Optional[Callable[[Any], None]] = None,
     ) -> RunResult:
         return self.run_capture(
             request.profile_path,
@@ -107,4 +110,5 @@ class RunLaunchCoordinator:
             progress_callback=progress_callback,
             cancel_check=cancel_check,
             operator_stop_source=operator_stop_source,
+            live_telemetry_callback=live_telemetry_callback,
         )

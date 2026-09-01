@@ -5,14 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import textwrap
 from typing import Any, Dict, Iterable, Tuple
 
+from .lvs_live_telemetry import LiveCpuCore, LiveTelemetrySnapshot, LiveTelemetryValue
 from .lvs_run_progress import run_event_history_text, run_status_detail_text, short_status_text
 
 
 RUN_ACTIVE_SIDEBAR_TITLE = "Run Active"
-RUN_ACTIVE_SIDEBAR_ROWS: Tuple[str, str] = (
+RUN_ACTIVE_SIDEBAR_ROWS: Tuple[str, ...] = (
     "Run in progress\n  navigation locked",
+    "V\n  telemetry detail",
     "Esc / Back\n  request safe cancel",
 )
 LIVE_SYSTEM_PANE_WIDTH = 32
@@ -356,6 +359,261 @@ def live_system_text(events: Iterable[object]) -> str:
                 lines.append(f"         {_compact_number(row.vram_used_percent)}% used")
         if row.fan_percent is not None:
             lines.append(f"  Fan    {_compact_number(row.fan_percent)}%")
+    return "\n".join(lines)
+
+
+def live_snapshot_is_stale(snapshot: LiveTelemetrySnapshot, now_monotonic: float) -> bool:
+    age = max(0.0, float(now_monotonic) - snapshot.sampled_monotonic)
+    return snapshot.state != "active" or age > max(6.0, snapshot.interval_seconds * 3.0)
+
+
+def _compact_clock(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return f"{_compact_number(value / 1000.0)}G" if value >= 1000 else f"{_compact_number(value)}M"
+
+
+def _parts(*parts: str | None) -> str:
+    return "  ".join(part for part in parts if part)
+
+
+def _append_compact_lines(
+    lines: list[str], prefix: str, parts: Iterable[str | None], *, width: int = LIVE_SYSTEM_PANE_WIDTH
+) -> None:
+    tokens = [part for part in parts if part]
+    if not tokens:
+        return
+    continuation = " " * len(prefix)
+    current = prefix
+    for token in tokens:
+        separator = "" if current == prefix else "  "
+        if len(current) + len(separator) + len(token) <= width:
+            current += separator + token
+        else:
+            lines.append(current.rstrip())
+            current = continuation + token
+    lines.append(current.rstrip())
+
+
+def live_snapshot_text(snapshot: LiveTelemetrySnapshot, *, stale: bool = False) -> str:
+    """Render a deliberately compact summary for the 32-column side pane."""
+    lines = ["Live Telemetry", "=============="]
+    if stale:
+        lines.append("STALE snapshot")
+    cpu = _parts(
+        f"{_compact_number(snapshot.cpu_utilization_percent)}%" if snapshot.cpu_utilization_percent is not None else None,
+        f"{_compact_number(snapshot.cpu_temperature_c)}C" if snapshot.cpu_temperature_c is not None else None,
+        f"{_compact_number(snapshot.cpu_power_w)}W" if snapshot.cpu_power_w is not None else None,
+    )
+    if cpu:
+        _append_compact_lines(lines, "CPU  ", cpu.split("  "))
+        extra = (
+            _compact_clock(snapshot.cpu_clock_mhz),
+            f"Vcore {_compact_number(snapshot.cpu_vcore_v)}V" if snapshot.cpu_vcore_v is not None else None,
+        )
+        _append_compact_lines(lines, "     ", extra)
+    for gpu in snapshot.gpus[:4]:
+        thermal = None
+        if gpu.temperature_c is not None:
+            thermal = _compact_number(gpu.temperature_c)
+            if gpu.hotspot_c is not None:
+                thermal += f"/{_compact_number(gpu.hotspot_c)}C"
+            else:
+                thermal += "C"
+        gpu_prefix = f"GPU{gpu.index + 1} "
+        _append_compact_lines(
+            lines, gpu_prefix, (
+                f"{_compact_number(gpu.utilization_percent)}%" if gpu.utilization_percent is not None else None,
+                thermal,
+                f"{_compact_number(gpu.power_w)}W" if gpu.power_w is not None else None,
+            ),
+        )
+        detail = (
+            _compact_clock(gpu.clock_mhz),
+            f"VRAM {_compact_number(gpu.vram_used_gib)}/{_compact_number(gpu.vram_total_gib)}G"
+            if gpu.vram_used_gib is not None and gpu.vram_total_gib is not None
+            else (f"VRAM {_compact_number(gpu.vram_used_gib)}G" if gpu.vram_used_gib is not None else None),
+        )
+        _append_compact_lines(lines, " " * len(gpu_prefix), detail)
+        fan = None
+        if gpu.fan_rpm:
+            fan = f"Fan {_compact_number(gpu.fan_rpm[0].value)}r"
+        elif gpu.fan_duty_percent is not None:
+            fan = f"Fan {_compact_number(gpu.fan_duty_percent)}%"
+        auxiliary = (
+            f"VR {_compact_number(gpu.vram_temperature_c)}C" if gpu.vram_temperature_c is not None else None,
+            f"busy {_compact_number(gpu.vram_busy_percent)}%" if gpu.vram_busy_percent is not None else None,
+            fan,
+            f"{_compact_number(gpu.vddgfx_v)}V" if gpu.vddgfx_v is not None else None,
+        )
+        _append_compact_lines(lines, " " * len(gpu_prefix), auxiliary)
+    if len(snapshot.gpus) > 4:
+        lines.append(f"GPU  +{len(snapshot.gpus) - 4} in detail")
+    if snapshot.memory_used_gib is not None:
+        percent = (
+            snapshot.memory_used_gib / snapshot.memory_total_gib * 100.0
+            if snapshot.memory_total_gib
+            else None
+        )
+        _append_compact_lines(lines, "RAM  ", (
+            f"{_compact_number(snapshot.memory_used_gib)}/{_compact_number(snapshot.memory_total_gib)}G"
+            if snapshot.memory_total_gib else f"{_compact_number(snapshot.memory_used_gib)}G",
+            f"{_compact_number(percent)}%" if percent is not None else None,
+            f"DIMM {_compact_number(max(row.value for row in snapshot.dimm_temperatures))}C"
+            if snapshot.dimm_temperatures else None,
+        ))
+    elif snapshot.dimm_temperatures:
+        lines.append(f"DIMM max {_compact_number(max(row.value for row in snapshot.dimm_temperatures))}C")
+    if snapshot.storage_temperatures:
+        primary = [row for row in snapshot.storage_temperatures if "_sensor_" not in row.key]
+        hottest = max(primary or snapshot.storage_temperatures, key=lambda row: row.value)
+        identity = hottest.label.replace(" Composite", "")[:14]
+        lines.append(f"Disk {identity} {_compact_number(hottest.value)}C")
+    cooling = list(snapshot.cooling)
+    for row in cooling[:3]:
+        label = "CPU fan" if row.semantic == "cpu_fan" else ("Pump" if "pump" in row.semantic else row.label)
+        lines.append(f"{label[:14]} {_compact_number(row.value)} RPM")
+    if len(cooling) > 3:
+        lines.append(f"Fans +{len(cooling) - 3} in detail")
+    if snapshot.bmc_state != "unavailable":
+        lines.append(f"BMC  {snapshot.bmc_state.upper()}")
+    if len(lines) == 2:
+        lines.extend(["", "Waiting for first sample..."])
+    return "\n".join(lines)
+
+
+def live_detail_content_width(terminal_width: int) -> int:
+    """Conservative content width after the existing sidebar/live-pane layout."""
+    width = max(40, int(terminal_width or 0))
+    sidebar = min(64, max(32, int(width * 0.28)))
+    live_pane = LIVE_SYSTEM_PANE_WIDTH if width >= LIVE_SYSTEM_MIN_TERMINAL_WIDTH else 0
+    return max(24, width - sidebar - live_pane - 10)
+
+
+def _column_lines(
+    items: Iterable[str], content_width: int, *, minimum_cell_width: int = 20,
+    maximum_columns: int = 6,
+) -> tuple[list[str], int]:
+    values = [str(item) for item in items]
+    if not values:
+        return [], 0
+    width = max(16, int(content_width or 0))
+    widest = max(len(item) for item in values)
+    columns = min(maximum_columns, max(1, (width + 3) // (minimum_cell_width + 3)))
+    while columns > 1:
+        cell_width = (width - (columns - 1) * 3) // columns
+        if widest <= cell_width:
+            break
+        columns -= 1
+    if columns == 1:
+        lines = []
+        for value in values:
+            lines.extend(textwrap.wrap(value, width=width, break_long_words=True, break_on_hyphens=True) or [""])
+        return lines, 1
+    cell_width = (width - (columns - 1) * 3) // columns
+    lines = []
+    for start in range(0, len(values), columns):
+        row = values[start:start + columns]
+        lines.append("   ".join(
+            item.ljust(cell_width) if index < len(row) - 1 else item
+            for index, item in enumerate(row)
+        ).rstrip())
+    return lines, columns
+
+
+def live_detail_column_count(items: Iterable[str], content_width: int, *, minimum_cell_width: int = 20) -> int:
+    return _column_lines(items, content_width, minimum_cell_width=minimum_cell_width)[1]
+
+
+def _detail_values(
+    title: str, rows: Iterable[LiveTelemetryValue], content_width: int
+) -> list[str]:
+    values = list(rows)
+    if not values:
+        return []
+    unit_labels = {
+        "celsius": "C", "degrees_c": "C", "volts": "V", "watts": "W",
+        "amps": "A", "percent": "%", "rpm": "RPM",
+    }
+    label_counts: dict[str, int] = {}
+    for row in values:
+        label_counts[row.label] = label_counts.get(row.label, 0) + 1
+    rendered = []
+    for row in values:
+        label = row.label
+        if label_counts[label] > 1 and row.provider:
+            label = f"{label} [{row.provider}]"
+        unit = unit_labels.get(row.unit.lower(), row.unit)
+        rendered.append(f"{label}: {_compact_number(row.value)} {unit}".rstrip())
+    rendered_lines, _columns = _column_lines(rendered, content_width, minimum_cell_width=24)
+    return ["", title, "-" * len(title), *rendered_lines]
+
+
+def live_snapshot_detail_text(
+    snapshot: LiveTelemetrySnapshot, *, stale: bool = False, content_width: int = 80
+) -> str:
+    lines = ["Live Telemetry Detail", "====================="]
+    if stale:
+        lines.extend(["", "Snapshot is stale; the last collected values are shown."])
+    cpu_rows = []
+    for label, value, unit in (
+        ("Load", snapshot.cpu_utilization_percent, "%"),
+        ("Package temperature", snapshot.cpu_temperature_c, "C"),
+        ("Package power", snapshot.cpu_power_w, "W"),
+        ("Aggregate clock", snapshot.cpu_clock_mhz, "MHz"),
+        ("Measured Vcore", snapshot.cpu_vcore_v, "V"),
+    ):
+        if value is not None:
+            cpu_rows.append(f"{label}: {_compact_number(value)} {unit}")
+    if cpu_rows:
+        cpu_lines, _columns = _column_lines(cpu_rows, content_width, minimum_cell_width=24)
+        lines.extend(["", "CPU", "---", *cpu_lines])
+    lines.extend(_detail_values("CPU packages", snapshot.cpu_packages, content_width))
+    if snapshot.cpu_cores:
+        groups: dict[str, list[LiveCpuCore]] = {}
+        for core in snapshot.cpu_cores:
+            groups.setdefault(core.core_class, []).append(core)
+        labels = {"performance": "Performance cores", "efficiency": "Efficiency cores", "unknown": "CPU cores"}
+        for core_class in ("performance", "efficiency", "unknown"):
+            cores = groups.get(core_class, [])
+            if not cores:
+                continue
+            lines.extend(["", f"{labels[core_class]} ({len(cores)})"])
+            chunks = []
+            for core in cores:
+                values = _parts(
+                    f"{_compact_number(core.utilization_percent)}%" if core.utilization_percent is not None else None,
+                    _compact_clock(core.clock_mhz),
+                )
+                chunks.append(f"{core.label} {values}".rstrip())
+            core_lines, _columns = _column_lines(chunks, content_width, minimum_cell_width=19)
+            lines.extend(core_lines)
+    for gpu in snapshot.gpus:
+        rows = []
+        for label, value, unit in (
+            ("Load", gpu.utilization_percent, "%"), ("Core temperature", gpu.temperature_c, "C"),
+            ("Hotspot", gpu.hotspot_c, "C"), ("Power", gpu.power_w, "W"),
+            ("Core clock", gpu.clock_mhz, "MHz"), ("VRAM used", gpu.vram_used_gib, "GiB"),
+            ("VRAM total", gpu.vram_total_gib, "GiB"), ("VRAM used", gpu.vram_used_percent, "%"),
+            ("VRAM busy", gpu.vram_busy_percent, "%"), ("VRAM clock", gpu.vram_clock_mhz, "MHz"),
+            ("VRAM temperature", gpu.vram_temperature_c, "C"), ("Fan duty", gpu.fan_duty_percent, "%"),
+            ("VDDGFX", gpu.vddgfx_v, "V"),
+            ("VDDNB", gpu.vddnb_v, "V"),
+        ):
+            if value is not None:
+                rows.append(f"{label}: {_compact_number(value)} {unit}")
+        rows.extend(f"{fan.label}: {_compact_number(fan.value)} RPM" for fan in gpu.fan_rpm)
+        if rows:
+            gpu_lines, _columns = _column_lines(rows, content_width, minimum_cell_width=22)
+            lines.extend(["", f"GPU {gpu.index + 1}", "-----", *gpu_lines])
+    lines.extend(_detail_values("Memory", snapshot.dimm_temperatures, content_width))
+    lines.extend(_detail_values("Storage", snapshot.storage_temperatures, content_width))
+    lines.extend(_detail_values("Cooling", snapshot.cooling, content_width))
+    lines.extend(_detail_values("Voltage rails", snapshot.voltages, content_width))
+    lines.extend(_detail_values("Platform", snapshot.platform, content_width))
+    lines.extend(_detail_values(f"BMC ({snapshot.bmc_state})", snapshot.bmc, content_width))
+    if len(lines) == 2:
+        lines.extend(["", "Waiting for the first collected telemetry sample."])
     return "\n".join(lines)
 
 

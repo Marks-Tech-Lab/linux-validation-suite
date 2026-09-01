@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
+import time
 from typing import Optional
 
 from textual.app import App, ComposeResult
@@ -39,7 +40,12 @@ from Modules.lvs_tui_navigation_state import TuiNavigationReset
 from Modules.lvs_tui_profile_edit_adapter import TuiProfileEditAdapterMixin
 from Modules.lvs_tui_results_adapter import TuiResultsAdapterMixin
 from Modules.lvs_tui_run_execution_adapter import TuiRunExecutionAdapterMixin
-from Modules.lvs_tui_run_presentation import live_system_layout, live_system_text
+from Modules.lvs_tui_run_presentation import (
+    live_snapshot_is_stale,
+    live_snapshot_text,
+    live_system_layout,
+    live_system_text,
+)
 from Modules.lvs_tui_run_setup_adapter import TuiRunSetupAdapterMixin
 from Modules.lvs_tui_settings_adapter import TuiSettingsAdapterMixin
 
@@ -164,6 +170,7 @@ class LinuxValidationSuiteTui(
         ("m", "edit_profile", "Edit"),
         ("h", "load_setup_history", "History"),
         ("u", "run_selected", "Run"),
+        ("v", "telemetry_detail", "Telemetry"),
         ("w", "edit_wall_wattage", "Wall W"),
         ("g", "upload_last_result", "Upload"),
         ("s", "show_results", "Results"),
@@ -220,6 +227,9 @@ class LinuxValidationSuiteTui(
         self.run_live_lines: list[str] = []
         self.run_live_profile_name = ""
         self.run_live_phase_line = ""
+        self.run_live_telemetry_snapshot = None
+        self.run_live_telemetry_detail = False
+        self._rendered_live_system_state = None
         self.run_status_tracker = RunStatusTracker()
         self.status_message = "Ready"
         self.post_run_upload_prompt_text = ""
@@ -230,7 +240,7 @@ class LinuxValidationSuiteTui(
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self.run_in_progress:
-            return True if action == "cancel_setup_input" else None
+            return True if action in {"cancel_setup_input", "telemetry_detail"} else None
         if self.upload_in_progress:
             return True if action == "quit" else None
         if self.pending_input_field or self.setup_picker_key:
@@ -286,6 +296,7 @@ class LinuxValidationSuiteTui(
         set_interval = getattr(self, "set_interval", None)
         if callable(set_interval):
             set_interval(0.25, self._refresh_global_action_buttons)
+            set_interval(2.0, self._refresh_live_system_pane)
 
     def on_resize(self, event) -> None:  # pragma: no cover - exercised by Textual runtime
         size = getattr(event, "size", None)
@@ -297,6 +308,8 @@ class LinuxValidationSuiteTui(
             self._rendered_global_action_width = None
         self._set_action_help()
         self._refresh_live_system_pane()
+        if bool(getattr(self, "run_live_telemetry_detail", False)):
+            self._refresh_run_detail()
         self._refresh_global_action_buttons()
 
     async def on_unmount(self) -> None:
@@ -395,10 +408,34 @@ class LinuxValidationSuiteTui(
             )
             widget.set_class(layout.visible, "live-system-visible")
             if layout.visible:
-                tracker = getattr(self, "run_status_tracker", None)
-                widget.update(live_system_text(getattr(tracker, "events", ())))
+                snapshot = getattr(self, "run_live_telemetry_snapshot", None)
+                if snapshot is not None:
+                    stale = live_snapshot_is_stale(snapshot, time.monotonic())
+                    render_state = (
+                        True, int(getattr(snapshot, "sequence", 0)),
+                        str(getattr(snapshot, "state", "")), stale,
+                    )
+                    if render_state == getattr(self, "_rendered_live_system_state", None):
+                        return
+                    self._rendered_live_system_state = render_state
+                    widget.update(
+                        live_snapshot_text(
+                            snapshot,
+                            stale=stale,
+                        )
+                    )
+                else:
+                    tracker = getattr(self, "run_status_tracker", None)
+                    events = getattr(tracker, "events", ())
+                    render_state = (True, None, len(events), False)
+                    if render_state == getattr(self, "_rendered_live_system_state", None):
+                        return
+                    self._rendered_live_system_state = render_state
+                    widget.update(live_system_text(events))
             else:
-                widget.update("")
+                if getattr(self, "_rendered_live_system_state", None) != (False,):
+                    self._rendered_live_system_state = (False,)
+                    widget.update("")
         except Exception:
             pass
 

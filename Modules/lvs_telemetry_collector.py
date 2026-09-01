@@ -9,10 +9,11 @@ import subprocess
 import time
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_gpu_identity import gpu_vendor_name, normalize_pci_slot
 from .lvs_hardware_evidence import HardwareEvidenceCollector, format_hardware_evidence_summary
+from .lvs_live_telemetry import build_live_telemetry_snapshot
 from .lvs_settings import DEFAULT_SAMPLE_INTERVAL_SECONDS
 from .lvs_telemetry_gpu import (
     discover_gpu_cards,
@@ -132,9 +133,12 @@ class TelemetryCollector:
         cpu_core_type_probe: Optional[Dict[str, Any]] = None,
         bmc_provider: Optional[BmcSnapshotProvider] = None,
         enable_bmc_provider: bool = True,
+        live_snapshot_callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.samples: List[Sample] = []
+        self._live_snapshot_callback = live_snapshot_callback
+        self._live_snapshot_closed = False
         self._env_overrides = {str(key): str(value) for key, value in (runtime_environment or {}).items()}
         self._privileged_helper_enabled = bool(privileged_helper_enabled)
         self._cpu_core_type_probe = dict(cpu_core_type_probe or {})
@@ -251,6 +255,18 @@ class TelemetryCollector:
         self.samples.append(
             Sample(timestamp=sample_time, values=telemetry_values_with_unit_aliases(values))
         )
+        self._publish_live_snapshot("active")
+
+    def _publish_live_snapshot(self, state: str) -> None:
+        callback = getattr(self, "_live_snapshot_callback", None)
+        samples = getattr(self, "samples", ())
+        if callback is None or not samples:
+            return
+        try:
+            callback(build_live_telemetry_snapshot(self, samples[-1], state=state))
+        except Exception:
+            # Optional presentation must never alter collection or run outcome.
+            return
 
     def _read_cpu_temp(self, package_temps: Optional[Dict[str, Optional[float]]] = None) -> Optional[float]:
         return read_cpu_temp(self._cpu_temp_sources, self._safe_read_text, package_temps)
@@ -672,6 +688,9 @@ class TelemetryCollector:
         )
 
     def close(self) -> None:
+        if not getattr(self, "_live_snapshot_closed", False):
+            self._live_snapshot_closed = True
+            self._publish_live_snapshot("stopped")
         provider = getattr(self, "_bmc_provider", None)
         if provider is not None:
             provider.close()
