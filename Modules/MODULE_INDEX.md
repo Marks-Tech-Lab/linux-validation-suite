@@ -157,7 +157,7 @@ Every other TUI helper must remain importable without Textual installed.
 | --- | --- | --- |
 | `lvs_telemetry_collector.py` | Internal composition | Discovers sources and coordinates sampling. |
 | `lvs_telemetry_sampling.py`, `lvs_telemetry_samples.py` | Internal | Parse raw samples and serialize sample records. |
-| `lvs_telemetry_sources.py`, `lvs_telemetry_sensor_io.py`, `lvs_telemetry_device.py` | Internal | Select sources, perform sensor I/O, and discover optional devices. |
+| `lvs_telemetry_sources.py`, `lvs_telemetry_sensor_io.py`, `lvs_telemetry_device.py`, `lvs_telemetry_hwmon.py` | Internal | Select sources, perform sensor I/O, discover optional devices, and retain evidence-first direct hwmon fan/rail candidates. |
 | `lvs_telemetry_cpu.py`, `lvs_telemetry_memory.py` | Internal | Own CPU/package and memory telemetry rules. |
 | `lvs_telemetry_gpu.py`, `lvs_telemetry_intel.py`, `lvs_telemetry_nvidia.py` | Internal | Discover and sample DRM/hwmon plus platform devfreq/thermal, Intel, and NVIDIA GPU telemetry. |
 | `lvs_telemetry_storage_sources.py` | Internal | Discovers and reads storage temperature sources. |

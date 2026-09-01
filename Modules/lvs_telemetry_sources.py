@@ -169,6 +169,7 @@ def telemetry_source_record(
         "module_index",
         "drive_index",
         "sensor_index",
+        "channel",
         "block_name",
         "device_name",
         "sensor_id",
@@ -219,6 +220,11 @@ def telemetry_source_record(
         "last_successful_snapshot_at",
         "last_snapshot_status",
         "potential_duplicate_of",
+        "family",
+        "unit",
+        "semantic_classification",
+        "source_scope",
+        "measurement_semantics",
     ):
         if source.get(key) not in (None, ""):
             record[key] = source.get(key)
@@ -251,6 +257,8 @@ def build_telemetry_source_map(
     cpu_core_utilization_sources: Iterable[TelemetrySource] = (),
     llcc_edac_sources: Iterable[TelemetrySource] = (),
     bmc_sources: Iterable[TelemetrySource] = (),
+    direct_hwmon_sources: Iterable[TelemetrySource] = (),
+    hwmon_sensor_candidates: Iterable[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     """Build a machine-readable map for raw telemetry CSV fields.
 
@@ -267,6 +275,8 @@ def build_telemetry_source_map(
     device_temp_source_list = list(device_temp_sources)
     gpu_source_list = list(gpu_sources)
     bmc_source_list = list(bmc_sources)
+    direct_hwmon_source_list = list(direct_hwmon_sources)
+    hwmon_sensor_candidate_list = list(hwmon_sensor_candidates)
     cpu_power_unreadable_source_list = list(cpu_power_unreadable_sources)
 
     fields: Dict[str, Dict[str, Any]] = {
@@ -369,6 +379,16 @@ def build_telemetry_source_map(
         if field:
             fields[field] = telemetry_source_record(field, source, category="device", metric="temperature_c")
 
+    for source in direct_hwmon_source_list:
+        field = str(source.get("key") or "")
+        if field:
+            fields[field] = telemetry_source_record(
+                field,
+                source,
+                category="platform",
+                metric=str(source.get("metric") or field),
+            )
+
     for source in gpu_source_list:
         field = str(source.get("key") or "")
         if field:
@@ -427,6 +447,7 @@ def build_telemetry_source_map(
         + llcc_edac_source_list
         + storage_temp_source_list
         + device_temp_source_list
+        + direct_hwmon_source_list
         + gpu_source_list
         + bmc_source_list
     ):
@@ -443,6 +464,7 @@ def build_telemetry_source_map(
             unreadable_sources=cpu_power_unreadable_source_list,
         ),
         "fields": {key: fields[key] for key in sorted(fields)},
+        "direct_hwmon_sensor_candidates": hwmon_sensor_candidate_list,
         "gpu_index_map": sorted(gpu_index_map, key=lambda item: int(item.get("gpu_index", 0) or 0)),
         "storage_link_map": sorted(
             [
@@ -496,6 +518,7 @@ def build_gpu_telemetry_matrix(
         ("memory_busy_percent", "memory_busy"),
         ("vram_used_gb", "vram_used"),
         ("fan_percent", "fan"),
+        ("fan_rpm", "fan_speed"),
         ("vddgfx_v", "vddgfx_voltage"),
         ("vddnb_v", "vddnb_voltage"),
         ("throttle_idle", "throttle_idle"),
@@ -588,6 +611,7 @@ def build_telemetry_capability_summary(
     cpu_utilization_source: Optional[TelemetrySource] = None,
     cpu_core_utilization_sources: Iterable[TelemetrySource] = (),
     llcc_edac_sources: Iterable[TelemetrySource] = (),
+    direct_hwmon_sources: Iterable[TelemetrySource] = (),
 ) -> Dict[str, Dict[str, Any]]:
     """Build the diagnostics/export telemetry capability payload.
 
@@ -622,6 +646,7 @@ def build_telemetry_capability_summary(
         if source.get("kind") == "wifi_temp"
     ]
     gpu_source_list = list(gpu_sources)
+    direct_hwmon_source_list = list(direct_hwmon_sources)
     cpu_power_unreadable_source_list = list(cpu_power_unreadable_sources)
 
     def first_source_for_metric(metric: str) -> Optional[TelemetrySource]:
@@ -759,6 +784,21 @@ def build_telemetry_capability_summary(
             "available": any(source.get("metric") == "fan_percent" for source in gpu_source_list),
             "source": describe_source(first_source_for_metric("fan_percent")),
             "count": metric_gpu_count(gpu_source_list, "fan_percent"),
+        },
+        "gpu_fan_rpm": {
+            "available": any(source.get("metric") == "fan_rpm" for source in gpu_source_list),
+            "source": describe_source(first_source_for_metric("fan_rpm")),
+            "count": metric_gpu_count(gpu_source_list, "fan_rpm"),
+        },
+        "direct_fan_rpm": {
+            "available": any(source.get("metric") == "fan_rpm" for source in direct_hwmon_source_list),
+            "source": describe_source(next((source for source in direct_hwmon_source_list if source.get("metric") == "fan_rpm"), None)),
+            "count": sum(1 for source in direct_hwmon_source_list if source.get("metric") == "fan_rpm"),
+        },
+        "direct_voltage_v": {
+            "available": any(source.get("metric") == "voltage_v" for source in direct_hwmon_source_list),
+            "source": describe_source(next((source for source in direct_hwmon_source_list if source.get("metric") == "voltage_v"), None)),
+            "count": sum(1 for source in direct_hwmon_source_list if source.get("metric") == "voltage_v"),
         },
         "gpu_vddgfx_v": {
             "available": any(source.get("metric") == "vddgfx_v" for source in gpu_source_list),

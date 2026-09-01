@@ -65,6 +65,7 @@ from .lvs_telemetry_cpu import (
     score_thermal_zone,
 )
 from .lvs_telemetry_device import discover_device_temp_sources, read_device_temps
+from .lvs_telemetry_hwmon import discover_direct_hwmon_sources, read_direct_hwmon_values
 from .lvs_telemetry_edac import discover_llcc_edac_sources, read_llcc_edac_counters
 from .lvs_telemetry_memory import (
     discover_memory_temp_sources,
@@ -159,6 +160,7 @@ class TelemetryCollector:
         self._llcc_edac_sources = self._discover_llcc_edac_sources()
         self._storage_temp_sources = self._discover_storage_temp_sources()
         self._device_temp_sources = self._discover_device_temp_sources()
+        self._direct_hwmon_sources, self._hwmon_sensor_candidates = self._discover_direct_hwmon_sources()
         self._gpu_sources = self._discover_gpu_sources()
         self._energy_source_state: Dict[str, Dict[str, float]] = {}
         self._last_cpu_package_power_values: Dict[str, float] = {}
@@ -244,6 +246,7 @@ class TelemetryCollector:
         values.update(self._read_llcc_edac_counters())
         values.update(self._read_storage_temps())
         values.update(self._read_device_temps())
+        values.update(self._read_direct_hwmon_values())
         values.update(self._read_gpu_values(sample_time))
         self.samples.append(
             Sample(timestamp=sample_time, values=telemetry_values_with_unit_aliases(values))
@@ -340,6 +343,7 @@ class TelemetryCollector:
             llcc_edac_sources=self._llcc_edac_sources,
             storage_temp_sources=self._storage_temp_sources,
             device_temp_sources=self._device_temp_sources,
+            direct_hwmon_sources=getattr(self, "_direct_hwmon_sources", []),
             gpu_sources=self._gpu_sources,
             gpu_temp_source=self._preferred_gpu_source("temp_core_c", prefer_hardware_thresholds=True),
             describe_source=self._describe_source,
@@ -378,6 +382,8 @@ class TelemetryCollector:
             llcc_edac_sources=self._llcc_edac_sources,
             storage_temp_sources=self._storage_temp_sources,
             device_temp_sources=self._device_temp_sources,
+            direct_hwmon_sources=getattr(self, "_direct_hwmon_sources", []),
+            hwmon_sensor_candidates=getattr(self, "_hwmon_sensor_candidates", []),
             gpu_sources=self._gpu_sources,
             gpu_cards=self._discover_gpu_cards(),
             privileged_helper_enabled=self._privileged_helper_enabled,
@@ -570,6 +576,14 @@ class TelemetryCollector:
             self._device_temp_sources,
             self._read_temperature_path,
             self._safe_read_text,
+        )
+
+    def _discover_direct_hwmon_sources(self) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        return discover_direct_hwmon_sources(read_text=self._safe_read_text)
+
+    def _read_direct_hwmon_values(self) -> Dict[str, Optional[float]]:
+        return read_direct_hwmon_values(
+            getattr(self, "_direct_hwmon_sources", []), self._safe_read_text
         )
 
     def _read_gpu_values(self, sample_time: Optional[float] = None) -> Dict[str, Optional[float]]:

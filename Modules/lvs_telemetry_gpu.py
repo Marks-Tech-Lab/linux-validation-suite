@@ -19,6 +19,7 @@ from .lvs_telemetry_sampling import (
     parse_power_text_w,
     parse_vram_used_gb_from_bytes_text,
 )
+from .lvs_platform_hwmon import stable_temperature_device_locator
 
 
 ReadText = Callable[[Path], Optional[str]]
@@ -184,6 +185,58 @@ def parse_voltage_text_v(raw: Any) -> Optional[float]:
     if value > 100.0:
         value /= 1000.0
     return round(value, 3) if 0.0 < value < 10.0 else None
+
+
+def parse_fan_rpm(raw: Any) -> Optional[float]:
+    try:
+        value = float(str(raw or "").strip())
+    except Exception:
+        return None
+    return round(value, 2) if 0.0 <= value <= 1_000_000.0 else None
+
+
+def gpu_hwmon_fan_sources(
+    hwmon: Path,
+    *,
+    card_name: str,
+    gpu_index: int,
+    slot: str,
+    read_text: ReadText,
+    sensor_label: SensorLabel,
+) -> List[Dict[str, Any]]:
+    """Return attributable RPM sources for one GPU-owned hwmon device."""
+    provider = read_text(hwmon / "name") or ""
+    sources: List[Dict[str, Any]] = []
+    fan_paths = sorted(
+        hwmon.glob("fan*_input"),
+        key=lambda item: int(re.match(r"fan(\d+)_input", item.name).group(1))
+        if re.match(r"fan(\d+)_input", item.name) else 0,
+    )
+    for path in fan_paths:
+        if parse_fan_rpm(read_text(path)) is None:
+            continue
+        channel_match = re.match(r"fan(\d+)_input", path.name)
+        channel = int(channel_match.group(1)) if channel_match else 1
+        label = sensor_label(path) or f"fan {channel}"
+        sources.append({
+            "kind": "gpu_sensor",
+            "path": str(path),
+            "label": f"{card_name} {label}".strip(),
+            "raw_label": label,
+            "gpu_index": gpu_index,
+            "card": card_name,
+            "slot": slot.lower(),
+            "metric": "fan_rpm",
+            "provider": provider,
+            "sensor_index": channel,
+            "channel": channel,
+            "family": "fan",
+            "unit": "rpm",
+            "semantic_classification": "gpu_fan",
+            "source_scope": "direct_gpu_hwmon",
+            "stable_device_locator": stable_temperature_device_locator(path),
+        })
+    return sources
 
 
 def discover_gpu_cards(
@@ -395,6 +448,7 @@ def discover_gpu_sources(
         if "display" in drm_of_name:
             continue
         hwmons = gpu_hwmon_dirs(card, read_text, hwmon_root)
+        gpu_fan_sources: List[Dict[str, Any]] = []
         for hwmon in hwmons:
             hwmon_name = read_text(hwmon / "name") or ""
             for path in sorted(hwmon.glob("temp*_input")):
@@ -475,6 +529,24 @@ def discover_gpu_sources(
                         "key": f"gpu_{gpu_index}_{metric}",
                     }
                 )
+            gpu_fan_sources.extend(gpu_hwmon_fan_sources(
+                hwmon,
+                card_name=card.name,
+                gpu_index=gpu_index,
+                slot=slot,
+                read_text=read_text,
+                sensor_label=sensor_label,
+            ))
+        gpu_fan_sources.sort(key=lambda source: (
+            str(source.get("stable_device_locator") or ""),
+            str(source.get("provider") or ""),
+            int(source.get("sensor_index", 0) or 0),
+            str(source.get("raw_label") or ""),
+        ))
+        for fan_index, source in enumerate(gpu_fan_sources):
+            source["key"] = f"gpu_{gpu_index}_fan_{fan_index}_rpm"
+            source["sensor_index"] = fan_index
+            sources.append(source)
         clock_path = device_dir / "pp_dpm_sclk"
         if read_text(clock_path) is not None:
             sources.append(_gpu_path_source(card.name, gpu_index, slot, clock_path, "clock_mhz", "pp_dpm_sclk"))
@@ -688,6 +760,8 @@ def read_gpu_values(
             raw = read_text(Path(str(source.get("path") or "")))
             if raw is not None:
                 value = parse_percent_text(raw)
+        elif source["metric"] == "fan_rpm":
+            value = parse_fan_rpm(read_text(Path(str(source.get("path") or ""))))
         elif source["metric"] == "vram_used_gb":
             raw = read_text(Path(str(source.get("path") or "")))
             if raw is not None:

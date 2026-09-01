@@ -37,6 +37,7 @@ from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
+from smoke_tests.direct_hwmon_telemetry_checks import run_direct_hwmon_telemetry_checks
 from smoke_tests.bmc_telemetry_provider_checks import run_bmc_telemetry_provider_checks
 from smoke_tests.standalone_report_checks import run_standalone_report_checks
 from smoke_tests.output_contract_checks import (
@@ -27013,6 +27014,7 @@ def main() -> int:
         run_profile_metadata_checks,
         run_profile_authoring_ux_checks,
         run_platform_sensor_telemetry_checks,
+        run_direct_hwmon_telemetry_checks,
         run_bmc_telemetry_provider_checks,
         run_standalone_report_checks,
         test_google_drive_not_ready_manifest,
