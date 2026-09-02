@@ -67,6 +67,7 @@ class RunExecutor:
         cancel_check: Optional[Callable[[], bool]] = None,
         operator_stop_source: str = "cli",
         live_telemetry_callback: Optional[Callable[[Any], None]] = None,
+        live_timing_callback: Optional[Callable[[Any], None]] = None,
     ) -> RunResult:
         context = self._profile_run_context(profile_path, metadata, setup)
         profile = context.profile
@@ -140,6 +141,7 @@ class RunExecutor:
                     cancel_check=cancel_check,
                     operator_stop_source=operator_stop_source,
                     live_telemetry_callback=live_telemetry_callback,
+                    live_timing_callback=live_timing_callback,
                 )
         except Exception as exc:
             output.write(

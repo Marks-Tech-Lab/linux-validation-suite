@@ -72,6 +72,7 @@ def run_effective_stages(
     on_operator_stop: Callable[[str, Dict[str, Any]], None],
     cancel_check: Optional[Callable[[], bool]] = None,
     completion_stage_runner: Optional[Callable[..., Any]] = None,
+    run_timing: Any = None,
 ) -> StageLoopResult:
     current_run_aborted = bool(run_aborted)
     for idx, stage in enumerate(effective_profile.stages):
@@ -80,16 +81,28 @@ def run_effective_stages(
         display_name = labels[idx] if idx < len(labels) else stage.name
         stage_plan = dict(preflight_plan[idx]) if idx < len(preflight_plan) else {}
         execution_mode = stage_execution_mode(stage)
+        if run_timing is not None:
+            run_timing.prepare_stage(idx)
         if execution_mode == "completion":
             if completion_stage_runner is None:
                 raise RuntimeError(f"completion-based stage runner is unavailable for {display_name}")
-            completion = completion_stage_runner(
-                stage=stage,
-                display_name=display_name,
-                stage_plan=stage_plan,
-            )
+            if run_timing is not None:
+                run_timing.start_stage(idx, monotonic())
+            try:
+                completion = completion_stage_runner(
+                    stage=stage,
+                    display_name=display_name,
+                    stage_plan=stage_plan,
+                )
+            finally:
+                if run_timing is not None:
+                    run_timing.end_stage(idx)
             current_run_aborted = bool(completion.run_aborted)
             if completion.should_break_run:
+                if run_timing is not None:
+                    run_timing.terminate(
+                        monotonic(), lifecycle="aborted", remaining_status="aborted"
+                    )
                 break
             continue
         if execution_mode == "mixed":
@@ -185,8 +198,14 @@ def run_effective_stages(
                 stop_event,
             ),
             cancel_check=cancel_check,
+            run_timing=run_timing,
+            run_timing_profile_index=idx,
         )
         current_run_aborted = stage_adapter.run_aborted
         if stage_adapter.should_break_run:
+            if run_timing is not None and run_timing.anchor().terminal_elapsed_seconds is None:
+                run_timing.terminate(
+                    monotonic(), lifecycle="aborted", remaining_status="aborted"
+                )
             break
     return StageLoopResult(run_aborted=current_run_aborted)

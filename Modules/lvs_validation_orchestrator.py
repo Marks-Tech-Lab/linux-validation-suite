@@ -298,6 +298,7 @@ class ValidationOrchestrator:
         cancel_check: Optional[Callable[[], bool]] = None,
         operator_stop_source: str = "cli",
         live_telemetry_callback: Optional[Callable[[Any], None]] = None,
+        live_timing_callback: Optional[Callable[[Any], None]] = None,
     ) -> Path:
         return execute_validation_run(
             self,
@@ -310,4 +311,5 @@ class ValidationOrchestrator:
             cancel_check=cancel_check,
             operator_stop_source=operator_stop_source,
             live_telemetry_callback=live_telemetry_callback,
+            live_timing_callback=live_timing_callback,
         )

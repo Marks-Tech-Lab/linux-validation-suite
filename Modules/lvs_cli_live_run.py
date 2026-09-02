@@ -102,6 +102,12 @@ class CliLiveRunPresenter:
         ]
         if snapshot.profile:
             lines.append(short_status_text(f"Profile: {snapshot.profile}", self.width))
+        if snapshot.run_elapsed:
+            run_parts = [f"Run elapsed: {snapshot.run_elapsed}"]
+            if snapshot.est_run_remaining:
+                estimate = snapshot.est_run_remaining
+                run_parts.append(f"Est. remaining: {estimate.title() if not estimate[:1].isdigit() else estimate}")
+            lines.append(short_status_text(" | ".join(run_parts), self.width))
         if snapshot.stage:
             active = [f"Active stage: {snapshot.stage}"]
             if snapshot.elapsed:

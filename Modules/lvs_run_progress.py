@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
+
+from .lvs_core import format_duration_hms
 
 from .lvs_run_lifecycle import phase_line
 
@@ -28,6 +30,10 @@ class RunStatusSnapshot:
     verdict: str = ""
     elapsed: str = ""
     remaining: str = ""
+    stage_elapsed: str = ""
+    stage_remaining: str = ""
+    run_elapsed: str = ""
+    est_run_remaining: str = ""
     manual_abort_requested: bool = False
 
 
@@ -144,6 +150,10 @@ class RunStatusTracker:
             snapshot.elapsed = fields["elapsed"]
         if fields.get("remaining"):
             snapshot.remaining = fields["remaining"]
+        if fields.get("run_elapsed"):
+            snapshot.run_elapsed = fields["run_elapsed"]
+        if fields.get("est_run_remaining"):
+            snapshot.est_run_remaining = fields["est_run_remaining"]
         if event_type == "run-start":
             snapshot.active = True
             snapshot.status = "run_active"
@@ -153,13 +163,18 @@ class RunStatusTracker:
             snapshot.active = True
             snapshot.status = "stage_active"
             snapshot.stage = fields.get("stage", snapshot.stage)
-            snapshot.remaining = fields.get("remaining", snapshot.remaining)
+            snapshot.elapsed = ""
+            snapshot.remaining = ""
+            snapshot.stage_elapsed = ""
+            snapshot.stage_remaining = ""
         elif event_type == "stage-progress":
             snapshot.active = True
             snapshot.status = "stage_active"
             snapshot.stage = fields.get("stage", snapshot.stage)
             snapshot.elapsed = fields.get("elapsed", snapshot.elapsed)
             snapshot.remaining = fields.get("remaining", snapshot.remaining)
+            snapshot.stage_elapsed = fields.get("elapsed", snapshot.stage_elapsed)
+            snapshot.stage_remaining = fields.get("remaining", snapshot.stage_remaining)
         elif event_type == "stage-skip":
             snapshot.status = "stage_skipped"
             snapshot.stage = fields.get("stage", snapshot.stage)
@@ -167,6 +182,10 @@ class RunStatusTracker:
             snapshot.active = True
             snapshot.status = "cpu_tuning"
             snapshot.stage = fields.get("stage", snapshot.stage)
+            snapshot.elapsed = ""
+            snapshot.remaining = ""
+            snapshot.stage_elapsed = ""
+            snapshot.stage_remaining = ""
         elif event_type == "cpu-tune-end":
             snapshot.status = "cpu_tuned"
             snapshot.stage = fields.get("stage", snapshot.stage)
@@ -208,12 +227,17 @@ class RunStatusTracker:
             snapshot.active = True
             snapshot.status = "stage_complete"
             snapshot.stage = fields.get("stage", snapshot.stage)
-            snapshot.remaining = fields.get("remaining", "")
+            snapshot.elapsed = ""
+            snapshot.remaining = ""
+            snapshot.stage_elapsed = ""
+            snapshot.stage_remaining = ""
         elif event_type == "run-end":
             snapshot.active = False
             snapshot.status = "run_complete"
             snapshot.elapsed = fields.get("elapsed", snapshot.elapsed)
             snapshot.remaining = fields.get("remaining", "")
+            snapshot.run_elapsed = fields.get("run_elapsed", fields.get("elapsed", snapshot.run_elapsed))
+            snapshot.est_run_remaining = fields.get("est_run_remaining", "00:00:00")
             snapshot.verdict = fields.get("verdict", snapshot.verdict)
         elif event_type == "run-error":
             snapshot.active = False
@@ -231,13 +255,34 @@ class RunStatusTracker:
         if snapshot.verdict:
             parts.append(f"verdict={snapshot.verdict}")
         if snapshot.elapsed:
-            parts.append(f"elapsed={snapshot.elapsed}")
+            parts.append(f"stage_elapsed={snapshot.elapsed}")
         if snapshot.remaining:
-            parts.append(f"remaining={snapshot.remaining}")
+            parts.append(f"stage_remaining={snapshot.remaining}")
+        if snapshot.run_elapsed:
+            parts.append(f"run_elapsed={snapshot.run_elapsed}")
+        if snapshot.est_run_remaining:
+            parts.append(f"est_run_remaining={snapshot.est_run_remaining}")
         return short_status_text(" | ".join(parts), limit=limit)
 
 
-def run_status_detail_text(snapshot: RunStatusSnapshot) -> str:
+def _remaining_display(timing_snapshot: Any) -> str:
+    status = str(getattr(timing_snapshot, "estimated_run_remaining_status", "") or "")
+    if status:
+        return status.replace("_", " ").title()
+    remaining = getattr(timing_snapshot, "estimated_run_remaining_seconds", None)
+    return format_duration_hms(remaining) if remaining is not None else "Unknown"
+
+
+def run_timing_detail_lines(timing_snapshot: Any) -> list[str]:
+    if timing_snapshot is None:
+        return []
+    return [
+        f"Run elapsed: {format_duration_hms(timing_snapshot.run_elapsed_seconds)}",
+        f"Est. remaining: {_remaining_display(timing_snapshot)}",
+    ]
+
+
+def run_status_detail_text(snapshot: RunStatusSnapshot, timing_snapshot: Any = None) -> str:
     lines = [
         f"Status: {snapshot.status.replace('_', ' ')}",
     ]
@@ -247,10 +292,17 @@ def run_status_detail_text(snapshot: RunStatusSnapshot) -> str:
         lines.append(f"Stage: {snapshot.stage}")
     if snapshot.verdict:
         lines.append(f"Verdict: {snapshot.verdict}")
-    if snapshot.elapsed:
-        lines.append(f"Elapsed: {snapshot.elapsed}")
-    if snapshot.remaining:
-        lines.append(f"Remaining: {snapshot.remaining}")
+    if timing_snapshot is not None:
+        lines.extend(run_timing_detail_lines(timing_snapshot))
+    else:
+        if snapshot.elapsed:
+            scope = "Run" if snapshot.status in {"run_complete", "run_failed"} else (
+                "Heatsoak" if snapshot.status.startswith("heatsoak") else "Stage"
+            )
+            lines.append(f"{scope} elapsed: {snapshot.elapsed}")
+        if snapshot.remaining:
+            scope = "Heatsoak" if snapshot.status.startswith("heatsoak") else "Stage"
+            lines.append(f"{scope} remaining: {snapshot.remaining}")
     if snapshot.manual_abort_requested:
         lines.append("Manual stop requested: yes")
     if snapshot.latest_event_type:
@@ -272,7 +324,10 @@ def _event_summary(event: RunProgressEvent) -> str:
     label = event.event_type.replace("_", " ").replace("-", " ") or "event"
     fields = event.fields or {}
     details = []
-    for key in ("profile", "stage", "target", "workload", "verdict", "elapsed", "remaining", "minutes", "action", "error"):
+    for key in (
+        "profile", "stage", "target", "workload", "verdict", "elapsed", "remaining",
+        "run_elapsed", "est_run_remaining", "minutes", "action", "error",
+    ):
         value = fields.get(key)
         if value:
             details.append(f"{key}={value}")

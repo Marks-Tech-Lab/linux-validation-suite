@@ -102,6 +102,7 @@ def bootstrap_run_artifacts(
     print_run_header: Callable[[str, Path, bool], None],
     print_stage_skip: Callable[[str, str], None],
     print_run_start: Callable[[str], None],
+    on_effective_profile: Optional[Callable[[ValidationProfile], None]] = None,
 ) -> RunBootstrapResult:
     preflight_plan = list(preflight.get("plan", []) or [])
     effective_profile, skipped_stages, effective_labels = build_effective_profile_for_run(
@@ -109,6 +110,8 @@ def bootstrap_run_artifacts(
         labels,
         preflight_plan,
     )
+    if on_effective_profile is not None:
+        on_effective_profile(effective_profile)
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     advanced_debug = AdvancedDebugLogger(

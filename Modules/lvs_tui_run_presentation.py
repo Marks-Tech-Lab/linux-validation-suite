@@ -9,7 +9,7 @@ import textwrap
 from typing import Any, Dict, Iterable, Tuple
 
 from .lvs_live_telemetry import LiveCpuCore, LiveTelemetrySnapshot, LiveTelemetryValue
-from .lvs_run_progress import run_event_history_text, run_status_detail_text, short_status_text
+from .lvs_run_progress import run_event_history_text, run_status_detail_text, run_timing_detail_lines, short_status_text
 
 
 RUN_ACTIVE_SIDEBAR_TITLE = "Run Active"
@@ -550,9 +550,12 @@ def _detail_values(
 
 
 def live_snapshot_detail_text(
-    snapshot: LiveTelemetrySnapshot, *, stale: bool = False, content_width: int = 80
+    snapshot: LiveTelemetrySnapshot, *, stale: bool = False, content_width: int = 80,
+    timing_snapshot: object = None,
 ) -> str:
     lines = ["Live Telemetry Detail", "====================="]
+    if timing_snapshot is not None:
+        lines.extend(["", *run_timing_detail_lines(timing_snapshot)])
     if stale:
         lines.extend(["", "Snapshot is stale; the last collected values are shown."])
     cpu_rows = []
@@ -740,6 +743,18 @@ def stage_progress_table_text(events: Iterable[object], *, limit: int = 24, widt
 
 def active_stage_line_text(status_snapshot: object, events: Iterable[object], *, width: int = 120) -> str:
     snapshot_stage = str(getattr(status_snapshot, "stage", "") or "").strip()
+    snapshot_status = str(getattr(status_snapshot, "status", "") or "")
+    if snapshot_status in {"stage_preparing", "cpu_tuning", "cpu_tuned"}:
+        return short_status_text(
+            f"Active: {snapshot_stage or 'next stage'} | preparing",
+            width,
+        )
+    if snapshot_status in {"stage_complete", "stage_skipped", "between_stages"}:
+        return "Active: between stages"
+    if snapshot_status in {"manual_abort_requested", "stage_aborted", "run_aborted"}:
+        return short_status_text(f"Active: {snapshot_stage or 'stage'} | stopping", width)
+    if snapshot_status in {"run_complete", "run_failed", "run_finalizing"}:
+        return "Active: run stopped"
     latest_progress = None
     for event in events:
         if str(getattr(event, "event_type", "") or "") in {"stage-progress", "heatsoak-progress", "stage-start", "heatsoak-start"}:
@@ -776,6 +791,7 @@ def run_progress_detail_text(
     phase_line: str,
     events: Iterable[object],
     output_lines: Iterable[str],
+    timing_snapshot: object = None,
 ) -> str:
     output = output_tail_text(output_lines)
     latest_phase = short_status_text(phase_line or "(waiting for phase output...)", 120)
@@ -785,7 +801,7 @@ def run_progress_detail_text(
         f"Profile: {profile_name or '-'}\n\n"
         "Current Status\n"
         "--------------\n"
-        f"{run_status_detail_text(status_snapshot)}\n"
+        f"{run_status_detail_text(status_snapshot, timing_snapshot)}\n"
         f"{active_stage_line_text(status_snapshot, events)}\n"
         f"Latest: {latest_phase}\n\n"
         f"{stage_progress_table_text(events)}\n\n"
@@ -802,6 +818,7 @@ def locked_run_detail_text(
     phase_line: str,
     events: Iterable[object],
     cancel_requested: bool = False,
+    timing_snapshot: object = None,
 ) -> str:
     message = (
         "Run In Progress\n"
@@ -810,7 +827,7 @@ def locked_run_detail_text(
         "Navigation and edits are locked while the workload is active.\n\n"
         "Press Esc or the footer Back action to request safe cancellation. "
         "Cancellation stops active workers and saves partial run results through the existing operator-stop path.\n\n"
-        f"{run_status_detail_text(status_snapshot)}\n"
+        f"{run_status_detail_text(status_snapshot, timing_snapshot)}\n"
         f"Latest phase: {phase_line or '(waiting for phase output...)'}\n\n"
         f"{stage_progress_table_text(events)}\n\n"
         f"{run_event_history_text(events, limit=5)}"

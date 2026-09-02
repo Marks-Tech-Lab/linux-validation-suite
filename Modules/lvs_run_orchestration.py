@@ -13,6 +13,7 @@ from .lvs_run_completion import complete_validation_run
 from .lvs_run_event_presenter import CliRunEventPresenter
 from .lvs_run_lifecycle import future_local_iso
 from .lvs_run_stage_loop import run_effective_stages
+from .lvs_run_timing import RunTimingController, append_timing_cli_fields
 from .lvs_settings import DEFAULT_STAGE_PROGRESS_INTERVAL_SECONDS
 from .lvs_system_info import SystemInfoCollector
 from .lvs_storage_benchmark import StorageBenchmarkService
@@ -32,6 +33,7 @@ def execute_validation_run(
     cancel_check: Optional[Callable[[], bool]] = None,
     operator_stop_source: str = "cli",
     live_telemetry_callback: Optional[Callable[[Any], None]] = None,
+    live_timing_callback: Optional[Callable[[Any], None]] = None,
 ) -> Path:
     preflight = orchestrator.dry_run(profile_path, profile, labels)
     if not preflight["runnable"]:
@@ -44,14 +46,16 @@ def execute_validation_run(
 
     started_iso = now_local_iso()
     started_monotonic = time.monotonic()
-    telemetry = TelemetryCollector(
-        interval_seconds=profile.defaults.telemetry_interval_seconds,
-        runtime_environment=orchestrator.settings.runtime_environment,
-        privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
-        cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
-        live_snapshot_callback=live_telemetry_callback,
-    )
+    run_timing = RunTimingController(started_monotonic, publish=live_timing_callback)
+    telemetry = None
     try:
+        telemetry = TelemetryCollector(
+            interval_seconds=profile.defaults.telemetry_interval_seconds,
+            runtime_environment=orchestrator.settings.runtime_environment,
+            privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
+            cpu_core_type_probe=dict(preflight.get("backend_details", {}).get("cpu_native_helper", {}).get("core_type_probe") or {}),
+            live_snapshot_callback=live_telemetry_callback,
+        )
         return _execute_validation_run_with_collector(
             orchestrator,
             profile_path=profile_path,
@@ -69,9 +73,19 @@ def execute_validation_run(
             started_iso=started_iso,
             started_monotonic=started_monotonic,
             telemetry=telemetry,
+            run_timing=run_timing,
         )
+    except BaseException:
+        anchor = run_timing.anchor()
+        elapsed = (
+            anchor.terminal_elapsed_seconds
+            if anchor.terminal_elapsed_seconds is not None
+            else time.monotonic() - started_monotonic
+        )
+        run_timing.finish(elapsed, lifecycle="stopped", remaining_status="stopped")
+        raise
     finally:
-        close_telemetry = getattr(telemetry, "close", None)
+        close_telemetry = getattr(telemetry, "close", None) if telemetry is not None else None
         if callable(close_telemetry):
             close_telemetry()
 
@@ -94,12 +108,16 @@ def _execute_validation_run_with_collector(
     started_iso: str,
     started_monotonic: float,
     telemetry: TelemetryCollector,
+    run_timing: RunTimingController,
 ) -> Path:
     stage_windows: List[Any] = []
     executed_plan: List[Dict[str, Any]] = []
     run_aborted = False
     recovery_report = preflight.get("gpu_recovery") or orchestrator._build_gpu_recovery_report()
-    run_events = CliRunEventPresenter(started_iso=started_iso)
+    run_events = CliRunEventPresenter(
+        started_iso=started_iso,
+        timing_snapshot=lambda: run_timing.snapshot(time.monotonic()),
+    )
     bootstrap = bootstrap_run_artifacts(
         app_name=APP_NAME,
         app_version=APP_VERSION,
@@ -126,6 +144,7 @@ def _execute_validation_run_with_collector(
         print_run_header=run_events.run_header,
         print_stage_skip=run_events.stage_skip,
         print_run_start=run_events.run_start,
+        on_effective_profile=lambda effective: run_timing.configure(effective, labels),
     )
     run_dir = bootstrap.run_dir
     effective_profile = bootstrap.effective_profile
@@ -139,6 +158,12 @@ def _execute_validation_run_with_collector(
         runtime_environment=orchestrator.settings.runtime_environment,
         privileged_helper_enabled=orchestrator.settings.privileged_helper_enabled,
     )
+
+    def handle_operator_stop(display_name: str, event: Dict[str, Any]) -> None:
+        run_events.operator_stop(display_name, event)
+        run_timing.terminate(
+            time.monotonic(), lifecycle="aborted", remaining_status="aborted"
+        )
 
     stage_loop = run_effective_stages(
         profile_name=profile.profile_name,
@@ -204,9 +229,11 @@ def _execute_validation_run_with_collector(
         print_stage_start=run_events.stage_start,
         print_stage_abort=run_events.stage_abort,
         print_stage_end=run_events.stage_end,
-        print_progress=print,
+        print_progress=lambda line: print(
+            append_timing_cli_fields(line, run_timing.snapshot(time.monotonic()))
+        ),
         operator_stop_source=operator_stop_source,
-        on_operator_stop=run_events.operator_stop,
+        on_operator_stop=handle_operator_stop,
         cancel_check=cancel_check,
         completion_stage_runner=lambda stage, display_name, stage_plan: run_storage_benchmark_stage(
             service=storage_benchmark_service,
@@ -218,8 +245,11 @@ def _execute_validation_run_with_collector(
             executed_plan=executed_plan,
             monotonic=time.monotonic,
             cancel_check=cancel_check,
-            progress=print,
+            progress=lambda line: print(
+                append_timing_cli_fields(line, run_timing.snapshot(time.monotonic()))
+            ),
         ),
+        run_timing=run_timing,
     )
     run_aborted = stage_loop.run_aborted
 
@@ -252,5 +282,6 @@ def _execute_validation_run_with_collector(
         run_events=run_events,
         now_local_iso=now_local_iso,
         monotonic=time.monotonic,
+        run_timing=run_timing,
     )
     return run_dir

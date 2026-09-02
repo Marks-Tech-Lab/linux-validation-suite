@@ -228,6 +228,8 @@ class LinuxValidationSuiteTui(
         self.run_live_profile_name = ""
         self.run_live_phase_line = ""
         self.run_live_telemetry_snapshot = None
+        self.run_timing_anchor = None
+        self.run_timing_snapshot = None
         self.run_live_telemetry_detail = False
         self._rendered_live_system_state = None
         self.run_status_tracker = RunStatusTracker()
@@ -398,6 +400,9 @@ class LinuxValidationSuiteTui(
             pass
 
     def _refresh_live_system_pane(self) -> None:
+        refresh_timing = getattr(self, "_refresh_run_timing_display", None)
+        if callable(refresh_timing):
+            refresh_timing()
         try:
             widget = self.query_one("#live-system", Static)
             terminal_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)

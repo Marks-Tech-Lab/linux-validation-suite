@@ -4,18 +4,29 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Optional
 
 from Modules.lvs_core import format_duration_hms
 from Modules.lvs_run_lifecycle import phase_line
+from Modules.lvs_run_timing import timing_cli_fields
 
 
 class CliRunEventPresenter:
     """CLI phase-line presenter for shared run orchestration callbacks."""
 
-    def __init__(self, *, started_iso: str, emit: Callable[[str], None] = print) -> None:
+    def __init__(
+        self,
+        *,
+        started_iso: str,
+        emit: Callable[[str], None] = print,
+        timing_snapshot: Optional[Callable[[], Any]] = None,
+    ) -> None:
         self.started_iso = started_iso
         self.emit = emit
+        self.timing_snapshot = timing_snapshot
+
+    def _timing_fields(self) -> dict[str, str]:
+        return timing_cli_fields(self.timing_snapshot()) if self.timing_snapshot is not None else {}
 
     def run_header(self, profile_name: str, run_dir: Path, debug_enabled: bool) -> None:
         self.emit(f"\nRunning profile: {profile_name}")
@@ -27,7 +38,7 @@ class CliRunEventPresenter:
         self.emit(phase_line(self.started_iso, "stage-skip", stage=label, reason=reason))
 
     def run_start(self, profile_name: str) -> None:
-        self.emit(phase_line(self.started_iso, "run-start", profile=profile_name) + "\n")
+        self.emit(phase_line(self.started_iso, "run-start", profile=profile_name, **self._timing_fields()) + "\n")
 
     def cpu_tune_start(self, display_name: str, timestamp: str, policy: str) -> None:
         self.emit(
@@ -36,6 +47,7 @@ class CliRunEventPresenter:
                 "cpu-tune-start",
                 stage=display_name,
                 policy=policy,
+                **self._timing_fields(),
             )
         )
 
@@ -54,6 +66,7 @@ class CliRunEventPresenter:
                 stage=display_name,
                 duration=format_duration_hms(tune_elapsed),
                 selected=selected,
+                **self._timing_fields(),
             )
             + tune_summary_suffix
         )
@@ -76,13 +89,22 @@ class CliRunEventPresenter:
                 type=stage_type,
                 planned=planned,
                 expected_end=expected_end,
+                **self._timing_fields(),
             )
             + cpu_suffix
             + gpu_suffix
         )
 
     def stage_abort(self, display_name: str, timestamp: str, reason: str) -> None:
-        self.emit(phase_line(timestamp, "stage-abort", stage=display_name, reason=reason))
+        self.emit(
+            phase_line(
+                timestamp,
+                "stage-abort",
+                stage=display_name,
+                reason=reason,
+                **self._timing_fields(),
+            )
+        )
 
     def stage_end(
         self,
@@ -99,6 +121,7 @@ class CliRunEventPresenter:
                 stage=display_name,
                 actual=format_duration_hms(stage_elapsed),
                 verdict=verdict,
+                **self._timing_fields(),
             )
             + (f" | issues={issue_count}" if issue_count else "")
         )

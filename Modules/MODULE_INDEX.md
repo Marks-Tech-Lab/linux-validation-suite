@@ -147,6 +147,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_run_completion.py`, `lvs_run_finalization.py`, `lvs_run_verdict.py` | Internal | Complete runs and consolidate final verdicts. |
 | `lvs_run_artifacts.py`, `lvs_run_bootstrap.py` | Internal | Write initial and final run artifacts. |
 | `lvs_run_lifecycle.py`, `lvs_run_progress.py`, `lvs_run_event_presenter.py` | Internal | Format lifecycle events and progress for frontends. |
+| `lvs_run_timing.py` | Internal timing model | Owns monotonic run/stage timing anchors and shared CLI/TUI elapsed/estimated-remaining calculations. |
 | `lvs_faults.py`, `lvs_sensor_events.py`, `lvs_stability_events.py` | Internal evidence | Build system-fault, sensor, and stability events. |
 | `lvs_heatsoak.py` | Internal | Coordinates frontend-neutral heatsoak preparation. |
 | `lvs_strict_threshold_policy.py` | Internal policy | Produces strict-threshold recommendation warnings. |

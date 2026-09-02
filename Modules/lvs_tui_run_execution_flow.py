@@ -27,6 +27,7 @@ def run_progress_text(
     phase_line: str,
     events: List[Any],
     output_lines: List[str],
+    timing_snapshot: Any = None,
 ) -> str:
     return run_progress_detail_text(
         profile_name=profile_name,
@@ -34,6 +35,7 @@ def run_progress_text(
         phase_line=phase_line,
         events=events,
         output_lines=output_lines,
+        timing_snapshot=timing_snapshot,
     )
 
 

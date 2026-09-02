@@ -49,9 +49,16 @@ def complete_validation_run(
     run_events: Any,
     now_local_iso: Callable[[], str],
     monotonic: Callable[[], float],
+    run_timing: Any = None,
 ) -> RunCompletionResult:
     ended_iso = now_local_iso()
     total_elapsed = monotonic() - started_monotonic
+    if run_timing is not None:
+        run_timing.finish(
+            total_elapsed,
+            lifecycle="finalizing",
+            remaining_status="aborted" if run_aborted else "",
+        )
     kernel_faults = collect_kernel_faults(started_iso, ended_iso)
     final_artifacts = write_final_run_artifacts(
         run_dir=run_dir,
@@ -81,6 +88,11 @@ def complete_validation_run(
         capture_run_end=capture_run_end,
     )
     overall_verdict = final_artifacts.overall_verdict
+    if run_timing is not None:
+        if run_aborted:
+            run_timing.finish(total_elapsed, lifecycle="aborted", remaining_status="aborted")
+        else:
+            run_timing.finish(total_elapsed, lifecycle="completed")
     run_events.run_end(ended_iso, total_elapsed, overall_verdict, len(skipped_stages))
     run_events.run_complete(run_dir)
     return RunCompletionResult(

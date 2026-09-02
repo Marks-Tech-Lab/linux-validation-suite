@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from pathlib import Path
 
 from Modules.lvs_run_executor import RunExecutionError
 from Modules.lvs_run_progress import RunProgressEvent
+from Modules.lvs_run_timing import calculate_run_timing
 from Modules.lvs_service_models import FrontendActionSpec
 from Modules.lvs_tui_input_state import tui_input_state
 from Modules.lvs_tui_post_run_flow import (
@@ -139,6 +141,8 @@ class TuiRunExecutionAdapterMixin:
         profile = self.selected_profile
         self.run_live_lines = []
         self.run_live_telemetry_snapshot = None
+        self.run_timing_anchor = None
+        self.run_timing_snapshot = None
         self.run_live_telemetry_detail = False
         self.run_live_profile_name = profile.name
         self.run_live_phase_line = ""
@@ -263,6 +267,9 @@ class TuiRunExecutionAdapterMixin:
                 live_telemetry_callback=lambda snapshot: self.call_from_thread(
                     self._append_live_telemetry_snapshot, snapshot
                 ),
+                live_timing_callback=lambda anchor: self.call_from_thread(
+                    self._append_run_timing_anchor, anchor
+                ),
                 cancel_check=self.run_cancel_event.is_set,
                 operator_stop_source="tui",
             )
@@ -306,16 +313,56 @@ class TuiRunExecutionAdapterMixin:
         if self.run_in_progress and self.run_live_telemetry_detail:
             self._refresh_run_detail()
 
+    def _append_run_timing_anchor(self, anchor) -> None:
+        self.run_timing_anchor = anchor
+        tracker_snapshot = self.run_status_tracker.snapshot
+        position = getattr(anchor, "current_stage_position", None)
+        stages = getattr(anchor, "stages", ())
+        if position is not None and 0 <= position < len(stages):
+            tracker_snapshot.stage = stages[position].label
+        if getattr(anchor, "lifecycle", "") == "preparing":
+            tracker_snapshot.status = "stage_preparing"
+            tracker_snapshot.elapsed = ""
+            tracker_snapshot.remaining = ""
+            tracker_snapshot.stage_elapsed = ""
+            tracker_snapshot.stage_remaining = ""
+        elif getattr(anchor, "lifecycle", "") == "between_stages":
+            tracker_snapshot.status = "between_stages"
+            tracker_snapshot.elapsed = ""
+            tracker_snapshot.remaining = ""
+            tracker_snapshot.stage_elapsed = ""
+            tracker_snapshot.stage_remaining = ""
+        elif getattr(anchor, "lifecycle", "") == "finalizing":
+            tracker_snapshot.status = "run_finalizing"
+        elif getattr(anchor, "lifecycle", "") == "completed":
+            tracker_snapshot.status = "run_complete"
+            tracker_snapshot.active = False
+        elif getattr(anchor, "lifecycle", "") == "aborted":
+            tracker_snapshot.status = "run_aborted"
+            tracker_snapshot.active = False
+        elif getattr(anchor, "lifecycle", "") == "stopped":
+            tracker_snapshot.status = "run_failed"
+            tracker_snapshot.active = False
+        self._refresh_run_timing_display()
+
+    def _refresh_run_timing_display(self) -> None:
+        anchor = getattr(self, "run_timing_anchor", None)
+        if anchor is None:
+            return
+        self.run_timing_snapshot = calculate_run_timing(anchor, time.monotonic())
+        if self.run_in_progress:
+            self._refresh_run_detail()
+
     def _refresh_run_detail(self) -> None:
         snapshot = getattr(self, "run_live_telemetry_snapshot", None)
         if getattr(self, "run_live_telemetry_detail", False) and snapshot is not None:
-            import time
             terminal_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)
             self._set_detail(
                 live_snapshot_detail_text(
                     snapshot,
                     stale=live_snapshot_is_stale(snapshot, time.monotonic()),
                     content_width=live_detail_content_width(terminal_width),
+                    timing_snapshot=getattr(self, "run_timing_snapshot", None),
                 )
             )
             return
@@ -338,6 +385,7 @@ class TuiRunExecutionAdapterMixin:
             phase_line=self.run_live_phase_line,
             events=self.run_status_tracker.events,
             output_lines=self.run_live_lines,
+            timing_snapshot=getattr(self, "run_timing_snapshot", None),
         )
 
     def _request_run_cancel(self) -> None:
@@ -355,6 +403,7 @@ class TuiRunExecutionAdapterMixin:
                 phase_line=self.run_live_phase_line,
                 events=self.run_status_tracker.events,
                 cancel_requested=True,
+                timing_snapshot=getattr(self, "run_timing_snapshot", None),
             )
         )
 
@@ -561,6 +610,7 @@ class TuiRunExecutionAdapterMixin:
                     phase_line=self.run_live_phase_line,
                     events=self.run_status_tracker.events,
                     cancel_requested=cancel_requested,
+                    timing_snapshot=getattr(self, "run_timing_snapshot", None),
                 )
             )
             return

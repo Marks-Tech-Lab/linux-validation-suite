@@ -163,6 +163,7 @@ class SuiteRunServiceMixin:
         cancel_check: Optional[Callable[[], bool]] = None,
         operator_stop_source: str = "cli",
         live_telemetry_callback: Optional[Callable[[Any], None]] = None,
+        live_timing_callback: Optional[Callable[[Any], None]] = None,
     ) -> RunResult:
         if setup is not None:
             request = RunLaunchRequest(
@@ -178,6 +179,7 @@ class SuiteRunServiceMixin:
                 cancel_check=cancel_check,
                 operator_stop_source=operator_stop_source,
                 live_telemetry_callback=live_telemetry_callback,
+                live_timing_callback=live_timing_callback,
             )
         return self.run_launcher.run_capture(
             profile_path,
@@ -189,6 +191,7 @@ class SuiteRunServiceMixin:
             cancel_check=cancel_check,
             operator_stop_source=operator_stop_source,
             live_telemetry_callback=live_telemetry_callback,
+            live_timing_callback=live_timing_callback,
         )
 
     def build_heatsoak_stage(self, duration_seconds: int) -> StageConfig:

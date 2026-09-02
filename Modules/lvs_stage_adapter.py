@@ -80,6 +80,8 @@ def run_stage_adapter(
     operator_stop_source: str,
     on_operator_stop: Callable[[Dict[str, Any]], None],
     cancel_check: Optional[Callable[[], bool]] = None,
+    run_timing: Any = None,
+    run_timing_profile_index: int = -1,
 ) -> StageAdapterResult:
     stage_context = stage_run_context_from_plan(stage_plan)
     cpu_backend = stage_context.cpu_backend
@@ -136,6 +138,8 @@ def run_stage_adapter(
     gpu_suffix = gpu_stage_start_suffix(stage, stage_context)
     stage_started_iso = now_local_iso()
     stage_start = monotonic()
+    if run_timing is not None:
+        run_timing.start_stage(run_timing_profile_index, stage_start)
     print_stage_start(
         stage_started_iso,
         stage.name,
@@ -230,6 +234,8 @@ def run_stage_adapter(
         stage_execution.stage_verdict,
         stage_completion.issue_count,
     )
+    if run_timing is not None:
+        run_timing.end_stage(run_timing_profile_index)
     post_stage = apply_completed_stage_bookkeeping(
         stage_window=stage_completion.stage_window,
         stage_plan=stage_plan,
