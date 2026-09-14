@@ -38,6 +38,7 @@ class LauncherRuntimeMixin:
         )
         runtime = build_runtime_services(
             settings=self.settings_manager.settings,
+            settings_path=self.settings_manager.settings_path,
             orchestrator_factory=ValidationOrchestrator,
             ensure_ready=lambda: self._ensure_privileged_helper_ready("this run"),
             run_heatsoak_if_requested=self._run_heatsoak_if_requested,

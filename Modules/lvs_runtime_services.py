@@ -9,6 +9,8 @@ from typing import Any, Callable, Optional, Type
 
 from .lvs_dependency_reports import DependencyReportManager
 from .lvs_local_migration import LocalMigrationManager
+from .lvs_migration_lock import state_lock
+from .lvs_migration_paths import MigrationPathOwnership
 from .lvs_option_defaults import DEFAULT_CASE_OPTIONS, DEFAULT_CPU_COOLER_OPTIONS, DEFAULT_PSU_RATING_OPTIONS
 from .lvs_post_run import PostRunManager
 from .lvs_pre_import_sanity import PreImportSanityFacade
@@ -86,7 +88,16 @@ def build_runtime_services(
     profile_loader_type: Type[ProfileLoader] = ProfileLoader,
     summary_exporter: Optional[Any] = None,
     ensure_example_profile: bool = False,
+    application_root: Optional[Path] = None,
+    settings_path: Optional[Path] = None,
 ) -> RuntimeServices:
+    root = (application_root or Path(__file__).resolve().parents[1]).resolve()
+    selected_settings_path = settings_path or (root / "settings/global_settings.json")
+    ownership = MigrationPathOwnership.from_settings(
+        application_root=root,
+        settings_file=selected_settings_path,
+        settings=settings,
+    )
     profile_loader = profile_loader_type(Path(settings.profiles_dir), settings.profile_menu_groups)
     if ensure_example_profile:
         profile_loader.ensure_example_profile()
@@ -116,7 +127,11 @@ def build_runtime_services(
         orchestrator,
         post_run_manager.google_drive_readiness,
     )
-    local_migration_manager = LocalMigrationManager()
+    local_migration_manager = LocalMigrationManager(
+        root,
+        settings=settings,
+        settings_path=selected_settings_path,
+    )
     run_preflight_manager = RunPreflightManager(
         profile_loader=profile_loader,
         orchestrator=orchestrator,
@@ -133,7 +148,10 @@ def build_runtime_services(
         ensure_enhanced_telemetry_ready=ensure_ready,
         run_heatsoak_if_requested=run_heatsoak_if_requested,
     )
-    run_launcher = RunLaunchCoordinator(run_executor)
+    run_launcher = RunLaunchCoordinator(
+        run_executor,
+        state_lock_context=lambda: state_lock(ownership.settings_root, exclusive=False),
+    )
     storage_benchmark_service = StorageBenchmarkService(
         Path(settings.results_dir),
         runtime_environment=getattr(settings, "runtime_environment", {}),

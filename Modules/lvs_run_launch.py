@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -32,8 +33,9 @@ class RunLaunchRequest:
 class RunLaunchCoordinator:
     """Launch prepared runs through the shared executor."""
 
-    def __init__(self, executor: RunExecutor) -> None:
+    def __init__(self, executor: RunExecutor, *, state_lock_context: Optional[Callable[[], Any]] = None) -> None:
         self.executor = executor
+        self.state_lock_context = state_lock_context or nullcontext
 
     def run_direct(
         self,
@@ -44,13 +46,14 @@ class RunLaunchCoordinator:
         setup: Optional[RunSetupState] = None,
         heatsoak_debug_callback: Optional[Callable[[Path], None]] = None,
     ) -> Optional[Path]:
-        return self.executor.run_profile_direct(
-            profile_path,
-            metadata=metadata,
-            heatsoak_minutes=heatsoak_minutes,
-            setup=setup,
-            heatsoak_debug_callback=heatsoak_debug_callback,
-        )
+        with self.state_lock_context():
+            return self.executor.run_profile_direct(
+                profile_path,
+                metadata=metadata,
+                heatsoak_minutes=heatsoak_minutes,
+                setup=setup,
+                heatsoak_debug_callback=heatsoak_debug_callback,
+            )
 
     def run_prepared_direct(
         self,
@@ -80,18 +83,19 @@ class RunLaunchCoordinator:
         live_telemetry_callback: Optional[Callable[[Any], None]] = None,
         live_timing_callback: Optional[Callable[[Any], None]] = None,
     ) -> RunResult:
-        return self.executor.run_profile_capture_output(
-            profile_path,
-            metadata=metadata,
-            heatsoak_minutes=heatsoak_minutes,
-            setup=setup,
-            output_callback=output_callback,
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-            operator_stop_source=operator_stop_source,
-            live_telemetry_callback=live_telemetry_callback,
-            live_timing_callback=live_timing_callback,
-        )
+        with self.state_lock_context():
+            return self.executor.run_profile_capture_output(
+                profile_path,
+                metadata=metadata,
+                heatsoak_minutes=heatsoak_minutes,
+                setup=setup,
+                output_callback=output_callback,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                operator_stop_source=operator_stop_source,
+                live_telemetry_callback=live_telemetry_callback,
+                live_timing_callback=live_timing_callback,
+            )
 
     def run_prepared_capture(
         self,

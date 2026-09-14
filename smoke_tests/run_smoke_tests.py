@@ -722,6 +722,7 @@ from Modules.lvs_local_migration import (
     LocalMigrationManager,
     main as local_migration_main,
 )
+from smoke_tests.local_migration_checks import run_local_migration_checks
 from Modules.lvs_qa_review_cli import main as qa_review_cli_main
 from Modules.lvs_settings import GlobalSettings, SettingsManager
 from Modules.lvs_settings_facade import SettingsFacade
@@ -27003,6 +27004,7 @@ def main() -> int:
         test_migration_restore_preview_apply_and_scaffolds,
         test_migration_restore_no_overwrite_and_conflict_staging,
         test_migration_restore_rejects_invalid_bundles,
+        run_local_migration_checks,
         test_result_artifact_facade_inventory,
         test_result_artifact_presentation_helpers,
         test_profile_dry_run_summary_formatting,

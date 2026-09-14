@@ -16,6 +16,11 @@ from typing import Any
 
 from .lvs_core import APP_VERSION
 from .lvs_local_environment_export import PublicSupportExporter
+from .lvs_migration_lock import MigrationLockUnavailable, state_lock
+from .lvs_migration_paths import MigrationPathOwnership
+from .lvs_migration_transaction import MigrationTransaction
+from .lvs_migration_v1_adapter import V1PlanningInput, adapt_v1_payloads
+from .lvs_migration_v2 import build_a1_plan, validate_v2_bundle
 from .lvs_settings import GlobalSettings
 
 
@@ -118,12 +123,56 @@ def _portable_settings(payload: Any) -> dict[str, Any] | None:
 class LocalMigrationManager:
     """Create private bundles and restore them without overwriting local files."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        settings: Any | None = None,
+        settings_path: Path | None = None,
+    ) -> None:
         self.root = (root or Path(__file__).resolve().parents[1]).resolve()
+        if settings is None:
+            self.path_ownership, _ = MigrationPathOwnership.load_nonmutating(
+                application_root=self.root,
+                settings_file=settings_path,
+            )
+        else:
+            selected_settings_path = settings_path or (self.root / "settings/global_settings.json")
+            self.path_ownership = MigrationPathOwnership.from_settings(
+                application_root=self.root,
+                settings_file=selected_settings_path,
+                settings=settings,
+            )
         self.support_exporter = PublicSupportExporter(self.root)
+        self._v2_preview_tokens: dict[str, str] = {}
 
     def export_public_support(self, output_parent: Path | None = None):
         return self.support_exporter.export(output_parent)
+
+    def adapt_v1_bundle(self, bundle_dir: Path) -> V1PlanningInput:
+        """Validate a v1 bundle and project it without applying legacy targets."""
+        bundle = bundle_dir.expanduser().absolute()
+        validation = self._validate_bundle(bundle)
+        if validation["errors"]:
+            raise ValueError("version 1 migration bundle is invalid")
+        payloads: dict[str, Any] = {}
+        logical_by_path = {
+            SETTINGS_BUNDLE_PATH: "global_settings",
+            HISTORY_BUNDLE_PATH: "run_setup_history",
+            HARDWARE_STATE_BUNDLE_PATH: "hardware_result_validation_state",
+        }
+        for entry in validation["manifest"].get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            bundle_path = str(entry.get("bundle_path") or "")
+            logical_name = logical_by_path.get(bundle_path)
+            if logical_name is None:
+                continue
+            status, payload = _read_json(bundle / bundle_path)
+            if status != "readable":
+                raise ValueError("version 1 migration payload became unreadable")
+            payloads[logical_name] = payload
+        return adapt_v1_payloads(payloads)
 
     def create_private_bundle(
         self,
@@ -246,6 +295,8 @@ class LocalMigrationManager:
         )
 
     def preview_restore(self, bundle_dir: Path) -> MigrationRestoreResult:
+        if self._bundle_contract_version(bundle_dir) == 2:
+            return self._preview_v2_restore(bundle_dir)
         bundle = bundle_dir.expanduser().absolute()
         validation = self._validate_bundle(bundle)
         if validation["errors"]:
@@ -503,6 +554,8 @@ class LocalMigrationManager:
         return {"errors": errors, "warnings": warnings, "manifest": manifest}
 
     def apply_restore(self, bundle_dir: Path, *, yes: bool) -> MigrationRestoreResult:
+        if self._bundle_contract_version(bundle_dir) == 2:
+            return self._apply_v2_restore(bundle_dir, yes=yes)
         preview = self.preview_restore(bundle_dir)
         if not preview.valid:
             return preview
@@ -584,6 +637,187 @@ class LocalMigrationManager:
             staging_dir,
         )
 
+    def _bundle_contract_version(self, bundle_dir: Path) -> int | None:
+        status, manifest = _read_json(bundle_dir.expanduser().absolute() / MANIFEST_NAME)
+        if status != "readable" or not isinstance(manifest, dict):
+            return None
+        try:
+            return int(manifest.get("contract_version"))
+        except (TypeError, ValueError):
+            return None
+
+    def _preview_v2_restore(self, bundle_dir: Path) -> MigrationRestoreResult:
+        bundle, errors = validate_v2_bundle(bundle_dir.expanduser().absolute())
+        if bundle is None:
+            plan = {
+                "kind": "migration_restore_plan",
+                "valid": False,
+                "preview_only": True,
+                "bundle_contract_version": 2,
+                "errors": [item.to_dict() for item in errors],
+                "warnings": [],
+                "actions": [],
+                "requires_restart": True,
+                "apply_ready": False,
+            }
+            return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
+        try:
+            plan_model = build_a1_plan(bundle, self.path_ownership)
+        except (OSError, ValueError):
+            plan = {
+                "kind": "migration_restore_plan",
+                "valid": False,
+                "preview_only": True,
+                "bundle_contract_version": 2,
+                "errors": [
+                    {
+                        "error_code": "DESTINATION_ROOT_UNSAFE",
+                        "phase": "preview",
+                        "safe_message": "A configured migration destination is missing or unsafe.",
+                        "content_class": "",
+                        "logical_item": "",
+                        "retryable": True,
+                        "manual_action_required": False,
+                        "diagnostics": {},
+                    }
+                ],
+                "warnings": [],
+                "actions": [],
+                "requires_restart": True,
+                "apply_ready": False,
+            }
+            return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
+        plan = {**plan_model.to_dict(), "preview_only": True}
+        self._v2_preview_tokens[str(bundle.bundle_path)] = plan_model.preview_token
+        return MigrationRestoreResult(plan_model.valid, False, plan, self._v2_restore_summary(plan))
+
+    def _apply_v2_restore(self, bundle_dir: Path, *, yes: bool) -> MigrationRestoreResult:
+        bundle_key = str(bundle_dir.expanduser().absolute())
+        expected_preview_token = self._v2_preview_tokens.get(bundle_key)
+        preview = self._preview_v2_restore(bundle_dir)
+        if not preview.valid or not yes:
+            if not yes and preview.valid:
+                plan = dict(preview.plan)
+                plan["valid"] = False
+                plan["apply_ready"] = False
+                plan["errors"] = [
+                    *plan.get("errors", []),
+                    {
+                        "error_code": "CONFIRMATION_REQUIRED",
+                        "phase": "confirmation",
+                        "safe_message": "Explicit confirmation is required for migration apply.",
+                        "content_class": "",
+                        "logical_item": "",
+                        "retryable": True,
+                        "manual_action_required": False,
+                        "diagnostics": {},
+                    },
+                ]
+                return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
+            return preview
+
+        if expected_preview_token is not None and expected_preview_token != str(preview.plan.get("preview_token") or ""):
+            plan = dict(preview.plan)
+            plan["valid"] = False
+            plan["apply_ready"] = False
+            plan["errors"] = [
+                *plan.get("errors", []),
+                {
+                    "error_code": "DESTINATION_CHANGED_AFTER_PREVIEW",
+                    "phase": "apply_precondition",
+                    "safe_message": "Destination state changed after preview. Create a new preview before applying.",
+                    "content_class": "",
+                    "logical_item": "",
+                    "retryable": True,
+                    "manual_action_required": False,
+                    "diagnostics": {},
+                },
+            ]
+            return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
+
+        bundle, _ = validate_v2_bundle(bundle_dir.expanduser().absolute())
+        if bundle is None:
+            return self._preview_v2_restore(bundle_dir)
+        plan_model = build_a1_plan(bundle, self.path_ownership)
+        if plan_model.preview_token != str(preview.plan.get("preview_token") or ""):
+            return self._preview_v2_restore(bundle_dir)
+        try:
+            with state_lock(self.path_ownership.settings_root, exclusive=True):
+                result = MigrationTransaction(
+                    ownership=self.path_ownership,
+                    bundle=bundle,
+                    plan=plan_model,
+                ).execute()
+        except (MigrationLockUnavailable, OSError) as exc:
+            lock_contention = isinstance(exc, MigrationLockUnavailable)
+            plan = dict(preview.plan)
+            plan["valid"] = False
+            plan["apply_ready"] = False
+            plan["errors"] = [
+                *plan.get("errors", []),
+                {
+                    "error_code": "ACTIVE_RUN_OR_MIGRATION" if lock_contention else "MIGRATION_LOCK_UNAVAILABLE",
+                    "phase": "lock",
+                    "safe_message": (
+                        "Migration apply is unavailable while validation or another migration apply is active."
+                        if lock_contention
+                        else "Migration apply could not secure the configured settings location."
+                    ),
+                    "content_class": "",
+                    "logical_item": "",
+                    "retryable": lock_contention,
+                    "manual_action_required": not lock_contention,
+                    "diagnostics": {"operation": "acquire_state_lock"},
+                },
+            ]
+            return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
+        plan = {**result.plan.to_dict(), "preview_only": False}
+        plan.update(
+            {
+                "transaction_id": result.transaction_id,
+                "applied": result.applied,
+                "rollback_complete": result.rollback_complete,
+                "recovery_required": result.recovery_required,
+                "recovery_instructions": list(result.recovery_instructions),
+            }
+        )
+        return MigrationRestoreResult(result.valid, result.applied, plan, self._v2_restore_summary(plan))
+
+    def _v2_restore_summary(self, plan: dict[str, Any]) -> str:
+        lines = [
+            "Private Migration Restore v2",
+            "============================",
+            "",
+            f"Valid: {'yes' if plan.get('valid') else 'no'}",
+            f"Apply ready: {'yes' if plan.get('apply_ready') else 'no'}",
+            f"Requires restart: {'yes' if plan.get('requires_restart') else 'no'}",
+        ]
+        if not plan.get("preview_only", True):
+            lines.extend(
+                [
+                    f"Applied: {'yes' if plan.get('applied', plan.get('valid')) else 'no'}",
+                    f"Recovery required: {'yes' if plan.get('recovery_required') else 'no'}",
+                ]
+            )
+        for error in plan.get("errors", []):
+            lines.append(
+                f"ERROR: {error.get('safe_message', 'Migration validation failed.') if isinstance(error, dict) else error}"
+            )
+        for warning in plan.get("warnings", []):
+            lines.append(
+                f"WARNING: {warning.get('safe_message', 'Migration warning.') if isinstance(warning, dict) else warning}"
+            )
+        lines.append("")
+        lines.append("Actions:")
+        for action in plan.get("actions", []):
+            if isinstance(action, dict):
+                lines.append(
+                    f"- {action.get('disposition')}: {action.get('logical_item')} — "
+                    f"{action.get('safe_summary') or action.get('reason_code')}"
+                )
+        lines.append("")
+        return "\n".join(lines)
+
     def _copy_exclusive(self, source: Path, target: Path) -> None:
         if source.is_symlink() or not source.is_file():
             raise OSError("unsafe source")
@@ -645,6 +879,7 @@ class LocalMigrationManager:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LVS public support export and private local migration helper.")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1], help=argparse.SUPPRESS)
+    parser.add_argument("--settings-file", type=Path, help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     support = subparsers.add_parser("support-export", help="Write a public-safe, redacted support summary.")
@@ -663,7 +898,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    manager = LocalMigrationManager(args.root)
+    manager = LocalMigrationManager(args.root, settings_path=args.settings_file)
     try:
         if args.command == "support-export":
             result = manager.export_public_support(args.output_dir)

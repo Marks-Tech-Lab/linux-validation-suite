@@ -69,6 +69,7 @@ class SuiteAppService(
     def _rebuild_runtime_components(self) -> None:
         runtime = build_runtime_services(
             settings=self.settings,
+            settings_path=self.settings_path,
             orchestrator_factory=self.orchestrator_factory,
             ensure_ready=self.ensure_enhanced_telemetry_ready,
             run_heatsoak_if_requested=self.run_heatsoak_if_requested,
