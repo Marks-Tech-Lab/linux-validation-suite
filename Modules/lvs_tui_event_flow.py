@@ -32,6 +32,7 @@ BUTTON_ACTIONS = {
 
 ESCAPE_CANCEL_VIEW_MODES = {
     "migration_support",
+    "migration_bundle_select",
     "setup_picker",
     "post_run_upload_picker",
     "profile_edit_picker",

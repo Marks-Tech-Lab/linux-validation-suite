@@ -7,6 +7,14 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .lvs_migration_ux import (
+    bundle_candidate_detail,
+    destructive_action_count,
+    migration_plan_text,
+    resolution_label,
+    successful_apply_text,
+    unresolved_actions,
+)
 from .lvs_profile_models import ValidationProfile
 
 
@@ -27,7 +35,7 @@ class DiagnosticsCliAdapter:
             print("\nDiagnostics / Dependencies")
             print("1. Dry Run / Diagnostics")
             print("2. Dependency Check")
-            print("3. Migration / Support")
+            print("3. Support / Migrate LVS State")
             print("4. Audit Profiles")
             print("5. Back")
             choice = host._input("Select: ").strip()
@@ -45,11 +53,11 @@ class DiagnosticsCliAdapter:
     def migration_support_menu(self) -> None:
         host = self.host
         while True:
-            print("\nMigration / Support")
-            print("1. Public-safe Support Summary")
-            print("2. Create Private Migration Bundle")
-            print("3. Preview Migration Restore")
-            print("4. Apply Reviewed Migration Restore")
+            print("\nSupport / Migrate LVS State")
+            print("1. Create Public-Safe Support Summary")
+            print("2. Export LVS State (Private Bundle)")
+            print("3. Preview LVS State Migration")
+            print("4. Apply LVS State Migration")
             print("5. Back")
             choice = host._input("Select: ").strip()
             try:
@@ -57,8 +65,10 @@ class DiagnosticsCliAdapter:
                     result = host.local_migration_manager.export_public_support()
                     print(result.summary_text, end="")
                 elif choice == "2":
+                    preview = host.local_migration_manager.preview_private_bundle_export()
+                    print(preview["summary_text"], end="")
                     warning = host._input(
-                        "This bundle is NOT public-safe. Type PRIVATE to acknowledge private data: "
+                        "Type PRIVATE to acknowledge this bundle is not public-safe and create it: "
                     ).strip()
                     if warning != "PRIVATE":
                         print("Private migration export cancelled.")
@@ -67,27 +77,132 @@ class DiagnosticsCliAdapter:
                         acknowledge_private_data=True,
                     )
                     print(result.summary_text, end="")
+                    follow_up = host._input("Type PREVIEW to preview this new bundle, or press Enter to return: ").strip()
+                    if follow_up == "PREVIEW":
+                        restored = host.local_migration_manager.preview_restore(result.bundle_dir)
+                        print(migration_plan_text(restored.plan, include_details=True), end="")
                 elif choice == "3":
-                    raw = host._input("Migration bundle folder: ").strip()
-                    if raw:
-                        print(host.local_migration_manager.preview_restore(Path(raw)).summary_text, end="")
+                    bundle_path = self._choose_migration_bundle()
+                    if bundle_path is not None:
+                        preview = host.local_migration_manager.preview_restore(bundle_path)
+                        print(migration_plan_text(preview.plan, include_details=True), end="")
                 elif choice == "4":
-                    raw = host._input("Migration bundle folder: ").strip()
-                    if not raw:
+                    bundle_path = self._choose_migration_bundle()
+                    if bundle_path is None:
                         continue
-                    preview = host.local_migration_manager.preview_restore(Path(raw))
-                    print(preview.summary_text, end="")
+                    preview = host.local_migration_manager.preview_restore(bundle_path)
+                    resolutions: dict[str, str] = {}
+                    print(migration_plan_text(preview.plan), end="")
+                    resolved = self._resolve_migration_conflicts(bundle_path, preview, resolutions)
+                    if resolved is None:
+                        continue
+                    preview, resolutions = resolved
                     if not preview.valid or not preview.plan.get("apply_ready", True):
                         continue
-                    confirmation = host._input("Type APPLY to perform the reviewed transactional restore: ").strip()
+                    print(migration_plan_text(preview.plan), end="")
+                    if destructive_action_count(preview.plan):
+                        destructive = host._input(
+                            "This plan replaces destination content. Type REPLACE to confirm destructive choices: "
+                        ).strip()
+                        if destructive != "REPLACE":
+                            print("Migration restore cancelled; no writes performed.")
+                            continue
+                    confirmation = host._input("Type APPLY to perform this final reviewed plan: ").strip()
                     if confirmation != "APPLY":
                         print("Migration restore cancelled; no writes performed.")
                         continue
-                    print(host.local_migration_manager.apply_restore(Path(raw), yes=True).summary_text, end="")
+                    result = host.local_migration_manager.apply_restore(
+                        bundle_path, yes=True, resolutions=resolutions,
+                    )
+                    print(
+                        successful_apply_text(result.plan)
+                        if result.applied else migration_plan_text(result.plan, include_details=True),
+                        end="",
+                    )
                 elif choice == "5":
                     return
             except (OSError, ValueError):
-                print("Migration operation failed without exposing private file details.")
+                print("Migration operation failed safely. Review the selected bundle and configured migration paths.")
+
+    def _choose_migration_bundle(self) -> Path | None:
+        host = self.host
+        candidates = host.local_migration_manager.discover_bundles()
+        print("\nAvailable migration bundles:")
+        if not candidates:
+            print("  none found in the configured bundle directory")
+        for index, candidate in enumerate(candidates, start=1):
+            print(f"{index}. {candidate.row_label}")
+        external_index = len(candidates) + 1
+        print(f"{external_index}. Enter external bundle path")
+        print(f"{external_index + 1}. Back")
+        raw = host._input("Select: ").strip()
+        try:
+            selected = int(raw)
+        except ValueError:
+            print("Invalid migration bundle selection.")
+            return None
+        if selected == external_index:
+            external = host._input("External migration bundle folder: ").strip()
+            return Path(external).expanduser() if external else None
+        if selected == external_index + 1:
+            return None
+        if 1 <= selected <= len(candidates):
+            candidate = candidates[selected - 1]
+            print(bundle_candidate_detail(candidate))
+            if not candidate.valid:
+                print("This bundle cannot be applied.")
+                return None
+            return candidate.path
+        print("Invalid migration bundle selection.")
+        return None
+
+    def _resolve_migration_conflicts(
+        self,
+        bundle_path: Path,
+        preview: Any,
+        resolutions: dict[str, str],
+    ) -> tuple[Any, dict[str, str]] | None:
+        host = self.host
+        while preview.valid and not preview.plan.get("apply_ready", False):
+            conflicts = unresolved_actions(preview.plan)
+            if not conflicts:
+                print(migration_plan_text(preview.plan, include_details=True), end="")
+                return None
+            action = conflicts[0]
+            allowed = list(action.get("allowed_resolutions") or [])
+            print(f"\nConflict: {action.get('logical_item')} ({action.get('content_class')})")
+            print(str(action.get("safe_summary") or action.get("reason_code")))
+            for index, resolution in enumerate(allowed, start=1):
+                print(f"{index}. {resolution_label(action, resolution)}")
+            print(f"{len(allowed) + 1}. Cancel")
+            raw = host._input("Select resolution: ").strip()
+            try:
+                selected = int(raw)
+            except ValueError:
+                print("Invalid conflict resolution selection.")
+                continue
+            if selected == len(allowed) + 1:
+                print("Migration restore cancelled; no writes performed.")
+                return None
+            if not 1 <= selected <= len(allowed):
+                print("Invalid conflict resolution selection.")
+                continue
+            resolution = allowed[selected - 1]
+            if resolution == "replace_destination":
+                confirmation = host._input("Type REPLACE to confirm this destructive resolution: ").strip()
+                if confirmation != "REPLACE":
+                    print("Destructive resolution not selected.")
+                    continue
+            resolutions[str(action.get("action_id"))] = resolution
+            preview = host.local_migration_manager.preview_restore(bundle_path, resolutions=resolutions)
+            if any(error.get("error_code") in {
+                    "DESTINATION_CHANGED_AFTER_PREVIEW", "RESOLUTION_ACTION_UNKNOWN"
+                }
+                for error in preview.plan.get("errors", []) if isinstance(error, dict)):
+                resolutions.clear()
+                print("Destination state changed. A new migration preview is required.")
+                return None
+        return preview, resolutions
 
     def dry_run_diagnostics(self) -> None:
         host = self.host

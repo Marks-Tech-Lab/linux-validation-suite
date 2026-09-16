@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import threading
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -220,6 +220,11 @@ class LinuxValidationSuiteTui(
         self.history_entries: list[RunSetupHistoryEntry] = []
         self.pending_history_entry: Optional[RunSetupHistoryEntry] = None
         self.pending_migration_bundle_path: Optional[Path] = None
+        self.migration_bundle_candidates: list[Any] = []
+        self.migration_bundle_purpose = "preview"
+        self.migration_resolutions: Dict[str, str] = {}
+        self.migration_preview_result: Any = None
+        self.pending_migration_resolution_action: Optional[Dict[str, Any]] = None
         self.last_audit_notes: list[str] = []
         self.last_run_dir: Optional[Path] = None
         self.upload_result_dir: Optional[Path] = None

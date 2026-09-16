@@ -153,14 +153,15 @@ Before importing or uploading active result folders:
 Google Drive upload is optional and private/local. Missing credentials or shared
 drive IDs should appear as not configured, not as a suite failure.
 
-## Migration And Public-Safe Support
+## Public-Safe Support And LVS State Migration
 
-Use **Diagnostics / Dependencies > Migration / Support** in the CLI or the TUI
-**K Migration** action. The TUI can run all three workflows directly: it uses
-text input for bundle paths, requires `PRIVATE` before private export, and shows
-a fresh restore preview before requiring `APPLY`. The public-safe support
-export is redacted, reports
-missing optional files as informational, and writes below
+Use **Diagnostics / Dependencies > Support / Migrate LVS State** in the CLI or
+the TUI **K Support / Migrate** action. These are deliberately separate tasks:
+
+- **Create Public-Safe Support Summary** writes a redacted diagnostic summary.
+- **Migrate LVS State** exports or restores a private core-state bundle.
+
+The support export reports missing optional files as informational and writes below
 `results/Support_Exports/Public_Support_Export_<timestamp>/`:
 
 ```bash
@@ -170,19 +171,21 @@ missing optional files as informational, and writes below
 This support summary is safe to share by default. It is not a configuration or
 secret backup.
 
-Private migration bundles require explicit acknowledgement:
+Private migration bundles require explicit acknowledgement and are not safe to
+post publicly:
 
 ```bash
 .venv/bin/python -m Modules.lvs_local_migration migration-export --acknowledge-private-data
 ```
 
-They are written below
-`results/Migration_Bundles/Private_Migration_Bundle_<timestamp>/` with
-restrictive permissions, a versioned manifest, and SHA-256 checksums. They may
-contain private settings, setup history, and hardware-state mappings and are
-**not public-safe**. Google credentials and identifiers, runtime environment
-overrides, actual results, sensor-log contents, vendor/test data, `.venv`, and
-caches are excluded.
+They are written below the configured migration-bundle directory (normally
+`results/Migration_Bundles/`) with restrictive permissions, a versioned
+manifest, and SHA-256 checksums. A v2 bundle can contain semantic portable
+settings, setup history, active custom profiles, locally modified stock
+profiles, and bundle-only recovery profiles. It is **not public-safe**.
+Credentials and identifiers, runtime environment values, destination-local
+paths, results, archived profiles, sensor logs, derived hardware state,
+vendor/test data, `.venv`, and caches are excluded.
 
 Restore is preview-only unless explicitly applied:
 
@@ -191,11 +194,23 @@ Restore is preview-only unless explicitly applied:
 .venv/bin/python -m Modules.lvs_local_migration restore /path/to/bundle --apply --yes
 ```
 
-Restore validates the manifest, checksums, paths, and symlink safety first. It
-recreates safe folder scaffolding and missing local files but never overwrites
-existing files. Conflicts are staged below
-`results/Migration_Restore_Staging/` for manual comparison. Google Drive
-credentials and identifiers always require manual restoration in v1.
+The normal CLI and TUI list only direct-child bundles in the configured bundle
+directory; an external USB/network/copied bundle path can still be entered
+manually. Listings identify contract version, source LVS version, contents,
+validity, warnings, and privacy. v1 remains readable but does not contain
+profiles/results and treats its hardware state as recovery-only.
+
+Restore previews structured settings, profile, history, relink, recovery, and
+conflict counts. CLI and TUI conflict choices come only from the backend plan;
+the direct command retains repeatable
+`--resolve ACTION_ID=RESOLUTION` for automation. Modified-stock replacement is
+explicit and destructive. Apply is unavailable during an active validation,
+uses validated transactions and rollback, and never installs recovery-only
+items as active profiles. Cancel/back before Apply performs no writes.
+
+After a successful apply, restart LVS before configuring or starting another
+validation. Settings, profile lists, menu groups, and history are not reloaded
+live. Google credentials and identifiers require relinking.
 
 ## Production-Ready Versus Experimental
 

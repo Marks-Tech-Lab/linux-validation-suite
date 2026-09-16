@@ -303,11 +303,14 @@ Available workflows include:
 - A public hardware/result coverage matrix with optional local result mappings.
 - Storage Health inventory enrichment plus standalone and profile-based Storage
   Benchmark workflows, including sequential all-internal mode.
-- CLI and TUI Migration / Support workflows for public-safe support export,
-  explicitly acknowledged private migration bundles, restore preview, and
-  confirmed restore apply. Restore never overwrites existing local files;
-  conflicts are staged for manual comparison, and bundle manifests, checksums,
-  paths, and symlinks are validated before use.
+- Distinct CLI and TUI workflows for **Create Public-Safe Support Summary** and
+  **Migrate LVS State**. Migration discovers bundles only in the configured
+  bundle directory (with manual external-path entry), labels v1/v2 coverage,
+  previews structured settings/profile/history changes, resolves only
+  backend-approved conflicts, and requires explicit confirmation for destructive
+  replacement. Applies use validated transactions with rollback and require an
+  LVS restart; v2 does not migrate results, archived profiles, sensor logs,
+  credentials, or derived hardware state.
 
 The runtime version is `0.3.1-alpha`, corresponding to the `v0.3.1-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead

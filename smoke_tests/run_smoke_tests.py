@@ -723,6 +723,7 @@ from Modules.lvs_local_migration import (
     main as local_migration_main,
 )
 from smoke_tests.local_migration_checks import run_local_migration_checks
+from smoke_tests.migration_ux_checks import run_migration_ux_checks
 from Modules.lvs_qa_review_cli import main as qa_review_cli_main
 from Modules.lvs_settings import GlobalSettings, SettingsManager
 from Modules.lvs_settings_facade import SettingsFacade
@@ -2914,7 +2915,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
         "TUI settings sidebar exposes real actions",
     )
     migration_state = migration_support_sidebar_state()
-    assert_equal(migration_state.title, "Migration / Support", "TUI migration sidebar title")
+    assert_equal(migration_state.title, "Support / Migrate LVS State", "TUI migration sidebar title")
     assert_equal(len(migration_state.rows), 4, "TUI migration sidebar action count")
     assert_true(("results", "Results") in ACTION_BUTTONS, "TUI right-pane buttons keep Results action")
     assert_true(("settings", "Settings") in ACTION_BUTTONS, "TUI right-pane buttons keep Settings action")
@@ -3185,34 +3186,72 @@ def test_tui_app_actions_adapter_helpers() -> None:
             self.preview_paths = []
             self.apply_calls = []
             self.blocked = False
+            self.drift_after_resolution = False
+            self.apply_blocked = False
 
         def public_support_export_text(self):
             return "Public-safe Support Summary\nExport folder: results/Support_Exports/smoke"
 
+        def preview_private_migration_export(self):
+            return {"summary_text": "Migrate LVS State — Export Preview\nPRIVATE — NOT PUBLIC-SAFE\n"}
+
+        def discover_migration_bundles(self):
+            return [SimpleNamespace(
+                row_label="2026-09-16 09:20 | v2 | LVS smoke | settings, 1 profile | valid",
+                path=Path("/tmp/migration-bundle"), valid=True,
+                generated_at="2026-09-16T09:20:00-04:00", suite_version="smoke", contract_version=2,
+                content_summary="settings, 1 profile", size_bytes=1024, warning_count=0,
+                private_bundle=True, safe_status="Valid migration bundle.",
+            )]
+
         def create_private_migration_bundle(self, *, acknowledge_private_data):
             self.private_calls.append(acknowledge_private_data)
-            return SimpleNamespace(summary_text="Private Migration Bundle\nBundle folder: results/Migration_Bundles/smoke")
-
-        def preview_migration_restore(self, bundle_path):
-            self.preview_paths.append(bundle_path)
             return SimpleNamespace(
-                valid=True,
-                plan={"apply_ready": not self.blocked},
-                summary_text=(
-                    "Migration Restore Preview\nWrites performed: no\nAction counts: restore=1\n"
-                    + ("Unresolved conflicts: 1\nresolution required: --resolve 'profile:fixture=<choice>'"
-                       if self.blocked else "Conflicts requiring staging: 0\nManual actions: 2")
-                ),
+                bundle_dir=Path("/tmp/new-migration-bundle"),
+                summary_text="Private Migration Bundle\nBundle folder: results/Migration_Bundles/smoke",
             )
 
-        def apply_migration_restore(self, bundle_path, *, confirmed):
-            self.apply_calls.append((bundle_path, confirmed))
+        def preview_migration_restore(self, bundle_path, *, resolutions=None):
+            self.preview_paths.append((bundle_path, dict(resolutions or {})))
+            unresolved = self.blocked and not resolutions
+            if self.drift_after_resolution and resolutions:
+                return SimpleNamespace(valid=False, plan={
+                    "valid": False, "apply_ready": False, "requires_restart": True,
+                    "summary": {}, "actions": [],
+                    "errors": [{"error_code": "DESTINATION_CHANGED_AFTER_PREVIEW",
+                        "safe_message": "Destination state changed after preview."}],
+                })
+            selected = next(iter((resolutions or {}).values()), None)
+            actions = ([{
+                "action_id": "settings:suite_department", "content_class": "settings_field",
+                "logical_item": "suite_department", "disposition": "conflict",
+                "reason_code": "BOTH_CUSTOMIZED_DIFFERENT", "destructive": selected == "replace_destination",
+                "requires_user_choice": unresolved,
+                "allowed_resolutions": ["keep_destination", "replace_destination"],
+                "selected_resolution": selected,
+                "safe_summary": "Source and destination settings differ.",
+                "dependencies": ["profile-menu:engineering"],
+            }] if self.blocked else [])
             return SimpleNamespace(
                 valid=True,
-                summary_text=(
-                    "Migration Restore Apply Result\nWrites performed: yes\nAction counts: restore=1\n"
-                    "Staging folder: none\nManual actions: 2"
-                ),
+                plan={"valid": True, "apply_ready": not unresolved, "requires_restart": True,
+                    "summary": {"settings": {"merge": 1}, "profiles": {"create": 1}, "history": {}},
+                    "actions": actions, "errors": []},
+            )
+
+        def apply_migration_restore(self, bundle_path, *, confirmed, resolutions=None):
+            self.apply_calls.append((bundle_path, confirmed, dict(resolutions or {})))
+            if self.apply_blocked:
+                return SimpleNamespace(valid=False, applied=False, plan={
+                    "valid": False, "apply_ready": False, "requires_restart": True,
+                    "summary": {}, "actions": [],
+                    "errors": [{"error_code": "ACTIVE_RUN_OR_MIGRATION",
+                        "safe_message": "Migration apply is unavailable while a validation run is active."}],
+                })
+            return SimpleNamespace(
+                valid=True, applied=True,
+                plan={"summary": {"settings": {"merge": 1}, "profiles": {"create": 1}, "history": {}},
+                    "actions": [], "requires_restart": True},
             )
 
     class MigrationSupportTui(TuiAppActionsAdapterMixin):
@@ -3226,6 +3265,11 @@ def test_tui_app_actions_adapter_helpers() -> None:
             self.rows = []
             self.pending_input_field = None
             self.pending_migration_bundle_path = None
+            self.migration_bundle_candidates = []
+            self.migration_bundle_purpose = "preview"
+            self.migration_resolutions = {}
+            self.migration_preview_result = None
+            self.pending_migration_resolution_action = None
 
         def query_one(self, selector):
             return self.title if selector == "#sidebar-title" else SimpleNamespace()
@@ -3268,36 +3312,73 @@ def test_tui_app_actions_adapter_helpers() -> None:
         await migration_tui._commit_migration_input("__migration_private_ack", "PRIVATE")
         assert_equal(migration_tui.service.private_calls, [True], "TUI private export accepts explicit acknowledgement")
         assert_true("Bundle folder" in migration_tui.detail, "TUI private export renders output path")
+        await migration_tui._commit_migration_input("__migration_post_create", "")
 
         await migration_tui._select_migration_support_action(2)
-        assert_equal(migration_tui.pending_input_field, "__migration_restore_preview_path", "TUI preview awaits bundle path")
-        await migration_tui._commit_migration_input("__migration_restore_preview_path", "/tmp/migration-preview")
-        assert_equal(migration_tui.service.preview_paths[-1], Path("/tmp/migration-preview"), "TUI preview passes bundle path")
-        assert_true("Writes performed: no" in migration_tui.detail, "TUI preview renders no-write result")
+        assert_equal(migration_tui.view_mode, "migration_bundle_select", "TUI preview opens discovered bundle selection")
+        assert_true("Enter external bundle path" in migration_tui.rows, "TUI discovery preserves external path")
+        await migration_tui._select_migration_bundle(0)
+        assert_equal(migration_tui.service.preview_paths[-1][0], Path("/tmp/migration-bundle"), "TUI preview passes selected bundle")
+        assert_true("Migration Preview" in migration_tui.detail, "TUI preview renders structured plan")
 
         migration_tui.service.blocked = True
+        await migration_tui.action_show_migration_support()
         await migration_tui._select_migration_support_action(3)
-        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-conflict")
-        assert_equal(migration_tui.pending_input_field, None, "TUI conflict does not offer misleading apply confirmation")
-        assert_equal(migration_tui.status, "Migration conflicts require CLI resolution", "TUI conflict names CLI path")
-        assert_true("--resolve" in migration_tui.detail, "TUI conflict exposes actionable resolution identifier")
+        await migration_tui._select_migration_bundle(0)
+        assert_equal(migration_tui.pending_input_field, "__migration_conflict_choice", "TUI conflict offers interactive choices")
+        assert_true("suite_department" in migration_tui.detail, "TUI conflict identifies logical item")
+        assert_true("profile-menu:engineering" in migration_tui.detail, "TUI conflict exposes backend dependency")
+        await migration_tui._commit_migration_input("__migration_conflict_choice", "1")
+        assert_equal(migration_tui.pending_input_field, "__migration_restore_apply_confirm", "safe resolution rebuilds ready plan")
+        await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "cancel")
+        assert_equal(migration_tui.service.apply_calls, [], "TUI conflict cancellation performs no writes")
         migration_tui.service.blocked = False
 
+        migration_tui.service.blocked = True
+        await migration_tui.action_show_migration_support()
         await migration_tui._select_migration_support_action(3)
-        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-apply")
+        await migration_tui._select_migration_bundle(0)
+        await migration_tui._commit_migration_input("__migration_conflict_choice", "2")
+        assert_equal(migration_tui.pending_input_field, "__migration_replace_resolution_confirm", "TUI replacement requires resolution confirmation")
+        await migration_tui._commit_migration_input("__migration_replace_resolution_confirm", "REPLACE")
+        assert_equal(migration_tui.pending_input_field, "__migration_destructive_plan_confirm", "TUI replacement requires final destructive-plan confirmation")
+        await migration_tui._commit_migration_input("__migration_destructive_plan_confirm", "cancel")
+        assert_equal(migration_tui.service.apply_calls, [], "TUI destructive-plan cancellation performs no writes")
+
+        migration_tui.service.drift_after_resolution = True
+        await migration_tui.action_show_migration_support()
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._select_migration_bundle(0)
+        await migration_tui._commit_migration_input("__migration_conflict_choice", "1")
+        assert_true("new migration preview is required" in migration_tui.detail.lower(), "TUI destination drift requires new preview")
+        assert_equal(migration_tui.migration_resolutions, {}, "TUI destination drift clears stale resolutions")
+        migration_tui.service.drift_after_resolution = False
+        migration_tui.service.blocked = False
+
+        await migration_tui.action_show_migration_support()
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._select_migration_bundle(0)
         assert_equal(migration_tui.pending_input_field, "__migration_restore_apply_confirm", "TUI apply awaits second confirmation")
         assert_equal(migration_tui.service.apply_calls, [], "TUI apply does not run after path alone")
         await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "cancel")
         assert_equal(migration_tui.service.apply_calls, [], "TUI apply rejects incorrect confirmation")
+        await migration_tui.action_show_migration_support()
         await migration_tui._select_migration_support_action(3)
-        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-apply")
+        await migration_tui._select_migration_bundle(0)
         await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "APPLY")
         assert_equal(
             migration_tui.service.apply_calls,
-            [(Path("/tmp/migration-apply"), True)],
+            [(Path("/tmp/migration-bundle"), True, {})],
             "TUI apply requires preview path and explicit APPLY",
         )
-        assert_true("Writes performed: yes" in migration_tui.detail, "TUI apply renders write result")
+        assert_true("RESTART REQUIRED" in migration_tui.detail, "TUI apply renders prominent restart result")
+
+        migration_tui.service.apply_blocked = True
+        await migration_tui.action_show_migration_support()
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._select_migration_bundle(0)
+        await migration_tui._commit_migration_input("__migration_restore_apply_confirm", "APPLY")
+        assert_true("validation run" in migration_tui.detail, "TUI active-run block is explicit")
 
     asyncio.run(run_migration_support_actions())
 
@@ -3349,6 +3430,7 @@ def test_tui_event_adapter_helpers() -> None:
     assert_true(view_uses_escape_cancel("setup_history_prompt"), "TUI event setup history prompt escape cancel")
     assert_true(view_uses_escape_cancel("setup_history_confirm"), "TUI event setup history confirm escape cancel")
     assert_true(view_uses_escape_cancel("migration_support"), "TUI migration input supports escape cancel")
+    assert_true(view_uses_escape_cancel("migration_bundle_select"), "TUI migration bundle selection supports escape cancel")
     assert_true(not view_uses_escape_cancel("settings"), "TUI event settings view does not use picker escape cancel")
     assert_equal(pending_input_route("__post_wall_wattage"), "post_wall_wattage", "TUI event wall wattage input route")
     assert_equal(pending_input_route("__migration_restore_preview_path"), "migration", "TUI event migration input route")
@@ -11424,10 +11506,10 @@ def test_migration_cli_menu_contract() -> None:
     with contextlib.redirect_stdout(output):
         DiagnosticsCliAdapter(Host()).migration_support_menu()
     text = output.getvalue()
-    assert_true("1. Public-safe Support Summary" in text, "migration CLI public support option")
-    assert_true("2. Create Private Migration Bundle" in text, "migration CLI private bundle option")
-    assert_true("3. Preview Migration Restore" in text, "migration CLI restore preview option")
-    assert_true("4. Apply Reviewed Migration Restore" in text, "migration CLI restore apply option")
+    assert_true("1. Create Public-Safe Support Summary" in text, "migration CLI public support option")
+    assert_true("2. Export LVS State (Private Bundle)" in text, "migration CLI private bundle option")
+    assert_true("3. Preview LVS State Migration" in text, "migration CLI restore preview option")
+    assert_true("4. Apply LVS State Migration" in text, "migration CLI restore apply option")
     assert_true("5. Back" in text, "migration CLI back option")
 
 
@@ -26644,6 +26726,8 @@ def test_service_frontend_contract_methods() -> None:
         "settings_action_for_key",
         "dependency_check_payload",
         "public_support_export_text",
+        "preview_private_migration_export",
+        "discover_migration_bundles",
         "create_private_migration_bundle",
         "preview_migration_restore",
         "apply_migration_restore",
@@ -27018,6 +27102,7 @@ def main() -> int:
         test_migration_restore_no_overwrite_and_conflict_staging,
         test_migration_restore_rejects_invalid_bundles,
         run_local_migration_checks,
+        run_migration_ux_checks,
         test_result_artifact_facade_inventory,
         test_result_artifact_presentation_helpers,
         test_profile_dry_run_summary_formatting,

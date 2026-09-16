@@ -241,6 +241,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_local_migration.py` | Public command/compatibility facade | Creates useful v2 core-state bundles, retains the v1 writer, and routes structured preview/apply operations. |
 | `lvs_migration_models.py`, `lvs_migration_paths.py`, `lvs_migration_v2.py`, `lvs_migration_v1_adapter.py` | Internal migration contract | Define v2 inventory, logical configured-root ownership, structured plans/errors, validation, and conservative v1 projection. |
 | `lvs_migration_core_state.py` | Internal migration semantics | Exports and semantically merges portable settings, active custom/modified-stock profiles, menu groups, and setup history. |
+| `lvs_migration_ux.py` | Internal frontend-neutral presentation | Discovers direct-child v1/v2 bundles and projects structured export, preview, error, and apply summaries without parsing backend text. |
 | `lvs_migration_safe_fs.py`, `lvs_migration_transaction.py`, `lvs_migration_lock.py` | Internal migration safety | Pin Linux directory roots and payloads, coordinate active runs, and apply verified file transactions with rollback. |
 | `lvs_hardware_matrix_state.py` | Public command | Maintains ignored local hardware/result validation state. |
 | `lvs_privileged.py` | Internal | Manages session-scoped privileged telemetry helpers. |

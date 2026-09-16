@@ -141,13 +141,25 @@ class SuiteAppService(
             acknowledge_private_data=acknowledge_private_data,
         )
 
-    def preview_migration_restore(self, bundle_path: Path):
-        return self.local_migration_manager.preview_restore(bundle_path)
+    def preview_private_migration_export(self):
+        return self.local_migration_manager.preview_private_bundle_export()
 
-    def apply_migration_restore(self, bundle_path: Path, *, confirmed: bool):
+    def discover_migration_bundles(self):
+        return self.local_migration_manager.discover_bundles()
+
+    def preview_migration_restore(self, bundle_path: Path, *, resolutions: Optional[Dict[str, str]] = None):
+        return self.local_migration_manager.preview_restore(bundle_path, resolutions=resolutions)
+
+    def apply_migration_restore(
+        self,
+        bundle_path: Path,
+        *,
+        confirmed: bool,
+        resolutions: Optional[Dict[str, str]] = None,
+    ):
         if not confirmed:
             raise ValueError("migration restore apply requires explicit confirmation")
-        return self.local_migration_manager.apply_restore(bundle_path, yes=True)
+        return self.local_migration_manager.apply_restore(bundle_path, yes=True, resolutions=resolutions)
 
 
 def main() -> int:

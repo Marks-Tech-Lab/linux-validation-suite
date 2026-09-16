@@ -23,6 +23,12 @@ from .lvs_migration_v1_adapter import V1PlanningInput, adapt_v1_payloads
 from .lvs_migration_models import MigrationSafeError
 from .lvs_migration_v2 import ValidatedV2Bundle, build_a1_plan, validate_v2_bundle, write_v2_bundle
 from .lvs_migration_core_state import build_core_plan, collect_core_export
+from .lvs_migration_ux import (
+    MigrationBundleCandidate,
+    discover_migration_bundles,
+    export_preview_text,
+    format_size,
+)
 from .lvs_settings import GlobalSettings
 
 
@@ -151,6 +157,25 @@ class LocalMigrationManager:
 
     def export_public_support(self, output_parent: Path | None = None):
         return self.support_exporter.export(output_parent)
+
+    def discover_bundles(self) -> tuple[MigrationBundleCandidate, ...]:
+        return discover_migration_bundles(
+            self.path_ownership.bundle_root,
+            validate_v1=self._validate_bundle,
+        )
+
+    def preview_private_bundle_export(self) -> dict[str, Any]:
+        _, source_settings = MigrationPathOwnership.load_nonmutating(
+            application_root=self.root,
+            settings_file=self.path_ownership.settings_file,
+        )
+        exported = collect_core_export(self.path_ownership, source_settings)
+        size_bytes = sum(len(item.payload) for item in exported.contents)
+        return {
+            "summary": exported.summary,
+            "size_bytes": size_bytes,
+            "summary_text": export_preview_text(exported.summary, approximate_size=size_bytes),
+        }
 
     def adapt_v1_bundle(self, bundle_dir: Path) -> V1PlanningInput:
         """Validate a v1 bundle and project it without applying legacy targets."""
@@ -344,6 +369,8 @@ class LocalMigrationManager:
         return "\n".join([
             "Private Migration Bundle v2", "===========================", "",
             "NOT PUBLIC-SAFE. Contains private LVS settings, profiles, and setup history.",
+            f"Contract: v{manifest.get('contract_version', 2)}",
+            f"Source LVS: {manifest.get('suite_version', APP_VERSION)}",
             f"Portable settings: {settings.get('portable_fields', 0)}",
             f"Relink requirements: {settings.get('relink_requirements', 0)}",
             f"Custom profiles: {profiles.get('custom_included', 0)}",
@@ -354,6 +381,7 @@ class LocalMigrationManager:
             f"Malformed history records excluded: {history.get('malformed_records', 0)}",
             "Excluded: results, hardware validation state, sensor logs, credentials, archived profiles.",
             f"Included payloads: {len(manifest.get('content', []))}",
+            f"Declared payload size: {format_size(sum(int(item.get('size_bytes') or 0) for item in manifest.get('content', []) if isinstance(item, dict)))}",
             f"Bundle folder: {bundle_label}", f"Manifest: {MANIFEST_NAME}", "",
         ])
 
@@ -971,7 +999,7 @@ class LocalMigrationManager:
                     "error_code": "ACTIVE_RUN_OR_MIGRATION" if lock_contention else "MIGRATION_LOCK_UNAVAILABLE",
                     "phase": "lock",
                     "safe_message": (
-                        "Migration apply is unavailable while validation or another migration apply is active."
+                        "Migration apply is unavailable while a validation run or another migration apply is active."
                         if lock_contention
                         else "Migration apply could not secure the configured settings location."
                     ),
@@ -1119,6 +1147,8 @@ def build_parser() -> argparse.ArgumentParser:
     private.add_argument("--acknowledge-private-data", action="store_true")
     private.add_argument("--output-dir", type=Path)
 
+    subparsers.add_parser("migration-list", help="List migration bundles in the configured bundle directory.")
+
     restore = subparsers.add_parser("restore", help="Preview or apply a validated migration restore.")
     restore.add_argument("bundle", type=Path)
     restore.add_argument("--apply", action="store_true")
@@ -1147,6 +1177,17 @@ def main(argv: list[str] | None = None) -> int:
                 output_parent=args.output_dir,
             )
             print(result.summary_text, end="")
+            return 0
+        if args.command == "migration-list":
+            candidates = manager.discover_bundles()
+            if not candidates:
+                print("No migration bundles found in the configured bundle directory.")
+                return 0
+            print("Available migration bundles:")
+            for index, candidate in enumerate(candidates, start=1):
+                print(f"{index}. {candidate.row_label}")
+                if not candidate.valid:
+                    print(f"   {candidate.safe_status}")
             return 0
         if args.yes and not args.apply:
             print("--yes is only valid with --apply.", file=sys.stderr)

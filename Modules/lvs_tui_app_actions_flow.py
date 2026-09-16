@@ -309,12 +309,12 @@ def settings_sidebar_state() -> TuiSidebarListState:
 
 def migration_support_sidebar_state() -> TuiSidebarListState:
     return TuiSidebarListState(
-        title="Migration / Support",
+        title="Support / Migrate LVS State",
         rows=(
-            "Public-safe Support Summary",
-            "Create Private Migration Bundle",
-            "Preview Migration Restore",
-            "Apply Reviewed Migration Restore",
+            "Create Public-Safe Support Summary",
+            "Export LVS State (Private Bundle)",
+            "Preview LVS State Migration",
+            "Apply LVS State Migration",
         ),
         selected_index=0,
     )

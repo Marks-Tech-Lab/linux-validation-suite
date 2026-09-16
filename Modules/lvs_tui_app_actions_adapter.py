@@ -14,6 +14,14 @@ from Modules.lvs_tui_app_actions_flow import (
 )
 from Modules.lvs_tui_picker_presentation import TuiPickerOpenPresentation, TuiPickerPresentation
 from Modules.lvs_tui_input_state import tui_input_state
+from Modules.lvs_migration_ux import (
+    bundle_candidate_detail,
+    destructive_action_count,
+    migration_plan_text,
+    resolution_label,
+    successful_apply_text,
+    unresolved_actions,
+)
 from Modules.lvs_tui_profile_presentation import profile_summary_presentation
 from Modules.lvs_tui_run_setup_presentation import (
     run_setup_no_history_detail,
@@ -190,17 +198,23 @@ class TuiAppActionsAdapterMixin:
             return
         self.view_mode = "migration_support"
         self.pending_migration_bundle_path = None
-        self._set_status("Ready | Migration / Support")
+        self.migration_bundle_candidates = []
+        self.migration_bundle_purpose = "preview"
+        self.migration_resolutions = {}
+        self.migration_preview_result = None
+        self.pending_migration_resolution_action = None
+        self._set_status("Ready | Support / Migrate LVS State")
         self._apply_navigation_reset(tui_navigation_reset(clear_selected_profile=True, clear_selected_result=True))
         presentation = migration_support_sidebar_state()
         self.query_one("#sidebar-title").update(presentation.title)
         list_view = self.query_one("#items")
         await self._replace_sidebar_labels(list_view, list(presentation.rows), selected_index=0, focus=True)
         self._set_detail(
-            "Migration / Support\n"
-            "===================\n\n"
-            "Choose a public-safe summary, create an acknowledged private bundle, or preview/apply a restore.\n"
-            "Restore apply always shows a fresh preview and requires typing APPLY. Private migration operations never include Google credentials, results, or sensor-log contents."
+            "Support / Migrate LVS State\n"
+            "===========================\n\n"
+            "SUPPORT creates a redacted public-safe summary.\n"
+            "MIGRATION exports or restores private LVS settings, active custom profiles, and setup history.\n\n"
+            "Private bundles are NOT PUBLIC-SAFE. Results, archived profiles, credentials, hardware state, and sensor logs are excluded."
         )
 
     async def _select_migration_support_action(self, index: int) -> None:
@@ -214,37 +228,143 @@ class TuiAppActionsAdapterMixin:
                 self._set_status("Public-safe support summary failed")
             return
         if index == 1:
+            try:
+                export_preview = self.service.preview_private_migration_export()
+                preview_text = str(export_preview.get("summary_text") or "")
+            except Exception:
+                self._set_detail("Migration export inventory could not be prepared safely.")
+                self._set_status("Migration export preview failed")
+                return
             self._begin_migration_input(
                 "__migration_private_ack",
                 placeholder="Type PRIVATE to create the private bundle",
                 detail=(
-                    "Create Private Migration Bundle\n"
-                    "===============================\n\n"
-                    "NOT PUBLIC-SAFE. The bundle may contain private settings, setup history, and hardware-state mappings.\n"
-                    "Google credentials and identifiers, runtime overrides, results, sensor logs, vendor data, and .venv are excluded.\n\n"
-                    "Type PRIVATE below to acknowledge and create the bundle. Press Esc to cancel."
+                    preview_text
+                    + "\nType PRIVATE below to acknowledge and create the bundle. Press Esc to cancel."
                 ),
             )
         elif index == 2:
-            self._begin_migration_input(
-                "__migration_restore_preview_path",
-                placeholder="Path to Private_Migration_Bundle_<timestamp>",
-                detail=(
-                    "Preview Migration Restore\n"
-                    "=========================\n\n"
-                    "Enter the migration bundle folder path. Preview validates the bundle and performs no writes."
-                ),
-            )
+            await self._open_migration_bundle_selection("preview")
         elif index == 3:
+            await self._open_migration_bundle_selection("apply")
+
+    async def _open_migration_bundle_selection(self, purpose: str) -> None:
+        self.migration_bundle_purpose = purpose
+        self.migration_resolutions = {}
+        self.pending_migration_bundle_path = None
+        try:
+            self.migration_bundle_candidates = list(self.service.discover_migration_bundles())
+        except Exception:
+            self._set_detail("Configured migration bundle directory could not be inspected safely.")
+            self._set_status("Migration bundle discovery failed")
+            return
+        self.view_mode = "migration_bundle_select"
+        self.query_one("#sidebar-title").update("Select Migration Bundle")
+        rows = [candidate.row_label for candidate in self.migration_bundle_candidates]
+        rows.extend(("Enter external bundle path", "Back"))
+        await self._replace_sidebar_labels(self.query_one("#items"), rows, selected_index=0, focus=True)
+        self._set_detail(
+            "Select a discovered bundle or enter an operator-controlled external path.\n"
+            "Discovery checks direct children of the configured bundle directory only; it never searches the filesystem."
+        )
+        self._set_status(f"Migration {purpose} | Select bundle")
+
+    async def _select_migration_bundle(self, index: int) -> None:
+        count = len(self.migration_bundle_candidates)
+        if 0 <= index < count:
+            candidate = self.migration_bundle_candidates[index]
+            self._set_detail(bundle_candidate_detail(candidate))
+            if not candidate.valid:
+                self._set_status("Migration bundle invalid — Apply unavailable")
+                return
+            await self._preview_selected_migration_bundle(candidate.path, self.migration_bundle_purpose)
+            return
+        if index == count:
             self._begin_migration_input(
-                "__migration_restore_apply_path",
-                placeholder="Path to reviewed Private_Migration_Bundle_<timestamp>",
+                "__migration_external_path",
+                placeholder="External migration bundle folder",
+                detail="Enter an external bundle folder path. It will be validated before preview; no filesystem search is performed.",
+            )
+            return
+        await self.action_show_migration_support()
+
+    async def _preview_selected_migration_bundle(self, bundle_path: Path, purpose: str) -> None:
+        self.pending_migration_bundle_path = bundle_path
+        self.migration_resolutions = {}
+        self._set_status("Validating migration bundle")
+        try:
+            preview = self.service.preview_migration_restore(bundle_path, resolutions={})
+        except Exception:
+            self._set_detail("Migration preview could not be completed safely. Verify the bundle and configured paths.")
+            self._set_status("Migration preview failed")
+            return
+        self.migration_preview_result = preview
+        if purpose == "preview" or not preview.valid:
+            detail = migration_plan_text(preview.plan)
+            if preview.valid:
+                detail += "\nType DETAILS to show field/item actions, or press Esc to return."
+                self._begin_migration_input("__migration_preview_details", placeholder="DETAILS", detail=detail)
+                self._set_status("Migration preview complete — no writes performed")
+            else:
+                self._set_detail(detail)
+                self._set_status("Migration bundle invalid — Apply unavailable")
+            return
+        await self._continue_migration_resolution()
+
+    async def _continue_migration_resolution(self) -> None:
+        preview = self.migration_preview_result
+        if preview is None:
+            return
+        conflicts = unresolved_actions(preview.plan)
+        if conflicts:
+            action = conflicts[0]
+            self.pending_migration_resolution_action = action
+            allowed = list(action.get("allowed_resolutions") or [])
+            choices = "\n".join(
+                f"{index}. {resolution_label(action, resolution)}"
+                + (" — destructive" if resolution == "replace_destination" else "")
+                for index, resolution in enumerate(allowed, start=1)
+            )
+            dependencies = action.get("dependencies") or []
+            dependency_text = f"\nDependencies: {', '.join(str(item) for item in dependencies)}" if dependencies else ""
+            self._begin_migration_input(
+                "__migration_conflict_choice",
+                placeholder="Resolution number, or CANCEL",
                 detail=(
-                    "Apply Reviewed Migration Restore\n"
-                    "================================\n\n"
-                    "Enter the bundle path. The TUI will show a fresh read-only preview before asking for APPLY confirmation."
+                    migration_plan_text(preview.plan)
+                    + f"\nResolve: {action.get('logical_item')} ({action.get('content_class')})\n"
+                    + f"{action.get('safe_summary') or action.get('reason_code')}"
+                    + dependency_text + "\n\n" + choices
                 ),
             )
+            self._set_status(f"Migration blocked — {len(conflicts)} unresolved conflict(s)")
+            return
+        if not preview.valid or not preview.plan.get("apply_ready", False):
+            self._set_detail(migration_plan_text(preview.plan, include_details=True))
+            self._set_status("Migration blocked")
+            return
+        await self._prepare_migration_apply_confirmation()
+
+    async def _prepare_migration_apply_confirmation(self) -> None:
+        preview = self.migration_preview_result
+        if preview is None:
+            return
+        destructive = destructive_action_count(preview.plan)
+        detail = migration_plan_text(preview.plan)
+        if destructive:
+            self._begin_migration_input(
+                "__migration_destructive_plan_confirm",
+                placeholder="Type REPLACE to confirm destructive actions",
+                detail=detail + "\nType REPLACE to confirm the selected destructive replacements.",
+            )
+            self._set_status(f"Migration ready — confirm {destructive} destructive action(s)")
+            return
+        self._begin_migration_input(
+            "__migration_restore_apply_confirm",
+            placeholder="Type APPLY to perform the reviewed restore",
+            detail=detail + "\nType APPLY to perform this final reviewed plan.",
+        )
+        self._set_status("Migration READY TO APPLY")
 
     def _begin_migration_input(self, field: str, *, placeholder: str, detail: str) -> None:
         self._apply_input_state(
@@ -266,11 +386,90 @@ class TuiAppActionsAdapterMixin:
             self._set_status("Creating private migration bundle")
             try:
                 result = self.service.create_private_migration_bundle(acknowledge_private_data=True)
-                self._set_detail(result.summary_text)
+                self.pending_migration_bundle_path = result.bundle_dir
+                self._begin_migration_input(
+                    "__migration_post_create",
+                    placeholder="Type PREVIEW, or press Enter to return",
+                    detail=result.summary_text + "\nType PREVIEW to inspect this bundle now.",
+                )
                 self._set_status("Private migration bundle complete")
             except Exception:
                 self._set_detail("Private migration export failed without exposing private file details.")
                 self._set_status("Private migration export failed")
+            return
+
+        if field == "__migration_post_create":
+            bundle_path = self.pending_migration_bundle_path
+            self._clear_setup_input(focus_items=True)
+            if raw == "PREVIEW" and bundle_path is not None:
+                await self._preview_selected_migration_bundle(bundle_path, "preview")
+            else:
+                await self.action_show_migration_support()
+            return
+
+        if field == "__migration_external_path":
+            self._clear_setup_input(focus_items=True)
+            if not raw:
+                await self._open_migration_bundle_selection(self.migration_bundle_purpose)
+                return
+            await self._preview_selected_migration_bundle(Path(raw).expanduser(), self.migration_bundle_purpose)
+            return
+
+        if field == "__migration_preview_details":
+            self._clear_setup_input(focus_items=True)
+            preview = self.migration_preview_result
+            if raw == "DETAILS" and preview is not None:
+                self._set_detail(migration_plan_text(preview.plan, include_details=True))
+                self._set_status("Migration preview details — no writes performed")
+            else:
+                await self.action_show_migration_support()
+            return
+
+        if field == "__migration_conflict_choice":
+            action = self.pending_migration_resolution_action
+            if raw.upper() == "CANCEL" or action is None:
+                self._clear_setup_input(focus_items=True)
+                self._set_detail("Migration cancelled; conflict selections were not applied and no writes were performed.")
+                self._set_status("Migration cancelled")
+                return
+            allowed = list(action.get("allowed_resolutions") or [])
+            try:
+                resolution = allowed[int(raw) - 1]
+            except (ValueError, IndexError):
+                await self._continue_migration_resolution()
+                return
+            if resolution == "replace_destination":
+                self._begin_migration_input(
+                    "__migration_replace_resolution_confirm",
+                    placeholder="Type REPLACE to select destructive replacement",
+                    detail="Replace destination is destructive. Type REPLACE to select it, or press Esc to cancel.",
+                )
+                return
+            await self._apply_migration_resolution(str(action.get("action_id")), resolution)
+            return
+
+        if field == "__migration_replace_resolution_confirm":
+            action = self.pending_migration_resolution_action
+            if raw != "REPLACE" or action is None:
+                await self._continue_migration_resolution()
+                return
+            await self._apply_migration_resolution(str(action.get("action_id")), "replace_destination")
+            return
+
+        if field == "__migration_destructive_plan_confirm":
+            if raw != "REPLACE":
+                self._clear_setup_input(focus_items=True)
+                self._set_detail("Migration cancelled; no writes were performed.")
+                self._set_status("Migration cancelled")
+                return
+            preview = self.migration_preview_result
+            self._begin_migration_input(
+                "__migration_restore_apply_confirm",
+                placeholder="Type APPLY to perform the reviewed restore",
+                detail=migration_plan_text(preview.plan if preview is not None else {})
+                + "\nDestructive choices confirmed. Type APPLY to begin the transaction.",
+            )
+            self._set_status("Migration READY TO APPLY — awaiting APPLY")
             return
 
         if field in {"__migration_restore_preview_path", "__migration_restore_apply_path"}:
@@ -279,36 +478,8 @@ class TuiAppActionsAdapterMixin:
                 self._set_detail("Migration bundle path is required; no writes were performed.")
                 self._set_status("Migration path required")
                 return
-            bundle_path = Path(raw).expanduser()
-            self._set_status("Validating migration bundle")
-            try:
-                preview = self.service.preview_migration_restore(bundle_path)
-            except Exception:
-                self._set_detail("Migration preview failed without exposing private file details.")
-                self._set_status("Migration preview failed")
-                return
-            preview_plan = getattr(preview, "plan", {})
-            apply_ready = preview_plan.get("apply_ready", True) if isinstance(preview_plan, dict) else True
-            if field == "__migration_restore_preview_path" or not preview.valid or not apply_ready:
-                self._set_detail(preview.summary_text)
-                self._set_status(
-                    "Migration conflicts require CLI resolution"
-                    if preview.valid and not apply_ready
-                    else "Migration preview complete" if preview.valid else "Migration bundle invalid"
-                )
-                return
-            self.pending_migration_bundle_path = bundle_path
-            self._apply_input_state(
-                tui_input_state(
-                    "__migration_restore_apply_confirm",
-                    placeholder="Type APPLY to perform the reviewed restore",
-                    detail=(
-                        preview.summary_text
-                        + "\nType APPLY below to perform the reviewed transactional restore. A restart is required after success."
-                    ),
-                )
-            )
-            self._set_status("Migration restore awaiting APPLY confirmation")
+            purpose = "preview" if field == "__migration_restore_preview_path" else "apply"
+            await self._preview_selected_migration_bundle(Path(raw).expanduser(), purpose)
             return
 
         if field == "__migration_restore_apply_confirm":
@@ -321,12 +492,51 @@ class TuiAppActionsAdapterMixin:
                 return
             self._set_status("Applying reviewed migration restore")
             try:
-                result = self.service.apply_migration_restore(bundle_path, confirmed=True)
-                self._set_detail(result.summary_text)
-                self._set_status("Migration restore complete" if result.valid else "Migration restore failed")
+                result = self.service.apply_migration_restore(
+                    bundle_path, confirmed=True, resolutions=dict(self.migration_resolutions),
+                )
+                if result.applied:
+                    self._set_detail(successful_apply_text(result.plan))
+                    self._set_status("Migration applied — RESTART LVS")
+                else:
+                    errors = [item for item in result.plan.get("errors", []) if isinstance(item, dict)]
+                    drift = any(item.get("error_code") in {
+                        "DESTINATION_CHANGED_AFTER_PREVIEW", "RESOLUTION_ACTION_UNKNOWN"
+                    } for item in errors)
+                    self.migration_resolutions = {}
+                    self._set_detail(
+                        "Destination state changed.\nA new migration preview is required.\n"
+                        if drift else migration_plan_text(result.plan, include_details=True)
+                    )
+                    self._set_status("New migration preview required" if drift else "Migration restore failed")
             except Exception:
-                self._set_detail("Migration restore failed without exposing private file details.")
+                self._set_detail("Migration restore failed safely. Verify the bundle and configured migration paths.")
                 self._set_status("Migration restore failed")
+
+    async def _apply_migration_resolution(self, action_id: str, resolution: str) -> None:
+        bundle_path = self.pending_migration_bundle_path
+        if bundle_path is None:
+            return
+        self.migration_resolutions[action_id] = resolution
+        self._clear_setup_input(focus_items=True)
+        try:
+            preview = self.service.preview_migration_restore(
+                bundle_path, resolutions=dict(self.migration_resolutions),
+            )
+        except Exception:
+            self._set_detail("Migration preview recalculation failed safely; no writes were performed.")
+            self._set_status("Migration preview failed")
+            return
+        errors = [item for item in preview.plan.get("errors", []) if isinstance(item, dict)]
+        if any(item.get("error_code") in {"DESTINATION_CHANGED_AFTER_PREVIEW", "RESOLUTION_ACTION_UNKNOWN"}
+            for item in errors):
+            self.migration_resolutions = {}
+            self.migration_preview_result = None
+            self._set_detail("Destination state changed.\nA new migration preview is required.")
+            self._set_status("New migration preview required")
+            return
+        self.migration_preview_result = preview
+        await self._continue_migration_resolution()
 
     async def action_setup_run(self) -> None:
         if self.view_mode != "profiles" or self.selected_profile is None:
