@@ -3184,6 +3184,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
             self.private_calls = []
             self.preview_paths = []
             self.apply_calls = []
+            self.blocked = False
 
         def public_support_export_text(self):
             return "Public-safe Support Summary\nExport folder: results/Support_Exports/smoke"
@@ -3196,9 +3197,11 @@ def test_tui_app_actions_adapter_helpers() -> None:
             self.preview_paths.append(bundle_path)
             return SimpleNamespace(
                 valid=True,
+                plan={"apply_ready": not self.blocked},
                 summary_text=(
                     "Migration Restore Preview\nWrites performed: no\nAction counts: restore=1\n"
-                    "Conflicts requiring staging: 0\nManual actions: 2"
+                    + ("Unresolved conflicts: 1\nresolution required: --resolve 'profile:fixture=<choice>'"
+                       if self.blocked else "Conflicts requiring staging: 0\nManual actions: 2")
                 ),
             )
 
@@ -3271,6 +3274,14 @@ def test_tui_app_actions_adapter_helpers() -> None:
         await migration_tui._commit_migration_input("__migration_restore_preview_path", "/tmp/migration-preview")
         assert_equal(migration_tui.service.preview_paths[-1], Path("/tmp/migration-preview"), "TUI preview passes bundle path")
         assert_true("Writes performed: no" in migration_tui.detail, "TUI preview renders no-write result")
+
+        migration_tui.service.blocked = True
+        await migration_tui._select_migration_support_action(3)
+        await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-conflict")
+        assert_equal(migration_tui.pending_input_field, None, "TUI conflict does not offer misleading apply confirmation")
+        assert_equal(migration_tui.status, "Migration conflicts require CLI resolution", "TUI conflict names CLI path")
+        assert_true("--resolve" in migration_tui.detail, "TUI conflict exposes actionable resolution identifier")
+        migration_tui.service.blocked = False
 
         await migration_tui._select_migration_support_action(3)
         await migration_tui._commit_migration_input("__migration_restore_apply_path", "/tmp/migration-apply")
@@ -11353,13 +11364,13 @@ def test_private_migration_bundle_manifest_checksums_and_exclusions() -> None:
 
         manager = LocalMigrationManager(root)
         try:
-            manager.create_private_bundle(acknowledge_private_data=False)
+            manager.create_v1_private_bundle(acknowledge_private_data=False, legacy_restore_semantics=True)
         except ValueError:
             pass
         else:
             raise AssertionError("private migration bundle should require explicit acknowledgement")
 
-        result = manager.create_private_bundle(acknowledge_private_data=True)
+        result = manager.create_v1_private_bundle(acknowledge_private_data=True, legacy_restore_semantics=True)
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         assert_contract_identity(
             manifest,
@@ -11427,7 +11438,7 @@ def test_migration_restore_preview_apply_and_scaffolds() -> None:
         target_root = base / "target"
         source_root.mkdir()
         target_root.mkdir()
-        bundle = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True)
+        bundle = LocalMigrationManager(source_root).create_v1_private_bundle(acknowledge_private_data=True, legacy_restore_semantics=True)
         (target_root / "settings").mkdir()
         example_text = '{"environment_mode": "end_user", "google_drive_credentials_path": ""}\n'
         (target_root / "settings" / "global_settings.example.json").write_text(example_text, encoding="utf-8")
@@ -11489,7 +11500,7 @@ def test_migration_restore_no_overwrite_and_conflict_staging() -> None:
         (source_root / "settings").mkdir(parents=True)
         JsonStore.write(source_root / "settings" / "global_settings.json", {"suite_department": "Incoming"})
         JsonStore.write(source_root / "settings" / "run_setup_history.json", [{"description": "incoming"}])
-        bundle = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True)
+        bundle = LocalMigrationManager(source_root).create_v1_private_bundle(acknowledge_private_data=True, legacy_restore_semantics=True)
 
         (target_root / "settings").mkdir(parents=True)
         existing_settings = '{"suite_department": "Existing"}\n'
@@ -11522,7 +11533,9 @@ def test_migration_restore_rejects_invalid_bundles() -> None:
         target_root = base / "target"
         (source_root / "settings").mkdir(parents=True)
         JsonStore.write(source_root / "settings" / "global_settings.json", {"environment_mode": "end_user"})
-        original = LocalMigrationManager(source_root).create_private_bundle(acknowledge_private_data=True).bundle_dir
+        original = LocalMigrationManager(source_root).create_v1_private_bundle(
+            acknowledge_private_data=True, legacy_restore_semantics=True
+        ).bundle_dir
         target_root.mkdir()
         manager = LocalMigrationManager(target_root)
 

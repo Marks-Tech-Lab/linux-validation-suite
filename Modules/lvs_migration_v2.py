@@ -111,6 +111,7 @@ def write_v2_bundle(
     source: dict[str, Any],
     contents: tuple[V2ContentPayload, ...],
     omitted_classes: tuple[dict[str, Any], ...] = (),
+    export_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write an exclusive private directory bundle from already selected A2 inputs."""
     if bundle_path.exists() or bundle_path.is_symlink():
@@ -163,6 +164,8 @@ def write_v2_bundle(
             "content": inventory,
             "omitted_classes": list(omitted_classes),
         }
+        if export_summary is not None:
+            manifest["export_summary"] = export_summary
         encoded = (json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
         fd = root.open_exclusive(MANIFEST_NAME)
         try:

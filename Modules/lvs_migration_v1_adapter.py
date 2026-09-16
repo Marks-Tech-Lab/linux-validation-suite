@@ -9,12 +9,12 @@ from typing import Any
 from .lvs_settings import GlobalSettings
 
 
-DESTINATION_LOCAL_SETTINGS = frozenset({"results_dir", "profiles_dir", "settings_dir"})
+DESTINATION_LOCAL_SETTINGS = frozenset({"environment_mode", "results_dir", "profiles_dir", "settings_dir"})
 SECRET_OR_RELINK_SETTINGS = frozenset(
     {"runtime_environment", "google_drive_credentials_path", "google_drive_shared_drive_id"}
 )
 SESSION_ONLY_SETTINGS = frozenset({"privileged_helper_enabled", "privileged_helper_prompt_for_sudo"})
-POLICY_PENDING_SETTINGS = frozenset({"environment_mode"})
+POLICY_PENDING_SETTINGS = frozenset()
 
 
 @dataclass(frozen=True)

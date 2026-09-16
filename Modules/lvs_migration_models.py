@@ -14,6 +14,7 @@ MIGRATION_BUNDLE_KIND = "private_local_migration_bundle"
 PLAN_DISPOSITIONS = frozenset(
     {
         "create",
+        "import_renamed",
         "merge",
         "skip_identical",
         "preserve_destination",

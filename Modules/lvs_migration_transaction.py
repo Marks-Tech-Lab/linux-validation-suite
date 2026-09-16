@@ -64,6 +64,8 @@ class MigrationTransaction:
         plan: MigrationPlan,
         failure_hook: Callable[[str, int], None] | None = None,
         revalidate_plan: bool = True,
+        plan_builder: Callable[[], MigrationPlan] | None = None,
+        materialized_payloads: dict[str, bytes] | None = None,
     ) -> None:
         self.ownership = ownership
         self.bundle = bundle
@@ -71,6 +73,8 @@ class MigrationTransaction:
         self.transaction_id = uuid.uuid4().hex
         self.failure_hook = failure_hook
         self.revalidate_plan = revalidate_plan
+        self.plan_builder = plan_builder
+        self.materialized_payloads = dict(materialized_payloads or {})
         self.roots: dict[str, PinnedRoot] = {}
         self.workspace_paths: dict[str, str] = {}
         self.journal: list[JournalOperation] = []
@@ -86,6 +90,12 @@ class MigrationTransaction:
         if role not in self.workspace_paths:
             relative = f".lvs_migration_transactions/{self.transaction_id}"
             root = self._root(role)
+            role_path = self.ownership.root_for_role(role).resolve()
+            for existing_role, existing_relative in self.workspace_paths.items():
+                if self.ownership.root_for_role(existing_role).resolve() == role_path:
+                    self.workspace_paths[role] = existing_relative
+                    self.workspace_files[role] = self.workspace_files[existing_role]
+                    return existing_relative
             root.ensure_private_dir(relative)
             self.workspace_paths[role] = relative
             self.workspace_files[role] = set()
@@ -161,9 +171,25 @@ class MigrationTransaction:
         finally:
             bundle_root.close()
 
+    def _pin_materialized(self, action_id: str, role: str, payload: bytes) -> tuple[str, str, int]:
+        relative = f"{self._workspace(role)}/materialized-{hashlib.sha256(action_id.encode()).hexdigest()}.bin"
+        target_fd = self._root(role).open_exclusive(relative)
+        self.workspace_files[role].add(relative)
+        try:
+            _write_all(target_fd, payload)
+            os.fsync(target_fd)
+        finally:
+            os.close(target_fd)
+        return relative, hashlib.sha256(payload).hexdigest(), len(payload)
+
     def _cleanup(self) -> bool:
         complete = True
+        cleaned: set[tuple[Path, str]] = set()
         for role, relative in list(self.workspace_paths.items()):
+            workspace_key = (self.ownership.root_for_role(role).resolve(), relative)
+            if workspace_key in cleaned:
+                continue
+            cleaned.add(workspace_key)
             root = self._root(role)
             for file_relative in sorted(self.workspace_files.get(role, set()), reverse=True):
                 try:
@@ -190,16 +216,29 @@ class MigrationTransaction:
         try:
             # Pin roots and payloads before any destination mutation.
             for action in self.plan.actions:
-                if action.disposition != "create" or action.destination is None:
+                if not action.transaction_operations or action.destination is None:
                     continue
                 operation = str((action.transaction_operations or ({"operation": "create_file"},))[0].get("operation"))
                 self._root(action.destination.root_role)
                 if operation != "create_directory":
-                    pinned[action.action_id] = self._pin_payload(entries[action.action_id], action.destination.root_role)
+                    if action.action_id in self.materialized_payloads:
+                        pinned[action.action_id] = self._pin_materialized(
+                            action.action_id,
+                            action.destination.root_role,
+                            self.materialized_payloads[action.action_id],
+                        )
+                    else:
+                        pinned[action.action_id] = self._pin_payload(entries[action.action_id], action.destination.root_role)
             if self.failure_hook:
                 self.failure_hook("materialized", 0)
 
-            current_plan = build_a1_plan(self.bundle, self.ownership) if self.revalidate_plan else self.plan
+            current_plan = (
+                self.plan_builder()
+                if self.revalidate_plan and self.plan_builder is not None
+                else build_a1_plan(self.bundle, self.ownership)
+                if self.revalidate_plan
+                else self.plan
+            )
             if self.revalidate_plan and current_plan.preview_token != self.plan.preview_token:
                 error_plan = MigrationPlan(
                     False,
@@ -215,7 +254,7 @@ class MigrationTransaction:
                 return MigrationApplyResult(False, False, error_plan, self.transaction_id)
 
             for sequence, action in enumerate(self.plan.actions, start=1):
-                if action.disposition != "create" or action.destination is None:
+                if not action.transaction_operations or action.destination is None:
                     continue
                 root = self._root(action.destination.root_role)
                 before = root.identity(action.destination.relative_path)

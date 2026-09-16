@@ -70,6 +70,7 @@ class MigrationPathOwnership:
     def root_for_role(self, role: str) -> Path:
         roots = {
             "settings": self.settings_root,
+            "settings_file": self.settings_file.parent,
             "profiles": self.profiles_root,
             "results": self.results_root,
             "application": self.application_root,

@@ -287,9 +287,15 @@ class TuiAppActionsAdapterMixin:
                 self._set_detail("Migration preview failed without exposing private file details.")
                 self._set_status("Migration preview failed")
                 return
-            if field == "__migration_restore_preview_path" or not preview.valid:
+            preview_plan = getattr(preview, "plan", {})
+            apply_ready = preview_plan.get("apply_ready", True) if isinstance(preview_plan, dict) else True
+            if field == "__migration_restore_preview_path" or not preview.valid or not apply_ready:
                 self._set_detail(preview.summary_text)
-                self._set_status("Migration preview complete" if preview.valid else "Migration bundle invalid")
+                self._set_status(
+                    "Migration conflicts require CLI resolution"
+                    if preview.valid and not apply_ready
+                    else "Migration preview complete" if preview.valid else "Migration bundle invalid"
+                )
                 return
             self.pending_migration_bundle_path = bundle_path
             self._apply_input_state(
@@ -298,7 +304,7 @@ class TuiAppActionsAdapterMixin:
                     placeholder="Type APPLY to perform the reviewed restore",
                     detail=(
                         preview.summary_text
-                        + "\nType APPLY below to perform the missing-only restore. Existing files will be staged, not overwritten."
+                        + "\nType APPLY below to perform the reviewed transactional restore. A restart is required after success."
                     ),
                 )
             )

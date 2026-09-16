@@ -77,9 +77,9 @@ class DiagnosticsCliAdapter:
                         continue
                     preview = host.local_migration_manager.preview_restore(Path(raw))
                     print(preview.summary_text, end="")
-                    if not preview.valid:
+                    if not preview.valid or not preview.plan.get("apply_ready", True):
                         continue
-                    confirmation = host._input("Type APPLY to perform the reviewed missing-only restore: ").strip()
+                    confirmation = host._input("Type APPLY to perform the reviewed transactional restore: ").strip()
                     if confirmation != "APPLY":
                         print("Migration restore cancelled; no writes performed.")
                         continue

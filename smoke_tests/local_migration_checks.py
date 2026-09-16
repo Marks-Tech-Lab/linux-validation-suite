@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+from dataclasses import asdict, fields
 import io
 import json
 import os
@@ -21,6 +22,12 @@ from Modules.lvs_core import APP_VERSION
 from Modules.lvs_local_migration import LocalMigrationManager
 from Modules.lvs_local_migration import main as local_migration_main
 from Modules.lvs_migration_lock import MigrationLockUnavailable, state_lock
+from Modules.lvs_migration_core_state import (
+    DESTINATION_LOCAL, PORTABLE, SECRET_OR_RELINK, SESSION_ONLY,
+    SETTINGS_FIELD_POLICY, _canonical_profile_payload, _deterministic_import_name,
+    build_core_plan, merge_history, merge_settings,
+    MigrationSourceChanged, semantic_profile_hash, settings_payload,
+)
 from Modules.lvs_migration_models import LogicalDestination, MigrationPlan, MigrationPlanAction
 from Modules.lvs_migration_paths import MigrationPathOwnership
 from Modules.lvs_migration_safe_fs import PinnedRoot
@@ -35,6 +42,7 @@ from Modules.lvs_migration_v2 import (
     write_v2_bundle,
 )
 from Modules.lvs_run_launch import RunLaunchCoordinator
+from Modules.lvs_settings import GlobalSettings
 
 
 def _roots(root: Path) -> MigrationPathOwnership:
@@ -237,7 +245,8 @@ def test_configured_roots_and_nonmutating_loader() -> None:
 
         bundle_path = _bundle(root / "source", (_content("settings/global", "global_settings", b"{}\n"),))
         manager = LocalMigrationManager(root, settings_path=settings_file)
-        assert manager.preview_restore(bundle_path).valid
+        preview = manager.preview_restore(bundle_path)
+        assert preview.valid, preview.plan
         result = manager.apply_restore(bundle_path, yes=True)
         assert result.applied
         assert (external / "settings/global_settings.json").is_file()
@@ -540,8 +549,9 @@ def test_v1_adapter_and_recovery_distinction() -> None:
         }
     )
     assert projected.settings_values == {"sample_interval_seconds": 1}
-    assert projected.policy_pending_fields == ("environment_mode",)
-    assert projected.destination_local_fields == ("results_dir",)
+    assert "environment_mode" in projected.destination_local_fields
+    assert projected.policy_pending_fields == ()
+    assert projected.destination_local_fields == ("environment_mode", "results_dir")
     assert set(projected.relink_required) == {"google_drive_shared_drive_id", "runtime_environment"}
     assert projected.history_records == ({"profile_name": "Example"},)
     assert projected.recovery_only[0]["disposition"] == "quarantine"
@@ -576,11 +586,459 @@ def test_v1_adapter_and_recovery_distinction() -> None:
             encoding="utf-8",
         )
         manager = LocalMigrationManager(root)
-        exported = manager.create_private_bundle(acknowledge_private_data=True)
+        exported = manager.create_v1_private_bundle(acknowledge_private_data=True)
         adapted = manager.adapt_v1_bundle(exported.bundle_dir)
         assert adapted.settings_values == {"sample_interval_seconds": 1}
         assert adapted.destination_local_fields == ("results_dir",)
         assert adapted.recovery_only and adapted.recovery_only[0]["disposition"] == "quarantine"
+
+
+def _valid_profile(name: str, *, menu_group: str = "custom", duration: int = 60) -> dict:
+    return {
+        "profile_name": name,
+        "profile_type": "validation_schedule",
+        "menu_group": menu_group,
+        "defaults": {"telemetry_interval_seconds": 2, "trim_start_seconds": 30, "trim_end_seconds": 30},
+        "stages": [{
+            "id": "stage_1", "name": "CPU", "display_label": "CPU", "duration_seconds": duration,
+            "enabled": True, "modules": {"cpu": {"enabled": True}},
+            "normalization": {"trim_start_seconds": 30, "trim_end_seconds": 30},
+        }],
+    }
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _settings_for(root: Path, *, department: str = "Production", groups: list[dict] | None = None) -> GlobalSettings:
+    settings = GlobalSettings()
+    settings.settings_dir = str(root / "settings")
+    settings.profiles_dir = str(root / "profiles")
+    settings.results_dir = str(root / "results")
+    settings.suite_department = department
+    if groups is not None:
+        settings.profile_menu_groups = groups
+    return settings
+
+
+def test_a2_settings_policy_and_merge_matrix() -> None:
+    assert set(SETTINGS_FIELD_POLICY) == {item.name for item in fields(GlobalSettings)}
+    assert SETTINGS_FIELD_POLICY["environment_mode"] == DESTINATION_LOCAL
+    assert all(SETTINGS_FIELD_POLICY[key] == DESTINATION_LOCAL for key in ("results_dir", "profiles_dir", "settings_dir"))
+    assert all(SETTINGS_FIELD_POLICY[key] == SECRET_OR_RELINK for key in (
+        "runtime_environment", "google_drive_credentials_path", "google_drive_shared_drive_id"))
+    assert all(SETTINGS_FIELD_POLICY[key] == SESSION_ONLY for key in (
+        "privileged_helper_enabled", "privileged_helper_prompt_for_sudo"))
+    assert SETTINGS_FIELD_POLICY["sample_interval_seconds"] == PORTABLE
+
+    defaults = asdict(GlobalSettings())
+    source = settings_payload({**defaults, "sample_interval_seconds": 1.0, "suite_department": "Source"})
+    destination = {**defaults, "suite_department": "Destination", "future_bool": True, "future_number": 7,
+        "future_string": "kept", "future_list": [1, "two"], "future_extension": {"kept": True}}
+    output, actions, counts, conflicts = merge_settings(source, destination, settings_file=Path("settings/global_settings.json"))
+    assert output["sample_interval_seconds"] == 1.0
+    assert output["suite_department"] == "Destination"
+    assert output["future_extension"] == {"kept": True}
+    assert {key: output[key] for key in ("future_bool", "future_number", "future_string", "future_list")} == {
+        "future_bool": True, "future_number": 7, "future_string": "kept", "future_list": [1, "two"]}
+    assert "settings:suite_department" in conflicts and counts["conflict"] >= 1
+    resolved, _, _, conflicts = merge_settings(source, destination,
+        settings_file=Path("settings/global_settings.json"),
+        resolutions={"settings:suite_department": "replace_destination"})
+    assert resolved["suite_department"] == "Source" and not conflicts
+
+    old_defaults = dict(defaults); old_defaults["sample_interval_seconds"] = 1.0
+    old_source = settings_payload({**defaults, "sample_interval_seconds": 1.0}, source_defaults=old_defaults)
+    new_destination = {**defaults, "sample_interval_seconds": defaults["sample_interval_seconds"]}
+    cross, _, _, conflicts = merge_settings(old_source, new_destination, settings_file=Path("x"))
+    assert cross["sample_interval_seconds"] == defaults["sample_interval_seconds"] and not conflicts
+    customized_old = settings_payload({**defaults, "sample_interval_seconds": 2.0},
+        source_defaults={**defaults, "sample_interval_seconds": 1.0})
+    customized_new, _, _, conflicts = merge_settings(customized_old, new_destination, settings_file=Path("x"))
+    assert customized_new["sample_interval_seconds"] == 2.0 and not conflicts
+    destination_custom = {**defaults, "sample_interval_seconds": 3.0}
+    _, _, _, conflicts = merge_settings(customized_old, destination_custom, settings_file=Path("x"))
+    assert "settings:sample_interval_seconds" in conflicts
+    unknown_era = settings_payload({**defaults, "sample_interval_seconds": 1.0}, source_defaults={})
+    imported_unknown, _, _, conflicts = merge_settings(unknown_era, new_destination, settings_file=Path("x"))
+    assert imported_unknown["sample_interval_seconds"] == 1.0 and not conflicts
+    _, _, _, conflicts = merge_settings(unknown_era, destination_custom, settings_file=Path("x"))
+    assert "settings:sample_interval_seconds" in conflicts
+    absent = settings_payload(defaults); absent["present_fields"].remove("trim_end_seconds"); absent["portable_values"].pop("trim_end_seconds")
+    preserved, _, _, _ = merge_settings(absent, {**defaults, "trim_end_seconds": 47}, settings_file=Path("x"))
+    assert preserved["trim_end_seconds"] == 47
+    menu_source = settings_payload({**defaults, "profile_menu_groups": [
+        {"key": "custom", "label": "Source Custom"}]})
+    _, menu_actions, _, menu_conflicts = merge_settings(menu_source, defaults, settings_file=Path("x"))
+    assert "menu_group:custom" in menu_conflicts
+    assert any(action.content_class == "profile_menu_metadata" and action.requires_user_choice for action in menu_actions)
+    assert _deterministic_import_name("P.json", "abcdef0123456789", {"P (Imported abcdef01).json": "different"}) == "P (Imported abcdef012345).json"
+
+
+def test_a2_fresh_install_and_external_roots() -> None:
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        base = Path(temporary); source = base / "source"; destination = base / "destination"
+        source_state = base / "source-state"; destination_state = base / "destination-state"
+        source_settings = _settings_for(source, department="Migrated", groups=[
+            *asdict(GlobalSettings())["profile_menu_groups"], {"key": "lab", "label": "Lab Profiles"},
+        ])
+        source_settings.settings_dir = str(source_state / "settings")
+        source_settings.profiles_dir = str(source_state / "profiles")
+        source_settings.results_dir = str(source_state / "results")
+        source_settings.runtime_environment = {"PRIVATE_TOKEN": "must-not-migrate"}
+        source_settings.environment_mode = "development"
+        source_settings.google_drive_credentials_path = "/private/source/credentials.json"
+        source_settings.google_drive_shared_drive_id = "private-drive-id"
+        _write_json(source_state / "settings/global_settings.json", asdict(source_settings))
+        _write_json(source_state / "profiles/My Lab Test.json", _valid_profile("My Lab Test", menu_group="lab"))
+        _write_json(source_state / "settings/run_setup_history.json", [{
+            "saved": "2026-09-15T10:00:00-04:00", "profile_name": "My Lab Test",
+            "profile_file": "My Lab Test.json", "metadata": {"case_sku": "Fixture"}, "heatsoak_minutes": 0,
+        }, "malformed"])
+        bundle = LocalMigrationManager(source, settings=source_settings,
+            settings_path=source_state / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=base / "bundles")
+        manifest_text = bundle.manifest_path.read_text(encoding="utf-8")
+        bundle_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore")
+            for path in bundle.bundle_dir.rglob("*") if path.is_file())
+        assert '"contract_version": 2' in manifest_text
+        assert "must-not-migrate" not in bundle_text and "private-drive-id" not in bundle_text
+        assert "/private/source" not in bundle_text and str(source) not in manifest_text
+        assert any(item["content_class"] == "custom_profile" for item in bundle.manifest["content"])
+        profile_entry = next(item for item in bundle.manifest["content"] if item["content_class"] == "custom_profile")
+        assert profile_entry["provenance"] == "external_custom"
+        settings_entry = next(item for item in bundle.manifest["content"] if item["content_class"] == "settings")
+        semantic_settings = json.loads((bundle.bundle_dir / settings_entry["bundle_path"]).read_text())
+        assert not ({"environment_mode", "results_dir", "profiles_dir", "settings_dir", "runtime_environment",
+            "google_drive_credentials_path", "google_drive_shared_drive_id", "privileged_helper_enabled",
+            "privileged_helper_prompt_for_sudo"} & set(semantic_settings["portable_values"]))
+
+        destination_settings = _settings_for(destination)
+        destination_settings.settings_dir = str(destination_state / "settings")
+        destination_settings.profiles_dir = str(destination_state / "profiles")
+        destination_settings.results_dir = str(destination_state / "results")
+        destination_settings.environment_mode = "end_user"
+        destination_raw = asdict(destination_settings); destination_raw["future_extension"] = "preserved"
+        destination_raw.update({"future_bool": False, "future_number": 11, "future_string": "local",
+            "future_list": ["a"], "future_nested": {"local": [1, 2]}})
+        _write_json(destination_state / "settings/global_settings.json", destination_raw)
+        (destination_state / "profiles").mkdir(parents=True); (destination_state / "results").mkdir()
+        manager = LocalMigrationManager(destination, settings=destination_settings,
+            settings_path=destination_state / "settings/global_settings.json")
+        preview = manager.preview_restore(bundle.bundle_dir)
+        assert preview.valid and preview.plan["apply_ready"], preview.plan
+        assert preview.plan["summary"]["pristine_destination"]
+        result = manager.apply_restore(bundle.bundle_dir, yes=True)
+        assert result.valid and result.applied and result.plan["requires_restart"], result.plan
+        restored_settings = json.loads((destination_state / "settings/global_settings.json").read_text())
+        assert restored_settings["suite_department"] == "Migrated"
+        assert restored_settings["environment_mode"] == "end_user"
+        assert restored_settings["profiles_dir"] == str(destination_state / "profiles")
+        assert restored_settings["future_extension"] == "preserved"
+        assert {key: restored_settings[key] for key in (
+            "future_bool", "future_number", "future_string", "future_list", "future_nested")
+        } == {"future_bool": False, "future_number": 11, "future_string": "local",
+            "future_list": ["a"], "future_nested": {"local": [1, 2]}}
+        assert restored_settings["runtime_environment"] == {}
+        assert any(group["key"] == "lab" and group["label"] == "Lab Profiles"
+            for group in restored_settings["profile_menu_groups"])
+        assert (destination_state / "profiles/My Lab Test.json").is_file()
+        history = json.loads((destination_state / "settings/run_setup_history.json").read_text())
+        assert history[0]["profile_file"] == "My Lab Test.json"
+        assert not list(destination_state.rglob(".lvs_migration_transactions/*"))
+
+
+def test_a2_profile_identity_rename_conflict_and_reimport() -> None:
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        base = Path(temporary); source = base / "source"; destination = base / "destination"
+        source_settings = _settings_for(source)
+        _write_json(source / "settings/global_settings.json", asdict(source_settings))
+        source_profile = _valid_profile("Collision", duration=60)
+        _write_json(source / "profiles/Collision.json", source_profile)
+        bundle = LocalMigrationManager(source, settings=source_settings,
+            settings_path=source / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=base / "bundles")
+        destination_settings = _settings_for(destination)
+        _write_json(destination / "settings/global_settings.json", asdict(destination_settings))
+        _write_json(destination / "profiles/Collision.json", _valid_profile("Collision", duration=120))
+        (destination / "results").mkdir()
+        manager = LocalMigrationManager(destination, settings=destination_settings,
+            settings_path=destination / "settings/global_settings.json")
+        preview = manager.preview_restore(bundle.bundle_dir)
+        renamed = next(action for action in preview.plan["actions"] if action["disposition"] == "import_renamed")
+        assert "(Imported " in renamed["destination"]["relative_path"]
+        first = manager.apply_restore(bundle.bundle_dir, yes=True); assert first.applied
+        imported = destination / "profiles" / renamed["destination"]["relative_path"]
+        assert imported.is_file()
+        second_preview = manager.preview_restore(bundle.bundle_dir)
+        assert any(action["disposition"] == "skip_identical" and action["logical_item"] == "Collision.json"
+            for action in second_preview.plan["actions"])
+        assert len(list((destination / "profiles").glob("Collision (Imported *).json"))) == 1
+        formatting_variant = json.loads(imported.read_text())
+        assert semantic_profile_hash(formatting_variant) == semantic_profile_hash(json.loads(json.dumps(formatting_variant)))
+        canonical = _canonical_profile_payload(imported, destination_settings.profile_menu_groups)
+        mutations = (
+            ("profile_name", lambda item: item.update(profile_name="Different")),
+            ("profile_type", lambda item: item.update(profile_type="different_type")),
+            ("menu_group", lambda item: item.update(menu_group="standard")),
+            ("run policy", lambda item: item.update(require_all_stages_runnable=True)),
+            ("defaults", lambda item: item["defaults"].update(trim_start_seconds=99)),
+            ("stage identity", lambda item: item["stages"][0].update(id="different")),
+            ("stage duration", lambda item: item["stages"][0].update(duration_seconds=999)),
+            ("stage enablement", lambda item: item["stages"][0].update(enabled=False)),
+            ("module behavior", lambda item: item["stages"][0]["modules"]["cpu"].update(enabled=False)),
+            ("normalization", lambda item: item["stages"][0]["normalization"].update(trim_end_seconds=99)),
+        )
+        canonical_hash = semantic_profile_hash(canonical)
+        for label, mutate in mutations:
+            changed = json.loads(json.dumps(canonical)); mutate(changed)
+            assert semantic_profile_hash(changed) != canonical_hash, label
+
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        base = Path(temporary); source = base / "source"; destination = base / "destination"
+        source_settings = _settings_for(source); destination_settings = _settings_for(destination)
+        _write_json(source / "settings/global_settings.json", asdict(source_settings))
+        _write_json(source / "profiles/Stock.json", _valid_profile("Stock", duration=60))
+        subprocess.run(["git", "init", "-q", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "profiles/Stock.json"], check=True)
+        subprocess.run(["git", "-C", str(source), "-c", "user.name=LVS", "-c", "user.email=lvs@example.invalid",
+            "commit", "-qm", "stock"], check=True)
+        unchanged_bundle = LocalMigrationManager(source, settings=source_settings,
+            settings_path=source / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=base / "unchanged-bundles")
+        assert not any(item["content_class"] in {"custom_profile", "modified_stock_profile"}
+            for item in unchanged_bundle.manifest["content"])
+        assert unchanged_bundle.manifest["export_summary"]["profiles"]["stock_unchanged_omitted"] == 1
+        _write_json(source / "profiles/Stock.json", _valid_profile("Stock", duration=90))
+        bundle = LocalMigrationManager(source, settings=source_settings,
+            settings_path=source / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=base / "bundles")
+        assert any(item["content_class"] == "modified_stock_profile" for item in bundle.manifest["content"])
+        _write_json(destination / "settings/global_settings.json", asdict(destination_settings))
+        _write_json(destination / "profiles/Stock.json", _valid_profile("Stock", duration=60)); (destination / "results").mkdir()
+        manager = LocalMigrationManager(destination, settings=destination_settings,
+            settings_path=destination / "settings/global_settings.json")
+        preview = manager.preview_restore(bundle.bundle_dir)
+        conflict = next(action for action in preview.plan["actions"] if action["reason_code"] == "MODIFIED_STOCK_COLLISION")
+        assert not preview.plan["apply_ready"] and conflict["requires_user_choice"]
+        assert conflict["action_id"] in preview.summary_text and "--resolve" in preview.summary_text
+        resolved = manager.preview_restore(bundle.bundle_dir, resolutions={conflict["action_id"]: "import_source_as_renamed"})
+        assert resolved.plan["apply_ready"]
+        cli_output = io.StringIO()
+        with contextlib.redirect_stdout(cli_output):
+            cli_code = local_migration_main([
+                "--root", str(destination), "--settings-file", str(destination / "settings/global_settings.json"),
+                "restore", str(bundle.bundle_dir), "--resolve",
+                f"{conflict['action_id']}=import_source_as_renamed",
+            ])
+        assert cli_code == 0 and "Apply ready: yes" in cli_output.getvalue()
+        applied = manager.apply_restore(bundle.bundle_dir, yes=True,
+            resolutions={conflict["action_id"]: "import_source_as_renamed"})
+        assert applied.applied and len(list((destination / "profiles").glob("Stock (Imported *).json"))) == 1
+        imported_path = next((destination / "profiles").glob("Stock (Imported *).json"))
+        imported_path.unlink()
+        replace_preview = manager.preview_restore(bundle.bundle_dir,
+            resolutions={conflict["action_id"]: "replace_destination"})
+        replace_action = next(action for action in replace_preview.plan["actions"] if action["logical_item"] == "Stock.json"
+            and action["content_class"] == "modified_stock_profile")
+        assert replace_action["destructive"] and replace_action["transaction_operations"][0]["operation"] == "replace_file"
+        ownership = MigrationPathOwnership.from_settings(application_root=destination,
+            settings_file=destination / "settings/global_settings.json", settings=destination_settings)
+        validated_bundle, errors = validate_v2_bundle(bundle.bundle_dir)
+        assert validated_bundle is not None and not errors
+        replace_core = build_core_plan(validated_bundle, ownership,
+            resolutions={conflict["action_id"]: "replace_destination"}, destination_settings=destination_settings)
+        original_stock = (destination / "profiles/Stock.json").read_bytes()
+        profile_sequence = next(index for index, action in enumerate(replace_core.plan.actions, start=1)
+            if action.action_id == conflict["action_id"])
+        def fail_after_replace(phase: str, sequence: int) -> None:
+            if phase == "applied" and sequence == profile_sequence:
+                raise OSError("fixture after profile replacement")
+        rolled_back = MigrationTransaction(ownership=ownership, bundle=validated_bundle, plan=replace_core.plan,
+            materialized_payloads=replace_core.materialized_payloads,
+            plan_builder=lambda: build_core_plan(validated_bundle, ownership,
+                resolutions={conflict["action_id"]: "replace_destination"},
+                destination_settings=destination_settings).plan,
+            failure_hook=fail_after_replace).execute()
+        assert not rolled_back.applied and rolled_back.rollback_complete
+        assert (destination / "profiles/Stock.json").read_bytes() == original_stock
+        replaced = manager.apply_restore(bundle.bundle_dir, yes=True,
+            resolutions={conflict["action_id"]: "replace_destination"})
+        assert replaced.applied
+        assert json.loads((destination / "profiles/Stock.json").read_text())["stages"][0]["duration_seconds"] == 90
+
+        unknown = manager.preview_restore(bundle.bundle_dir, resolutions={"missing-action": "keep_destination"})
+        assert not unknown.valid and any(error["error_code"] == "RESOLUTION_ACTION_UNKNOWN"
+            for error in unknown.plan["errors"])
+        invalid = manager.preview_restore(bundle.bundle_dir,
+            resolutions={conflict["action_id"]: "not-a-resolution"})
+        assert not invalid.valid and any(error["error_code"] == "RESOLUTION_NOT_ALLOWED"
+            for error in invalid.plan["errors"])
+        with contextlib.redirect_stderr(io.StringIO()) as duplicate_error:
+            duplicate_code = local_migration_main([
+                "--root", str(destination), "--settings-file", str(destination / "settings/global_settings.json"),
+                "restore", str(bundle.bundle_dir), "--resolve", f"{conflict['action_id']}=keep_destination",
+                "--resolve", f"{conflict['action_id']}=replace_destination",
+            ])
+        assert duplicate_code == 2 and "specified more than once" in duplicate_error.getvalue()
+
+
+def test_a2_profile_provenance_recovery_and_legacy_hydration() -> None:
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        root = Path(temporary); settings = _settings_for(root)
+        _write_json(root / "settings/global_settings.json", asdict(settings))
+        _write_json(root / "profiles/Unknown.json", _valid_profile("Unknown"))
+        _write_json(root / "profiles/Broken.json", {"profile_name": "Broken", "stages": "invalid"})
+        (root / "profiles/Unsafe.json").symlink_to(root / "profiles/Unknown.json")
+        legacy = _valid_profile("Legacy")
+        legacy["segment_label_source"] = "Legacy.labels"
+        legacy["stages"][0].pop("display_label")
+        _write_json(root / "profiles/Legacy.json", legacy)
+        (root / "profiles/Legacy.labels").write_text("Hydrated Label\n", encoding="utf-8")
+        missing_legacy = _valid_profile("Missing Legacy")
+        missing_legacy["segment_label_source"] = "missing.labels"
+        missing_legacy["stages"][0].pop("display_label")
+        _write_json(root / "profiles/Missing Legacy.json", missing_legacy)
+        bundle = LocalMigrationManager(root, settings=settings,
+            settings_path=root / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=root / "bundles")
+        entries = bundle.manifest["content"]
+        unknown = next(item for item in entries if item.get("source_filename") == "Unknown.json")
+        assert unknown["provenance"] == "unknown_provenance"
+        assert any(item["content_class"] == "recovery_profile" and item["logical_name"] == "Broken.json" for item in entries)
+        assert any(item["content_class"] == "recovery_profile" and item["logical_name"] == "Missing Legacy.json" for item in entries)
+        legacy_entry = next(item for item in entries if item.get("source_filename") == "Legacy.json")
+        hydrated = json.loads((bundle.bundle_dir / legacy_entry["bundle_path"]).read_text())
+        assert hydrated["stages"][0]["display_label"] == "Hydrated Label"
+        assert bundle.manifest["export_summary"]["profiles"]["unsafe_or_unreadable"] == 1
+
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        root = Path(temporary); settings = _settings_for(root)
+        _write_json(root / "settings/global_settings.json", asdict(settings))
+        _write_json(root / "profiles/Repo Custom.json", _valid_profile("Repo Custom"))
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        bundle = LocalMigrationManager(root, settings=settings,
+            settings_path=root / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=root / "bundles")
+        entry = next(item for item in bundle.manifest["content"] if item.get("source_filename") == "Repo Custom.json")
+        assert entry["provenance"] == "repository_custom"
+
+
+def test_a2_export_source_mutation_detection() -> None:
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        root = Path(temporary); settings = _settings_for(root)
+        settings_path = root / "settings/global_settings.json"
+        profile_path = root / "profiles/Changing.json"
+        _write_json(settings_path, asdict(settings)); _write_json(profile_path, _valid_profile("Changing"))
+        manager = LocalMigrationManager(root, settings=settings, settings_path=settings_path)
+        from Modules import lvs_migration_core_state as core_state
+        real_read = core_state._read_stable_regular
+        profile_reads = 0
+        def changing_read(path: Path) -> bytes | None:
+            nonlocal profile_reads
+            value = real_read(path)
+            if path == profile_path:
+                profile_reads += 1
+                if profile_reads == 1:
+                    _write_json(profile_path, _valid_profile("Changing", duration=120))
+            return value
+        with patch.object(core_state, "_read_stable_regular", side_effect=changing_read):
+            with _assert_raises(MigrationSourceChanged):
+                manager.create_private_bundle(acknowledge_private_data=True, output_parent=root / "bundles")
+
+
+def test_a2_history_merge_and_transaction_rollback() -> None:
+    destination = [{"saved": "2026-09-15T12:00:00-04:00", "profile_name": "A", "profile_file": "A.json",
+        "metadata": {"case_sku": "one"}, "heatsoak_minutes": 0}]
+    source = [dict(destination[0]), {"saved": "invalid", "profile_name": "B", "profile_file": "B.json",
+        "metadata": {}, "heatsoak_minutes": 1}]
+    merged, counts = merge_history(source, destination, {"B.json": "B (Imported hash).json"}, set())
+    assert len(merged) == 2 and counts["duplicate"] == 1
+    assert any(item["profile_file"] == "B (Imported hash).json" for item in merged)
+    unresolved, counts = merge_history(source, destination, {}, {"B.json"})
+    assert counts["unresolved_profile_reference"] == 1 and all(item["profile_file"] != "B.json" for item in unresolved)
+    many = [{"saved": f"2026-09-{day:02d}T12:00:00-04:00", "profile_name": str(day),
+        "profile_file": f"{day}.json", "metadata": {}, "heatsoak_minutes": 0} for day in range(1, 12)]
+    capped, counts = merge_history(many, [], {}, set())
+    assert len(capped) == 8 and counts["dropped_by_retention_limit"] == 3
+
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        base = Path(temporary); source_root = base / "source"; destination_root = base / "destination"
+        source_settings = _settings_for(source_root, department="Source")
+        destination_settings = _settings_for(destination_root)
+        _write_json(source_root / "settings/global_settings.json", asdict(source_settings))
+        _write_json(source_root / "profiles/A.json", _valid_profile("A"))
+        _write_json(source_root / "settings/run_setup_history.json", [{
+            "saved": "2026-09-15T13:00:00-04:00", "profile_name": "A", "profile_file": "A.json",
+            "metadata": {"case_sku": "two"}, "heatsoak_minutes": 0,
+        }])
+        bundle_result = LocalMigrationManager(source_root, settings=source_settings,
+            settings_path=source_root / "settings/global_settings.json").create_private_bundle(
+                acknowledge_private_data=True, output_parent=base / "bundles")
+        _write_json(destination_root / "settings/global_settings.json", asdict(destination_settings))
+        _write_json(destination_root / "settings/run_setup_history.json", destination)
+        (destination_root / "profiles").mkdir(); (destination_root / "results").mkdir()
+        ownership = MigrationPathOwnership.from_settings(application_root=destination_root,
+            settings_file=destination_root / "settings/global_settings.json", settings=destination_settings)
+        bundle, errors = validate_v2_bundle(bundle_result.bundle_dir); assert bundle is not None and not errors
+        core = build_core_plan(bundle, ownership, destination_settings=destination_settings)
+        original_settings = (destination_root / "settings/global_settings.json").read_bytes()
+        original_history = (destination_root / "settings/run_setup_history.json").read_bytes()
+        for fail_index in (1, 2, 3):
+            applied_count = 0
+            def fail_after_selected_operation(phase: str, _sequence: int) -> None:
+                nonlocal applied_count
+                if phase == "applied":
+                    applied_count += 1
+                    if applied_count == fail_index:
+                        raise OSError("fixture")
+            core = build_core_plan(bundle, ownership, destination_settings=destination_settings)
+            result = MigrationTransaction(ownership=ownership, bundle=bundle, plan=core.plan,
+                materialized_payloads=core.materialized_payloads,
+                plan_builder=lambda: build_core_plan(bundle, ownership, destination_settings=destination_settings).plan,
+                failure_hook=fail_after_selected_operation).execute()
+            assert not result.applied and result.rollback_complete, result
+            assert (destination_root / "settings/global_settings.json").read_bytes() == original_settings
+            assert (destination_root / "settings/run_setup_history.json").read_bytes() == original_history
+            assert not (destination_root / "profiles/A.json").exists()
+
+
+def test_a2_v1_adapter_settings_and_history() -> None:
+    with TemporaryDirectory(dir="/tmp") as temporary:
+        base = Path(temporary); source = base / "source"; destination = base / "destination"
+        (source / "settings").mkdir(parents=True)
+        _write_json(source / "settings/global_settings.json", {
+            "suite_department": "Legacy Source", "environment_mode": "production",
+            "results_dir": "/legacy/results", "profiles_dir": "/legacy/profiles",
+            "settings_dir": "/legacy/settings", "runtime_environment": {"TOKEN": "secret"},
+        })
+        _write_json(source / "settings/run_setup_history.json", [{
+            "saved": "2026-09-15T08:00:00-04:00", "profile_name": "Legacy",
+            "profile_file": "Legacy.json", "metadata": {}, "heatsoak_minutes": 0,
+        }])
+        _write_json(source / "hardware_result_validation_state.json", {"entries": [{"path": "results/private"}]})
+        legacy = LocalMigrationManager(source).create_v1_private_bundle(acknowledge_private_data=True,
+            output_parent=base / "legacy-bundles")
+        destination_settings = _settings_for(destination); destination_settings.environment_mode = "end_user"
+        _write_json(destination / "settings/global_settings.json", asdict(destination_settings))
+        (destination / "profiles").mkdir(); (destination / "results").mkdir()
+        manager = LocalMigrationManager(destination, settings=destination_settings,
+            settings_path=destination / "settings/global_settings.json")
+        preview = manager.preview_restore(legacy.bundle_dir)
+        assert preview.valid and preview.plan["adapted_to_core_semantics"] and preview.plan["apply_ready"]
+        assert any(warning["error_code"] == "V1_HARDWARE_STATE_IGNORED" for warning in preview.plan["warnings"])
+        assert any(action["content_class"] == "hardware_validation_state" and action["disposition"] == "quarantine"
+            for action in preview.plan["actions"])
+        applied = manager.apply_restore(legacy.bundle_dir, yes=True); assert applied.applied
+        settings = json.loads((destination / "settings/global_settings.json").read_text())
+        assert settings["suite_department"] == "Legacy Source" and settings["environment_mode"] == "end_user"
+        assert settings["results_dir"] == str(destination / "results")
+        assert settings["runtime_environment"] == {}
+        assert preview.plan["summary"]["history"]["unresolved_profile_reference"] == 1
+        assert not (destination / "settings/run_setup_history.json").exists()
+        assert not (destination / "hardware_result_validation_state.json").exists()
 
 
 def run_local_migration_checks() -> None:
@@ -597,6 +1055,13 @@ def run_local_migration_checks() -> None:
         test_lock_error_and_journal_privacy,
         test_destination_precondition_matrix,
         test_v1_adapter_and_recovery_distinction,
+        test_a2_settings_policy_and_merge_matrix,
+        test_a2_fresh_install_and_external_roots,
+        test_a2_profile_identity_rename_conflict_and_reimport,
+        test_a2_profile_provenance_recovery_and_legacy_hydration,
+        test_a2_export_source_mutation_detection,
+        test_a2_history_merge_and_transaction_rollback,
+        test_a2_v1_adapter_settings_and_history,
     )
     for test in tests:
         test()
@@ -604,4 +1069,4 @@ def run_local_migration_checks() -> None:
 
 if __name__ == "__main__":
     run_local_migration_checks()
-    print("local migration v2 A1 checks: PASS")
+    print("local migration v2 A1+A2 checks: PASS")
