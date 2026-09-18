@@ -724,6 +724,7 @@ from Modules.lvs_local_migration import (
 )
 from smoke_tests.local_migration_checks import run_local_migration_checks
 from smoke_tests.migration_ux_checks import run_migration_ux_checks
+from smoke_tests.migration_credentials_checks import run_migration_credentials_checks
 from Modules.lvs_qa_review_cli import main as qa_review_cli_main
 from Modules.lvs_settings import GlobalSettings, SettingsManager
 from Modules.lvs_settings_facade import SettingsFacade
@@ -3204,8 +3205,8 @@ def test_tui_app_actions_adapter_helpers() -> None:
                 private_bundle=True, safe_status="Valid migration bundle.",
             )]
 
-        def create_private_migration_bundle(self, *, acknowledge_private_data):
-            self.private_calls.append(acknowledge_private_data)
+        def create_private_migration_bundle(self, *, acknowledge_private_data, include_upload_credentials=False):
+            self.private_calls.append((acknowledge_private_data, include_upload_credentials))
             return SimpleNamespace(
                 bundle_dir=Path("/tmp/new-migration-bundle"),
                 summary_text="Private Migration Bundle\nBundle folder: results/Migration_Bundles/smoke",
@@ -3310,7 +3311,7 @@ def test_tui_app_actions_adapter_helpers() -> None:
         assert_equal(migration_tui.service.private_calls, [], "TUI private export rejects incorrect acknowledgement")
         await migration_tui._select_migration_support_action(1)
         await migration_tui._commit_migration_input("__migration_private_ack", "PRIVATE")
-        assert_equal(migration_tui.service.private_calls, [True], "TUI private export accepts explicit acknowledgement")
+        assert_equal(migration_tui.service.private_calls, [(True, False)], "TUI private export accepts explicit acknowledgement")
         assert_true("Bundle folder" in migration_tui.detail, "TUI private export renders output path")
         await migration_tui._commit_migration_input("__migration_post_create", "")
 
@@ -27103,6 +27104,7 @@ def main() -> int:
         test_migration_restore_rejects_invalid_bundles,
         run_local_migration_checks,
         run_migration_ux_checks,
+        run_migration_credentials_checks,
         test_result_artifact_facade_inventory,
         test_result_artifact_presentation_helpers,
         test_profile_dry_run_summary_formatting,

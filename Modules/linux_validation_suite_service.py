@@ -136,13 +136,18 @@ class SuiteAppService(
     def public_support_export_text(self) -> str:
         return self.local_migration_manager.export_public_support().summary_text
 
-    def create_private_migration_bundle(self, *, acknowledge_private_data: bool):
+    def create_private_migration_bundle(
+        self, *, acknowledge_private_data: bool, include_upload_credentials: bool = False,
+    ):
         return self.local_migration_manager.create_private_bundle(
             acknowledge_private_data=acknowledge_private_data,
+            include_upload_credentials=include_upload_credentials,
         )
 
-    def preview_private_migration_export(self):
-        return self.local_migration_manager.preview_private_bundle_export()
+    def preview_private_migration_export(self, *, include_upload_credentials: bool = False):
+        return self.local_migration_manager.preview_private_bundle_export(
+            include_upload_credentials=include_upload_credentials,
+        )
 
     def discover_migration_bundles(self):
         return self.local_migration_manager.discover_bundles()

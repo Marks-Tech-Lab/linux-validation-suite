@@ -628,7 +628,8 @@ def test_a2_settings_policy_and_merge_matrix() -> None:
     assert SETTINGS_FIELD_POLICY["environment_mode"] == DESTINATION_LOCAL
     assert all(SETTINGS_FIELD_POLICY[key] == DESTINATION_LOCAL for key in ("results_dir", "profiles_dir", "settings_dir"))
     assert all(SETTINGS_FIELD_POLICY[key] == SECRET_OR_RELINK for key in (
-        "runtime_environment", "google_drive_credentials_path", "google_drive_shared_drive_id"))
+        "runtime_environment", "google_drive_credentials_path"))
+    assert SETTINGS_FIELD_POLICY["google_drive_shared_drive_id"] == PORTABLE
     assert all(SETTINGS_FIELD_POLICY[key] == SESSION_ONLY for key in (
         "privileged_helper_enabled", "privileged_helper_prompt_for_sudo"))
     assert SETTINGS_FIELD_POLICY["sample_interval_seconds"] == PORTABLE
@@ -704,7 +705,8 @@ def test_a2_fresh_install_and_external_roots() -> None:
         bundle_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore")
             for path in bundle.bundle_dir.rglob("*") if path.is_file())
         assert '"contract_version": 2' in manifest_text
-        assert "must-not-migrate" not in bundle_text and "private-drive-id" not in bundle_text
+        assert "must-not-migrate" not in bundle_text
+        assert "private-drive-id" in bundle_text
         assert "/private/source" not in bundle_text and str(source) not in manifest_text
         assert any(item["content_class"] == "custom_profile" for item in bundle.manifest["content"])
         profile_entry = next(item for item in bundle.manifest["content"] if item["content_class"] == "custom_profile")
@@ -712,7 +714,7 @@ def test_a2_fresh_install_and_external_roots() -> None:
         settings_entry = next(item for item in bundle.manifest["content"] if item["content_class"] == "settings")
         semantic_settings = json.loads((bundle.bundle_dir / settings_entry["bundle_path"]).read_text())
         assert not ({"environment_mode", "results_dir", "profiles_dir", "settings_dir", "runtime_environment",
-            "google_drive_credentials_path", "google_drive_shared_drive_id", "privileged_helper_enabled",
+            "google_drive_credentials_path", "privileged_helper_enabled",
             "privileged_helper_prompt_for_sudo"} & set(semantic_settings["portable_values"]))
 
         destination_settings = _settings_for(destination)

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 import hashlib
 import json
@@ -16,6 +16,16 @@ from typing import Any
 
 from .lvs_core import APP_VERSION
 from .lvs_migration_models import LogicalDestination, MigrationPlan, MigrationPlanAction, MigrationSafeError
+from .lvs_migration_credentials import (
+    DESTINATION_CREDENTIAL_RELATIVE,
+    CredentialPayloadInvalid,
+    UPLOAD_CREDENTIAL_CONTENT_CLASS,
+    UPLOAD_CREDENTIAL_SCHEMA_ID,
+    destination_credential_path,
+    inspect_upload_credentials,
+    safe_read_destination_credential,
+    validate_service_account_payload,
+)
 from .lvs_migration_paths import MigrationPathOwnership
 from .lvs_migration_safe_fs import FileIdentity, PinnedRoot, validate_relative_path
 from .lvs_migration_v2 import V2ContentPayload, ValidatedV2Bundle, destination_preconditions, preview_token
@@ -31,7 +41,7 @@ SESSION_ONLY = "SESSION_ONLY"
 
 DESTINATION_LOCAL_FIELDS = frozenset({"environment_mode", "results_dir", "profiles_dir", "settings_dir"})
 SECRET_OR_RELINK_FIELDS = frozenset(
-    {"runtime_environment", "google_drive_credentials_path", "google_drive_shared_drive_id"}
+    {"runtime_environment", "google_drive_credentials_path"}
 )
 SESSION_ONLY_FIELDS = frozenset({"privileged_helper_enabled", "privileged_helper_prompt_for_sudo"})
 PORTABLE_FIELDS = frozenset(
@@ -48,6 +58,7 @@ PORTABLE_FIELDS = frozenset(
         "gpu_safe_max_vram_percent", "gpu_external_max_processes", "suite_department",
         "case_options", "psu_rating_options", "cpu_cooler_options",
         "google_drive_move_to_uploaded_on_success", "google_drive_prompt_after_run",
+        "google_drive_shared_drive_id",
         "profile_menu_groups",
     }
 )
@@ -69,12 +80,13 @@ class CoreExport:
     contents: tuple[V2ContentPayload, ...]
     omitted_classes: tuple[dict[str, Any], ...]
     summary: dict[str, Any]
+    warnings: tuple[MigrationSafeError, ...] = ()
 
 
 @dataclass(frozen=True)
 class CorePlan:
     plan: MigrationPlan
-    materialized_payloads: dict[str, bytes]
+    materialized_payloads: dict[str, bytes] = field(repr=False)
     summary: dict[str, Any]
 
 
@@ -162,7 +174,9 @@ def semantically_pristine_settings(raw: dict[str, Any], *, settings_file: Path) 
     return True
 
 
-def _safe_value(value: Any) -> str:
+def _safe_value(value: Any, *, key: str = "") -> str:
+    if key == "google_drive_shared_drive_id":
+        return "Configured" if bool(str(value or "").strip()) else "Not configured"
     if isinstance(value, (dict, list)):
         return f"<{type(value).__name__}:{len(value)}>"
     text = str(value)
@@ -281,7 +295,7 @@ def merge_settings(
                         requires_user_choice=selected is None,
                         allowed_resolutions=("keep_destination", "replace_destination"),
                         selected_resolution=selected,
-                        safe_summary=f"Both installations customized {key}; source={_safe_value(src)}, destination={_safe_value(dst)}.",
+                        safe_summary=f"Both installations customized {key}; source={_safe_value(src, key=key)}, destination={_safe_value(dst, key=key)}.",
                     ))
                     counts[disposition] = counts.get(disposition, 0) + 1
                     continue
@@ -372,24 +386,38 @@ def _baseline_semantic_hash(raw: bytes) -> str | None:
         return None
 
 
-def collect_core_export(ownership: MigrationPathOwnership, source_settings: GlobalSettings) -> CoreExport:
+def collect_core_export(
+    ownership: MigrationPathOwnership,
+    source_settings: GlobalSettings,
+    *,
+    include_upload_credentials: bool = False,
+) -> CoreExport:
     contents: list[V2ContentPayload] = []
     settings_raw, _ = _read_json_regular(ownership.settings_file)
     settings_raw = settings_raw if isinstance(settings_raw, dict) else asdict(source_settings)
     source_menu_groups = settings_raw.get("profile_menu_groups", source_settings.profile_menu_groups)
     semantic_settings = settings_payload(settings_raw)
-    credentials_value = str(settings_raw.get("google_drive_credentials_path") or "")
-    credentials_path = Path(credentials_value) if credentials_value else None
-    if credentials_path is not None and not credentials_path.is_absolute():
-        credentials_path = ownership.application_root / credentials_path
+    credential_inspection = inspect_upload_credentials(ownership, settings_raw)
+    credentials_included = bool(
+        include_upload_credentials and credential_inspection.available and credential_inspection.payload is not None
+    )
     semantic_settings["relink_required"]["google_drive_credentials_path"] = bool(
-        credentials_path is not None and credentials_path.is_file() and not credentials_path.is_symlink()
+        credential_inspection.configured and not credentials_included
     )
     contents.append(V2ContentPayload(
         "settings", "settings", "global_settings", "payload/settings/semantic_settings.json", "settings",
         "linux_validation_suite.migration.settings_payload", 1, _json_bytes(semantic_settings),
         merge_policy_hint="semantic_merge", required=True,
     ))
+    if credentials_included and credential_inspection.payload is not None:
+        contents.append(V2ContentPayload(
+            "upload-credentials", UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload",
+            "payload/secrets/google_drive_credentials.json", "upload_authentication",
+            UPLOAD_CREDENTIAL_SCHEMA_ID, 1, credential_inspection.payload,
+            privacy_class="SECRET_CONTENT", portability="portable_secret",
+            merge_policy_hint="credential_conflict",
+            metadata={"credential_type": credential_inspection.credential_type},
+        ))
 
     history_raw, _ = _read_json_regular(ownership.settings_root / "run_setup_history.json")
     valid_history, malformed = validate_history_records(history_raw if isinstance(history_raw, list) else [])
@@ -466,23 +494,49 @@ def collect_core_export(ownership: MigrationPathOwnership, source_settings: Glob
                 merge_policy_hint="profile_semantic_merge", metadata=metadata,
             ))
 
-    omitted = (
+    omitted_items = [
         {"content_class": "result_tree", "reason": "not_implemented"},
         {"content_class": "hardware_validation_state", "reason": "derived_state_excluded"},
         {"content_class": "sensor_probe_logs", "reason": "not_implemented"},
-        {"content_class": "credentials", "reason": "secret_excluded"},
         {"content_class": "archived_profiles", "reason": "not_core_v2"},
+    ]
+    if not credentials_included:
+        omitted_items.append({"content_class": "upload_credentials", "reason": "secret_excluded"})
+    omitted = tuple(omitted_items)
+    shared_drive_configured = bool(str(settings_raw.get("google_drive_shared_drive_id") or "").strip())
+    upload_configured = credential_inspection.configured or shared_drive_configured
+    upload_complete = not upload_configured or (shared_drive_configured and credentials_included)
+    credential_status = (
+        "included" if credentials_included else
+        "not_configured" if not credential_inspection.configured else
+        "unavailable" if not credential_inspection.available else "excluded"
     )
+    warnings = (credential_inspection.error,) if credential_inspection.error is not None else ()
     return CoreExport(tuple(contents), omitted, {
         "settings": {"portable_fields": len(semantic_settings["portable_values"]),
             "relink_requirements": sum(bool(value) for value in semantic_settings["relink_required"].values())},
         "profiles": profile_counts,
         "history": {"valid_records": len(valid_history), "malformed_records": malformed},
+        "upload": {
+            "configured": upload_configured,
+            "credentials_available": credential_inspection.available,
+            "shared_drive_target": "included" if shared_drive_configured else "not_configured",
+            "credentials": credential_status,
+            "destination_credential_path": "generated_on_restore" if credentials_included else "not_generated",
+            "complete_for_current_configuration": upload_complete,
+            "incomplete_reason": "" if upload_complete else (
+                credential_inspection.error.error_code if credential_inspection.error else "CREDENTIALS_EXCLUDED"
+            ),
+        },
         "excluded": [item["content_class"] for item in omitted],
-    })
+    }, warnings)
 
 
 def _entry_json(bundle: ValidatedV2Bundle, entry: dict[str, Any]) -> Any:
+    return json.loads(_entry_bytes(bundle, entry).decode("utf-8"))
+
+
+def _entry_bytes(bundle: ValidatedV2Bundle, entry: dict[str, Any]) -> bytes:
     with PinnedRoot(bundle.bundle_path) as root:
         fd = root.open_read(str(entry["bundle_path"]))
         try:
@@ -501,7 +555,7 @@ def _entry_json(bundle: ValidatedV2Bundle, entry: dict[str, Any]) -> Any:
             payload = b"".join(chunks)
             if len(payload) != int(entry["size_bytes"]) or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
                 raise OSError("migration payload failed semantic materialization integrity check")
-            return json.loads(payload.decode("utf-8"))
+            return payload
         finally:
             os.close(fd)
 
@@ -624,7 +678,7 @@ def build_core_plan(
     resolutions = resolutions or {}
     actions: list[MigrationPlanAction] = []
     materialized: dict[str, bytes] = {}
-    summary: dict[str, Any] = {"settings": {}, "profiles": {}, "history": {}}
+    summary: dict[str, Any] = {"settings": {}, "profiles": {}, "history": {}, "upload": {}}
     conflicts: set[str] = set()
     profile_mapping: dict[str, str] = {}
     unresolved_profiles: set[str] = set()
@@ -637,6 +691,7 @@ def build_core_plan(
         k: v for k, v in destination_raw.items() if k in _KNOWN_SETTINGS_FIELDS
     }})
     destination_settings = destination_settings or file_settings
+    settings_output_action: MigrationPlanAction | None = None
     if settings_entries:
         source = _entry_json(bundle, settings_entries[0])
         if isinstance(source, dict) and "portable_values" not in source:
@@ -657,11 +712,163 @@ def build_core_plan(
         destination = LogicalDestination("settings_file", ownership.settings_file.name)
         before = _identity(ownership, destination)
         operation = "replace_file" if before.exists else "create_file"
-        actions.append(MigrationPlanAction(file_id, "settings", "global_settings", destination, "merge",
+        settings_output_action = MigrationPlanAction(file_id, "settings", "global_settings", destination, "merge",
             "SEMANTIC_SETTINGS_MERGE", destructive=before.exists,
             safe_summary="Materialize the resolved semantic settings merge.",
-            transaction_operations=({"operation": operation},) if not setting_conflicts else ()))
-        materialized[file_id] = _json_bytes(output)
+            transaction_operations=({"operation": operation},) if not setting_conflicts else ())
+
+    credential_entries = [
+        entry for entry in entries if entry.get("content_class") == UPLOAD_CREDENTIAL_CONTENT_CLASS
+    ]
+    credential_conflicts: set[str] = set()
+    if credential_entries:
+        resolved_credentials_ready = False
+        credential_entry = credential_entries[0]
+        source_credentials = _entry_bytes(bundle, credential_entry)
+        if not validate_service_account_payload(source_credentials):
+            raise CredentialPayloadInvalid("unsupported upload credential payload")
+        source_digest = hashlib.sha256(source_credentials).hexdigest()
+        canonical_path = destination_credential_path(ownership)
+        configured_text = str(destination_raw.get("google_drive_credentials_path") or "").strip()
+        configured_path = Path(configured_text).expanduser() if configured_text else canonical_path
+        if not configured_path.is_absolute():
+            configured_path = ownership.application_root / configured_path
+        active_payload = safe_read_destination_credential(configured_path)
+        canonical_payload = (
+            active_payload if configured_path == canonical_path
+            else safe_read_destination_credential(canonical_path)
+        )
+        comparison_payload = active_payload if active_payload is not None else canonical_payload
+        comparison_path = configured_path if active_payload is not None else canonical_path
+        action_id = str(credential_entry["entry_id"])
+        selected = resolutions.get(action_id)
+        allowed = ("keep_destination", "replace_destination")
+        if comparison_payload is not None and hashlib.sha256(comparison_payload).hexdigest() == source_digest:
+            output["google_drive_credentials_path"] = str(comparison_path)
+            actions.append(MigrationPlanAction(
+                action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload",
+                LogicalDestination("settings", DESTINATION_CREDENTIAL_RELATIVE)
+                if comparison_path == canonical_path else None,
+                "skip_identical", "UPLOAD_CREDENTIALS_IDENTICAL",
+                safe_summary="Destination upload credentials are already identical; the existing credential is reused.",
+            ))
+            summary["upload"]["credentials"] = "reused"
+            resolved_credentials_ready = True
+        elif comparison_payload is not None and selected != "replace_destination":
+            if selected == "keep_destination":
+                output["google_drive_credentials_path"] = str(comparison_path)
+                actions.append(MigrationPlanAction(
+                    action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload", None,
+                    "preserve_destination", "USER_KEPT_DESTINATION_CREDENTIALS",
+                    destructive=False, allowed_resolutions=allowed, selected_resolution=selected,
+                    safe_summary="Destination upload credentials are preserved; secret values are not displayed.",
+                ))
+                summary["upload"]["credentials"] = "destination_preserved"
+                resolved_credentials_ready = validate_service_account_payload(comparison_payload)
+            else:
+                conflicts.add(action_id); credential_conflicts.add(action_id)
+                actions.append(MigrationPlanAction(
+                    action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload",
+                    LogicalDestination("settings", DESTINATION_CREDENTIAL_RELATIVE),
+                    "conflict", "DESTINATION_CREDENTIAL_CONFLICT",
+                    destructive=True, requires_user_choice=True, allowed_resolutions=allowed,
+                    safe_summary="Source and destination upload credentials are configured and differ; secret values are not displayed.",
+                ))
+                summary["upload"]["credentials"] = "conflict"
+        else:
+            replace = canonical_payload is not None
+            if replace and selected != "replace_destination":
+                # A differing canonical LVS-owned secret is never overwritten implicitly,
+                # even when another external credential is the active reference.
+                if selected == "keep_destination" and active_payload is not None:
+                    output["google_drive_credentials_path"] = str(configured_path)
+                    actions.append(MigrationPlanAction(
+                        action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload", None,
+                        "preserve_destination", "USER_KEPT_DESTINATION_CREDENTIALS",
+                        allowed_resolutions=allowed, selected_resolution=selected,
+                        safe_summary="Destination upload credentials are preserved; secret values are not displayed.",
+                    ))
+                    summary["upload"]["credentials"] = "destination_preserved"
+                    resolved_credentials_ready = validate_service_account_payload(active_payload)
+                else:
+                    conflicts.add(action_id); credential_conflicts.add(action_id)
+                    actions.append(MigrationPlanAction(
+                        action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload",
+                        LogicalDestination("settings", DESTINATION_CREDENTIAL_RELATIVE),
+                        "conflict", "DESTINATION_CREDENTIAL_CONFLICT", destructive=True,
+                        requires_user_choice=True, allowed_resolutions=allowed,
+                        safe_summary="The LVS-owned destination credential differs from the source credential.",
+                    ))
+                    summary["upload"]["credentials"] = "conflict"
+            else:
+                directory_destination = LogicalDestination("settings", "secrets")
+                if not ownership.settings_root.exists() or not (ownership.settings_root / "secrets").exists():
+                    actions.append(MigrationPlanAction(
+                        "upload-credentials-directory", UPLOAD_CREDENTIAL_CONTENT_CLASS,
+                        "upload_credentials_directory", directory_destination, "create",
+                        "PRIVATE_SECRET_DIRECTORY_REQUIRED",
+                        safe_summary="Create the private destination credential directory.",
+                        transaction_operations=({"operation": "create_directory"},),
+                    ))
+                operation = "replace_file" if canonical_payload is not None else "create_file"
+                actions.append(MigrationPlanAction(
+                    action_id, UPLOAD_CREDENTIAL_CONTENT_CLASS, "google_drive_upload",
+                    LogicalDestination("settings", DESTINATION_CREDENTIAL_RELATIVE), "create",
+                    "INSTALL_DESTINATION_OWNED_UPLOAD_CREDENTIALS", destructive=operation == "replace_file",
+                    allowed_resolutions=allowed if comparison_payload is not None else (),
+                    selected_resolution="replace_destination" if comparison_payload is not None else None,
+                    safe_summary="Install source upload credentials in the destination-owned private location.",
+                    transaction_operations=({"operation": operation},),
+                ))
+                materialized[action_id] = source_credentials
+                output["google_drive_credentials_path"] = str(canonical_path)
+                summary["upload"]["credentials"] = "source_installed"
+                resolved_credentials_ready = True
+        shared_drive_configured = bool(str(output.get("google_drive_shared_drive_id") or "").strip())
+        upload_ready = not credential_conflicts and resolved_credentials_ready and shared_drive_configured
+        summary["upload"].update({
+            "shared_drive_target": "configured" if shared_drive_configured else "not_configured",
+            "destination_credential": DESTINATION_CREDENTIAL_RELATIVE,
+            "ready_after_restart": upload_ready,
+            "incomplete_reason": "" if upload_ready else (
+                "credential_conflict" if credential_conflicts else
+                "credentials_not_usable" if not resolved_credentials_ready else
+                "shared_drive_target_not_configured"
+            ),
+        })
+    else:
+        destination_credential_text = str(destination_raw.get("google_drive_credentials_path") or "").strip()
+        destination_existing_credential_path = Path(destination_credential_text).expanduser() if destination_credential_text else None
+        if destination_existing_credential_path is not None and not destination_existing_credential_path.is_absolute():
+            destination_existing_credential_path = ownership.application_root / destination_existing_credential_path
+        destination_credential_payload = (
+            safe_read_destination_credential(destination_existing_credential_path)
+            if destination_existing_credential_path is not None else None
+        )
+        destination_credential_configured = bool(
+            destination_credential_payload is not None
+            and validate_service_account_payload(destination_credential_payload)
+        )
+        destination_drive_configured = bool(str(destination_raw.get("google_drive_shared_drive_id") or "").strip())
+        summary["upload"] = {
+            "credentials": "not_present_in_bundle",
+            "shared_drive_target": "destination_preserved" if destination_drive_configured else "not_configured",
+            "ready_after_restart": destination_credential_configured and destination_drive_configured,
+            "incomplete_reason": "credentials_not_present_in_bundle",
+        }
+
+    if settings_output_action is not None:
+        if conflicts:
+            settings_output_action = MigrationPlanAction(
+                settings_output_action.action_id, settings_output_action.content_class,
+                settings_output_action.logical_item, settings_output_action.destination,
+                settings_output_action.disposition, settings_output_action.reason_code,
+                destructive=settings_output_action.destructive,
+                safe_summary=settings_output_action.safe_summary,
+                dependencies=tuple(sorted(conflicts)), transaction_operations=(),
+            )
+        actions.append(settings_output_action)
+        materialized[settings_output_action.action_id] = _json_bytes(output)
 
     menu_groups = destination_settings.profile_menu_groups
     if settings_entries and "output" in locals():
@@ -786,6 +993,7 @@ def build_core_plan(
                 "skip_identical", "HISTORY_IDENTICAL", safe_summary="Destination history already has the merged content."))
 
     known = {"settings", "setup_history", "custom_profile", "modified_stock_profile", "recovery_profile",
+        UPLOAD_CREDENTIAL_CONTENT_CLASS,
         "hardware_validation_state"}
     for entry in entries:
         if str(entry.get("content_class")) not in known:

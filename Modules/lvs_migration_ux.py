@@ -28,6 +28,7 @@ class MigrationBundleCandidate:
     warning_count: int
     private_bundle: bool
     safe_status: str
+    contains_secrets: bool = False
 
     @property
     def row_label(self) -> str:
@@ -35,10 +36,11 @@ class MigrationBundleCandidate:
         version = f"v{self.contract_version}" if self.contract_version is not None else "unknown version"
         state = "valid" if self.valid else "INVALID"
         warnings = f" | {self.warning_count} warning(s)" if self.warning_count else ""
+        secret = " | CONTAINS SECRETS" if self.contains_secrets else ""
         return (
             f"{_bounded_text(created, 28)} | {_bounded_text(version, 16)} | "
             f"LVS {_bounded_text(self.suite_version or 'unknown', 24)} | "
-            f"{_bounded_text(self.content_summary, 64)} | {state}{warnings}"
+            f"{_bounded_text(self.content_summary, 64)} | {state}{warnings}{secret}"
         )
 
 
@@ -184,6 +186,7 @@ def discover_migration_bundles(
             warning_count=warnings,
             private_bundle=bool(manifest.get("private_bundle", True)),
             safe_status=safe_status,
+            contains_secrets=bool(manifest.get("contains_secrets", False)),
         ))
     def sort_key(item: MigrationBundleCandidate) -> tuple[int, float, str]:
         timestamp = _timestamp_value(item.generated_at)
@@ -205,6 +208,8 @@ def format_size(size_bytes: int) -> str:
 
 def bundle_candidate_detail(candidate: MigrationBundleCandidate) -> str:
     privacy = "PRIVATE — NOT PUBLIC-SAFE" if candidate.private_bundle else "privacy marker invalid"
+    if getattr(candidate, "contains_secrets", False):
+        privacy += " — CONTAINS SECRET AUTHENTICATION MATERIAL"
     lines = [
         "Migration Bundle",
         "================",
@@ -229,6 +234,11 @@ def unresolved_actions(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def resolution_label(action: dict[str, Any], resolution: str) -> str:
+    if action.get("content_class") == "upload_credentials":
+        if resolution == "keep_destination":
+            return "Keep destination credentials"
+        if resolution == "replace_destination":
+            return "Use source credentials"
     if resolution == "keep_destination":
         return "Keep destination"
     if resolution == "import_source_as_renamed":
@@ -263,6 +273,7 @@ def migration_plan_text(plan: dict[str, Any], *, include_details: bool = False) 
         f"Settings: {_counts_line(summary.get('settings'))}",
         f"Profiles: {_counts_line(summary.get('profiles'))}",
         f"History: {_counts_line(summary.get('history'))}",
+        f"Upload: {_counts_line(summary.get('upload'))}",
         f"Manual / relink: {sum(item.get('disposition') == 'relink_required' for item in plan.get('actions', []) if isinstance(item, dict))}",
         f"Recovery items: {sum(item.get('disposition') == 'quarantine' for item in plan.get('actions', []) if isinstance(item, dict))}",
         f"Conflicts: {len(conflicts)}",
@@ -307,12 +318,12 @@ def migration_plan_text(plan: dict[str, Any], *, include_details: bool = False) 
             if dependencies:
                 lines.append(f"  dependencies: {', '.join(str(item) for item in dependencies)}")
     if include_details:
-        grouped: dict[str, list[dict[str, Any]]] = {"Settings": [], "Profiles": [], "History": [], "Manual / Recovery": []}
+        grouped: dict[str, list[dict[str, Any]]] = {"Settings": [], "Profiles": [], "History": [], "Upload": [], "Manual / Recovery": []}
         for action in plan.get("actions", []):
             if not isinstance(action, dict):
                 continue
             content = str(action.get("content_class") or "")
-            target = "Settings" if content in {"settings", "settings_field", "profile_menu_metadata"} else (
+            target = "Upload" if content == "upload_credentials" else "Settings" if content in {"settings", "settings_field", "profile_menu_metadata"} else (
                 "Profiles" if "profile" in content else "History" if content == "setup_history" else "Manual / Recovery"
             )
             grouped[target].append(action)
@@ -330,6 +341,9 @@ def migration_plan_text(plan: dict[str, Any], *, include_details: bool = False) 
 def export_preview_text(summary: dict[str, Any], *, approximate_size: int) -> str:
     profiles = summary.get("profiles") if isinstance(summary.get("profiles"), dict) else {}
     history = summary.get("history") if isinstance(summary.get("history"), dict) else {}
+    upload = summary.get("upload") if isinstance(summary.get("upload"), dict) else {}
+    complete = bool(upload.get("complete_for_current_configuration"))
+    credential_status = str(upload.get("credentials") or "not_configured").replace("_", " ")
     return "\n".join((
         "Migrate LVS State — Export Preview",
         "==================================",
@@ -341,8 +355,12 @@ def export_preview_text(summary: dict[str, Any], *, approximate_size: int) -> st
         f"Modified stock profiles: {profiles.get('modified_stock_included', 0)}",
         f"Unchanged stock profiles omitted: {profiles.get('stock_unchanged_omitted', 0)}",
         f"Recovery-only profiles: {profiles.get('recovery_only', 0)}",
+        "Upload configuration:",
+        f"  Shared Drive target: {str(upload.get('shared_drive_target') or 'not configured').replace('_', ' ')}",
+        f"  Credentials: {credential_status}",
+        f"  Migration status: {'COMPLETE FOR CURRENT CONFIGURATION' if complete else 'INCOMPLETE — upload relink required'}",
         f"Approximate payload size: {format_size(approximate_size)}",
-        "Excluded: results, archived profiles, sensor logs, credentials/secrets, hardware derived state.",
+        "Excluded: results, archived profiles, sensor logs, hardware derived state.",
         "",
     ))
 
@@ -356,6 +374,7 @@ def successful_apply_text(plan: dict[str, Any]) -> str:
         f"Settings: {_counts_line(summary.get('settings'))}",
         f"Profiles: {_counts_line(summary.get('profiles'))}",
         f"History: {_counts_line(summary.get('history'))}",
+        f"Upload: {_counts_line(summary.get('upload'))}",
         f"Recovery items: {sum(item.get('disposition') == 'quarantine' for item in plan.get('actions', []) if isinstance(item, dict))}",
         f"Relink requirements: {sum(item.get('disposition') == 'relink_required' for item in plan.get('actions', []) if isinstance(item, dict))}",
         "",

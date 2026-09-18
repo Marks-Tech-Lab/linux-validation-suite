@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 from typing import Any
 
@@ -47,6 +48,7 @@ SUPPORTED_CONTENT_SCHEMAS: dict[str, dict[str, set[int]]] = {
     "modified_stock_profile": {"linux_validation_suite.validation_profile": {1}},
     "profile_menu_metadata": {"linux_validation_suite.migration.profile_menu_metadata": {1}},
     "recovery_profile": {"linux_validation_suite.migration.recovery_profile": {1}},
+    "upload_credentials": {"linux_validation_suite.migration.google_service_account": {1}},
 }
 
 ENTRY_REQUIRED_FIELDS = frozenset(
@@ -86,7 +88,7 @@ class V2ContentPayload:
     source_role: str
     schema_id: str
     schema_version: int
-    payload: bytes
+    payload: bytes = field(repr=False)
     privacy_class: str = "PRIVATE_CONTENT"
     portability: str = "semantic_portable"
     merge_policy_hint: str = "create_only"
@@ -120,6 +122,7 @@ def write_v2_bundle(
     os.chmod(bundle_path, 0o700)
     root = PinnedRoot(bundle_path)
     inventory: list[dict[str, Any]] = []
+    completed = False
     try:
         for content in sorted(contents, key=lambda item: (item.content_class, item.logical_name, item.entry_id)):
             parts = validate_relative_path(content.bundle_path)
@@ -163,6 +166,7 @@ def write_v2_bundle(
             "source": source,
             "content": inventory,
             "omitted_classes": list(omitted_classes),
+            "contains_secrets": any(item.get("privacy_class") == "SECRET_CONTENT" for item in inventory),
         }
         if export_summary is not None:
             manifest["export_summary"] = export_summary
@@ -173,9 +177,17 @@ def write_v2_bundle(
             os.fsync(fd)
         finally:
             os.close(fd)
+        completed = True
         return manifest
     finally:
         root.close()
+        if not completed:
+            # The manifest is the completion marker. Never retain a failed
+            # export containing a partial private or secret payload inventory.
+            try:
+                shutil.rmtree(bundle_path)
+            except OSError:
+                pass
 
 
 def _error(code: str, phase: str, message: str, **kwargs: Any) -> MigrationSafeError:
@@ -290,7 +302,9 @@ def validate_v2_bundle(bundle_path: Path) -> tuple[ValidatedV2Bundle | None, tup
                     schema_version = -1
                 if schema_id not in supported or schema_version not in supported.get(schema_id, set()):
                     errors.append(_error("SCHEMA_VERSION_UNSUPPORTED", "validate", "Migration content schema is unsupported.", content_class=content_class, logical_item=logical_name))
-            if raw.get("private") is not True or str(raw.get("privacy_class")) not in {"PRIVATE_CONTENT", "PRIVATE_METADATA"}:
+            if raw.get("private") is not True or str(raw.get("privacy_class")) not in {
+                "PRIVATE_CONTENT", "PRIVATE_METADATA", "SECRET_CONTENT"
+            }:
                 errors.append(_error("CONTENT_PRIVACY_INVALID", "validate", "Migration content privacy classification is invalid.", content_class=content_class, logical_item=logical_name))
             try:
                 expected_size = int(raw.get("size_bytes"))
@@ -317,6 +331,12 @@ def validate_v2_bundle(bundle_path: Path) -> tuple[ValidatedV2Bundle | None, tup
             except OSError:
                 errors.append(_error("PAYLOAD_MISSING_OR_UNSAFE", "validate", "Migration payload is missing or unsafe.", content_class=content_class, logical_item=logical_name))
             entries.append(dict(raw))
+
+        declared_secrets = manifest.get("contains_secrets", False)
+        if not isinstance(declared_secrets, bool):
+            errors.append(_error("SECRET_MARKER_INVALID", "validate", "Migration bundle secret marker is invalid."))
+        elif bool(declared_secrets) != any(item.get("privacy_class") == "SECRET_CONTENT" for item in entries):
+            errors.append(_error("SECRET_MARKER_MISMATCH", "validate", "Migration bundle secret inventory is inconsistent."))
 
         try:
             actual_files: set[str] = set()
@@ -373,7 +393,12 @@ def destination_preconditions(actions: list[MigrationPlanAction], ownership: Mig
                     state[action.action_id] = "missing"
                     continue
                 roots[role] = PinnedRoot(root_path)
-            state[action.action_id] = roots[role].identity(action.destination.relative_path).token()
+            try:
+                state[action.action_id] = roots[role].identity(action.destination.relative_path).token()
+            except FileNotFoundError:
+                # A planned parent-directory creation makes nested file targets
+                # legitimately absent at preview time.
+                state[action.action_id] = "missing"
     finally:
         for root in roots.values():
             root.close()

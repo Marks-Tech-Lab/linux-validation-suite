@@ -23,6 +23,7 @@ from .lvs_migration_v1_adapter import V1PlanningInput, adapt_v1_payloads
 from .lvs_migration_models import MigrationSafeError
 from .lvs_migration_v2 import ValidatedV2Bundle, build_a1_plan, validate_v2_bundle, write_v2_bundle
 from .lvs_migration_core_state import build_core_plan, collect_core_export
+from .lvs_migration_credentials import CredentialPayloadInvalid
 from .lvs_migration_ux import (
     MigrationBundleCandidate,
     discover_migration_bundles,
@@ -164,16 +165,20 @@ class LocalMigrationManager:
             validate_v1=self._validate_bundle,
         )
 
-    def preview_private_bundle_export(self) -> dict[str, Any]:
+    def preview_private_bundle_export(self, *, include_upload_credentials: bool = False) -> dict[str, Any]:
         _, source_settings = MigrationPathOwnership.load_nonmutating(
             application_root=self.root,
             settings_file=self.path_ownership.settings_file,
         )
-        exported = collect_core_export(self.path_ownership, source_settings)
+        exported = collect_core_export(
+            self.path_ownership, source_settings,
+            include_upload_credentials=include_upload_credentials,
+        )
         size_bytes = sum(len(item.payload) for item in exported.contents)
         return {
             "summary": exported.summary,
             "size_bytes": size_bytes,
+            "warnings": [warning.to_dict() for warning in exported.warnings],
             "summary_text": export_preview_text(exported.summary, approximate_size=size_bytes),
         }
 
@@ -248,6 +253,7 @@ class LocalMigrationManager:
         *,
         acknowledge_private_data: bool,
         output_parent: Path | None = None,
+        include_upload_credentials: bool = False,
     ) -> PrivateMigrationBundleResult:
         """Create the preferred useful v2 core-state bundle."""
         if not acknowledge_private_data:
@@ -261,7 +267,12 @@ class LocalMigrationManager:
             application_root=self.root,
             settings_file=self.path_ownership.settings_file,
         )
-        exported = collect_core_export(self.path_ownership, source_settings)
+        exported = collect_core_export(
+            self.path_ownership, source_settings,
+            include_upload_credentials=include_upload_credentials,
+        )
+        if include_upload_credentials and exported.summary.get("upload", {}).get("credentials") != "included":
+            raise ValueError("configured upload credentials could not be included safely")
         manifest = write_v2_bundle(
             bundle_dir,
             suite_version=APP_VERSION,
@@ -366,9 +377,22 @@ class LocalMigrationManager:
         settings = summary.get("settings", {})
         profiles = summary.get("profiles", {})
         history = summary.get("history", {})
+        upload = summary.get("upload", {})
+        secret_warning = (
+            "THIS BUNDLE CONTAINS SECRET AUTHENTICATION MATERIAL."
+            if manifest.get("contains_secrets") else
+            "Upload credentials were not included."
+        )
+        completeness = (
+            "COMPLETE FOR CURRENT CONFIGURATION"
+            if upload.get("complete_for_current_configuration") else
+            "INCOMPLETE — upload credentials require relinking"
+        )
         return "\n".join([
             "Private Migration Bundle v2", "===========================", "",
             "NOT PUBLIC-SAFE. Contains private LVS settings, profiles, and setup history.",
+            secret_warning,
+            f"Migration status: {completeness}",
             f"Contract: v{manifest.get('contract_version', 2)}",
             f"Source LVS: {manifest.get('suite_version', APP_VERSION)}",
             f"Portable settings: {settings.get('portable_fields', 0)}",
@@ -379,7 +403,9 @@ class LocalMigrationManager:
             f"Recovery-only profiles: {profiles.get('recovery_only', 0)}",
             f"Valid history records: {history.get('valid_records', 0)}",
             f"Malformed history records excluded: {history.get('malformed_records', 0)}",
-            "Excluded: results, hardware validation state, sensor logs, credentials, archived profiles.",
+            f"Shared Drive target: {upload.get('shared_drive_target', 'not_configured')}",
+            f"Upload credentials: {upload.get('credentials', 'not_configured')}",
+            "Excluded: results, hardware validation state, sensor logs, archived profiles.",
             f"Included payloads: {len(manifest.get('content', []))}",
             f"Declared payload size: {format_size(sum(int(item.get('size_bytes') or 0) for item in manifest.get('content', []) if isinstance(item, dict)))}",
             f"Bundle folder: {bundle_label}", f"Manifest: {MANIFEST_NAME}", "",
@@ -888,6 +914,17 @@ class LocalMigrationManager:
             else:
                 core = None
                 plan_model = build_a1_plan(bundle, self.path_ownership)
+        except CredentialPayloadInvalid:
+            plan = {
+                "kind": "migration_restore_plan", "valid": False, "preview_only": True,
+                "bundle_contract_version": 2, "errors": [{
+                    "error_code": "CREDENTIAL_INVALID", "phase": "plan",
+                    "safe_message": "Bundled upload credentials are not a valid supported service-account document.",
+                    "content_class": "upload_credentials", "logical_item": "google_drive_upload",
+                    "retryable": False, "manual_action_required": True, "diagnostics": {},
+                }], "warnings": [], "actions": [], "requires_restart": True, "apply_ready": False,
+            }
+            return MigrationRestoreResult(False, False, plan, self._v2_restore_summary(plan))
         except (OSError, ValueError):
             plan = {
                 "kind": "migration_restore_plan",
@@ -1143,9 +1180,12 @@ def build_parser() -> argparse.ArgumentParser:
     support = subparsers.add_parser("support-export", help="Write a public-safe, redacted support summary.")
     support.add_argument("--output-dir", type=Path)
 
-    private = subparsers.add_parser("migration-export", help="Write a private migration bundle without secrets.")
+    private = subparsers.add_parser("migration-export", help="Write a private migration bundle.")
     private.add_argument("--acknowledge-private-data", action="store_true")
     private.add_argument("--output-dir", type=Path)
+    credential_choice = private.add_mutually_exclusive_group()
+    credential_choice.add_argument("--include-upload-credentials", action="store_true")
+    credential_choice.add_argument("--exclude-upload-credentials", action="store_true")
 
     subparsers.add_parser("migration-list", help="List migration bundles in the configured bundle directory.")
 
@@ -1172,9 +1212,24 @@ def main(argv: list[str] | None = None) -> int:
             if not args.acknowledge_private_data:
                 print("Private migration export requires --acknowledge-private-data.", file=sys.stderr)
                 return 2
+            preview = manager.preview_private_bundle_export()
+            upload = preview.get("summary", {}).get("upload", {})
+            if upload.get("configured") and not (
+                args.include_upload_credentials or args.exclude_upload_credentials
+            ):
+                print(
+                    "Configured upload authentication was detected. Specify exactly one of "
+                    "--include-upload-credentials or --exclude-upload-credentials.",
+                    file=sys.stderr,
+                )
+                return 2
+            if args.include_upload_credentials and not upload.get("credentials_available"):
+                print("Configured upload credentials are unavailable or invalid; they cannot be included.", file=sys.stderr)
+                return 2
             result = manager.create_private_bundle(
                 acknowledge_private_data=True,
                 output_parent=args.output_dir,
+                include_upload_credentials=args.include_upload_credentials,
             )
             print(result.summary_text, end="")
             return 0

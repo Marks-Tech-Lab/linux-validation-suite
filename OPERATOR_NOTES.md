@@ -175,17 +175,30 @@ Private migration bundles require explicit acknowledgement and are not safe to
 post publicly:
 
 ```bash
-.venv/bin/python -m Modules.lvs_local_migration migration-export --acknowledge-private-data
+.venv/bin/python -m Modules.lvs_local_migration migration-export --acknowledge-private-data --include-upload-credentials
+# Or deliberately omit them (upload relinking will be required):
+.venv/bin/python -m Modules.lvs_local_migration migration-export --acknowledge-private-data --exclude-upload-credentials
 ```
 
 They are written below the configured migration-bundle directory (normally
 `results/Migration_Bundles/`) with restrictive permissions, a versioned
 manifest, and SHA-256 checksums. A v2 bundle can contain semantic portable
 settings, setup history, active custom profiles, locally modified stock
-profiles, and bundle-only recovery profiles. It is **not public-safe**.
-Credentials and identifiers, runtime environment values, destination-local
-paths, results, archived profiles, sensor logs, derived hardware state,
-vendor/test data, `.venv`, and caches are excluded.
+profiles, bundle-only recovery profiles, the Shared Drive target, and—only
+after a separate deliberate choice—the configured Google service-account
+credential file. It is **not public-safe**. A bundle with credentials is marked
+**CONTAINS SECRET AUTHENTICATION MATERIAL**. Runtime environment values and
+source-machine credential paths are never copied as settings; results, archived
+profiles, sensor logs, derived hardware state, vendor/test data, `.venv`, and
+caches remain excluded.
+
+On restore, included credentials are transactionally installed at
+`<destination settings root>/secrets/google-credentials.json` with a private
+directory and file mode. The destination setting is generated to reference that
+location. Differing destination credentials require an explicit keep/use-source
+choice; using source credentials is destructive and receives the normal backup,
+confirmation, verification, and rollback protection. The public-safe support
+summary continues to contain neither credential contents nor the Shared Drive ID.
 
 Restore is preview-only unless explicitly applied:
 
@@ -201,7 +214,7 @@ validity, warnings, and privacy. v1 remains readable but does not contain
 profiles/results and treats its hardware state as recovery-only.
 
 Restore previews structured settings, profile, history, relink, recovery, and
-conflict counts. CLI and TUI conflict choices come only from the backend plan;
+conflict counts, including a separate Upload Configuration section. CLI and TUI conflict choices come only from the backend plan;
 the direct command retains repeatable
 `--resolve ACTION_ID=RESOLUTION` for automation. Modified-stock replacement is
 explicit and destructive. Apply is unavailable during an active validation,
@@ -210,7 +223,8 @@ items as active profiles. Cancel/back before Apply performs no writes.
 
 After a successful apply, restart LVS before configuring or starting another
 validation. Settings, profile lists, menu groups, and history are not reloaded
-live. Google credentials and identifiers require relinking.
+live. When a bundle deliberately excluded unavailable/configured credentials,
+the result reports upload as incomplete and relinking remains required.
 
 ## Production-Ready Versus Experimental
 

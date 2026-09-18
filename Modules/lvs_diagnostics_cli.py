@@ -73,8 +73,33 @@ class DiagnosticsCliAdapter:
                     if warning != "PRIVATE":
                         print("Private migration export cancelled.")
                         continue
+                    upload = preview.get("summary", {}).get("upload", {})
+                    include_credentials = False
+                    if upload.get("configured") and upload.get("credentials_available"):
+                        print("Configured upload credentials were found.")
+                        print("Including them makes this bundle contain SECRET authentication material.")
+                        print("1. Include credentials")
+                        print("2. Exclude credentials — destination upload will require relinking")
+                        print("3. Cancel")
+                        credential_choice = host._input("Select: ").strip()
+                        if credential_choice == "1":
+                            include_credentials = True
+                        elif credential_choice == "2":
+                            include_credentials = False
+                        else:
+                            print("Private migration export cancelled.")
+                            continue
+                    elif upload.get("configured"):
+                        print("Configured upload credentials could not be exported safely.")
+                        continuation = host._input(
+                            "Type EXCLUDE to continue with an incomplete bundle, or press Enter to cancel: "
+                        ).strip()
+                        if continuation != "EXCLUDE":
+                            print("Private migration export cancelled.")
+                            continue
                     result = host.local_migration_manager.create_private_bundle(
                         acknowledge_private_data=True,
+                        include_upload_credentials=include_credentials,
                     )
                     print(result.summary_text, end="")
                     follow_up = host._input("Type PREVIEW to preview this new bundle, or press Enter to return: ").strip()

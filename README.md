@@ -309,18 +309,22 @@ Available workflows include:
   previews structured settings/profile/history changes, resolves only
   backend-approved conflicts, and requires explicit confirmation for destructive
   replacement. Applies use validated transactions with rollback and require an
-  LVS restart; v2 does not migrate results, archived profiles, sensor logs,
-  credentials, or derived hardware state.
+  LVS restart. When deliberately included, v2 also restores the Shared Drive
+  target and service-account credentials into a destination-owned private
+  location. Results, archived profiles, sensor logs, and derived hardware state
+  remain excluded.
 
 The runtime version is `0.3.1-alpha`, corresponding to the `v0.3.1-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
 
-Migration bundles exclude secrets, Google credentials, result contents,
-sensor-log contents, vendor/test data, `.venv`, caches, and private identifiers
-by default. The public-safe support export is shareable; a private migration
-bundle is not.
+Private migration export asks explicitly whether configured upload credentials
+should be included. A credential-bearing bundle contains secret authentication
+material and must be protected accordingly; excluding credentials makes upload
+restoration incomplete. Result contents, sensor logs, vendor/test data, `.venv`,
+and caches remain excluded. The public-safe support export never contains
+credentials or private identifiers and is shareable; a migration bundle is not.
 
 Still experimental or hardware-sensitive:
 

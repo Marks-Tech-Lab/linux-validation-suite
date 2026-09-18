@@ -224,6 +224,7 @@ class LinuxValidationSuiteTui(
         self.migration_bundle_purpose = "preview"
         self.migration_resolutions: Dict[str, str] = {}
         self.migration_preview_result: Any = None
+        self.migration_export_preview: Optional[Dict[str, Any]] = None
         self.pending_migration_resolution_action: Optional[Dict[str, Any]] = None
         self.last_audit_notes: list[str] = []
         self.last_run_dir: Optional[Path] = None

@@ -213,8 +213,9 @@ class TuiAppActionsAdapterMixin:
             "Support / Migrate LVS State\n"
             "===========================\n\n"
             "SUPPORT creates a redacted public-safe summary.\n"
-            "MIGRATION exports or restores private LVS settings, active custom profiles, and setup history.\n\n"
-            "Private bundles are NOT PUBLIC-SAFE. Results, archived profiles, credentials, hardware state, and sensor logs are excluded."
+            "MIGRATION exports or restores private LVS settings, active custom profiles, setup history, and deliberately selected upload credentials.\n\n"
+            "Private bundles are NOT PUBLIC-SAFE. Credential-bearing bundles contain SECRET authentication material. "
+            "Results, archived profiles, hardware state, and sensor logs are excluded."
         )
 
     async def _select_migration_support_action(self, index: int) -> None:
@@ -230,6 +231,7 @@ class TuiAppActionsAdapterMixin:
         if index == 1:
             try:
                 export_preview = self.service.preview_private_migration_export()
+                self.migration_export_preview = export_preview
                 preview_text = str(export_preview.get("summary_text") or "")
             except Exception:
                 self._set_detail("Migration export inventory could not be prepared safely.")
@@ -383,20 +385,75 @@ class TuiAppActionsAdapterMixin:
                 self._set_detail("Private migration export cancelled; no bundle was written.")
                 self._set_status("Private migration export cancelled")
                 return
-            self._set_status("Creating private migration bundle")
-            try:
-                result = self.service.create_private_migration_bundle(acknowledge_private_data=True)
-                self.pending_migration_bundle_path = result.bundle_dir
+            upload = (
+                self.migration_export_preview.get("summary", {}).get("upload", {})
+                if isinstance(self.migration_export_preview, dict) else {}
+            )
+            if upload.get("configured") and upload.get("credentials_available"):
                 self._begin_migration_input(
-                    "__migration_post_create",
-                    placeholder="Type PREVIEW, or press Enter to return",
-                    detail=result.summary_text + "\nType PREVIEW to inspect this bundle now.",
+                    "__migration_credential_choice",
+                    placeholder="Type INCLUDE, EXCLUDE, or CANCEL",
+                    detail=(
+                        "Configured upload credentials were found.\n\n"
+                        "INCLUDE creates a bundle containing SECRET authentication material and enables complete upload restoration.\n"
+                        "EXCLUDE creates an incomplete bundle; upload will require relinking.\n\n"
+                        "Type INCLUDE or EXCLUDE deliberately."
+                    ),
                 )
-                self._set_status("Private migration bundle complete")
-            except Exception:
-                self._set_detail("Private migration export failed without exposing private file details.")
-                self._set_status("Private migration export failed")
+                self._set_status("Choose whether to include upload credentials")
+                return
+            if upload.get("configured"):
+                self._begin_migration_input(
+                    "__migration_credential_choice",
+                    placeholder="Type EXCLUDE to continue, or CANCEL",
+                    detail=(
+                        "Configured upload credentials could not be exported safely.\n"
+                        "Type EXCLUDE to create an incomplete bundle, or CANCEL."
+                    ),
+                )
+                self._set_status("Upload credential export unavailable")
+                return
+            await self._create_private_migration_bundle(include_upload_credentials=False)
             return
+
+        if field == "__migration_credential_choice":
+            self._clear_setup_input(focus_items=True)
+            if raw not in {"INCLUDE", "EXCLUDE"}:
+                self._set_detail("Private migration export cancelled; no bundle was written.")
+                self._set_status("Private migration export cancelled")
+                return
+            upload = (
+                self.migration_export_preview.get("summary", {}).get("upload", {})
+                if isinstance(self.migration_export_preview, dict) else {}
+            )
+            if raw == "INCLUDE" and not upload.get("credentials_available"):
+                self._set_detail("Upload credentials are unavailable or invalid and cannot be included.")
+                self._set_status("Private migration export cancelled")
+                return
+            await self._create_private_migration_bundle(include_upload_credentials=raw == "INCLUDE")
+            return
+
+        await self._commit_migration_input_after_export(field, raw)
+
+    async def _create_private_migration_bundle(self, *, include_upload_credentials: bool) -> None:
+        self._set_status("Creating private migration bundle")
+        try:
+            result = self.service.create_private_migration_bundle(
+                acknowledge_private_data=True,
+                include_upload_credentials=include_upload_credentials,
+            )
+            self.pending_migration_bundle_path = result.bundle_dir
+            self._begin_migration_input(
+                "__migration_post_create",
+                placeholder="Type PREVIEW, or press Enter to return",
+                detail=result.summary_text + "\nType PREVIEW to inspect this bundle now.",
+            )
+            self._set_status("Private migration bundle complete")
+        except Exception:
+            self._set_detail("Private migration export failed without exposing private file details.")
+            self._set_status("Private migration export failed")
+
+    async def _commit_migration_input_after_export(self, field: str, raw: str) -> None:
 
         if field == "__migration_post_create":
             bundle_path = self.pending_migration_bundle_path

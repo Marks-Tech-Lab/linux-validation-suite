@@ -103,7 +103,9 @@ class SettingsManager:
     def _ensure_local_dirs(self) -> None:
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_dir = Path(str(self.settings.settings_dir or self.settings_path.parent))
-        (settings_dir / "secrets").mkdir(parents=True, exist_ok=True)
+        secrets_dir = settings_dir / "secrets"
+        secrets_dir.mkdir(parents=True, exist_ok=True)
+        secrets_dir.chmod(0o700)
 
     def save(self) -> None:
         payload = asdict(self.settings)
