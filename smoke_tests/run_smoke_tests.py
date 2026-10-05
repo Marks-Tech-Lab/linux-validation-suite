@@ -21092,8 +21092,8 @@ def test_power_auto_cross_backend_selection_policy() -> None:
     )
     assert_equal(
         [item["candidate_id"] for item in power_cpu_fallback_order("aarch64", arm_candidates)],
-        ["stress_ng:matrixprod", "python_fallback:pbkdf2", "cpu_native_helper:neon", "cpu_native_helper:scalar"],
-        "AArch64 no-power fallback follows sustained hardware-validation evidence",
+        ["stress_ng:matrixprod", "python_fallback:pbkdf2", "cpu_native_helper:scalar", "cpu_native_helper:neon"],
+        "AArch64 unmeasured thermal fallback separates thermal evidence from native Auto ISA preference",
     )
     no_power = select_power_cpu_candidate(
         architecture="aarch64",
@@ -21139,7 +21139,47 @@ def test_power_auto_cross_backend_selection_policy() -> None:
         candidate_results=[],
         probe_duration_seconds=0,
     )
-    assert_equal(fallback["selected_kernel_flavor"], "neon", "native-only ARM fallback selects native Auto/NEON")
+    assert_equal(fallback["selected_kernel_flavor"], "scalar", "native-only ARM thermal fallback prefers scalar over NEON")
+    unusable_native_measurements = select_power_cpu_candidate(
+        architecture="arm64",
+        viable_candidates=native_only,
+        unavailable_candidates=unavailable,
+        telemetry={"available": True, "source": "hwmon:cpu_package"},
+        candidate_results=[
+            {
+                "candidate_id": "cpu_native_helper:scalar",
+                "valid": False,
+                "verification_valid": False,
+                "meaningful_work": True,
+                "power_sample_count": 4,
+                "avg_cpu_power_w": 11.0,
+            },
+            {
+                "candidate_id": "cpu_native_helper:neon",
+                "valid": False,
+                "verification_valid": True,
+                "meaningful_work": True,
+                "power_sample_count": 0,
+                "avg_cpu_power_w": None,
+            },
+        ],
+        probe_duration_seconds=8.0,
+    )
+    assert_equal(
+        unusable_native_measurements["selected_kernel_flavor"],
+        "scalar",
+        "native-only ARM fallback still prefers scalar when measured candidates produce no trustworthy winner",
+    )
+    assert_equal(
+        unusable_native_measurements["selection_mechanism"],
+        "thermal_validated_fallback",
+        "unusable native measurements use the ARM unmeasured thermal fallback",
+    )
+    assert_equal(
+        unusable_native_measurements["fallback_reason"],
+        "cpu_power_probes_unusable_or_failed_verification",
+        "unusable native measurement fallback reason is explicit",
+    )
 
     x86_candidates, unavailable = power_cpu_candidate_inventory(
         architecture="x86_64",
@@ -21839,18 +21879,56 @@ def test_native_cpu_scalar_architecture_policy_and_build_contract() -> None:
                 assert_equal(probe.stdout.strip(), expected, f"native {requested} resolved mode")
 
         architecture = normalize_cpu_architecture(os.uname().machine)
+        supported_probe = subprocess.run(
+            [str(binary), "--print-supported-kernels"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert_equal(supported_probe.returncode, 0, "native supported-kernel probe")
+        supported_kernels = set(parse_cpu_capability_probe(
+            supported_probe.returncode,
+            supported_probe.stdout,
+        ))
+        assert_true("scalar" in supported_kernels, "native helper retains scalar support")
+        auto_mode_probe = subprocess.run(
+            [str(binary), "--mode", "auto", "--print-resolved-mode"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        auto_kernel_probe = subprocess.run(
+            [str(binary), "--mode", "auto", "--print-kernel-flavor"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert_equal(auto_mode_probe.returncode, 0, "native auto mode probe")
+        assert_equal(auto_kernel_probe.returncode, 0, "native auto kernel probe")
+        auto_mode = auto_mode_probe.stdout.strip()
+        auto_kernel = auto_kernel_probe.stdout.strip()
+        assert_true(auto_kernel in supported_kernels, "native auto selects a supported kernel")
+        assert_equal(
+            auto_mode,
+            cpu_mode_for_kernel_flavor(auto_kernel),
+            f"{architecture} native auto mode matches its executed kernel",
+        )
+        scalar_kernel_probe = subprocess.run(
+            [str(binary), "--mode", "scalar", "--print-kernel-flavor"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert_equal(scalar_kernel_probe.returncode, 0, "native scalar kernel probe")
+        assert_equal(scalar_kernel_probe.stdout.strip(), "scalar", "explicit scalar kernel remains scalar")
         if architecture == "arm64":
-            assert_equal(
-                subprocess.run(
-                    [str(binary), "--mode", "auto", "--print-resolved-mode"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                ).stdout.strip(),
-                "scalar",
-                "ARM native auto resolves scalar",
-            )
+            expected_auto = "neon" if "neon" in supported_kernels else "scalar"
+            assert_equal(auto_mode, expected_auto, "ARM native auto follows the helper ASIMD capability contract")
+            assert_equal(auto_kernel, expected_auto, "ARM native auto kernel follows the helper ASIMD capability contract")
             for requested in ("sse", "avx", "avx2", "avx512"):
                 probe = subprocess.run(
                     [str(binary), "--mode", requested, "--print-resolved-mode"],

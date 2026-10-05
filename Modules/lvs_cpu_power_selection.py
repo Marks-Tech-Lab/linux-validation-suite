@@ -84,7 +84,7 @@ def power_cpu_candidate_inventory(
 
 
 def power_cpu_fallback_order(architecture: str, candidates: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return the validated no-power preference without claiming a measured result."""
+    """Return the fallback preference when no trustworthy measured-power winner exists."""
     architecture = normalize_cpu_architecture(architecture)
     entries = list(candidates)
 
@@ -97,9 +97,9 @@ def power_cpu_fallback_order(architecture: str, candidates: Iterable[Dict[str, A
                 value = 0
             elif backend == "python_fallback":
                 value = 1
-            elif preferred_native and flavor != "scalar":
-                value = 2
             elif backend == "cpu_native_helper" and flavor == "scalar":
+                value = 2
+            elif preferred_native:
                 value = 3
             else:
                 value = 4
