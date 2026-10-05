@@ -26,10 +26,10 @@ available on each host.
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current release is `v0.3.1-alpha`, a corrective alpha for the
-Heatsoak startup regression in `v0.3.0-alpha`. It preserves that release's
-first-class AArch64 support and cross-architecture CPU, power, memory, GPU,
-profile, and evidence validation.
+pre-releases. The current release is `v0.4.0-alpha`, a substantial feature
+alpha focused on telemetry visibility, standalone reporting, profile workflow
+improvements, run timing, and transactional migration while retaining
+first-class x86_64 and AArch64 support.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
 baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
@@ -297,8 +297,17 @@ Available workflows include:
   result review, standalone Storage Benchmark, upload prompts, and pre-import
   sanity.
 - TUI operator workflow for profile review, setup recall, dry run, run launch
-  and cancellation, live status, post-run review, result review, validation,
-  pre-import sanity, comparison, artifacts, upload workflow, and core settings.
+  and cancellation, structured live telemetry and run-level elapsed/estimated
+  remaining status, post-run review, result review, validation, pre-import
+  sanity, comparison, artifacts, upload workflow, and core settings.
+- Guided and advanced profile authoring with native stage display labels; active
+  profiles no longer depend on label sidecars.
+- Deterministic standalone report data, reusable chart-data JSON, and a
+  self-contained offline HTML telemetry explorer for existing result folders:
+
+  ```bash
+  .venv/bin/python -m Modules.lvs_report "results/<result-folder>"
+  ```
 - QA wrapper JSON contracts for single-result and batch review.
 - A public hardware/result coverage matrix with optional local result mappings.
 - Storage Health inventory enrichment plus standalone and profile-based Storage
@@ -314,7 +323,7 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The runtime version is `0.3.1-alpha`, corresponding to the `v0.3.1-alpha`
+The runtime version is `0.4.0-alpha`, corresponding to the `v0.4.0-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.

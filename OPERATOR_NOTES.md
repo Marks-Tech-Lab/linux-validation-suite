@@ -153,6 +153,27 @@ Before importing or uploading active result folders:
 Google Drive upload is optional and private/local. Missing credentials or shared
 drive IDs should appear as not configured, not as a suite failure.
 
+## Standalone Reports And Run Visibility
+
+Generate deterministic report data, reusable chart JSON, and a self-contained
+offline HTML telemetry explorer from an existing result folder with:
+
+```bash
+.venv/bin/python -m Modules.lvs_report "results/<result-folder>"
+```
+
+Report and chart output is derived from retained canonical evidence; normalized
+analysis windows do not rewrite raw telemetry. During a run, the TUI presents
+the existing structured telemetry snapshot together with authoritative total
+run elapsed time and an estimated remaining value. Future completion-based
+stages remain `Unknown` until their durations are known. This presentation does
+not add another hardware polling loop.
+
+Active profiles store their display labels directly in stage metadata. Use the
+guided editor for normal authoring and the advanced editor where explicit stage
+configuration is required; active profiles do not require `_info.txt` label
+sidecars.
+
 ## Public-Safe Support And LVS State Migration
 
 Use **Diagnostics / Dependencies > Support / Migrate LVS State** in the CLI or

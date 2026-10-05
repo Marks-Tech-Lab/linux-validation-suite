@@ -4,11 +4,11 @@ The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
 included. Alpha releases are published as pre-releases; the current
-`v0.3.1-alpha` release corrects the Heatsoak launch regression in
-`v0.3.0-alpha` while preserving its first-class AArch64 support alongside
-x86_64 and its cross-architecture CPU, power, memory, GPU, profile, evidence,
-and output-compatibility boundaries. It is validated with the full smoke suite
-and the committed hardware-acceptance records.
+`v0.4.0-alpha` release expands telemetry, standalone reporting, profile
+workflow, run timing, and transactional migration while preserving first-class
+AArch64 support alongside x86_64 and the established evidence and
+output-compatibility boundaries. It is validated with the full smoke suite and
+the committed hardware-acceptance records.
 
 Use this checklist when updating the public repository. Publish only generic
 Linux Validation Suite (LVS) code, examples, documentation, and empty runtime
@@ -83,8 +83,9 @@ scaffolds.
 - Keep additions to `parsed_results_extended.json`, manifests, worker evidence,
   and telemetry contracts additive unless a separately approved migration says
   otherwise.
-- Preserve established contract IDs, raw vendor/backend boundaries, and dynamic
-  profile sidecar labels.
+- Preserve established contract IDs, raw vendor/backend boundaries, and native
+  stage display labels. Retain legacy sidecar reading only where compatibility
+  requires it; active profiles do not depend on sidecars.
 - Do not rename or reinterpret historical explicit ISA requests or backend
   identifiers.
 
@@ -102,7 +103,8 @@ scaffolds.
 - Confirm passing smoke tests capture expected interactive screens while still
   exposing assertion diagnostics on failures.
 - Confirm public-safe support exports remain redacted. Private migration bundles
-  must require explicit acknowledgement, exclude secrets, Google credentials,
-  results, sensor logs, vendor/test data, `.venv`, caches, and private
-  identifiers, and retain no-overwrite restore, conflict staging, manifest,
-  checksum, traversal, and symlink protections.
+  must require explicit acknowledgement and clearly mark secret-bearing bundles;
+  Google credentials may be included only after a separate deliberate choice.
+  Bundles must exclude results, sensor logs, vendor/test data, `.venv`, caches,
+  and unsupported private identifiers, and retain no-overwrite restore, conflict
+  staging, manifest, checksum, traversal, and symlink protections.
