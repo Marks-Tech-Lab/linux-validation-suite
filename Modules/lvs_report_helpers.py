@@ -804,7 +804,7 @@ def build_department_use_summary(
     if skipped_stages:
         caveats.append(f"{len(skipped_stages)} requested stage(s) were skipped")
     if worker_failure_count:
-        caveats.append(f"{worker_failure_count} GPU worker result(s) reported failure")
+        caveats.append(f"{worker_failure_count} worker result(s) reported failure")
     for category, count in sorted(warning_categories.items()):
         caveats.append(f"{friendly_report_category(category)} ({count})")
     for category, count in sorted(error_categories.items()):

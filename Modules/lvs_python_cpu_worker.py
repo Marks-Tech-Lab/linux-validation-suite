@@ -22,6 +22,19 @@ from Modules.lvs_cpu_targeting import discover_linux_cpu_sets, parse_linux_cpu_l
 PYTHON_CPU_FALLBACK_BACKEND = "python_fallback"
 SUPERVISION_INTERVAL_SECONDS = 0.2
 WORKER_STARTUP_TIMEOUT_SECONDS = 30.0
+CHILD_TERMINATION_TIMEOUT_SECONDS = 2.0
+CHILD_KILL_REAP_TIMEOUT_SECONDS = 1.0
+
+
+def restore_python_cpu_child_signal_defaults(
+    signal_setter: Callable[[int, Any], Any] = signal.signal,
+) -> None:
+    """Ensure supervisor termination signals stop forked workload children."""
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal_setter(signum, signal.SIG_DFL)
+        except (OSError, RuntimeError, ValueError):
+            pass
 
 
 def apply_python_cpu_affinity(
@@ -74,6 +87,10 @@ def python_cpu_workload(
     verification_error_counter: Any,
 ) -> None:
     """Run one CPU fallback workload; this top-level target is spawn/forkserver importable."""
+    # Linux fork workers inherit the supervisor's SIGTERM handler. That handler
+    # only changes supervisor-local state, so retaining it here would make
+    # Process.terminate() ineffective against this intentionally infinite loop.
+    restore_python_cpu_child_signal_defaults()
     affinity = apply_python_cpu_affinity(worker_index, target_cpu_id)
     try:
         evidence_queue.put(affinity)
@@ -120,18 +137,65 @@ def _child_exit_information(processes: List[Any], expected_termination: bool) ->
     ]
 
 
-def _stop_children(processes: List[Any]) -> None:
+def _wait_for_children(
+    processes: List[Any],
+    timeout_seconds: float,
+    *,
+    monotonic: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> None:
+    deadline = monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        live = []
+        for process in processes:
+            try:
+                if process.is_alive():
+                    live.append(process)
+            except Exception:
+                continue
+        if not live:
+            return
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return
+        for process in live:
+            try:
+                process.join(timeout=0)
+            except Exception:
+                pass
+        sleep(min(0.05, remaining))
+
+
+def _stop_children(
+    processes: List[Any],
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
     for process in processes:
         try:
             if process.is_alive():
                 process.terminate()
         except Exception:
             pass
+    _wait_for_children(
+        processes,
+        CHILD_TERMINATION_TIMEOUT_SECONDS,
+        monotonic=monotonic,
+        sleep=sleep,
+    )
     for process in processes:
         try:
-            process.join(timeout=1)
+            if process.is_alive():
+                process.kill()
         except Exception:
             pass
+    _wait_for_children(
+        processes,
+        CHILD_KILL_REAP_TIMEOUT_SECONDS,
+        monotonic=monotonic,
+        sleep=sleep,
+    )
 
 
 def write_worker_result(path: str, payload: Dict[str, Any]) -> None:
@@ -260,7 +324,7 @@ def supervise_python_cpu_workers(
     healthy_before_shutdown = sum(
         1 for process in processes if getattr(process, "exitcode", None) is None
     )
-    _stop_children(processes)
+    _stop_children(processes, monotonic=monotonic, sleep=sleep)
 
     affinity_evidence: List[Dict[str, Any]] = []
     while True:

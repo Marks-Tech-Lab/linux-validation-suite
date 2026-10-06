@@ -264,7 +264,7 @@ class WorkloadCpuMemoryMixin:
             python_runtime=python_runtime if backend == "python_fallback" else "",
             cpu_kernel_flavor=cpu_kernel_flavor,
             result_file=result_file,
-            resolved_mode=self._cpu_resolved_mode(cpu),
+            resolved_mode=self._cpu_resolved_mode(cpu, backend_override=backend),
             target_cpu_ids=target_cpu_ids,
         )
 
@@ -760,8 +760,8 @@ class WorkloadCpuMemoryMixin:
             stderr_target=subprocess.DEVNULL,
         )
 
-    def _cpu_resolved_mode(self, cpu: Any) -> str:
-        backend = self._cpu_backend_name(cpu)
+    def _cpu_resolved_mode(self, cpu: Any, backend_override: str = "") -> str:
+        backend = str(backend_override or self._cpu_backend_name(cpu))
         requested = self._cpu_helper_mode(cpu)
         if backend == "cpu_native_helper":
             return str(self._cpu_capability_plan(cpu).get("common_safe_instruction_set") or "")

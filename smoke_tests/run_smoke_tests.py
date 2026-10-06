@@ -14,6 +14,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -324,6 +325,7 @@ from Modules.lvs_stage_launch_plan import StageLaunchCommand, build_stage_launch
 from Modules.lvs_stage_completion import build_stage_check_window, complete_stage_record, serialize_final_gpu_workers, stage_issue_count
 from Modules.lvs_stage_evaluation import evaluate_completed_stage
 from Modules.lvs_stage_process_control import (
+    PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS,
     StageProcess,
     launch_stage_processes_from_plan,
     stop_processes,
@@ -401,6 +403,7 @@ from Modules.lvs_cpu_execution import (
 from Modules.lvs_python_cpu_worker import (
     apply_python_cpu_affinity,
     python_cpu_workload,
+    restore_python_cpu_child_signal_defaults,
     supervise_python_cpu_workers,
 )
 from Modules.lvs_cpu_architecture import (
@@ -4471,6 +4474,14 @@ def test_report_highlights_and_xid_language() -> None:
     )
     assert_true(any("NVIDIA Xid" in note for note in summary["OperatorNotes"]), "NVIDIA Xid operator note")
     assert_true(any("NVIDIA Xid driver/GPU fault" in caveat for caveat in summary["PrimaryCaveats"]), "NVIDIA Xid caveat")
+    assert_true(
+        "1 worker result(s) reported failure" in summary["PrimaryCaveats"],
+        "worker failure caveat is backend-neutral",
+    )
+    assert_true(
+        not any("GPU worker result(s)" in caveat for caveat in summary["PrimaryCaveats"]),
+        "generic worker failure count is not mislabeled as GPU-only",
+    )
     thermal_items = build_report_action_item_details(
         {"WarningCategoryCounts": {}, "ErrorCategoryCounts": {"gpu_temperature": 1}},
         [],
@@ -21551,6 +21562,19 @@ def test_power_auto_cross_backend_selection_policy() -> None:
         [0, 1, 2, 3],
         "runner-level selection evidence preserves affinity target set",
     )
+    arm_runner._python_runtime = lambda: "/usr/bin/python3"
+    arm_runner._cpu_helper_status = lambda: {"available": True, "path": "/tmp/cpu-helper", "reason": ""}
+    python_command = arm_runner._cpu_command(
+        ModuleCpu(enabled=True, backend_preference="auto", instruction_set="auto", power_auto=True),
+        backend_override="python_fallback",
+    )
+    resolved_mode_index = python_command.index("--resolved-mode") if python_command else -1
+    assert_true(resolved_mode_index >= 0, "Power Auto Python command records its resolved policy mode")
+    assert_equal(
+        python_command[resolved_mode_index + 1],
+        "portable",
+        "Power Auto Python command does not inherit native ARM auto/NEON metadata",
+    )
 
     x86_runner = WorkloadRunner()
     x86_runner._cpu_machine = lambda: "x86_64"
@@ -22394,6 +22418,15 @@ def test_python_cpu_fallback_worker_supervision() -> None:
         "Modules.lvs_python_cpu_worker",
         "Python CPU worker target is importable",
     )
+    signal_calls: list[tuple[int, object]] = []
+    restore_python_cpu_child_signal_defaults(
+        lambda signum, handler: signal_calls.append((signum, handler))
+    )
+    assert_equal(
+        signal_calls,
+        [(signal.SIGTERM, signal.SIG_DFL), (signal.SIGINT, signal.SIG_DFL)],
+        "forked Python CPU children restore terminating signal behavior",
+    )
 
     class FakeProcess:
         next_pid = 2000
@@ -22550,6 +22583,74 @@ def test_python_cpu_fallback_worker_supervision() -> None:
             assert_equal(payload["failed_worker_count"], expected_failures, f"{label} failure evidence")
             assert_true(payload["child_exit_information"], f"{label} child exit information")
             assert_true("exited unexpectedly" in stderr.getvalue(), f"{label} failure reaches stderr")
+
+    with TemporaryDirectory() as tmpdir:
+        result_path = Path(tmpdir) / "real-subprocess-result.json"
+        stdout_path = Path(tmpdir) / "real-subprocess.stdout.log"
+        stderr_path = Path(tmpdir) / "real-subprocess.stderr.log"
+        worker_arguments = [
+            "--workers",
+            "2",
+            "--algorithm",
+            "sha512",
+            "--iterations",
+            "1000",
+            "--payload-bytes",
+            "4096",
+            "--resolved-mode",
+            "portable",
+            "--result-file",
+            str(result_path),
+        ]
+        command = [
+            sys.executable,
+            "-m",
+            "Modules.lvs_python_cpu_worker",
+            *worker_arguments,
+        ]
+        subprocess_command = [
+            sys.executable,
+            "-c",
+            (
+                "import multiprocessing as mp, sys; "
+                "mp.set_start_method('fork'); "
+                "from Modules.lvs_python_cpu_worker import main; "
+                "raise SystemExit(main(sys.argv[1:]))"
+            ),
+            *worker_arguments,
+        ]
+        with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
+            process = subprocess.Popen(
+                subprocess_command,
+                cwd=ROOT,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+            )
+        entry = StageProcess(
+            kind="cpu",
+            command=command,
+            process=process,
+            result_path=str(result_path),
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+        )
+        time.sleep(0.75)
+        stop_stage_processes([entry], timeout_seconds=0.1)
+        assert_true(result_path.exists(), "normal stage stop persists Python CPU result before ingestion")
+        payload = read_payload(result_path)
+        assert_equal(process.returncode, 0, "Python CPU supervisor exits cleanly after expected SIGTERM")
+        assert_equal(payload["termination_reason"], "expected_stop", "Python CPU result records expected stop")
+        assert_equal(payload["status"], "ok", "Python CPU expected-stop result is clean")
+        assert_true(payload["verification_passes"] > 0, "real Python CPU worker retains verification passes")
+        assert_equal(payload["verification_error_count"], 0, "real Python CPU worker has no verification errors")
+        assert_equal(len(payload["affinity_evidence"]), 2, "real Python CPU worker retains affinity evidence")
+        assert_true(
+            all(item["exit_code"] == -signal.SIGTERM for item in payload["child_exit_information"]),
+            "forked Python CPU children honor supervisor termination instead of swallowing SIGTERM",
+        )
+        ingested = read_worker_result(entry)
+        assert_equal(ingested["status"], "ok", "stage completion ingests persisted Python CPU result")
+        assert_true(entry.expected_termination, "stage controller records expected Python supervisor termination")
 
 
 def test_cpu_python_fallback_arm_runner_selection_and_diagnostics() -> None:
@@ -26718,6 +26819,19 @@ def test_stage_process_control_helpers() -> None:
     stop_stage_processes([timed_out_entry], timeout_seconds=0.01)
     assert_true(timed_out_vm.killed, "timed-out stress-ng VM is killed")
     assert_equal(timed_out_vm.wait_calls, 2, "killed stress-ng VM is reaped")
+    python_process = FakeProcess([sys.executable])
+    python_entry = StageProcess(
+        "cpu",
+        [sys.executable, "-m", "Modules.lvs_python_cpu_worker", "--workers", "2"],
+        python_process,
+    )
+    stop_stage_processes([python_entry], timeout_seconds=0.01)
+    assert_equal(
+        python_process.wait_timeouts[0],
+        PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS,
+        "Python CPU supervisor receives backend-specific result-persistence grace",
+    )
+    assert_true(not python_process.killed, "clean Python CPU supervisor shutdown is not escalated to SIGKILL")
 
 
 def test_stage_worker_evidence_helpers() -> None:

@@ -12,6 +12,9 @@ from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
 from Modules.lvs_stage_launch_plan import StageLaunchCommand
 
 
+PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
 @dataclass
 class StageProcess:
     kind: str
@@ -147,9 +150,24 @@ def stop_stage_processes(
                 and bool(command)
                 and Path(str(command[0])).name == "stress-ng"
             )
+            is_python_cpu_fallback = (
+                getattr(entry, "kind", "") == "cpu"
+                and "-m" in command
+                and "Modules.lvs_python_cpu_worker" in command
+            )
             # Large VM workers can need more than five seconds to unmap memory
             # and print their final --metrics-brief verification record.
-            wait_timeout = max(float(timeout_seconds), 30.0) if is_stress_ng_memory else timeout_seconds
+            if is_stress_ng_memory:
+                wait_timeout = max(float(timeout_seconds), 30.0)
+            elif is_python_cpu_fallback:
+                # The supervisor must stop its multiprocessing children, drain
+                # their evidence, and persist the required result before exit.
+                wait_timeout = max(
+                    float(timeout_seconds),
+                    PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS,
+                )
+            else:
+                wait_timeout = timeout_seconds
             entry.process.wait(timeout=wait_timeout)
         except Exception:
             try:
