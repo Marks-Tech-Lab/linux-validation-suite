@@ -371,6 +371,32 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             "Power Auto will compare viable CPU backends using trustworthy CPU/package power telemetry; "
             "when unavailable it will use the documented architecture-specific validated fallback"
         )
+        validation_evidence = dict(
+            (cpu_preview.get("selection_evidence") or {}).get("validation_runner") or {}
+        )
+        if validation_evidence:
+            failures = list(validation_evidence.get("requirement_failures") or [])
+            if not validation_evidence.get("requirements_met"):
+                issues.append(
+                    "CPU Power Auto hardware-validation runner requirements are not met: "
+                    + "; ".join(failures or ["unknown validation requirement failure"])
+                )
+            warnings.append(
+                "CPU Power Auto hardware-validation runner is active: "
+                f"architecture={validation_evidence.get('architecture') or 'unknown'}, "
+                f"common_native_kernels={validation_evidence.get('common_native_kernels') or []}, "
+                f"generic_auto={validation_evidence.get('generic_auto_kernel') or 'none'}"
+            )
+            warnings.append(
+                "Controlled validation availability: "
+                f"actual={validation_evidence.get('actual_candidate_availability') or {}}, "
+                f"effective={validation_evidence.get('controlled_candidate_availability') or {}}"
+            )
+            warnings.append(
+                "Production fallback order: "
+                + " -> ".join(validation_evidence.get("production_fallback_order") or [])
+                + f"; expected={validation_evidence.get('expected_selected_candidate') or 'none'}"
+            )
     if cpu_instruction_intent:
         intent_evidence = dict(cpu_preview.get("instruction_intent_evidence") or cpu_preview.get("selection_evidence") or {})
         if intent_evidence.get("tier_collapse"):

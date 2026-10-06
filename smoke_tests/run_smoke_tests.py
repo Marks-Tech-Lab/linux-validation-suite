@@ -425,6 +425,8 @@ from Modules.lvs_cpu_backend_policy import (
     select_cpu_backend,
 )
 from Modules.lvs_cpu_power_selection import (
+    POWER_AUTO_VALIDATION_RUNNER_ARM64_NATIVE_FALLBACK,
+    power_auto_validation_candidate_availability,
     power_cpu_candidate_inventory,
     power_cpu_fallback_order,
     select_power_cpu_candidate,
@@ -21546,7 +21548,7 @@ def test_power_auto_cross_backend_selection_policy() -> None:
         "python_fallback": True,
         "cpu_native_helper": True,
     }
-    arm_runner._cpu_capability_plan = lambda _cpu: {
+    arm_runner._cpu_capability_plan = lambda _cpu, target_plan=None: {
         **arm_runner._cpu_target_plan(_cpu),
         "common_kernel_flavors": ["neon", "scalar"],
         "selected_kernel_flavor": "neon",
@@ -21561,6 +21563,78 @@ def test_power_auto_cross_backend_selection_policy() -> None:
         integrated_arm["selection_evidence"]["target_cpu_ids"],
         [0, 1, 2, 3],
         "runner-level selection evidence preserves affinity target set",
+    )
+    validation_cpu = ModuleCpu(
+        enabled=True,
+        backend_preference="auto",
+        instruction_set="auto",
+        power_auto=True,
+        validation_runner=POWER_AUTO_VALIDATION_RUNNER_ARM64_NATIVE_FALLBACK,
+    )
+    validation_arm = arm_runner.resolve_cpu_execution(validation_cpu, tune_max_power=True)
+    assert_equal(
+        validation_arm["backend"],
+        "cpu_native_helper",
+        "validation runner retains the real production selector and native backend",
+    )
+    assert_equal(
+        validation_arm["kernel_flavor"],
+        "scalar",
+        "validation runner proves native scalar precedes native Auto/NEON",
+    )
+    validation_evidence = validation_arm["selection_evidence"]["validation_runner"]
+    assert_equal(
+        validation_evidence["actual_candidate_availability"],
+        {"stress_ng": True, "python_fallback": True, "cpu_native_helper": True},
+        "validation evidence retains actual backend availability",
+    )
+    assert_equal(
+        validation_evidence["controlled_candidate_availability"],
+        {"stress_ng": False, "python_fallback": False, "cpu_native_helper": True},
+        "validation runner excludes only the two earlier fallback candidates",
+    )
+    assert_equal(
+        validation_evidence["production_fallback_order"],
+        ["stress_ng:matrixprod", "python_fallback:pbkdf2", "cpu_native_helper:scalar", "cpu_native_helper:neon"],
+        "validation evidence derives the unchanged production AArch64 fallback order",
+    )
+    assert_true(
+        validation_evidence["selection_matches_expectation"],
+        "validation runner records scalar selection through the production selector",
+    )
+    assert_equal(
+        validation_arm["selection_evidence"]["fallback_candidate_order"],
+        ["cpu_native_helper:scalar", "cpu_native_helper:neon"],
+        "controlled candidate order remains scalar before NEON",
+    )
+    validation_stage = StageConfig(
+        id="arm64_power_auto_native_fallback_order",
+        name="CPU",
+        duration_seconds=20,
+        modules=StageModules(cpu=validation_cpu),
+    )
+    validation_diagnostics = arm_runner.stage_diagnostics(
+        validation_stage,
+        "ARM64 Power Auto Native Fallback Order Confirmation",
+    )
+    assert_true(validation_diagnostics["runnable"], "applicable validation profile is runnable")
+    assert_equal(
+        validation_diagnostics["cpu_kernel_flavor"],
+        "scalar",
+        "normal dry-run diagnostics expose the selected scalar kernel",
+    )
+    assert_true(
+        any("Production fallback order:" in warning for warning in validation_diagnostics["warnings"]),
+        "normal dry-run diagnostics expose the production fallback order",
+    )
+    ordinary_after_validation = arm_runner.resolve_cpu_execution(
+        ModuleCpu(enabled=True, backend_preference="auto", instruction_set="auto", power_auto=True),
+        tune_max_power=True,
+    )
+    assert_equal(
+        ordinary_after_validation["backend"],
+        "stress_ng",
+        "validation controls do not leak into an ordinary Power Auto request",
     )
     arm_runner._python_runtime = lambda: "/usr/bin/python3"
     arm_runner._cpu_helper_status = lambda: {"available": True, "path": "/tmp/cpu-helper", "reason": ""}
@@ -21619,6 +21693,58 @@ def test_power_auto_cross_backend_selection_policy() -> None:
         "runner-level x86 selection evidence records the resolved ISA",
     )
     assert_equal(integrated_x86["tuned_avg_power_w"], 128.0, "runner-level x86 evidence preserves selected average")
+    x86_controlled, x86_validation = power_auto_validation_candidate_availability(
+        validation_runner=POWER_AUTO_VALIDATION_RUNNER_ARM64_NATIVE_FALLBACK,
+        architecture="x86_64",
+        actual_availability={"stress_ng": True, "python_fallback": True, "cpu_native_helper": True},
+        native_kernel_flavors=["avx2_fma", "scalar"],
+        selected_native_kernel="avx2_fma",
+    )
+    assert_true(not x86_validation["requirements_met"], "ARM64 validation runner fails closed on x86")
+    assert_true(not any(x86_controlled.values()), "inapplicable validation runner cannot launch on x86")
+
+    validation_profile_path = Path(
+        "profiles/Archived/2026 Hardware Validation/06 Power Auto and Instruction Intent Confirmation/"
+        "ARM64 Power Auto Native Fallback Order Confirmation.json"
+    )
+    validation_profile = power_loader.load_profile(validation_profile_path)
+    validation_labels = power_loader.load_segment_labels(validation_profile_path, validation_profile)
+    assert_equal(
+        SharedProfileValidator().validate(validation_profile, validation_labels)["errors"],
+        [],
+        "native fallback-order hardware-validation profile validates",
+    )
+    assert_equal(
+        validation_profile.stages[0].modules.cpu.validation_runner,
+        POWER_AUTO_VALIDATION_RUNNER_ARM64_NATIVE_FALLBACK,
+        "hardware-validation profile selects the narrow validation runner",
+    )
+    assert_equal(validation_profile.stages[0].duration_seconds, 20, "hardware-validation stage remains short")
+    assert_true(
+        validation_profile_path.name not in {path.name for path in power_loader.list_profiles()},
+        "completed hardware-validation profile is hidden from normal discovery",
+    )
+    invalid_validation_profile = ValidationProfile(
+        profile_name="Invalid validation runner",
+        stages=[StageConfig(
+            id="invalid_validation_runner",
+            name="CPU",
+            duration_seconds=20,
+            modules=StageModules(cpu=ModuleCpu(
+                enabled=True,
+                power_auto=True,
+                validation_runner="unknown_override",
+            )),
+        )],
+    )
+    invalid_validation_errors = SharedProfileValidator().validate(
+        invalid_validation_profile,
+        ["Invalid validation runner"],
+    )["errors"]
+    assert_true(
+        any("invalid cpu.validation_runner" in error for error in invalid_validation_errors),
+        "unknown validation controls fail profile validation",
+    )
 
 
 def test_cpu_instruction_intent_resolution_and_profile_conversion() -> None:

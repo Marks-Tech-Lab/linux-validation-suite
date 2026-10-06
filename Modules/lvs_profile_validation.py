@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
 from .lvs_cpu_architecture import CPU_INSTRUCTION_INTENTS
+from .lvs_cpu_power_selection import POWER_AUTO_VALIDATION_RUNNERS
 from .lvs_cpu_backend_policy import CPU_BACKEND_PREFERENCES
 from .lvs_memory_execution import MEMORY_BACKEND_PREFERENCES
 from .lvs_profile_models import StageConfig, ValidationProfile, stage_execution_mode
@@ -139,6 +140,13 @@ class ProfileValidator:
                 )
             if not isinstance(stage.modules.cpu.power_auto, bool):
                 errors.append(f"{stage_ref} cpu.power_auto must be true or false")
+            validation_runner = str(stage.modules.cpu.validation_runner or "").strip().lower()
+            if validation_runner and validation_runner not in POWER_AUTO_VALIDATION_RUNNERS:
+                errors.append(
+                    f"{stage_ref} has invalid cpu.validation_runner='{stage.modules.cpu.validation_runner}'"
+                )
+            if validation_runner and not stage.modules.cpu.power_auto:
+                errors.append(f"{stage_ref} cpu.validation_runner requires cpu.power_auto=true")
             instruction_intent = str(stage.modules.cpu.instruction_intent or "").strip().lower()
             if instruction_intent and instruction_intent not in CPU_INSTRUCTION_INTENTS:
                 errors.append(

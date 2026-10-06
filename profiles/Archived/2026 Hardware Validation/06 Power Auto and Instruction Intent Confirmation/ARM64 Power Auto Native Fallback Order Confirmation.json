@@ -1,0 +1,41 @@
+{
+  "profile_name": "ARM64 Power Auto Native Fallback Order Confirmation",
+  "profile_type": "validation_schedule",
+  "menu_description": "Temporary AArch64 hardware validation of native scalar-before-NEON Power Auto fallback ordering.",
+  "menu_group": "diagnostic",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 1.0,
+    "trim_start_seconds": 5,
+    "trim_end_seconds": 5,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "arm64_power_auto_native_fallback_order",
+      "name": "CPU",
+      "display_label": "ARM64 Power Auto Native Fallback Order Confirmation",
+      "duration_seconds": 20,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "auto",
+          "power_auto": true,
+          "validation_runner": "arm64_power_auto_native_fallback_order",
+          "instruction_set": "auto",
+          "instruction_intent": "",
+          "mode": "extreme",
+          "load": "steady",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 5,
+        "trim_end_seconds": 5
+      }
+    }
+  ]
+}

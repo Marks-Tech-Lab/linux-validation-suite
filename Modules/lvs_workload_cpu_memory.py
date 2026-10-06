@@ -42,7 +42,9 @@ from Modules.lvs_cpu_execution import (
     resolve_cpu_execution_policy,
 )
 from Modules.lvs_cpu_power_selection import (
+    power_auto_validation_candidate_availability,
     power_cpu_candidate_inventory,
+    power_cpu_fallback_order,
     select_power_cpu_candidate,
 )
 from Modules.lvs_cpu_targeting import (
@@ -518,10 +520,21 @@ class WorkloadCpuMemoryMixin:
     def _resolve_power_cpu_execution(self, cpu: Any, *, probe_candidates: bool) -> Dict[str, Any]:
         architecture = self._cpu_machine()
         target_plan = self._cpu_target_plan(cpu)
-        availability = self._cpu_backend_availability(cpu)
-        capability = self._cpu_capability_plan(cpu) if availability.get("cpu_native_helper") else dict(target_plan)
+        actual_availability = self._cpu_backend_availability(cpu)
+        capability = (
+            self._cpu_capability_plan(cpu)
+            if actual_availability.get("cpu_native_helper")
+            else dict(target_plan)
+        )
         native_flavors = list(capability.get("common_kernel_flavors") or [])
         selected_native = str(capability.get("selected_kernel_flavor") or "")
+        availability, validation_evidence = power_auto_validation_candidate_availability(
+            validation_runner=str(getattr(cpu, "validation_runner", "") or ""),
+            architecture=architecture,
+            actual_availability=actual_availability,
+            native_kernel_flavors=native_flavors,
+            selected_native_kernel=selected_native,
+        )
         viable, unavailable = power_cpu_candidate_inventory(
             architecture=architecture,
             availability=availability,
@@ -534,6 +547,29 @@ class WorkloadCpuMemoryMixin:
             "source": str(telemetry.get("source") or telemetry.get("details") or ""),
             "permission_issue": bool(telemetry.get("permission_issue")),
         }
+        if validation_evidence:
+            all_policy_candidates, _ = power_cpu_candidate_inventory(
+                architecture=architecture,
+                availability={
+                    "stress_ng": True,
+                    "python_fallback": True,
+                    "cpu_native_helper": True,
+                },
+                native_kernel_flavors=native_flavors,
+                selected_native_kernel=selected_native,
+            )
+            validation_evidence["production_fallback_order"] = [
+                str(candidate.get("candidate_id") or "")
+                for candidate in power_cpu_fallback_order(architecture, all_policy_candidates)
+            ]
+            validation_evidence["cpu_package_power_available"] = bool(
+                telemetry_evidence["available"]
+            )
+            if telemetry_evidence["available"]:
+                validation_evidence["requirements_met"] = False
+                validation_evidence.setdefault("requirement_failures", []).append(
+                    "CPU package-power telemetry is available; this profile validates only the unmeasured fallback"
+                )
         cache_key = (
             "power_auto",
             architecture,
@@ -561,6 +597,19 @@ class WorkloadCpuMemoryMixin:
         selection["target_cpu_ids"] = list(target_plan.get("target_cpu_ids") or [])
         selection["requested_thread_count"] = target_plan.get("requested_thread_count")
         selection["actual_worker_count"] = target_plan.get("actual_worker_count")
+        if validation_evidence:
+            intentional_exclusions = dict(validation_evidence.get("intentional_exclusions") or {})
+            for item in selection.get("unavailable_candidates") or []:
+                candidate_id = str(item.get("candidate_id") or "")
+                if candidate_id in intentional_exclusions:
+                    item["reason"] = intentional_exclusions[candidate_id]
+            selected_id = str((selection.get("selected_candidate") or {}).get("candidate_id") or "")
+            validation_evidence["selection_matches_expectation"] = bool(
+                validation_evidence.get("requirements_met")
+                and selected_id == validation_evidence.get("expected_selected_candidate")
+                and selection.get("selection_mechanism") != "power_probe"
+            )
+            selection["validation_runner"] = validation_evidence
         if not probe_candidates and telemetry_evidence["available"]:
             selection["selection_mechanism"] = "power_probe_pending"
             selection["fallback_reason"] = ""
