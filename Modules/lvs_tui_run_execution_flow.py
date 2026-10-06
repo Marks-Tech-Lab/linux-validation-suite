@@ -86,10 +86,14 @@ def run_success_thread_text(service: Any, result: Any, output_limit: int = 2000)
 
 
 def run_execution_error_text(exc: Any, output_limit: int = 2000) -> str:
+    exception_type = str(getattr(exc, "exception_type", "") or type(exc).__name__)
+    traceback_text = str(getattr(exc, "traceback_text", "") or "")
+    run_dir = getattr(exc, "run_dir", None)
     text = (
         "Run failed\n"
         "==========\n\n"
-        f"{exc}\n\n"
+        f"Exception: {exception_type}: {exc}\n"
+        f"Partial results: {run_dir or '-'}\n\n"
         "Final structured status:\n"
         "------------------------\n"
         f"{run_status_detail_text(exc.run_status)}\n\n"
@@ -97,6 +101,8 @@ def run_execution_error_text(exc: Any, output_limit: int = 2000) -> str:
     )
     if exc.output:
         text += "\n\nCaptured output tail:\n" + tail_text(exc.output, output_limit)
+    if traceback_text:
+        text += "\n\nTraceback:\n----------\n" + traceback_text.rstrip()
     return text
 
 

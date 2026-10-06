@@ -173,6 +173,25 @@ class AdvancedDebugLogger:
         self._capture_kernel_log("run", since_iso=since_iso)
         self._write_manifest()
 
+    def capture_run_failure(
+        self,
+        *,
+        timestamp_iso: str,
+        exception_type: str,
+        message: str,
+        traceback_text: str,
+    ) -> None:
+        if not self.enabled:
+            return
+        self._capture_event(
+            "run_failure",
+            timestamp_iso=timestamp_iso,
+            exception_type=exception_type,
+            message=message,
+            traceback=traceback_text,
+        )
+        self._write_manifest()
+
     def _capture_event(self, event: str, **payload: Any) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
         self._append_header(f"Event: {event}")
@@ -207,7 +226,7 @@ class AdvancedDebugLogger:
                 ],
                 10,
             ),
-            ("nvidia_smi_q", ["nvidia-smi", "-q", "-d", "TEMPERATURE,POWER,CLOCK,PERFORMANCE,PCIE,UTILIZATION,MEMORY"], 20),
+            ("nvidia_smi_q", ["nvidia-smi", "-q"], 20),
             ("vulkaninfo_summary", ["vulkaninfo", "--summary"], 25),
             ("clinfo_list", ["clinfo", "-l"], 15),
             ("intel_gpu_top_list", ["intel_gpu_top", "-L"], 8),

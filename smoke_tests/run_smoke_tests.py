@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -342,7 +343,7 @@ from Modules.lvs_stage_postprocess import apply_completed_stage_bookkeeping
 import Modules.lvs_run_stage_loop as run_stage_loop_module
 import Modules.lvs_run_completion as run_completion_module
 from Modules.lvs_run_event_presenter import CliRunEventPresenter
-from Modules.lvs_run_bootstrap import bootstrap_run_artifacts
+from Modules.lvs_run_bootstrap import bootstrap_run_artifacts, persist_run_failure_artifacts
 from Modules.lvs_run_artifacts import write_final_run_artifacts
 from Modules.lvs_stage_run_context import (
     apply_cpu_tuning_execution,
@@ -641,6 +642,7 @@ from Modules.lvs_result_artifact_view import (
     result_artifact_item_extras,
 )
 from Modules.lvs_run_lifecycle import future_local_iso, phase_line
+from Modules.lvs_live_telemetry import LiveTelemetrySnapshot
 from Modules.lvs_run_progress import (
     is_phase_progress_line,
     latest_phase_line,
@@ -651,6 +653,7 @@ from Modules.lvs_run_progress import (
     run_status_detail_text,
     short_status_text,
 )
+from Modules.lvs_run_timing import RunTimingAnchor, RunTimingStage
 from Modules.lvs_cli_live_run import CliLiveRunPresenter, cli_live_run_supported
 from Modules.lvs_cli_preflight_summary import compact_cli_preflight_summary
 from Modules.lvs_cli_screen import clear_cli_screen, cli_screen_refresh_supported
@@ -851,6 +854,7 @@ from Modules.lvs_tui_run_presentation import (
 )
 from Modules.lvs_tui_run_execution_flow import (
     apply_run_output_line,
+    run_execution_error_text,
     upload_active_detail,
     upload_active_presentation,
     upload_finish_result,
@@ -2457,6 +2461,178 @@ def test_tui_run_execution_adapter_helpers() -> None:
     fake.upload_in_progress = True
     assert_equal(fake._interaction_locked(), True, "TUI run execution locks during upload")
     fake.upload_in_progress = False
+    failure_detail = run_execution_error_text(
+        RunExecutionError(
+            "synthetic pre-stage failure",
+            output="run-start\nrun-error\n",
+            metadata=RunMetadata(dept="Smoke", case_sku="Fixture", description="Failure"),
+            progress_events=[],
+            run_status=RunStatusTracker().snapshot,
+            run_dir=Path("/tmp/lvs-partial-result"),
+            exception_type="RuntimeError",
+            traceback_text="Traceback (most recent call last):\nRuntimeError: synthetic pre-stage failure\n",
+        )
+    )
+    assert_true(
+        "Exception: RuntimeError: synthetic pre-stage failure" in failure_detail,
+        "TUI run failure exposes the original exception type and message",
+    )
+    assert_true(
+        "Partial results: /tmp/lvs-partial-result" in failure_detail,
+        "TUI run failure exposes the partial result path",
+    )
+    assert_true(
+        "Traceback (most recent call last)" in failure_detail,
+        "TUI run failure preserves the traceback",
+    )
+
+    class ActiveRunRefreshTui(TuiRunExecutionAdapterMixin):
+        def __init__(self) -> None:
+            self.run_in_progress = True
+            self.run_live_profile_name = "Active Refresh Smoke"
+            self.run_live_phase_line = ""
+            self.run_live_lines = []
+            self.run_live_telemetry_snapshot = None
+            self.run_live_telemetry_detail = False
+            self.run_status_tracker = RunStatusTracker()
+            self.run_status_tracker.snapshot.profile = self.run_live_profile_name
+            self.run_timing_anchor = None
+            self.run_timing_snapshot = None
+            self.size = SimpleNamespace(width=160)
+            self.detail = ""
+            self.status = ""
+            self.live_refreshes = 0
+            self.live_rendered = 0
+            self.action_help_refreshes = 0
+            self.context_action_refreshes = 0
+
+        def _update_detail_content(self, text: str) -> None:
+            self.detail = text
+
+        def _set_detail(self, text: str) -> None:
+            self._update_detail_content(text)
+            self._refresh_live_system_pane()
+            self._set_action_help()
+            self._refresh_context_action_buttons()
+
+        def _refresh_live_system_pane(self) -> None:
+            self.live_refreshes += 1
+            self._refresh_run_timing_display()
+            self.live_rendered += 1
+
+        def _set_action_help(self) -> None:
+            self.action_help_refreshes += 1
+
+        def _refresh_context_action_buttons(self) -> None:
+            self.context_action_refreshes += 1
+
+        def _set_status(self, text: str) -> None:
+            self.status = text
+
+    refresh_tui = ActiveRunRefreshTui()
+    now_monotonic = time.monotonic()
+    timing_stage = RunTimingStage(
+        profile_index=0,
+        stage_id="segment_1",
+        label="Combined Heatsoak",
+        duration_seconds=120.0,
+    )
+    between_stages_anchor = RunTimingAnchor(
+        run_started_monotonic=now_monotonic - 5.0,
+        stages=(timing_stage,),
+        lifecycle="between_stages",
+        next_stage_position=0,
+    )
+    refresh_tui._append_run_timing_anchor(between_stages_anchor)
+    assert_equal(
+        refresh_tui.run_timing_snapshot.lifecycle,
+        "between_stages",
+        "active-run TUI updates the between-stages timing snapshot",
+    )
+    assert_true("Run elapsed:" in refresh_tui.detail, "active-run progress detail includes run timing")
+
+    refresh_tui._refresh_live_system_pane()
+    assert_equal(refresh_tui.live_refreshes, 1, "active-run live-system refresh completes once without recursion")
+    assert_equal(refresh_tui.live_rendered, 1, "active-run live-system pane still renders")
+    refresh_tui._refresh_run_timing_display()
+    assert_equal(
+        refresh_tui.live_refreshes,
+        1,
+        "timing refresh updates detail without recursively refreshing the live-system pane",
+    )
+    refresh_tui._refresh_run_detail()
+    assert_equal(
+        refresh_tui.live_refreshes,
+        1,
+        "run-detail refresh does not recursively refresh the live-system pane",
+    )
+    refresh_tui._set_detail(refresh_tui._run_progress_text())
+    assert_equal(
+        refresh_tui.live_refreshes,
+        2,
+        "normal run-progress detail update performs one live-system refresh",
+    )
+    assert_equal(refresh_tui.action_help_refreshes, 1, "normal detail update retains action-help refresh")
+    assert_equal(refresh_tui.context_action_refreshes, 1, "normal detail update retains context-action refresh")
+
+    running_anchor = RunTimingAnchor(
+        run_started_monotonic=now_monotonic - 10.0,
+        stages=(timing_stage,),
+        lifecycle="running",
+        current_stage_position=0,
+        next_stage_position=0,
+        stage_started_monotonic=now_monotonic - 2.0,
+    )
+    refresh_tui._append_run_timing_anchor(running_anchor)
+    assert_equal(refresh_tui.run_timing_snapshot.lifecycle, "running", "active-stage timing lifecycle updates")
+    assert_true(
+        refresh_tui.run_timing_snapshot.stage_elapsed_seconds is not None,
+        "active-stage timing includes stage elapsed seconds",
+    )
+
+    refresh_tui.run_live_telemetry_snapshot = LiveTelemetrySnapshot(
+        state="active",
+        sequence=1,
+        sampled_monotonic=time.monotonic(),
+        interval_seconds=1.0,
+        cpu_utilization_percent=75.0,
+    )
+    refresh_tui.action_telemetry_detail()
+    assert_true(refresh_tui.run_live_telemetry_detail, "active-run telemetry detail toggle remains enabled")
+    assert_true("Live Telemetry Detail" in refresh_tui.detail, "telemetry detail mode still renders")
+    live_before_snapshot = refresh_tui.live_refreshes
+    refresh_tui._append_live_telemetry_snapshot(
+        replace(refresh_tui.run_live_telemetry_snapshot, sequence=2, sampled_monotonic=time.monotonic())
+    )
+    assert_equal(
+        refresh_tui.live_refreshes,
+        live_before_snapshot + 1,
+        "live telemetry callback performs exactly one live-system refresh",
+    )
+    assert_true("Live Telemetry Detail" in refresh_tui.detail, "live telemetry callback preserves detail mode")
+
+    refresh_tui.run_in_progress = False
+    refresh_tui._set_detail("Normal non-run detail")
+    assert_equal(refresh_tui.detail, "Normal non-run detail", "normal non-run detail updates remain intact")
+
+    tui_app_source = (ROOT / "Modules" / "lvs_tui_app.py").read_text(encoding="utf-8")
+    tui_adapter_source = (ROOT / "Modules" / "lvs_tui_run_execution_adapter.py").read_text(encoding="utf-8")
+    app_set_detail_source = tui_app_source.split("    def _set_detail", 1)[1].split(
+        "    def _refresh_context_action_buttons", 1
+    )[0]
+    adapter_run_detail_source = tui_adapter_source.split("    def _refresh_run_detail", 1)[1].split(
+        "    def _update_run_detail_content", 1
+    )[0]
+    assert_true("self._refresh_live_system_pane()" in app_set_detail_source, "normal detail path retains live refresh")
+    assert_true("self._set_action_help()" in app_set_detail_source, "normal detail path retains action help")
+    assert_true(
+        "self._update_run_detail_content" in adapter_run_detail_source,
+        "active-run detail path uses the acyclic content-only renderer",
+    )
+    assert_true(
+        "self._set_detail(" not in adapter_run_detail_source,
+        "active-run detail rendering cannot re-enter the live-system refresh path",
+    )
     not_ready = upload_not_ready_detail(Path("result"), {"missing": ["credentials"], "credential_path": "/tmp/creds.json"})
     assert_true("Missing: credentials" in not_ready, "TUI upload readiness missing detail")
     assert_true("Uploading: result" in upload_active_detail(Path("result")), "TUI upload active detail")
@@ -5360,6 +5536,45 @@ def test_run_bootstrap_artifact_helpers() -> None:
         assert_equal(skipped, [("GPU", "blocked backend")], "bootstrap skip callback")
         assert_equal(run_starts, ["Bootstrap Smoke"], "bootstrap run start callback")
         assert_equal(debug_manifest["events"][0]["event"], "run_start", "bootstrap debug run-start event")
+        failure_traceback = (
+            "Traceback (most recent call last):\n"
+            "  File \"lvs_run_orchestration.py\", line 1, in execute_validation_run\n"
+            "RuntimeError: synthetic pre-stage failure\n"
+        )
+        persisted = persist_run_failure_artifacts(
+            run_dir,
+            timestamp_iso="2026-06-12T00:00:01",
+            exception_type="RuntimeError",
+            message="synthetic pre-stage failure",
+            traceback_text=failure_traceback,
+            runtime_environment={"LVS_TEST": "1"},
+        )
+        assert_true(persisted, "bootstrap failure persistence recognizes an initialized run")
+        failed_manifest = JsonStore.read(run_dir / "run_manifest.json", {})
+        failed_debug_manifest = JsonStore.read(
+            run_dir / "advanced_debug" / "advanced_debug_manifest.json", {}
+        )
+        assert_equal(failed_manifest["verdict"], "fail", "bootstrap failure persistence verdict")
+        assert_equal(
+            failed_manifest["error_events"][-1]["details"]["exception_type"],
+            "RuntimeError",
+            "bootstrap failure persistence exception type",
+        )
+        assert_equal(
+            failed_manifest["events"][-1]["details"]["traceback"],
+            failure_traceback,
+            "bootstrap failure persistence traceback",
+        )
+        assert_equal(
+            failed_debug_manifest["events"][-1]["event"],
+            "run_failure",
+            "Advanced Debug records a durable run-failure event",
+        )
+        assert_equal(
+            failed_debug_manifest["events"][-1]["payload"]["exception_type"],
+            "RuntimeError",
+            "Advanced Debug run-failure exception type",
+        )
 
 
 def test_run_completion_helpers() -> None:
@@ -8157,6 +8372,32 @@ def test_run_executor_defaults_and_capture() -> None:
     assert_equal(result.run_status.verdict, "completed", "run executor final status verdict")
     assert_equal(result.run_status.profile, "SmokeProfile", "run executor final status profile")
     assert_equal(streamed_events[-1].fields.get("verdict"), "completed", "run executor streamed event fields")
+
+    class FailingOrchestrator(Orchestrator):
+        def run(self, profile_path, profile, labels, metadata, run_dir=None, **_kwargs):
+            failure = RuntimeError("synthetic persisted run failure")
+            failure.lvs_run_dir = Path("/tmp/lvs_run_executor_partial")
+            raise failure
+
+    failing_executor = RunExecutor(
+        settings=SimpleNamespace(suite_department="Production"),
+        profile_loader=Loader(),
+        orchestrator=FailingOrchestrator(),
+        default_run_metadata=default_metadata,
+        ensure_enhanced_telemetry_ready=lambda: False,
+        run_heatsoak_if_requested=heatsoak,
+    )
+    try:
+        failing_executor.run_profile_capture_output(Path("profiles/Smoke.json"))
+        raise AssertionError("run executor should preserve a failed run")
+    except RunExecutionError as exc:
+        assert_equal(exc.exception_type, "RuntimeError", "run executor preserves exception type")
+        assert_true("synthetic persisted run failure" in exc.traceback_text, "run executor preserves traceback")
+        assert_equal(
+            exc.run_dir,
+            Path("/tmp/lvs_run_executor_partial"),
+            "run executor preserves the partial artifact path",
+        )
 
     class DirectOrchestrator:
         def make_run_dir(self, profile_name):
@@ -18318,6 +18559,21 @@ def test_advanced_debug_logger_helpers() -> None:
         assert_true("Xid 79" in filtered and "AER fault" in filtered and "plain" not in filtered, "debug log filtering")
         logger._capture_command("missing_command", ["lvs-definitely-missing-command"], timeout=1)
         assert_true((run_dir / "advanced_debug" / "missing_command.txt").exists(), "missing command debug output")
+        baseline_commands = []
+        original_capture_command = logger._capture_command
+        logger._capture_command = lambda label, command, timeout=10: baseline_commands.append(
+            (label, list(command), timeout)
+        )
+        try:
+            logger._capture_baseline_commands("portable")
+        finally:
+            logger._capture_command = original_capture_command
+        nvidia_query = next(command for label, command, _timeout in baseline_commands if label.endswith("nvidia_smi_q"))
+        assert_equal(
+            nvidia_query,
+            ["nvidia-smi", "-q"],
+            "Advanced Debug uses the portable full NVIDIA query without unsupported display filters",
+        )
         logger._capture_event("run_start", started_iso="2026-05-28T12:00:00-04:00", profile_name="Smoke")
         logger.capture_stage_start(
             stage_name="Intent",

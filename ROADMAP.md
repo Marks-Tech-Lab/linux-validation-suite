@@ -52,9 +52,9 @@ undecided work. Deferred or possible work is not committed release scope.
   behavior.
 - Added Power Auto as a distinct cross-backend policy comparing viable native,
   stress-ng matrixprod, and Python PBKDF2 candidates. It uses measured package
-  power when trustworthy telemetry exists, the validated thermal fallback on
-  AArch64 without package watts, and the compatibility/capability fallback on
-  x86_64 without package watts.
+  power when a trustworthy measured winner exists, the validated thermal
+  fallback on AArch64 otherwise, and the compatibility/capability fallback on
+  x86_64 otherwise.
 - Converted the PL Validation family, QA System Test Short v2, and Quick Test to
   architecture-aware instruction intent; Power Test now explicitly requests
   Power Auto.
@@ -107,13 +107,87 @@ Storage Benchmark v1 aggregate reshaping is outside Phase 3 and Phase 4. Any
 such change requires a separately approved, versioned benchmark-contract
 milestone and does not authorize new storage testing, comparison, or reporting.
 
+## Adopted CPU ISA Stress Roadmap
+
+Generic ISA capability selection and Power Auto thermal selection remain
+separate policies. An implemented or higher-throughput ISA is not assumed to be
+the hottest workload. Power Auto continues to measure valid candidates when
+trustworthy package-watt telemetry exists; unmeasured thermal ordering requires
+physical evidence.
+
+### Current x86_64 kernels
+
+The implemented general and Power Auto native kernels are `scalar`, `sse2`,
+`sse2_int`, `avx`, `avx_fma`, `avx2`, `avx2_fma`, `avx512_fma`, and
+`avx512_int`.
+
+The adopted specialized x86_64 stress roadmap is AVX-VNNI/256-bit VNNI,
+AVX-512 VNNI, AVX-512 BF16, and AVX-512 FP16 as high-throughput stress flavors
+and Power Auto candidates. Intel AMX INT8/BF16/FP16 is a separate matrix/tile
+stress family. These are not additional ordinary top-level SIMD tiers unless
+architecture semantics require one. AVX10.x remains future work until physical
+hardware is available.
+
+SSE3/SSSE3/SSE4.x, AES/SHA/GFNI, BMI/ADX, IFMA/VBMI, and similar extensions are
+not adopted merely because they exist; they are not current general
+thermal-stress priorities.
+
+### AArch64 general SIMD work
+
+The currently implemented AArch64 kernels are `scalar` and the existing
+integer-style NEON/ASIMD kernel. `MODE_SVE` is currently an unimplemented
+placeholder.
+
+The adopted general SIMD work is:
+
+1. Add a proper NEON FP32/FMA stress flavor while preserving the existing NEON
+   kernel and its compatibility behavior.
+2. Implement SVE as a real explicit and general SIMD tier.
+3. Implement SVE2 as a real explicit and general SIMD tier.
+
+Once SVE and SVE2 are implemented, generic ARM instruction intents should
+resolve as follows:
+
+- `baseline_vector` selects NEON.
+- `high_throughput_vector` selects the appropriate common SVE/SVE2 tier and
+  falls back to NEON when that tier is unavailable.
+- `highest_verified_vector` selects the highest implemented general vector tier
+  common to the complete target CPU set.
+- Explicit `neon`, `sve`, and `sve2` requests select that exact tier or fail
+  closed.
+
+SVE and SVE2 must not be encoded as automatically hotter than scalar or NEON.
+
+### AArch64 specialized stress flavors
+
+The adopted specialized AArch64 roadmap is NEON FP16/FHM (`asimdhp` and
+`asimdfhm`), NEON DotProd (`asimddp`), NEON I8MM, NEON BF16, SVE I8MM, and SVE
+BF16. AES/SHA/SM3/SM4/CRC and SVE crypto extensions, SVE bitperm, and FCMA/RDM
+or miscellaneous DSP extensions are outside current scope unless later evidence
+establishes unique validation value. SME and SME2 remain deferred until
+physical hardware exposing them is available.
+
+### AArch64 evidence and portability boundary
+
+The physical NVIDIA DGX Spark system reports Cortex-X925 plus Cortex-A725 CPUs,
+GCC 13.3.0, a 16-byte/128-bit SVE vector length, and `asimd`, `fphp`, `asimdhp`,
+`asimddp`, `asimdfhm`, `sve`, `sve2`, `svei8mm`, `svebf16`, `i8mm`, and `bf16`
+CPU flags. Physical compiler probes passed for `-march=armv8-a+sve`,
+`-march=armv9-a+sve2`, `-march=armv9-a+sve2+i8mm`, and
+`-march=armv9-a+sve2+bf16`. This proves compiler capability only; it does not
+claim an implemented or runtime-validated LVS kernel.
+
+The baseline ARM64 helper must continue to build and run on the Snapdragon X1
+Plus with scalar and NEON only. Do not compile the complete helper globally with
+an SVE/SVE2-only `-march`. Future SVE, SVE2, and specialized implementations
+must use isolated feature compilation, targeted functions or objects, compiler
+capability probes, and appropriate runtime HWCAP/HWCAP2 checks. Snapdragon
+regression validation is mandatory after the Spark ISA work.
+
 ## Deferred Hardware Modules
 
 - Additional storage testing beyond the current Storage Health and Storage
   Benchmark baseline is deferred pending actual planning.
-- SVE, SVE2, and SME are not implemented. Any future AArch64 ISA expansion must
-  retain explicit capability detection, complete-target safety, and fail-closed
-  behavior.
 - Before the first real AArch64 GPU OpenCL validation, add common AArch64
   multiarch loader paths through one shared resolver. Do not fork the OpenCL
   workers or claim ARM GPU OpenCL acceptance before hardware validation.

@@ -29,6 +29,62 @@ class RunBootstrapResult:
     advanced_debug: AdvancedDebugLogger
 
 
+def persist_run_failure_artifacts(
+    run_dir: Path,
+    *,
+    timestamp_iso: str,
+    exception_type: str,
+    message: str,
+    traceback_text: str,
+    runtime_environment: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Persist an unexpected run exception without masking the original failure."""
+    run_dir = Path(run_dir)
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = JsonStore.read(manifest_path, {})
+    if not isinstance(manifest, dict) or not manifest:
+        return False
+    failure_event = {
+        "timestamp": timestamp_iso,
+        "category": "run_execution_failure",
+        "severity": "error",
+        "stage": "",
+        "source": "run_orchestration",
+        "message": f"{exception_type}: {message}" if message else exception_type,
+        "details": {
+            "exception_type": exception_type,
+            "exception_message": message,
+            "traceback": traceback_text,
+        },
+    }
+    for field in ("error_events", "events"):
+        existing = list(manifest.get(field, []) or [])
+        existing.append(failure_event)
+        manifest[field] = existing
+    manifest["verdict"] = "fail"
+    manifest["ended"] = timestamp_iso
+    JsonStore.write(manifest_path, manifest)
+
+    if bool(manifest.get("advanced_debug_logging")):
+        try:
+            AdvancedDebugLogger(
+                run_dir,
+                enabled=True,
+                runtime_environment={
+                    str(key): str(value)
+                    for key, value in dict(runtime_environment or {}).items()
+                },
+            ).capture_run_failure(
+                timestamp_iso=timestamp_iso,
+                exception_type=exception_type,
+                message=message,
+                traceback_text=traceback_text,
+            )
+        except Exception:
+            pass
+    return True
+
+
 def build_effective_profile_for_run(
     profile: ValidationProfile,
     labels: List[str],

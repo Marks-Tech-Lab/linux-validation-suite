@@ -380,8 +380,11 @@ class LinuxValidationSuiteTui(
         if reset.reset_input_widget:
             self._reset_entry_input()
 
-    def _set_detail(self, text: str) -> None:
+    def _update_detail_content(self, text: str) -> None:
         self.query_one("#detail", Static).update(text)
+
+    def _set_detail(self, text: str) -> None:
+        self._update_detail_content(text)
         self._refresh_live_system_pane()
         self._set_action_help()
         self._refresh_context_action_buttons()

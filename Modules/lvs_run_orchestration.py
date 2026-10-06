@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_core import APP_NAME, APP_VERSION, format_duration_hms, now_local_iso
-from .lvs_run_bootstrap import bootstrap_run_artifacts
+from .lvs_run_bootstrap import bootstrap_run_artifacts, persist_run_failure_artifacts
 from .lvs_run_completion import complete_validation_run
 from .lvs_run_event_presenter import CliRunEventPresenter
 from .lvs_run_lifecycle import future_local_iso
@@ -75,7 +76,7 @@ def execute_validation_run(
             telemetry=telemetry,
             run_timing=run_timing,
         )
-    except BaseException:
+    except BaseException as exc:
         anchor = run_timing.anchor()
         elapsed = (
             anchor.terminal_elapsed_seconds
@@ -83,6 +84,21 @@ def execute_validation_run(
             else time.monotonic() - started_monotonic
         )
         run_timing.finish(elapsed, lifecycle="stopped", remaining_status="stopped")
+        try:
+            persist_run_failure_artifacts(
+                run_dir,
+                timestamp_iso=now_local_iso(),
+                exception_type=type(exc).__name__,
+                message=str(exc),
+                traceback_text=traceback.format_exc(),
+                runtime_environment=orchestrator.settings.runtime_environment,
+            )
+        except Exception:
+            pass
+        try:
+            setattr(exc, "lvs_run_dir", run_dir)
+        except Exception:
+            pass
         raise
     finally:
         close_telemetry = getattr(telemetry, "close", None) if telemetry is not None else None

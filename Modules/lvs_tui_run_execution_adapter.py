@@ -357,7 +357,7 @@ class TuiRunExecutionAdapterMixin:
         snapshot = getattr(self, "run_live_telemetry_snapshot", None)
         if getattr(self, "run_live_telemetry_detail", False) and snapshot is not None:
             terminal_width = int(getattr(getattr(self, "size", None), "width", 0) or 0)
-            self._set_detail(
+            self._update_run_detail_content(
                 live_snapshot_detail_text(
                     snapshot,
                     stale=live_snapshot_is_stale(snapshot, time.monotonic()),
@@ -366,7 +366,14 @@ class TuiRunExecutionAdapterMixin:
                 )
             )
             return
-        self._set_detail(self._run_progress_text())
+        self._update_run_detail_content(self._run_progress_text())
+
+    def _update_run_detail_content(self, text: str) -> None:
+        update_content = getattr(self, "_update_detail_content", None)
+        if callable(update_content):
+            update_content(text)
+            return
+        self._set_detail(text)
 
     def action_telemetry_detail(self) -> None:
         if not self.run_in_progress:

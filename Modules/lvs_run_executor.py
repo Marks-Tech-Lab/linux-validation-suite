@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -27,6 +28,8 @@ class RunExecutionError(RuntimeError):
         progress_events: list[RunProgressEvent],
         run_status: RunStatusSnapshot,
         run_dir: Path | None = None,
+        exception_type: str = "",
+        traceback_text: str = "",
     ) -> None:
         super().__init__(message)
         self.output = output
@@ -34,6 +37,8 @@ class RunExecutionError(RuntimeError):
         self.progress_events = progress_events
         self.run_status = run_status
         self.run_dir = run_dir
+        self.exception_type = str(exception_type or "")
+        self.traceback_text = str(traceback_text or "")
 
 
 class RunExecutor:
@@ -144,6 +149,7 @@ class RunExecutor:
                     live_timing_callback=live_timing_callback,
                 )
         except Exception as exc:
+            failure_run_dir = getattr(exc, "lvs_run_dir", run_dir)
             output.write(
                 phase_line(
                     now_local_iso(),
@@ -159,7 +165,9 @@ class RunExecutor:
                 metadata=run_metadata,
                 progress_events=progress_events,
                 run_status=progress_tracker.snapshot,
-                run_dir=run_dir,
+                run_dir=failure_run_dir,
+                exception_type=type(exc).__name__,
+                traceback_text=traceback.format_exc(),
             ) from exc
         return RunResult(
             run_dir=run_dir,
