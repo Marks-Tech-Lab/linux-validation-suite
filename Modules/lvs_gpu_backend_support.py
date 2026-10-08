@@ -142,9 +142,11 @@ def vulkan_backend_target_support(
 
     match = dict(vulkan_match or {})
     device = match.get("device") or {}
-    if match.get("available"):
+    if match.get("available") and not match.get("ambiguous"):
         payload["supported"] = True
         payload["resolved_device_name"] = str(device.get("deviceName", "") or "")
+    elif match.get("ambiguous"):
+        payload["reason"] = "Vulkan devices match this target ambiguously; stable physical identity is required"
     else:
         payload["reason"] = "no matching Vulkan GPU device found for this target"
     return payload

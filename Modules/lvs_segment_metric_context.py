@@ -72,6 +72,7 @@ class SegmentMetricContextBuilder:
             gpu_order,
             samples,
             gpu_inventory,
+            telemetry,
         )
         gpu_temp_groups = self._temperature_metrics.gpu_temperature_groups(samples, gpu_names, gpu_order)
         gpu_metrics = self._gpu_metrics.metric_entries(

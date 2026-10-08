@@ -3,6 +3,8 @@ from __future__ import annotations
 import statistics
 from typing import Any, Dict, List
 
+from Modules.lvs_worker_integrity import worker_verification_required, worker_verification_satisfied
+
 
 class GpuWorkerStateSummaryBuilder:
     """Build parsed GPU worker state summaries from stage worker payloads."""
@@ -140,6 +142,8 @@ class GpuWorkerStateSummaryBuilder:
                     ),
                     "Frames": int(payload.get("frames") or 0),
                     "VerificationPasses": int(payload.get("verification_passes") or 0),
+                    "VerificationRequired": worker_verification_required(payload),
+                    "VerificationSatisfied": worker_verification_satisfied(payload),
                     "TransferMismatchCount": int(payload.get("transfer_mismatch_count") or 0),
                 }
             )

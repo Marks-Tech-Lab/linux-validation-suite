@@ -23,6 +23,7 @@ from Modules.lvs_gpu_stage_events import (
 from Modules.lvs_gpu_stage_targets import (
     stage_target_gpu_details_from_processes,
     stage_target_gpu_details_from_worker_dicts,
+    telemetry_gpu_index,
 )
 from Modules.lvs_gpu_worker_state import planned_internal_gpu_worker_state
 from Modules.lvs_sensor_events import stage_sensor_events as build_stage_sensor_events
@@ -60,14 +61,14 @@ def stage_target_gpu_progress_summary(
         live_payloads = [
             payload
             for entry in stage_processes
-            if entry.gpu_spec is not None and int(entry.gpu_spec.gpu_index) == gpu_index
+            if entry.gpu_spec is not None and telemetry_gpu_index(entry.gpu_spec) == gpu_index
             for payload in [orchestrator._read_worker_result(entry, allow_partial=True)]
             if payload
         ]
         planned_states = [
             planned_internal_gpu_worker_state(orchestrator.settings, entry.gpu_spec, stage_elapsed_seconds)
             for entry in stage_processes
-            if entry.gpu_spec is not None and int(entry.gpu_spec.gpu_index) == gpu_index
+            if entry.gpu_spec is not None and telemetry_gpu_index(entry.gpu_spec) == gpu_index
         ]
         metrics = target_gpu_metric_progress_parts(
             telemetry,
@@ -79,7 +80,7 @@ def stage_target_gpu_progress_summary(
                 int(entry.gpu_spec.target_vram_bytes)
                 for entry in stage_processes
                 if entry.gpu_spec is not None
-                and int(entry.gpu_spec.gpu_index) == gpu_index
+                and telemetry_gpu_index(entry.gpu_spec) == gpu_index
                 and int(entry.gpu_spec.target_vram_bytes or 0) > 0
             ]
             or [0]

@@ -93,16 +93,6 @@ def vulkan_device_score_for_target(
         score += 140.0
     if target_id not in likely_discrete_ids and "integrated" in device_type:
         score += 140.0
-    try:
-        runtime_index = int(device.get("index", -1))
-    except Exception:
-        runtime_index = -1
-    try:
-        target_index = int(target.get("gpu_index", -1))
-    except Exception:
-        target_index = -1
-    if runtime_index >= 0 and runtime_index == target_index:
-        score += 30.0
     return score
 
 
@@ -150,15 +140,12 @@ def vulkan_device_for_target(
     if len(ranked) > 1:
         next_score, next_device = ranked[1]
         if abs(best_score - next_score) < 1.0:
-            best_key = (
-                str(best_device.get("vendorID", "") or "").strip().lower(),
-                str(best_device.get("deviceID", "") or "").strip().lower(),
-            )
-            next_key = (
-                str(next_device.get("vendorID", "") or "").strip().lower(),
-                str(next_device.get("deviceID", "") or "").strip().lower(),
-            )
-            ambiguous = best_key == next_key
+            best_slot = vulkan_device_pci_slot(best_device, card_list).lower()
+            next_slot = vulkan_device_pci_slot(next_device, card_list).lower()
+            # A provider-order tie is never physical-identity evidence. Only
+            # duplicate observations of the same explicit PCI function are
+            # equivalent; otherwise launch must fail closed as ambiguous.
+            ambiguous = not (best_slot and best_slot == next_slot)
     selected_device = dict(best_device)
     selected_slot = vulkan_device_pci_slot(selected_device, card_list)
     if selected_slot:

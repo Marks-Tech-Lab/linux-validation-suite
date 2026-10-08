@@ -1,0 +1,102 @@
+{
+  "profile_name": "GPU Stable Identity Mapping Confirmation",
+  "profile_type": "validation_schedule",
+  "menu_group": "gpu",
+  "defaults": {
+    "telemetry_interval_seconds": 0.5,
+    "trim_start_seconds": 5,
+    "trim_end_seconds": 5
+  },
+  "stages": [
+    {
+      "id": "vulkan_identity_mapping",
+      "name": "3D Adaptive",
+      "duration_seconds": 30,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "vulkan_compute",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 5,
+        "trim_end_seconds": 5
+      },
+      "display_label": "GPU (Vulkan Identity Mapping)"
+    },
+    {
+      "id": "opencl_identity_mapping",
+      "name": "3D Adaptive",
+      "duration_seconds": 30,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false,
+          "mode": "normal",
+          "load": "steady",
+          "instruction_set": "auto",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "opencl",
+          "compute_variant": "baseline"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 5,
+        "trim_end_seconds": 5
+      },
+      "display_label": "GPU (OpenCL Identity Mapping)"
+    }
+  ]
+}

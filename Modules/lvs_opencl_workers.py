@@ -44,6 +44,7 @@ def build_python_opencl_compute_worker(
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
+    opencl_device_index = int((matched_device or {}).get("opencl_index", -1))
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
     normalized_compute_variant = runner._normalize_opencl_compute_variant(compute_variant)
     device_class = str(capability.get("device_class", "") or "")
@@ -69,6 +70,7 @@ def build_python_opencl_compute_worker(
                 target_id=target_id,
                 target_gpu_index=target_gpu_index,
                 target_vram_total=target_vram_total,
+                opencl_device_index=opencl_device_index,
                 worker_params={
                     "surface_size": params["surface_size"],
                     "draw_count": params["draw_count"],
@@ -98,6 +100,12 @@ def build_python_opencl_compute_worker(
         slot=target_slot,
         target_id=target_id,
         command=command,
+        physical_gpu_id=str(target.get("physical_gpu_id", "") if target else ""),
+        identity_source=str(target.get("identity_source", "") if target else ""),
+        identity_confidence=str(target.get("identity_confidence", "") if target else ""),
+        telemetry_gpu_index=target_gpu_index,
+        opencl_device_index=opencl_device_index,
+        nvidia_index=str(target.get("nvidia_index", "") if target else ""),
         env_overrides=selected_env,
         surface_size=params["surface_size"],
         draw_count=params["draw_count"],
@@ -140,6 +148,7 @@ def build_python_opencl_vram_worker(
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
+    opencl_device_index = int((matched_device or {}).get("opencl_index", -1))
     target_vram_total = int(target.get("vram_total") or 0) if target else 0
     command = runner._wrap_gpu_command(
         [
@@ -155,6 +164,7 @@ def build_python_opencl_vram_worker(
                 target_id=target_id,
                 target_gpu_index=target_gpu_index,
                 target_vram_total=target_vram_total,
+                opencl_device_index=opencl_device_index,
                 worker_params={
                     "compute_units": int(capability.get("compute_units", 0) or 0),
                     "max_work_group_size": int(capability.get("max_work_group_size", 0) or 0),
@@ -179,6 +189,12 @@ def build_python_opencl_vram_worker(
         slot=target_slot,
         target_id=target_id,
         command=command,
+        physical_gpu_id=str(target.get("physical_gpu_id", "") if target else ""),
+        identity_source=str(target.get("identity_source", "") if target else ""),
+        identity_confidence=str(target.get("identity_confidence", "") if target else ""),
+        telemetry_gpu_index=target_gpu_index,
+        opencl_device_index=opencl_device_index,
+        nvidia_index=str(target.get("nvidia_index", "") if target else ""),
         env_overrides=selected_env,
         target_vram_bytes=capped_target_vram_bytes,
         texture_side=0,

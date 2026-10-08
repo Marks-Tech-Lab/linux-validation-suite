@@ -13,6 +13,15 @@ class GpuWorkerSpec:
     slot: str
     target_id: str
     command: List[str]
+    # gpu_index is the DRM/telemetry target index. Provider API ordinals are
+    # selectors only and must remain in their provider-specific fields.
+    physical_gpu_id: str = ""
+    identity_source: str = ""
+    identity_confidence: str = ""
+    telemetry_gpu_index: Optional[int] = None
+    vulkan_device_index: Optional[int] = None
+    opencl_device_index: Optional[int] = None
+    nvidia_index: str = ""
     env_overrides: Dict[str, str] = field(default_factory=dict)
     draw_count: int = 0
     shader_iterations: int = 0
@@ -89,6 +98,13 @@ def serialize_gpu_worker_spec(worker: GpuWorkerSpec) -> Dict[str, Any]:
         "selection_ambiguous": worker.selection_ambiguous,
         "compute_variant": worker.compute_variant,
         "gpu_index": worker.gpu_index,
+        "physical_gpu_id": worker.physical_gpu_id,
+        "identity_source": worker.identity_source,
+        "identity_confidence": worker.identity_confidence,
+        "telemetry_gpu_index": worker.gpu_index if worker.telemetry_gpu_index is None else worker.telemetry_gpu_index,
+        "vulkan_device_index": worker.vulkan_device_index,
+        "opencl_device_index": worker.opencl_device_index,
+        "nvidia_index": worker.nvidia_index,
         "card": worker.card,
         "slot": worker.slot,
         "target_id": worker.target_id,

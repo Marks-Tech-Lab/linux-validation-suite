@@ -342,6 +342,7 @@ def main() -> int:
     parser.add_argument("--target-id", default="")
     parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
+    parser.add_argument("--vulkan-device-index", type=int, default=-1)
     parser.add_argument("--target-vram-total", type=int, default=0)
     parser.add_argument("--buffer-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--system-memory-fixed-commitment-bytes", type=int, default=1024 * 1024)
@@ -458,6 +459,8 @@ def main() -> int:
         "target_id": args.target_id,
         "physical_gpu_id": args.physical_gpu_id,
         "target_gpu_index": args.target_gpu_index,
+        "telemetry_gpu_index": args.target_gpu_index,
+        "vulkan_device_index": args.vulkan_device_index,
         "target_vram_total": args.target_vram_total,
         "profile_mode": args.profile_mode,
         "profile_intensity": args.profile_intensity,

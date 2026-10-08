@@ -8,6 +8,10 @@ from typing import Any, Dict, Optional
 
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_cpu_targeting import parse_linux_cpu_list
+from Modules.lvs_worker_integrity import (
+    worker_verification_required,
+    worker_verification_satisfied,
+)
 
 
 def read_log_tail(path: Optional[str], max_chars: int = 4000) -> str:
@@ -45,6 +49,18 @@ def apply_worker_entry_context(
         payload.setdefault("profile_intensity", getattr(gpu_spec, "profile_intensity", ""))
         payload.setdefault("workload", getattr(gpu_spec, "workload", ""))
         payload.setdefault("gpu_index", getattr(gpu_spec, "gpu_index", 0))
+        payload.setdefault("target_gpu_index", getattr(gpu_spec, "gpu_index", 0))
+        telemetry_index = getattr(gpu_spec, "telemetry_gpu_index", None)
+        payload.setdefault(
+            "telemetry_gpu_index",
+            getattr(gpu_spec, "gpu_index", 0) if telemetry_index is None else telemetry_index,
+        )
+        payload.setdefault("physical_gpu_id", getattr(gpu_spec, "physical_gpu_id", ""))
+        payload.setdefault("identity_source", getattr(gpu_spec, "identity_source", ""))
+        payload.setdefault("identity_confidence", getattr(gpu_spec, "identity_confidence", ""))
+        payload.setdefault("vulkan_device_index", getattr(gpu_spec, "vulkan_device_index", None))
+        payload.setdefault("opencl_device_index", getattr(gpu_spec, "opencl_device_index", None))
+        payload.setdefault("nvidia_index", getattr(gpu_spec, "nvidia_index", ""))
         payload.setdefault("card", getattr(gpu_spec, "card", ""))
         payload.setdefault("slot", getattr(gpu_spec, "slot", ""))
         payload.setdefault("target_id", getattr(gpu_spec, "target_id", ""))
@@ -108,6 +124,8 @@ def apply_worker_entry_context(
         payload.setdefault("stdout_tail", stdout_tail)
     if stderr_tail:
         payload.setdefault("stderr_tail", stderr_tail)
+    payload["verification_required"] = worker_verification_required(payload)
+    payload["verification_satisfied"] = worker_verification_satisfied(payload)
     return payload
 
 
@@ -218,6 +236,18 @@ def worker_result_events_from_payload(
                 display_name,
                 kind,
                 f"{kind} worker reported {error_count} verification errors",
+                payload,
+            )
+        )
+        return events
+    if worker_verification_required(payload) and not worker_verification_satisfied(payload):
+        events.append(
+            create_stability_event(
+                "worker_verification_missing",
+                "error",
+                display_name,
+                kind,
+                f"{payload.get('backend', kind)} completed without a required readback verification pass",
                 payload,
             )
         )

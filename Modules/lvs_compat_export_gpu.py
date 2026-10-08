@@ -7,6 +7,7 @@ import statistics
 from typing import Any, Callable
 
 from .lvs_compat_export_helpers import build_gpu_metric_test, build_gpu_temp_test
+from .lvs_worker_integrity import worker_verification_required, worker_verification_satisfied
 
 
 def build_gpu_power_details(
@@ -93,6 +94,8 @@ def build_gpu_worker_validation_detail(
         "BackendApiFamily": str(payload.get("backend_api_family") or ""),
         "SuiteScalingMode": str(payload.get("suite_scaling_mode") or ""),
         "SuiteVerification": str(payload.get("suite_verification") or ""),
+        "VerificationRequired": worker_verification_required(payload),
+        "VerificationSatisfied": worker_verification_satisfied(payload),
         "DiagnosticBackend": bool(payload.get("diagnostic_backend")),
         "SaturationResult": bool(payload.get("saturation_result")),
         "PowerSaturationExpected": bool(payload.get("power_saturation_expected")),

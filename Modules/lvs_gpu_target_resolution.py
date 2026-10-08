@@ -67,16 +67,6 @@ def opencl_device_score_for_target(runner: Any, device: Dict[str, Any], target: 
         score += 120.0
     if target_id not in likely_discrete_ids and 0 < device_mem < 2 * 1024 ** 3:
         score += 120.0
-    try:
-        opencl_index = int(device.get("opencl_index", -1))
-    except Exception:
-        opencl_index = -1
-    try:
-        target_index = int(target.get("gpu_index", -1))
-    except Exception:
-        target_index = -1
-    if not device_slot and opencl_index >= 0 and opencl_index == target_index:
-        score += 75.0
     if int(device.get("duplicate_group_size", 1) or 1) <= 1:
         score += 10.0
     score -= float(int(device.get("opencl_index", 0) or 0)) * 0.01
@@ -102,16 +92,14 @@ def opencl_best_device_for_target(
         return None
     if len(ranked) > 1:
         next_score, next_device = ranked[1]
-        best_identity = (
-            runner._normalize_pci_id(str(best_device.get("vendor_id", "") or "")),
-            str(best_device.get("identity_key", "") or ""),
-        )
-        next_identity = (
-            runner._normalize_pci_id(str(next_device.get("vendor_id", "") or "")),
-            str(next_device.get("identity_key", "") or ""),
-        )
-        if best_identity != next_identity and abs(best_score - next_score) < 25.0:
-            return None
+        if abs(best_score - next_score) < 25.0:
+            best_slot = runner._normalize_pci_slot(str(best_device.get("pci_slot", "") or ""))
+            next_slot = runner._normalize_pci_slot(str(next_device.get("pci_slot", "") or ""))
+            # Multiple observations of one explicitly identified PCI device are
+            # equivalent. Without that proof, equal candidates are ambiguous;
+            # provider enumeration order is never a physical identity.
+            if not best_slot or best_slot != next_slot:
+                return None
     target_vendor = str(target.get("vendor", "") or "").strip().lower()
     selected_vendor = str(best_device.get("vendor", "") or "").strip().lower()
     selected_name = str(best_device.get("name", "") or "").strip().lower()

@@ -8,6 +8,7 @@ shared service/report helpers that CLI, TUI, and future GUI frontends depend on.
 from __future__ import annotations
 
 import asyncio
+import ast
 import contextlib
 import hashlib
 import io
@@ -86,6 +87,7 @@ from Modules.lvs_gpu_stage_targets import (
     gpu_index_from_metric_key,
     stage_target_gpu_details_from_processes,
     stage_target_gpu_details_from_worker_dicts,
+    telemetry_gpu_index,
 )
 from Modules.lvs_gpu_telemetry_warnings import gpu_telemetry_coverage_warnings
 from Modules.lvs_gpu_progress import (
@@ -186,6 +188,7 @@ from Modules.lvs_vulkan_targeting import (
     vulkan_device_score_for_target,
     vulkan_device_is_hardware_gpu,
 )
+from Modules.lvs_gpu_target_resolution import opencl_best_device_for_target, opencl_device_score_for_target
 from Modules.lvs_vulkan_runtime import (
     build_vulkan_native_runtime_backend,
     collect_vulkan_native_physical_devices,
@@ -199,6 +202,7 @@ from Modules.lvs_vulkan_workers import (
     build_python_vulkan_compute_worker,
     build_python_vulkan_transfer_worker,
 )
+from Modules.lvs_opencl_workers import build_python_opencl_compute_worker
 from Modules.lvs_vulkan_memory_policy import (
     stateful_memory_buffer_cap,
     stateful_memory_buffer_count_limit,
@@ -249,7 +253,11 @@ from Modules.lvs_runtime_memory_guard import (
     runtime_memory_thresholds,
     update_runtime_memory_guard,
 )
-from Modules.lvs_opencl_compute_worker import opencl_compute_fixed_commitment_bytes
+from Modules.lvs_opencl_compute_worker import (
+    opencl_compute_fixed_commitment_bytes,
+    opencl_compute_phase_at_elapsed,
+    opencl_compute_phase_limits,
+)
 from Modules.lvs_telemetry_nvidia import (
     NVIDIA_CLOCK_EVENT_REASON_FIELDS,
     discover_nvidia_smi_gpus,
@@ -447,6 +455,7 @@ from Modules.lvs_cpu_targeting import (
 )
 from Modules.lvs_heatsoak import HeatsoakManager
 from Modules.lvs_gpu_identity import (
+    apply_physical_gpu_identity,
     clean_runtime_gpu_name,
     device_class_from_vulkan_type,
     friendly_pci_gpu_name,
@@ -458,6 +467,8 @@ from Modules.lvs_gpu_identity import (
     looks_like_cpu_package_gpu_name,
     normalize_pci_id,
     normalize_pci_slot,
+    pci_physical_gpu_id,
+    physical_gpu_identity,
     parse_vulkan_summary_devices,
     pci_slot_sort_key,
     runtime_gpu_name_score,
@@ -4743,6 +4754,52 @@ def test_report_summary_builder() -> None:
     assert_equal(failed_cpu_report["DepartmentUseSummary"]["WorkerFailureCount"], 1, "CPU worker failure count")
     assert_true(failed_cpu_report["DepartmentUseSummary"]["Blocking"], "CPU worker failure blocks department pass")
 
+    mixed_gpu_report = build_report_summary(
+        overall_result="Failed",
+        execution_detail="failed",
+        elapsed="00:01:00",
+        segments=[],
+        stability_interpretation={"WarningCategoryCounts": {}, "ErrorCategoryCounts": {}},
+        all_error_events=[],
+        gpu_validation_details=[
+            {
+                "Status": "ok",
+                "SuiteVerification": "compute_readback",
+                "VerificationPasses": 869,
+            },
+            {
+                "Status": "ok",
+                "SuiteVerification": "compute_readback",
+                "VerificationPasses": 0,
+            },
+        ],
+        skipped_stages=[],
+    )
+    assert_equal(
+        mixed_gpu_report["GpuWorkerSummary"]["SuccessfulWorkerResultCount"],
+        1,
+        "aggregate verification does not make an unverified GPU worker successful",
+    )
+    assert_equal(
+        mixed_gpu_report["GpuWorkerSummary"]["WorkerFailureCount"],
+        1,
+        "required zero-verification GPU worker is counted as failed",
+    )
+    assert_equal(
+        mixed_gpu_report["GpuWorkerSummary"]["VerificationPasses"],
+        869,
+        "aggregate verification total remains truthful",
+    )
+    assert_true(
+        not mixed_gpu_report["DepartmentUseSummary"]["WorkerVerified"],
+        "aggregate Vulkan passes cannot mask unverified OpenCL worker",
+    )
+    mixed_gpu_summary_text = RunSummaryTextExporter().build({"ReportSummary": mixed_gpu_report})
+    assert_true(
+        "GPU workers: 1/2 successful, 869 verification passes" in mixed_gpu_summary_text,
+        "run summary preserves the aggregate while exposing the unverified worker",
+    )
+
 
 def test_report_export_result_contract_bundle() -> None:
     segments = [
@@ -6061,6 +6118,35 @@ def test_egl_runtime_discovery_helpers() -> None:
 
 
 def test_opencl_compute_worker_script_builder() -> None:
+    assert_equal(
+        opencl_compute_phase_limits(
+            safe_mode_enabled=True,
+            device_class="integrated",
+            ramp_step_seconds=15.0,
+        ),
+        (22.5, 45.0),
+        "OpenCL integrated safe-mode phase boundaries",
+    )
+    assert_equal(
+        opencl_compute_phase_at_elapsed(
+            30.0,
+            safe_mode_enabled=True,
+            device_class="integrated",
+            ramp_step_seconds=15.0,
+        ),
+        "load",
+        "30-second OpenCL stage remains in load phase",
+    )
+    assert_equal(
+        opencl_compute_phase_at_elapsed(
+            45.0,
+            safe_mode_enabled=True,
+            device_class="integrated",
+            ramp_step_seconds=15.0,
+        ),
+        "verify",
+        "long OpenCL run retains dedicated verify phase",
+    )
     script = build_opencl_compute_workload_script(
         target_vendor="nvidia",
         target_vendor_id="10de",
@@ -6071,12 +6157,64 @@ def test_opencl_compute_worker_script_builder() -> None:
         target_gpu_index=0,
         target_vram_total=24 * 1024 * 1024 * 1024,
         compute_variant="baseline",
+        opencl_device_index=3,
         worker_params={"result_file": "/tmp/opencl_compute_worker_result.json", "safe_mode_enabled": True},
     )
     compile(script, "<opencl_compute_worker>", "exec")
     assert_true("score_device" in script, "OpenCL compute worker target scoring")
+    assert_true("OPENCL_DEVICE_INDEX = 3" in script, "OpenCL compute provider selector is independent")
+    assert_true('"telemetry_gpu_index": TARGET_GPU_INDEX' in script, "OpenCL compute retains telemetry identity")
     assert_true("safe_runtime_limits" in script, "OpenCL compute worker safe runtime limits")
     assert_true("verify_buffer" in script, "OpenCL compute worker buffer verification")
+    script_tree = ast.parse(script)
+    verification_checks = [
+        node
+        for node in ast.walk(script_tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "verify_buffer"
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+    ]
+    assert_equal(len(verification_checks), 1, "OpenCL compute periodic verification condition count")
+    verification_condition = ast.unparse(verification_checks[0].test)
+    assert_true("phase_name" not in verification_condition, "OpenCL compute verification is not gated on final phase")
+    assert_true("last_verify_monotonic" in verification_condition, "OpenCL compute verification remains rate-limited")
+    assert_true(
+        "OpenCL compute ended before completing a required readback verification pass" in script,
+        "OpenCL compute fails closed when a bounded run ends before verification",
+    )
+    allocation_status_checks = [
+        node.test
+        for node in ast.walk(script_tree)
+        if isinstance(node, ast.If)
+        and "error_code.value" in ast.unparse(node.test)
+        and "buffer_handle" in ast.unparse(node.test)
+    ]
+    assert_equal(len(allocation_status_checks), 1, "OpenCL compute allocation status check count")
+    allocation_status_check = compile(
+        ast.Expression(allocation_status_checks[0]),
+        "<opencl_compute_allocation_status>",
+        "eval",
+    )
+    assert_equal(
+        eval(allocation_status_check, {"error_code": SimpleNamespace(value=0), "buffer_handle": object()}),
+        False,
+        "OpenCL compute accepts successful buffer allocation",
+    )
+    assert_equal(
+        eval(allocation_status_check, {"error_code": SimpleNamespace(value=-5), "buffer_handle": object()}),
+        True,
+        "OpenCL compute rejects failed buffer allocation status",
+    )
+    assert_equal(
+        eval(allocation_status_check, {"error_code": SimpleNamespace(value=0), "buffer_handle": None}),
+        True,
+        "OpenCL compute rejects missing buffer handle",
+    )
 
 
 def test_opencl_vram_worker_script_builder() -> None:
@@ -6090,12 +6228,37 @@ def test_opencl_vram_worker_script_builder() -> None:
         "0000:01:00.0",
         0,
         24 * 1024 * 1024 * 1024,
+        opencl_device_index=3,
         worker_params={"result_file": "/tmp/opencl_vram_worker_result.json", "safe_mode_enabled": True},
         result_file="/tmp/opencl_vram_worker_result.json",
     )
     compile(script, "<opencl_vram_worker>", "exec")
     assert_true("device_score" in script, "OpenCL VRAM worker target scoring")
+    assert_true("OPENCL_DEVICE_INDEX = 3" in script, "OpenCL VRAM provider selector is independent")
+    assert_true('"telemetry_gpu_index": TARGET_GPU_INDEX' in script, "OpenCL VRAM retains telemetry identity")
     assert_true("clCreateBuffer" in script, "OpenCL VRAM worker allocation path")
+    script_tree = ast.parse(script)
+    verification_checks = [
+        node
+        for node in ast.walk(script_tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.AugAssign)
+            and isinstance(child.target, ast.Subscript)
+            and "verification_passes" in ast.unparse(child.target)
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+    ]
+    assert_true(verification_checks, "OpenCL VRAM periodic verification condition exists")
+    assert_true(
+        all("phase_name" not in ast.unparse(node.test) for node in verification_checks),
+        "OpenCL VRAM verification is not gated on final phase",
+    )
+    assert_true(
+        "OpenCL VRAM ended before completing a required readback verification pass" in script,
+        "OpenCL VRAM fails closed when a bounded run ends before verification",
+    )
     assert_true("clEnqueueReadBuffer" in script, "OpenCL VRAM worker buffer readback")
     assert_true("vram_mismatch_count" in script, "OpenCL VRAM worker mismatch verification")
 
@@ -6162,6 +6325,37 @@ def test_opencl_targeting_helpers() -> None:
     assert_true("nvidia corporation" in gpu_vendor_aliases("10de"), "OpenCL vendor aliases")
     assert_true(gpu_vendor_matches_text("1002", "Advanced Micro Devices, Inc.", "Radeon"), "OpenCL vendor text match")
     assert_true(not gpu_vendor_matches_text("nvidia", "Intel Arc"), "OpenCL vendor text mismatch")
+
+    class OpenclTargetRunner:
+        _normalize_pci_id = staticmethod(normalize_pci_id)
+        _normalize_pci_slot = staticmethod(normalize_pci_slot)
+        _gpu_vendor_matches_text = staticmethod(gpu_vendor_matches_text)
+        _likely_discrete_gpu_cards = staticmethod(lambda cards: cards)
+        _discover_gpu_cards = staticmethod(lambda: [])
+
+        def _opencl_device_score_for_target(self, device: dict, target: dict) -> float:
+            return opencl_device_score_for_target(self, device, target)
+
+    opencl_runner = OpenclTargetRunner()
+    reordered_devices = [
+        {"opencl_index": 0, "pci_slot": "0000:02:00.0", "vendor_id": "10de", "vendor": "NVIDIA", "name": "dGPU", "global_mem_bytes": 8 * GIB},
+        {"opencl_index": 1, "pci_slot": "0000:00:02.0", "vendor_id": "8086", "vendor": "Intel", "name": "iGPU", "global_mem_bytes": 2 * GIB},
+    ]
+    opencl_match = opencl_best_device_for_target(
+        opencl_runner,
+        reordered_devices,
+        {"gpu_index": 1, "slot": "0000:02:00.0", "vendor_id": "10de", "vendor": "NVIDIA", "name": "dGPU", "vram_total": 8 * GIB},
+    )
+    assert_equal(opencl_match["opencl_index"], 0, "OpenCL mapping uses BDF instead of DRM ordinal")
+    duplicate_opencl = opencl_best_device_for_target(
+        opencl_runner,
+        [
+            {"opencl_index": 0, "vendor_id": "10de", "vendor": "NVIDIA", "name": "Twin", "global_mem_bytes": 8 * GIB},
+            {"opencl_index": 1, "vendor_id": "10de", "vendor": "NVIDIA", "name": "Twin", "global_mem_bytes": 8 * GIB},
+        ],
+        {"gpu_index": 0, "vendor_id": "10de", "vendor": "NVIDIA", "name": "Twin", "vram_total": 8 * GIB},
+    )
+    assert_equal(duplicate_opencl, None, "duplicate OpenCL devices without stable identity remain ambiguous")
 
 
 def test_opencl_runtime_discovery_helpers() -> None:
@@ -6907,6 +7101,8 @@ def test_gpu_worker_validation_detail_builder() -> None:
     assert_equal(detail["Mode"], "vram", "worker detail mode from workload")
     assert_equal(detail["Workload"], "vram", "worker detail workload")
     assert_equal(detail["Backend"], "python_vulkan_memory", "worker detail backend")
+    assert_true(detail["VerificationRequired"], "worker detail records required verification")
+    assert_true(detail["VerificationSatisfied"], "worker detail records satisfied verification")
     assert_equal(detail["DeviceName"], "RTX 5090 #3", "worker detail device")
     assert_equal(detail["ExpectedGpuIndex"], 2, "worker detail target GPU index fallback")
     assert_equal(detail["ExpectedSlot"], "0000:03:00.0", "worker detail target slot fallback")
@@ -15297,8 +15493,12 @@ def test_telemetry_source_helpers() -> None:
         gpu_cards=[
             {
                 "gpu_index": 0,
+                "telemetry_gpu_index": 0,
                 "card": "card0",
                 "slot": "0000:13:00.0",
+                "physical_gpu_id": "pci:0000:13:00.0",
+                "identity_source": "pci_bdf",
+                "identity_confidence": "high",
                 "vendor": "AMD",
                 "driver": "amdgpu",
                 "pcie_link": {
@@ -15395,6 +15595,8 @@ def test_telemetry_source_helpers() -> None:
     assert_equal(source_map["fields"]["storage_drive_0_temp_c"]["pcie_link"]["CurrentLinkWidth"], "4", "source map storage PCIe link field")
     assert_equal(source_map["storage_link_map"][0]["block_name"], "nvme0n1", "source map storage PCIe link map")
     assert_equal(source_map["gpu_index_map"][0]["pcie_link"]["CurrentLinkSpeed"], "8.0 GT/s", "source map GPU PCIe link map")
+    assert_equal(source_map["gpu_index_map"][0]["physical_gpu_id"], "pci:0000:13:00.0", "source map GPU physical identity")
+    assert_equal(source_map["gpu_index_map"][0]["telemetry_gpu_index"], 0, "source map explicit telemetry index")
     assert_true("pcie_link" not in source_map["gpu_index_map"][1], "source map drops mismatched GPU PCIe link")
     assert_equal(source_map["fields"]["nic_0_temp_c"]["kind"], "nic_temp", "source map NIC temp kind")
     assert_true(source_map["fields"]["nic_0_temp_c"]["evidence_only"], "source map NIC temp evidence-only marker")
@@ -15906,7 +16108,9 @@ def test_telemetry_gpu_helpers() -> None:
             command_exists=lambda _command: False,
             discover_nvidia_smi_gpus=lambda: [
                 {
+                    "index": 0,
                     "slot": "0000:05:00.0",
+                    "uuid": "GPU-test-uuid",
                     "name": "NVIDIA Test",
                     "card": "card0",
                     "memory_temperature_c": 72.0,
@@ -15924,6 +16128,11 @@ def test_telemetry_gpu_helpers() -> None:
             any(source["kind"] == "nvidia_smi" and source["key"] == "gpu_0_fan_percent" for source in nvidia_sources),
             "GPU source discovery maps NVIDIA fan speed",
         )
+        nvidia_source = next(source for source in nvidia_sources if source["kind"] == "nvidia_smi")
+        assert_equal(nvidia_source["telemetry_gpu_index"], 0, "NVIDIA source retains DRM telemetry index")
+        assert_equal(nvidia_source["nvidia_index"], "0", "NVIDIA provider index zero retained separately")
+        assert_equal(nvidia_source["physical_gpu_id"], "pci:0000:05:00.0", "NVIDIA source canonical PCI identity")
+        assert_equal(nvidia_source["nvidia_uuid"], "GPU-test-uuid", "NVIDIA UUID retained as provider alias")
         nvidia_values = read_gpu_values(
             nvidia_sources,
             read_fixture,
@@ -16907,6 +17116,18 @@ def test_gpu_identity_helpers() -> None:
     assert_equal(normalize_pci_slot("00000000:01:00.0"), "0000:01:00.0", "normalize long PCI slot")
     assert_equal(normalize_pci_slot("01:00.0"), "0000:01:00.0", "normalize short PCI slot")
     assert_equal(normalize_pci_slot("pci-0000:13:00.0"), "0000:13:00.0", "normalize pci-prefixed slot")
+    assert_equal(pci_physical_gpu_id("0000000f:01:00.0"), "pci:000f:01:00.0", "canonical PCI GPU identity")
+    identity = physical_gpu_identity({"slot": "000f:01:00.0"})
+    assert_equal(identity["physical_gpu_id"], "pci:000f:01:00.0", "physical GPU identity prefers BDF")
+    assert_equal(identity["identity_source"], "pci_bdf", "physical GPU identity provenance")
+    platform_identity = apply_physical_gpu_identity({"platform_gpu_name": "3d00000.gpu"})
+    assert_equal(platform_identity["physical_gpu_id"], "platform:3d00000.gpu", "platform GPU identity")
+    uuid_identity = physical_gpu_identity({"nvidia_uuid": "GPU-strong-provider-uuid"})
+    assert_equal(
+        uuid_identity["physical_gpu_id"],
+        "provider:nvidia:GPU-strong-provider-uuid",
+        "provenance-qualified provider UUID identity",
+    )
     assert_true(pci_slot_sort_key("0000:01:00.0") < pci_slot_sort_key("0000:13:00.0"), "PCI slot sort key")
     assert_equal(gpu_vendor_name("0x8086"), "Intel", "GPU vendor name")
     assert_equal(gpu_vendor_name("1a03"), "1A03", "unknown GPU vendor name")
@@ -17065,6 +17286,34 @@ def test_gpu_target_helpers() -> None:
         assert_equal(platform_cards[0]["platform_gpu_driver"], "adreno", "unique platform GPU associates with non-PCI DRM target")
         assert_equal(platform_cards[0]["vendor"], "Qualcomm", "platform compatible supplies truthful vendor")
         assert_equal(platform_cards[0]["name"], "Adreno platform GPU", "platform driver supplies non-fictitious GPU name")
+        assert_equal(platform_cards[0]["physical_gpu_id"], "platform:3d00000.gpu", "platform target canonical identity")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        drm = root / "drm"
+        platform = root / "platform"
+        device = root / "devices" / "pci0000:00" / "0000:01:00.0"
+        card = drm / "card1"
+        render = drm / "renderD128"
+        device.mkdir(parents=True)
+        platform.mkdir(parents=True)
+        card.mkdir(parents=True)
+        render.mkdir(parents=True)
+        (device / "uevent").write_text(
+            "DRIVER=nvidia\nPCI_SLOT_NAME=0000:01:00.0\nPCI_ID=10DE:2684\n",
+            encoding="utf-8",
+        )
+        (device / "vendor").write_text("0x10de\n", encoding="utf-8")
+        (device / "device").write_text("0x2684\n", encoding="utf-8")
+        (card / "device").symlink_to(device, target_is_directory=True)
+        (render / "device").symlink_to(device, target_is_directory=True)
+        pci_cards = discover_gpu_cards(sys_drm=drm, sys_platform=platform)
+        assert_equal(pci_cards[0]["physical_gpu_id"], "pci:0000:01:00.0", "PCI target canonical identity")
+        assert_equal(pci_cards[0]["render_node"], "/dev/dri/renderD128", "DRM card/render relationship")
+        assert_true(
+            "drm_render_node:/dev/dri/renderD128" in pci_cards[0]["identity_aliases"],
+            "render-node alias retained",
+        )
 
 
 def test_gpu_capability_profile_helpers() -> None:
@@ -18386,6 +18635,30 @@ def test_gpu_progress_helpers() -> None:
         " | cpu_package_temp_c=64.0 | memory_used_gib=12.5",
         "orchestrator progress exposes collected system values without GPU targets",
     )
+    mapped_spec = GpuWorkerSpec(
+        workload="gpu_3d",
+        backend="python_vulkan_compute",
+        gpu_index=0,
+        card="card1",
+        slot="000f:01:00.0",
+        target_id="000f:01:00.0",
+        command=["vulkan"],
+        telemetry_gpu_index=1,
+        vulkan_device_index=0,
+        physical_gpu_id="pci:000f:01:00.0",
+    )
+    mapped_progress = orchestrator_stage_progress_summary(
+        SimpleNamespace(
+            settings=SimpleNamespace(gpu_safe_mode=False),
+            _read_worker_result=lambda _entry, allow_partial=True: {"status": "running"},
+        ),
+        SimpleNamespace(samples=[Sample(1.0, {"gpu_1_busy_percent": 88.0, "gpu_1_power_w": 42.0})]),
+        [SimpleNamespace(gpu_spec=mapped_spec)],
+        stage_elapsed_seconds=5.0,
+    )
+    assert_true("gpu1@000f:01:00.0" in mapped_progress, "orchestrator labels mapped telemetry target")
+    assert_true("busy=88.0%" in mapped_progress, "orchestrator reads mapped target telemetry")
+    assert_true("gpu_other=" not in mapped_progress, "mapped telemetry is not reported observed-only")
     state_parts = target_gpu_state_progress_parts(
         [
             {
@@ -18561,6 +18834,33 @@ def test_gpu_retune_policy_helpers() -> None:
         thermal_safe_for_gpu=lambda gpu_index: True,
     )
     assert_equal(vram_decision.reason, "vram_stable", "retune policy keeps VRAM workers stable")
+
+    mapped_keys: list[str] = []
+    mapped_thermal_indices: list[int] = []
+    mapped_spec = GpuWorkerSpec(
+        "gpu_3d",
+        "python_egl_gles2",
+        1,
+        "card1",
+        "000f:01:00.0",
+        "000f:01:00.0",
+        ["egl"],
+        telemetry_gpu_index=1,
+        vulkan_device_index=0,
+    )
+    mapped_decision = gpu_worker_retune_decision(
+        mapped_spec,
+        settings=settings,
+        retune_events=[],
+        stage_elapsed_seconds=70.0,
+        stage_duration_seconds=180.0,
+        latest_metric_value=lambda key: mapped_keys.append(key) or 55.0,
+        recent_metric_values_for_key=lambda key, _seconds: [55.0, 55.0, 55.0],
+        thermal_safe_for_gpu=lambda index: mapped_thermal_indices.append(index) or True,
+    )
+    assert_true(mapped_decision.should_retune, "mapped GPU remains retunable")
+    assert_equal(mapped_keys, ["gpu_1_busy_percent"], "retune reads mapped telemetry index")
+    assert_equal(mapped_thermal_indices, [1], "retune thermal safety uses mapped telemetry index")
 
 
 def test_advanced_debug_logger_helpers() -> None:
@@ -19140,6 +19440,18 @@ def test_gpu_stage_target_helpers() -> None:
     )
     assert_equal(worker_targets[0]["workloads"], ["gpu_3d"], "worker target deduped workloads")
     assert_equal(worker_targets[0]["backends"], ["python_egl_gles2"], "worker target deduped backends")
+    mapped_worker_targets = stage_target_gpu_details_from_worker_dicts(
+        [{
+            "gpu_index": 0,
+            "telemetry_gpu_index": 1,
+            "vulkan_device_index": 0,
+            "target_id": "000f:01:00.0",
+            "workload": "gpu_3d",
+            "backend": "python_vulkan_compute",
+        }]
+    )
+    assert_equal(list(mapped_worker_targets), [1], "stage targets use explicit telemetry index")
+    assert_equal(telemetry_gpu_index(mapped_worker_targets[1]), 1, "mapped stage target retains telemetry index")
     resolver = GpuTargetingResolver(worker_integrity_error_count=lambda _payloads: 0)
     inventory = [
         {"Name": "Integrated", "Interface": "0000:00:02.0", "Card": "card0"},
@@ -19158,6 +19470,71 @@ def test_gpu_stage_target_helpers() -> None:
     )
     assert_equal([item["GpuIndex"] for item in details], [1], "GPU evidence binds to telemetry by stable slot before runtime index")
     assert_equal(details[0]["Name"], "Discrete", "stable-slot telemetry association preserves physical identity")
+
+    numeric_only = resolver.targeting_details(
+        SimpleNamespace(
+            gpu_workers_initial=[{"gpu_index": 0, "backend": "legacy", "workload": "gpu_3d"}],
+            gpu_workers_final=[],
+            worker_results=[],
+        ),
+        {0: "Unknown"},
+        {0: 0},
+        [Sample(1.0, {"gpu_0_busy_percent": 50.0})],
+        [],
+    )
+    assert_equal(numeric_only[0]["IdentityResolution"], "legacy_numeric_unresolved", "numeric-only legacy identity is unresolved")
+    assert_true(not numeric_only[0]["ObservedInTelemetry"], "numeric-only legacy evidence is not silently joined")
+
+    spark_telemetry = SimpleNamespace(
+        _gpu_sources=[
+            {"gpu_index": 0, "telemetry_gpu_index": 0, "card": "card0"},
+            {
+                "gpu_index": 1,
+                "telemetry_gpu_index": 1,
+                "card": "card1",
+                "slot": "000f:01:00.0",
+                "physical_gpu_id": "pci:000f:01:00.0",
+            },
+        ]
+    )
+    spark_window = SimpleNamespace(
+        gpu_workers_initial=[{
+            "gpu_index": 1,
+            "telemetry_gpu_index": 1,
+            "vulkan_device_index": 0,
+            "physical_gpu_id": "pci:000f:01:00.0",
+            "slot": "000f:01:00.0",
+            "card": "card1",
+            "target_id": "000f:01:00.0",
+            "backend": "python_vulkan_compute",
+            "workload": "gpu_3d",
+        }],
+        gpu_workers_final=[],
+        worker_results=[{
+            "kind": "gpu",
+            "target_gpu_index": 1,
+            "telemetry_gpu_index": 1,
+            "vulkan_device_index": 0,
+            "physical_gpu_id": "pci:000f:01:00.0",
+            "target_slot": "000f:01:00.0",
+            "target_card": "card1",
+            "backend": "python_vulkan_compute",
+            "status": "ok",
+        }],
+    )
+    spark_details = resolver.targeting_details(
+        spark_window,
+        {0: "simple-framebuffer", 1: "NVIDIA GB10"},
+        {0: 0, 1: 0},
+        [Sample(1.0, {"gpu_1_busy_percent": 99.0, "gpu_1_power_w": 42.0})],
+        [{"Name": "NVIDIA GB10", "Interface": "000f:01:00.0", "Card": "card1"}],
+        spark_telemetry,
+    )
+    assert_equal(len(spark_details), 1, "Spark stable identity produces one GPU record")
+    assert_equal(spark_details[0]["GpuIndex"], 1, "Spark workload maps to telemetry index one")
+    assert_true(spark_details[0]["Targeted"], "Spark mapped GPU targeted")
+    assert_true(spark_details[0]["ObservedInTelemetry"], "Spark mapped GPU observed")
+    assert_equal(spark_details[0]["IdentityResolution"], "physical_gpu_id", "Spark physical identity match")
 
 
 def test_worker_evidence_helpers() -> None:
@@ -19199,6 +19576,8 @@ def test_worker_evidence_helpers() -> None:
     assert_equal(payload["observed_exit_signal"], 9, "worker payload signal")
     assert_equal(payload["status"], "crashed", "worker payload crashed status")
     assert_equal(payload["reported_status"], "ok", "worker payload reported status")
+    assert_true(payload["verification_required"], "readback worker records required verification")
+    assert_true(not payload["verification_satisfied"], "zero-pass readback worker records unsatisfied verification")
     assert_equal(payload["stdout_tail"], "out", "worker payload stdout tail")
     fallback = fallback_worker_payload(entry, 0, stdout_tail="done")
     assert_equal(fallback["status"], "ok", "fallback worker ok status")
@@ -19227,6 +19606,90 @@ def test_worker_evidence_helpers() -> None:
     )
     assert_equal(runtime_events[0]["category"], "backend_runtime_failure", "worker runtime failure event")
     assert_equal(runtime_events[0]["severity"], "warning", "compat runtime failure warning")
+    missing_verification_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl_compute",
+            "status": "ok",
+            "error_count": 0,
+            "suite_verification": "compute_readback",
+            "verification_passes": 0,
+        },
+        "OpenCL",
+        entry_kind="gpu",
+        backend_name="python_opencl_compute",
+        backend_load_class="high_load",
+    )
+    assert_equal(
+        [event["category"] for event in missing_verification_events],
+        ["worker_verification_missing"],
+        "required zero-verification worker fails closed",
+    )
+    explicit_missing_verification_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl_compute",
+            "status": "ok",
+            "error_count": 0,
+            "verification_required": True,
+            "verification_passes": 0,
+        },
+        "OpenCL",
+        entry_kind="gpu",
+        backend_name="python_opencl_compute",
+        backend_load_class="high_load",
+    )
+    assert_equal(
+        [event["category"] for event in explicit_missing_verification_events],
+        ["worker_verification_missing"],
+        "raw worker verification requirement fails closed without suite enrichment",
+    )
+    verified_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl_compute",
+            "status": "ok",
+            "error_count": 0,
+            "suite_verification": "compute_readback",
+            "verification_passes": 1,
+        },
+        "OpenCL",
+        entry_kind="gpu",
+        backend_name="python_opencl_compute",
+        backend_load_class="high_load",
+    )
+    assert_equal(verified_events, [], "required verified worker remains successful")
+    mismatch_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "python_opencl_compute",
+            "status": "error",
+            "error_count": 1,
+            "compute_mismatch_count": 1,
+            "suite_verification": "compute_readback",
+            "verification_passes": 1,
+        },
+        "OpenCL",
+        entry_kind="gpu",
+        backend_name="python_opencl_compute",
+        backend_load_class="high_load",
+    )
+    assert_equal(mismatch_events[0]["category"], "verification_error", "OpenCL mismatch remains a worker failure")
+    telemetry_only_events = worker_result_events_from_payload(
+        {
+            "kind": "gpu",
+            "backend": "external_gpu",
+            "status": "ok",
+            "error_count": 0,
+            "suite_verification": "telemetry_only",
+            "verification_passes": 0,
+        },
+        "External GPU",
+        entry_kind="gpu",
+        backend_name="external_gpu",
+        backend_load_class="external_smoke",
+    )
+    assert_equal(telemetry_only_events, [], "telemetry-only backend does not require readback")
     allocation_events = worker_result_events_from_payload(
         {
             "kind": "gpu",
@@ -19335,6 +19798,12 @@ def test_gpu_worker_plan_helpers() -> None:
         slot="0000:02:00.0",
         target_id="0000:02:00.0",
         command=["python", "native/vulkan_compute_worker.py"],
+        physical_gpu_id="pci:0000:02:00.0",
+        identity_source="pci_bdf",
+        identity_confidence="high",
+        telemetry_gpu_index=2,
+        vulkan_device_index=0,
+        nvidia_index="1",
         draw_count=1024,
         shader_iterations=64,
         surface_size=2048,
@@ -19354,6 +19823,10 @@ def test_gpu_worker_plan_helpers() -> None:
     serialized = serialize_gpu_worker_spec(worker)
     assert_equal(serialized["backend"], "python_vulkan_compute", "worker plan backend")
     assert_equal(serialized["target_id"], "0000:02:00.0", "worker plan target")
+    assert_equal(serialized["physical_gpu_id"], "pci:0000:02:00.0", "worker plan physical identity")
+    assert_equal(serialized["telemetry_gpu_index"], 2, "worker plan telemetry index")
+    assert_equal(serialized["vulkan_device_index"], 0, "worker plan Vulkan provider index")
+    assert_equal(serialized["nvidia_index"], "1", "worker plan NVIDIA provider index")
     assert_equal(serialized["target_vram_bytes"], 4 * 1024 ** 3, "worker plan VRAM bytes")
     assert_true("command" not in serialized, "worker plan serialization excludes launch command")
 
@@ -20414,6 +20887,15 @@ def test_gpu_backend_support_helpers() -> None:
     assert_true(vulkan_match["supported"], "Vulkan support matched target")
     assert_equal(vulkan_match["resolved_device_name"], "RTX 5090", "Vulkan support matched name")
 
+    vulkan_ambiguous = vulkan_backend_target_support(
+        backend="python_vulkan_compute",
+        target={"target_id": "Twin", "vendor": "nvidia", "driver": "nvidia"},
+        workload="gpu_3d",
+        vulkan_match={"available": True, "ambiguous": True, "device": {"deviceName": "Twin"}},
+    )
+    assert_true(not vulkan_ambiguous["supported"], "ambiguous Vulkan target fails closed")
+    assert_true("stable physical identity" in vulkan_ambiguous["reason"], "ambiguous Vulkan reason")
+
     vulkan_missing = vulkan_backend_target_support(
         backend="python_vulkan_transfer",
         target={"target_id": "0000:02:00.0", "vendor": "amd", "driver": "amdgpu"},
@@ -20747,6 +21229,31 @@ def test_vulkan_targeting_helpers() -> None:
     )
     assert_true(ambiguous["available"], "Vulkan ambiguous same-model match available")
     assert_true(ambiguous["ambiguous"], "Vulkan ambiguous same-model match flagged")
+
+    ordinal_only = vulkan_device_for_target(
+        [
+            {"index": 0, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "NVIDIA A", "deviceType": "discrete"},
+            {"index": 1, "vendorID": "10de", "deviceID": "bbbb", "deviceName": "NVIDIA B", "deviceType": "discrete"},
+        ],
+        {"gpu_index": 0, "vendor_id": "10de", "vendor": "nvidia"},
+        gpu_cards=[],
+        likely_discrete_ids=set(),
+    )
+    assert_true(ordinal_only["ambiguous"], "ordinal-only Vulkan tie remains ambiguous")
+
+    reordered = vulkan_device_for_target(
+        [
+            {"index": 0, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "dGPU", "deviceType": "discrete", "pci_slot": "0000:02:00.0"},
+            {"index": 1, "vendorID": "8086", "deviceID": "bbbb", "deviceName": "iGPU", "deviceType": "integrated", "pci_slot": "0000:00:02.0"},
+        ],
+        {"gpu_index": 1, "slot": "0000:02:00.0", "vendor_id": "10de", "device": "aaaa", "vendor": "nvidia"},
+        gpu_cards=[
+            {"gpu_index": 0, "slot": "0000:00:02.0", "vendor_id": "8086", "device": "bbbb"},
+            {"gpu_index": 1, "slot": "0000:02:00.0", "vendor_id": "10de", "device": "aaaa"},
+        ],
+        likely_discrete_ids={"0000:02:00.0"},
+    )
+    assert_equal(reordered["device"]["index"], 0, "Vulkan reordering resolves by stable slot, not ordinal")
 
 
 def test_gpu_worker_planner_helpers() -> None:
@@ -25202,6 +25709,25 @@ GPU1:
     assert_equal(merged[0]["device_local_heap_bytes"], 12 * GIB, "Vulkan merge adds native heap capability")
     assert_equal(merged[0]["max_storage_buffer_range_bytes"], 2 * GIB, "Vulkan merge adds buffer limit")
     assert_equal(merged[0]["max_memory_allocation_count"], 4096, "Vulkan merge adds allocation-count limit")
+    reordered_merge = merge_vulkan_device_inventories(
+        [
+            {"index": 0, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "Discrete"},
+            {"index": 1, "vendorID": "8086", "deviceID": "bbbb", "deviceName": "Integrated"},
+        ],
+        [
+            {"index": 0, "vendorID": "8086", "deviceID": "bbbb", "deviceName": "Integrated", "device_local_heap_bytes": 1},
+            {"index": 1, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "Discrete", "device_local_heap_bytes": 2},
+        ],
+    )
+    assert_equal(reordered_merge[0]["device_local_heap_bytes"], 2, "Vulkan inventory merge ignores provider order")
+    duplicate_merge = merge_vulkan_device_inventories(
+        [{"index": 0, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "Twin"}],
+        [
+            {"index": 0, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "Twin", "device_local_heap_bytes": 1},
+            {"index": 1, "vendorID": "10de", "deviceID": "aaaa", "deviceName": "Twin", "device_local_heap_bytes": 2},
+        ],
+    )
+    assert_true("device_local_heap_bytes" not in duplicate_merge[0], "duplicate Vulkan devices are not guessed by ordinal")
 
     missing = collect_vulkan_runtime_details(
         command_exists=lambda _name: False,
@@ -25343,8 +25869,79 @@ def test_vulkan_worker_resolved_device_binding() -> None:
         assert_equal(command[command.index("--target-vendor-id") + 1], "0x5143", "worker gets resolved Vulkan vendor")
         assert_equal(command[command.index("--target-device-id") + 1], "0x43030c00", "worker gets resolved Vulkan device")
         assert_equal(command[command.index("--target-device-name") + 1], "Adreno X1-45", "worker gets resolved Vulkan name")
-        assert_equal(command[command.index("--target-gpu-index") + 1], "3", "worker gets resolved Vulkan runtime index")
+        assert_equal(command[command.index("--target-gpu-index") + 1], "0", "worker retains telemetry target index")
+        assert_equal(command[command.index("--vulkan-device-index") + 1], "3", "worker gets separate Vulkan runtime index")
         assert_equal(command[command.index("--physical-gpu-id") + 1], "platform:3d00000.gpu", "worker preserves physical platform identity")
+        assert_equal(spec.gpu_index, 0, "worker spec keeps DRM/telemetry index")
+        assert_equal(spec.vulkan_device_index, 3, "worker spec records Vulkan API index")
+
+    opencl_target = {
+        "target_id": "000f:01:00.0",
+        "physical_gpu_id": "pci:000f:01:00.0",
+        "identity_source": "pci_bdf",
+        "identity_confidence": "high",
+        "card": "card1",
+        "slot": "000f:01:00.0",
+        "gpu_index": 1,
+        "vendor": "NVIDIA",
+        "vendor_id": "10de",
+        "name": "NVIDIA GB10",
+        "vram_total": 0,
+        "nvidia_index": "0",
+    }
+
+    class FakeOpenclRunner:
+        _settings = SimpleNamespace(gpu_safe_max_load_scale=1.0)
+
+        def _python_runtime(self) -> str:
+            return "python3"
+
+        def _opencl_gpu_backend(self) -> dict:
+            return {"selected_env": {}}
+
+        def _opencl_device_for_target(self, _target: dict) -> dict:
+            return {"opencl_index": 0, "max_alloc_bytes": 1024 ** 3, "required_env": {}}
+
+        def _opencl_target_env(self, _target: dict, env: dict) -> dict:
+            return env
+
+        def _gpu_worker_tuned_params(self, *_args: Any, **_kwargs: Any) -> dict:
+            return {
+                "surface_size": 256,
+                "draw_count": 16,
+                "shader_iterations": 8,
+                "capability": {
+                    "device_class": "integrated",
+                    "compute_units": 20,
+                    "max_work_group_size": 256,
+                    "max_clock_mhz": 1000,
+                    "parallelism_hint": 1,
+                },
+            }
+
+        def _gpu_internal_ramp_params(self) -> dict:
+            return {"ramp_step_seconds": 15.0, "start_load_fraction": 0.35}
+
+        def _gpu_safe_mode_enabled(self) -> bool:
+            return True
+
+        def _normalize_opencl_compute_variant(self, value: str) -> str:
+            return value
+
+        def _normalize_gpu_3d_intensity(self, value: str) -> str:
+            return value
+
+        def _opencl_compute_workload_script(self, **_kwargs: Any) -> str:
+            return "pass"
+
+        def _wrap_gpu_command(self, command: list[str], _target: dict, _env: dict) -> list[str]:
+            return command
+
+    opencl_spec = build_python_opencl_compute_worker(FakeOpenclRunner(), opencl_target)
+    assert_equal(opencl_spec.gpu_index, 1, "OpenCL spec retains telemetry index")
+    assert_equal(opencl_spec.telemetry_gpu_index, 1, "OpenCL telemetry index retained")
+    assert_equal(opencl_spec.opencl_device_index, 0, "OpenCL provider index retained separately")
+    assert_equal(opencl_spec.physical_gpu_id, "pci:000f:01:00.0", "OpenCL physical identity retained")
     transfer_source = (ROOT / "native" / "vulkan_transfer_worker.py").read_text(encoding="utf-8")
     compute_source = (ROOT / "native" / "vulkan_compute_worker.py").read_text(encoding="utf-8")
     for source in (transfer_source, compute_source):

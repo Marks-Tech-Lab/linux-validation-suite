@@ -14,6 +14,7 @@ from Modules.lvs_gpu_retune import (
     worker_retune_count as count_worker_retunes,
 )
 from Modules.lvs_gpu_retune_policy import gpu_worker_retune_decision
+from Modules.lvs_gpu_stage_targets import telemetry_gpu_index
 from Modules.lvs_gpu_retune_process import replace_gpu_process_for_retune
 from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
 from Modules.lvs_stage_process_control import StageProcess
@@ -131,7 +132,10 @@ def maybe_retune_gpu_processes(
         if spec.workload == "gpu_3d":
             metric_summary = f"busy={decision.busy_percent}%"
         else:
-            latest_used_gb = latest_sample_metric_value(telemetry, f"gpu_{spec.gpu_index}_vram_used_gb")
+            latest_used_gb = latest_sample_metric_value(
+                telemetry,
+                f"gpu_{telemetry_gpu_index(spec)}_vram_used_gb",
+            )
             used_text = "unknown" if latest_used_gb is None else str(round(float(latest_used_gb), 2))
             metric_summary = f"vram={used_text}GB/{round(spec.target_vram_bytes / (1024 ** 3), 2)}GB"
         runtime_guard = (entry.system_memory_plan or {}).get("runtime_memory_guard") or {}

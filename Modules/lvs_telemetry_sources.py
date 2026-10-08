@@ -161,6 +161,14 @@ def telemetry_source_record(
     )
     for key in (
         "gpu_index",
+        "telemetry_gpu_index",
+        "physical_gpu_id",
+        "identity_source",
+        "identity_confidence",
+        "identity_aliases",
+        "render_node",
+        "nvidia_index",
+        "nvidia_uuid",
         "card",
         "slot",
         "vendor",
@@ -421,6 +429,7 @@ def build_telemetry_source_map(
     for card in gpu_cards:
         entry = {
             "gpu_index": int(card.get("gpu_index", 0) or 0),
+            "telemetry_gpu_index": int(card.get("gpu_index", 0) or 0),
             "card": card.get("card", ""),
             "slot": card.get("slot", ""),
             "vendor": card.get("vendor", ""),
@@ -429,6 +438,12 @@ def build_telemetry_source_map(
             "gpu_platform_path": card.get("platform_gpu_path", ""),
             "gpu_device_role": card.get("gpu_device_role", ""),
             "physical_gpu_id": card.get("physical_gpu_id", ""),
+            "identity_source": card.get("identity_source", card.get("gpu_identity_source", "")),
+            "identity_confidence": card.get("identity_confidence", ""),
+            "identity_aliases": card.get("identity_aliases", []),
+            "render_node": card.get("render_node", ""),
+            "nvidia_index": card.get("nvidia_index", ""),
+            "nvidia_uuid": card.get("nvidia_uuid", ""),
             "drm_driver": card.get("drm_driver", ""),
             "drm_device_role": card.get("drm_device_role", ""),
         }

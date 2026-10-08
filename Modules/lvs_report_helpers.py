@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from Modules.lvs_worker_integrity import worker_result_successful, worker_verification_satisfied
+
 
 REPORT_SUMMARY_MIRROR_FIELDS = (
     "Schema",
@@ -648,11 +650,7 @@ def validate_gpu_worker_summary(parsed: Dict[str, Any], report_summary: Dict[str
                 "details": {"summary": expected_worker_count, "validation_details": len(validation_details)},
             }
         )
-    successful = sum(
-        1
-        for detail in validation_details
-        if str((detail or {}).get("Status") or "").lower() in {"ok", "pass", "passed", "success"}
-    )
+    successful = sum(1 for detail in validation_details if worker_result_successful(detail or {}))
     expected_successful = int(worker_summary.get("SuccessfulWorkerResultCount") or 0)
     if validation_details and expected_successful != successful:
         issues.append(
@@ -1368,9 +1366,7 @@ def build_report_summary(
     verification_passes = 0
     for detail in gpu_validation_details:
         status = str(detail.get("Status") or "").lower()
-        if status in {"ok", "pass", "passed", "success"}:
-            worker_success_count += 1
-        if any(
+        integrity_failed = any(
             int(detail.get(key) or 0) > 0
             for key in (
                 "ErrorCount",
@@ -1379,8 +1375,11 @@ def build_report_summary(
                 "VramMismatchCount",
                 "TransferMismatchCount",
             )
-        ) or status in {"error", "fail", "failed"}:
+        ) or status in {"error", "fail", "failed"} or not worker_verification_satisfied(detail)
+        if integrity_failed:
             worker_failure_count += 1
+        elif worker_result_successful(detail):
+            worker_success_count += 1
         try:
             verification_passes += int(detail.get("VerificationPasses") or 0)
         except Exception:

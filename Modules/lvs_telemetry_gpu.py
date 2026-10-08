@@ -11,6 +11,7 @@ from .lvs_gpu_targets import (
     discover_gpu_cards as discover_gpu_target_cards,
     discover_platform_gpu_devices,
 )
+from .lvs_gpu_identity import physical_gpu_identity
 from .lvs_pcie_link import read_pcie_link_info
 from .lvs_telemetry_cpu import read_energy_power_source, read_temperature_path
 from .lvs_telemetry_sampling import (
@@ -587,7 +588,8 @@ def discover_gpu_sources(
         if source.get("slot")
     }
     next_gpu_index = max((int(source["gpu_index"]) for source in sources), default=-1) + 1
-    for gpu in discover_nvidia_smi_gpus():
+    nvidia_gpus = discover_nvidia_smi_gpus()
+    for gpu in nvidia_gpus:
         slot = (gpu.get("slot") or "").lower()
         mapped_gpu_index = slot_index_map.get(slot)
         if mapped_gpu_index is None:
@@ -672,6 +674,31 @@ def discover_gpu_sources(
                 "slot": str(card.get("slot", "") or "").lower(),
             }
         )
+    cards_by_index = {int(card.get("gpu_index", 0) or 0): card for card in cards}
+    nvidia_by_slot = {
+        str(gpu.get("slot") or "").strip().lower(): gpu
+        for gpu in nvidia_gpus
+        if gpu.get("slot")
+    }
+    for source in sources:
+        telemetry_index = int(source.get("gpu_index", 0) or 0)
+        card = cards_by_index.get(telemetry_index, {})
+        identity = physical_gpu_identity(card or source)
+        source.setdefault("telemetry_gpu_index", telemetry_index)
+        source.setdefault("physical_gpu_id", identity["physical_gpu_id"])
+        source.setdefault("identity_source", identity["identity_source"])
+        source.setdefault("identity_confidence", identity["identity_confidence"])
+        source.setdefault("identity_aliases", identity["identity_aliases"])
+        source.setdefault("card", str(card.get("card") or ""))
+        source.setdefault("render_node", str(card.get("render_node") or ""))
+        slot = str(source.get("slot") or card.get("slot") or "").strip().lower()
+        provider_gpu = nvidia_by_slot.get(slot, {})
+        if provider_gpu:
+            source.setdefault(
+                "nvidia_index",
+                str(provider_gpu.get("index")) if provider_gpu.get("index") is not None else "",
+            )
+            source.setdefault("nvidia_uuid", str(provider_gpu.get("uuid") or ""))
     return sources
 
 

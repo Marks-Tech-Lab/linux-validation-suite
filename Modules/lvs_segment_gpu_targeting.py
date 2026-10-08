@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+from Modules.lvs_worker_integrity import worker_result_successful
+
 
 WorkerErrorCountFn = Callable[[List[Dict[str, Any]]], int]
 
@@ -125,6 +127,7 @@ class GpuTargetingResolver:
         gpu_order: Dict[int, int],
         samples: List[Any],
         gpu_inventory: Optional[List[Dict[str, Any]]] = None,
+        telemetry: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         def new_info(gpu_index: int, targeted: bool) -> Dict[str, Any]:
             return {
@@ -141,6 +144,8 @@ class GpuTargetingResolver:
                 "Backends": [],
                 "ResolvedDeviceNames": [],
                 "ObservedInTelemetry": False,
+                "IdentityResolution": "unresolved",
+                "PhysicalGpuId": "",
                 "WorkerEvidence": {
                     "WorkerResultCount": 0,
                     "SuccessfulWorkerResultCount": 0,
@@ -167,29 +172,62 @@ class GpuTargetingResolver:
         }
         all_workers = [*window.gpu_workers_initial, *window.gpu_workers_final]
 
-        def resolved_gpu_index(payload: Dict[str, Any], fallback_key: str) -> int:
+        telemetry_by_physical_id: Dict[str, set[int]] = {}
+        telemetry_by_slot: Dict[str, set[int]] = {}
+        telemetry_by_card: Dict[str, set[int]] = {}
+        for source in getattr(telemetry, "_gpu_sources", []) if telemetry is not None else []:
+            try:
+                source_index = int(source.get("telemetry_gpu_index", source.get("gpu_index", 0)))
+            except Exception:
+                continue
+            physical_id = str(source.get("physical_gpu_id") or "").strip().lower()
+            slot = self.normalize_interface(source.get("slot"))
+            card = str(source.get("card") or "").strip().lower()
+            if physical_id:
+                telemetry_by_physical_id.setdefault(physical_id, set()).add(source_index)
+            if slot:
+                telemetry_by_slot.setdefault(slot, set()).add(source_index)
+            if card:
+                telemetry_by_card.setdefault(card, set()).add(source_index)
+
+        def unique_index(indexes: Optional[set[int]]) -> Optional[int]:
+            return next(iter(indexes)) if indexes and len(indexes) == 1 else None
+
+        def resolved_gpu_index(payload: Dict[str, Any], fallback_key: str) -> tuple[int, str]:
+            physical_id = str(payload.get("physical_gpu_id") or "").strip().lower()
+            matched = unique_index(telemetry_by_physical_id.get(physical_id)) if physical_id else None
+            if matched is not None:
+                return matched, "physical_gpu_id"
             for key in ("target_slot", "slot", "target_id"):
                 slot = self.normalize_interface(payload.get(key))
+                matched = unique_index(telemetry_by_slot.get(slot)) if slot else None
+                if matched is not None:
+                    return matched, "pci_bdf"
                 if slot in inventory_by_slot:
                     inventory_index, _gpu = inventory_by_slot[slot]
-                    for source_index, order in gpu_order.items():
-                        if int(order) == int(inventory_index):
-                            return int(source_index)
+                    candidates = [int(source_index) for source_index, order in gpu_order.items() if int(order) == int(inventory_index)]
+                    if len(candidates) == 1:
+                        return candidates[0], "legacy_unique_inventory_order"
             for key in ("target_card", "card"):
                 card = str(payload.get(key) or "").strip().lower()
+                matched = unique_index(telemetry_by_card.get(card)) if card else None
+                if matched is not None:
+                    return matched, "drm_card"
                 if card in inventory_by_card:
                     inventory_index, _gpu = inventory_by_card[card]
-                    for source_index, order in gpu_order.items():
-                        if int(order) == int(inventory_index):
-                            return int(source_index)
+                    candidates = [int(source_index) for source_index, order in gpu_order.items() if int(order) == int(inventory_index)]
+                    if len(candidates) == 1:
+                        return candidates[0], "legacy_unique_inventory_order"
             try:
-                return int(payload.get(fallback_key, payload.get("gpu_index", 0)) or 0)
+                return int(payload.get(fallback_key, payload.get("gpu_index", 0)) or 0), "legacy_numeric_unresolved"
             except Exception:
-                return 0
+                return 0, "unresolved"
 
         for worker in all_workers:
-            gpu_index = resolved_gpu_index(worker, "gpu_index")
+            gpu_index, identity_resolution = resolved_gpu_index(worker, "gpu_index")
             info = per_gpu.setdefault(gpu_index, new_info(gpu_index, True))
+            info["IdentityResolution"] = identity_resolution
+            info["PhysicalGpuId"] = str(worker.get("physical_gpu_id") or info.get("PhysicalGpuId") or "")
             info["Targeted"] = True
             info["ObservationRole"] = "targeted"
             for field_name, source_key in (
@@ -206,8 +244,10 @@ class GpuTargetingResolver:
         for payload in window.worker_results:
             if str(payload.get("kind") or "").lower() != "gpu":
                 continue
-            gpu_index = resolved_gpu_index(payload, "target_gpu_index")
+            gpu_index, identity_resolution = resolved_gpu_index(payload, "target_gpu_index")
             info = per_gpu.setdefault(gpu_index, new_info(gpu_index, True))
+            info["IdentityResolution"] = identity_resolution
+            info["PhysicalGpuId"] = str(payload.get("physical_gpu_id") or info.get("PhysicalGpuId") or "")
             info["Targeted"] = True
             info["ObservationRole"] = "targeted"
             for field_name, source_key in (
@@ -231,7 +271,7 @@ class GpuTargetingResolver:
                 info["ResolvedDeviceNames"].append(resolved_name)
             evidence = info["WorkerEvidence"]
             evidence["WorkerResultCount"] += 1
-            if str(payload.get("status") or "").lower() in {"ok", "pass", "passed", "success"}:
+            if worker_result_successful(payload):
                 evidence["SuccessfulWorkerResultCount"] += 1
             evidence["WorkerErrorCount"] += self._worker_integrity_error_count([payload])
             try:
@@ -259,7 +299,10 @@ class GpuTargetingResolver:
         observed_gpu_indices = self.observed_indices(samples)
         for gpu_index in observed_gpu_indices:
             info = per_gpu.setdefault(gpu_index, new_info(gpu_index, False))
-            info["ObservedInTelemetry"] = True
+            # Numeric-only legacy evidence is not enough to prove the worker
+            # and telemetry record are the same physical GPU.
+            if info.get("IdentityResolution") != "legacy_numeric_unresolved":
+                info["ObservedInTelemetry"] = True
         for gpu_index, info in per_gpu.items():
             resolved_inventory: Optional[tuple[int, Dict[str, Any]]] = None
             for slot_value in [*info.get("Slots", []), *info.get("TargetIds", [])]:

@@ -6,6 +6,22 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 
 
+def telemetry_gpu_index(target: Any) -> int:
+    """Return the DRM/telemetry namespace index for a worker/spec payload."""
+    if isinstance(target, dict):
+        value = target.get("telemetry_gpu_index")
+        if value is None:
+            value = target.get("gpu_index", target.get("target_gpu_index", 0))
+    else:
+        value = getattr(target, "telemetry_gpu_index", None)
+        if value is None:
+            value = getattr(target, "gpu_index", 0)
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
 def gpu_index_from_metric_key(key: str) -> int:
     try:
         return int(str(key).removeprefix("gpu_").split("_", 1)[0])
@@ -19,7 +35,7 @@ def stage_target_gpu_details_from_processes(stage_processes: Iterable[Any]) -> D
         spec = getattr(entry, "gpu_spec", None)
         if spec is None:
             continue
-        gpu_index = int(getattr(spec, "gpu_index", 0))
+        gpu_index = telemetry_gpu_index(spec)
         target = targets.setdefault(
             gpu_index,
             {
@@ -43,7 +59,7 @@ def stage_target_gpu_details_from_worker_dicts(workers: Iterable[Dict[str, Any]]
     targets: Dict[int, Dict[str, Any]] = {}
     for worker in workers:
         try:
-            gpu_index = int(worker.get("gpu_index", 0))
+            gpu_index = telemetry_gpu_index(worker)
         except Exception:
             gpu_index = 0
         target = targets.setdefault(

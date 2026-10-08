@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .lvs_gpu_identity import gpu_vendor_name, normalize_pci_id, normalize_pci_slot
+from .lvs_gpu_identity import apply_physical_gpu_identity, gpu_vendor_name, normalize_pci_id, normalize_pci_slot
 
 
 CommandExists = Callable[[str], bool]
@@ -198,6 +198,16 @@ def discover_gpu_cards(
         if vendor_id == "1a03" or driver.strip().lower() == "ast":
             continue
         resolved_name = lookup_name(vendor_id, device_code)
+        render_nodes: List[str] = []
+        try:
+            resolved_device = device_dir.resolve()
+            render_nodes = [
+                f"/dev/dri/{node.name}"
+                for node in sorted(sys_drm.glob("renderD[0-9]*"))
+                if (node / "device").resolve() == resolved_device
+            ]
+        except Exception:
+            render_nodes = []
         vram_total_value = read_int(device_dir / "mem_info_vram_total")
         vram_used_value = read_int(device_dir / "mem_info_vram_used")
         cards.append(
@@ -221,6 +231,7 @@ def discover_gpu_cards(
                 "name": resolved_name or f"{vendor_name} GPU {device_code}".strip(),
                 "target_id": slot or card.name,
                 "gpu_index": gpu_index,
+                "render_node": render_nodes[0] if render_nodes else "",
             }
         )
         gpu_index += 1
@@ -322,10 +333,14 @@ def discover_gpu_cards(
                 card["vram_total_source"] = "nvidia_smi_memory_total"
         if str(card.get("vendor", "") or "").strip().lower() == "nvidia":
             card["name"] = str(nvidia_gpu.get("name", "") or card.get("name", ""))
-            card["nvidia_index"] = str(nvidia_gpu.get("index", "") or "")
+            card["nvidia_index"] = (
+                str(nvidia_gpu.get("index")) if nvidia_gpu.get("index") is not None else ""
+            )
             card["nvidia_uuid"] = str(nvidia_gpu.get("uuid", "") or "")
         if not str(card.get("driver", "") or "").strip():
             card["driver"] = str(nvidia_gpu.get("driver", "") or "")
+    for card in cards:
+        apply_physical_gpu_identity(card)
     return cards
 
 

@@ -4,6 +4,44 @@ import textwrap
 from typing import Any, Dict, Optional
 
 
+def opencl_compute_phase_limits(
+    *,
+    safe_mode_enabled: bool,
+    device_class: str,
+    ramp_step_seconds: float,
+) -> tuple[float, float]:
+    if not safe_mode_enabled:
+        return 0.0, 0.0
+    ramp = max(0.0, float(ramp_step_seconds or 0.0))
+    if str(device_class or "").strip().lower() == "discrete":
+        warmup_end = max(12.0, ramp * 1.0)
+        return warmup_end, max(warmup_end + 24.0, ramp * 4.0)
+    warmup_end = max(8.0, ramp * 1.5)
+    return warmup_end, max(18.0, ramp * 3.0)
+
+
+def opencl_compute_phase_at_elapsed(
+    elapsed_seconds: float,
+    *,
+    safe_mode_enabled: bool,
+    device_class: str,
+    ramp_step_seconds: float,
+) -> str:
+    if not safe_mode_enabled:
+        return "verify"
+    warmup_end, load_end = opencl_compute_phase_limits(
+        safe_mode_enabled=safe_mode_enabled,
+        device_class=device_class,
+        ramp_step_seconds=ramp_step_seconds,
+    )
+    elapsed = max(0.0, float(elapsed_seconds or 0.0))
+    if elapsed < warmup_end:
+        return "warmup"
+    if elapsed < load_end:
+        return "load"
+    return "verify"
+
+
 def opencl_compute_fixed_commitment_bytes(
     *,
     surface_size: int,
@@ -39,6 +77,7 @@ def build_opencl_compute_workload_script(
     target_gpu_index: int,
     target_vram_total: int,
     compute_variant: str,
+    opencl_device_index: int = -1,
     worker_params: Optional[Dict[str, Any]] = None,
 ) -> str:
     params = worker_params or {}
@@ -67,6 +106,7 @@ def build_opencl_compute_workload_script(
         import signal
         import time
 
+        from Modules.lvs_opencl_compute_worker import opencl_compute_phase_at_elapsed, opencl_compute_phase_limits
         from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
 
         TARGET_VENDOR = {target_vendor!r}
@@ -76,6 +116,7 @@ def build_opencl_compute_workload_script(
         TARGET_SLOT = {target_slot!r}
         TARGET_ID = {target_id!r}
         TARGET_GPU_INDEX = {int(target_gpu_index)}
+        OPENCL_DEVICE_INDEX = {int(opencl_device_index)}
         TARGET_VRAM_TOTAL = {int(target_vram_total)}
         SURFACE_SIZE = {surface_size}
         DRAW_COUNT = {draw_count}
@@ -204,6 +245,8 @@ def build_opencl_compute_workload_script(
             "status": "ok",
             "error_count": 0,
             "verification_passes": 0,
+            "verification_required": True,
+            "verification_satisfied": False,
             "compute_mismatch_count": 0,
             "kernel_launches": 0,
             "buffer_count": 0,
@@ -234,6 +277,8 @@ def build_opencl_compute_workload_script(
             "target_slot": TARGET_SLOT,
             "target_id": TARGET_ID,
             "target_gpu_index": TARGET_GPU_INDEX,
+            "telemetry_gpu_index": TARGET_GPU_INDEX,
+            "opencl_device_index": OPENCL_DEVICE_INDEX,
             "target_vram_total": TARGET_VRAM_TOTAL,
             "frames": 0,
             "phase": "initializing",
@@ -407,8 +452,8 @@ def build_opencl_compute_workload_script(
                 diff = abs(int(info["global_mem_bytes"]) - int(TARGET_VRAM_TOTAL))
                 score += max(0, 60 - min(60, diff // max(1, 256 * 1024 * 1024)))
             score += min(30, int(info.get("global_mem_bytes", 0)) // max(1, 4 * 1024 ** 3))
-            if not device_slot and info.get("opencl_index") == TARGET_GPU_INDEX:
-                score += 10
+            if OPENCL_DEVICE_INDEX >= 0 and info.get("opencl_index") == OPENCL_DEVICE_INDEX:
+                score += 1000
             return score
 
         def rotl32(value, shift):
@@ -479,6 +524,7 @@ def build_opencl_compute_workload_script(
                     record_error(f"OpenCL compute mismatch at word {{sample_index}}: expected={{expected}} actual={{actual}}")
                     break
             state["verification_passes"] += 1
+            state["verification_satisfied"] = True
 
         def current_load_fraction(started_monotonic):
             if RAMP_STEP_SECONDS <= 0:
@@ -488,15 +534,11 @@ def build_opencl_compute_workload_script(
             return min(1.0, START_LOAD_FRACTION + (1.0 - START_LOAD_FRACTION) * progress)
 
         def phase_limits():
-            if not SAFE_MODE_ENABLED:
-                return 0.0, 0.0
-            if DEVICE_CLASS == "discrete":
-                warmup_end = max(12.0, RAMP_STEP_SECONDS * 1.0)
-                load_end = max(warmup_end + 24.0, RAMP_STEP_SECONDS * 4.0)
-                return warmup_end, load_end
-            warmup_end = max(8.0, RAMP_STEP_SECONDS * 1.5)
-            load_end = max(18.0, RAMP_STEP_SECONDS * 3.0)
-            return warmup_end, load_end
+            return opencl_compute_phase_limits(
+                safe_mode_enabled=SAFE_MODE_ENABLED,
+                device_class=DEVICE_CLASS,
+                ramp_step_seconds=RAMP_STEP_SECONDS,
+            )
 
         def high_headroom_discrete():
             return DEVICE_CLASS == "discrete" and str(TARGET_VENDOR or "").strip().lower() == "amd" and (
@@ -525,15 +567,13 @@ def build_opencl_compute_workload_script(
             return 0
 
         def current_phase(started_monotonic):
-            if not SAFE_MODE_ENABLED:
-                return "verify"
             elapsed = max(0.0, time.monotonic() - started_monotonic)
-            warmup_end, load_end = phase_limits()
-            if elapsed < warmup_end:
-                return "warmup"
-            if elapsed < load_end:
-                return "load"
-            return "verify"
+            return opencl_compute_phase_at_elapsed(
+                elapsed,
+                safe_mode_enabled=SAFE_MODE_ENABLED,
+                device_class=DEVICE_CLASS,
+                ramp_step_seconds=RAMP_STEP_SECONDS,
+            )
 
         def set_phase(name):
             if state.get("phase") == name:
@@ -743,7 +783,7 @@ def build_opencl_compute_workload_script(
                 raise RuntimeError(
                     f"OpenCL selected PCI slot {{selected_slot}} but target is {{target_slot}}"
                 )
-            if target_slot and not selected_slot and len(devices) > 1 and int(selected.get("opencl_index", -1)) != TARGET_GPU_INDEX:
+            if target_slot and not selected_slot and len(devices) > 1 and int(selected.get("opencl_index", -1)) != OPENCL_DEVICE_INDEX:
                 raise RuntimeError(
                     f"OpenCL could not verify PCI slot for target {{target_slot}}; selected index {{selected.get('opencl_index', -1)}}"
                 )
@@ -878,7 +918,7 @@ def build_opencl_compute_workload_script(
                     state["target_cap_reason"] = "runtime_memory_guard"
                     break
                 buffer_handle = cl_mem(CL.clCreateBuffer(context, CL_MEM_READ_WRITE, buffer_bytes, None, ctypes.byref(error_code)))
-                if int(error_code.value) != CL_SUCCESS or not buffer_handle:
+                if int(error_code.value) != 0 or not buffer_handle:
                     release_runtime_allocation_claim(
                         buffer_bytes,
                         shared_system_memory=DEVICE_CLASS != "discrete",
@@ -965,10 +1005,12 @@ def build_opencl_compute_workload_script(
                         code = CL.clFinish(queue)
                         check(code, "clFinish chunk")
                     if (
-                        phase_name == "verify"
-                        and launch_index == current_launches - 1
+                        launch_index == current_launches - 1
                         and (time.monotonic() - last_verify_monotonic) >= verify_interval_seconds
                     ):
+                        # Phase controls load shape, not correctness coverage.
+                        # Verify periodically from the first meaningful work so
+                        # supervisor-bounded short stages cannot finish unverified.
                         verify_buffer(queue, buffer_handle, int(current_global_size.value), int(seed_value.value), current_rounds)
                         last_verify_monotonic = time.monotonic()
                 code = CL.clFinish(queue)
@@ -978,10 +1020,15 @@ def build_opencl_compute_workload_script(
                 if frame % 16 == 0:
                     write_result()
                 time.sleep(phase_sleep_seconds(phase_name))
+            if int(state.get("verification_passes") or 0) <= 0:
+                record_error("OpenCL compute ended before completing a required readback verification pass")
+                raise SystemExit(13)
         except Exception as exc:
             record_error(str(exc))
             raise SystemExit(1)
         finally:
+            state["verification_satisfied"] = int(state.get("verification_passes") or 0) > 0
+            write_result()
             for buffer_handle in buffers:
                 try:
                     CL.clReleaseMemObject(buffer_handle)

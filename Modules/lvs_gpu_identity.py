@@ -27,6 +27,81 @@ def normalize_pci_slot(slot: Any) -> str:
     return text
 
 
+def pci_physical_gpu_id(slot: Any) -> str:
+    """Return the canonical physical identity for a PCI GPU, if available."""
+    normalized = normalize_pci_slot(slot).lower()
+    return f"pci:{normalized}" if re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", normalized) else ""
+
+
+def physical_gpu_identity(device: Dict[str, Any]) -> Dict[str, Any]:
+    """Describe stable GPU identity without treating provider ordinals as identity."""
+    slot = normalize_pci_slot(device.get("slot") or device.get("pci_slot") or device.get("pciSlot")).lower()
+    provider_uuid = str(device.get("nvidia_uuid") or "").strip()
+    pci_identity = pci_physical_gpu_id(slot)
+    if pci_identity:
+        aliases = [f"pci_bdf:{slot}"]
+        card = str(device.get("card") or "").strip().lower()
+        render_node = str(device.get("render_node") or device.get("drm_render_node") or "").strip()
+        if card:
+            aliases.append(f"drm_card:{card}")
+        if render_node:
+            aliases.append(f"drm_render_node:{render_node}")
+        if provider_uuid:
+            aliases.append(f"nvidia_uuid:{provider_uuid}")
+        return {
+            "physical_gpu_id": pci_identity,
+            "identity_source": "pci_bdf",
+            "identity_confidence": "high",
+            "identity_aliases": aliases,
+        }
+    existing = str(device.get("physical_gpu_id") or "").strip()
+    if existing:
+        aliases = list(device.get("identity_aliases") or [])
+        card = str(device.get("card") or "").strip().lower()
+        render_node = str(device.get("render_node") or device.get("drm_render_node") or "").strip()
+        if card and f"drm_card:{card}" not in aliases:
+            aliases.append(f"drm_card:{card}")
+        if render_node and f"drm_render_node:{render_node}" not in aliases:
+            aliases.append(f"drm_render_node:{render_node}")
+        return {
+            "physical_gpu_id": existing,
+            "identity_source": str(device.get("identity_source") or device.get("gpu_identity_source") or "existing"),
+            "identity_confidence": str(device.get("identity_confidence") or "high"),
+            "identity_aliases": aliases,
+        }
+    platform_path = str(device.get("platform_gpu_path") or device.get("platform_path") or "").strip()
+    platform_name = str(device.get("platform_gpu_name") or device.get("platform_name") or "").strip()
+    if platform_path or platform_name:
+        stable_name = platform_name or platform_path.rstrip("/").rsplit("/", 1)[-1]
+        return {
+            "physical_gpu_id": f"platform:{stable_name}",
+            "identity_source": "platform_device_tree",
+            "identity_confidence": "high",
+            "identity_aliases": [f"platform_path:{platform_path}"] if platform_path else [],
+        }
+    if provider_uuid:
+        return {
+            "physical_gpu_id": f"provider:nvidia:{provider_uuid}",
+            "identity_source": "nvidia_uuid",
+            "identity_confidence": "high",
+            "identity_aliases": [f"nvidia_uuid:{provider_uuid}"],
+        }
+    return {
+        "physical_gpu_id": "",
+        "identity_source": "unresolved",
+        "identity_confidence": "unresolved",
+        "identity_aliases": [],
+    }
+
+
+def apply_physical_gpu_identity(device: Dict[str, Any]) -> Dict[str, Any]:
+    identity = physical_gpu_identity(device)
+    device.update(identity)
+    # Retain the established source-map field while using one canonical source name.
+    device["gpu_identity_source"] = identity["identity_source"]
+    return device
+
+
 def pci_slot_sort_key(slot: Any) -> Tuple[int, int, int, int]:
     normalized = normalize_pci_slot(slot)
     match = re.match(r"^([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2})\.([0-7])$", normalized)

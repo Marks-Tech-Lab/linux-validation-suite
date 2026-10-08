@@ -12,6 +12,7 @@ from Modules.lvs_gpu_retune import (
     minimum_gpu_retune_remaining_seconds,
     worker_retune_count,
 )
+from Modules.lvs_gpu_stage_targets import telemetry_gpu_index
 
 
 RETUNABLE_BACKENDS = {
@@ -70,11 +71,11 @@ def gpu_worker_retune_decision(
         max_retunes = max(0, int(getattr(settings, "gpu_max_retunes_per_worker", 0) or 0))
         if worker_retune_count(retune_events, spec) >= max_retunes:
             return GpuRetuneDecision(False, "max_retunes")
-        if not thermal_safe_for_gpu(int(getattr(spec, "gpu_index", -1))):
+        if not thermal_safe_for_gpu(telemetry_gpu_index(spec)):
             return GpuRetuneDecision(False, "thermal")
 
     if workload == "gpu_3d":
-        key = f"gpu_{getattr(spec, 'gpu_index', 0)}_busy_percent"
+        key = f"gpu_{telemetry_gpu_index(spec)}_busy_percent"
         busy = latest_metric_value(key)
         if busy is None or busy >= 92.0:
             return GpuRetuneDecision(False, "busy_unavailable_or_high", busy)

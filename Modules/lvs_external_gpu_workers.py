@@ -179,6 +179,15 @@ def external_gpu_worker_spec(
         slot=target.get("slot", "") if target else "",
         target_id=target.get("target_id", "") if target else "",
         command=command,
+        physical_gpu_id=str(target.get("physical_gpu_id", "") if target else ""),
+        identity_source=str(target.get("identity_source", "") if target else ""),
+        identity_confidence=str(target.get("identity_confidence", "") if target else ""),
+        telemetry_gpu_index=int(target.get("gpu_index", 0)) if target else 0,
+        vulkan_device_index=(
+            int((runner._vulkan_device_for_target(target).get("device") or {}).get("index", -1))
+            if backend in {"vkmark", "vkcube"} else None
+        ),
+        nvidia_index=str(target.get("nvidia_index", "") if target else ""),
         backend_api_family=str(backend_meta.get("api_family", "") or ""),
         suite_scaling_mode=str(backend_meta.get("suite_scaling_mode", "") or ""),
         suite_verification=str(backend_meta.get("suite_verification", "") or ""),
@@ -189,4 +198,3 @@ def external_gpu_worker_spec(
         profile_mode=str(profile_mode or ""),
         profile_intensity=runner._normalize_gpu_3d_intensity(profile_intensity) if profile_intensity else "",
     )
-

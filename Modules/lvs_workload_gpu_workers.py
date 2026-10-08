@@ -578,6 +578,7 @@ class WorkloadGpuWorkerMixin:
         target_id: str,
         target_gpu_index: int,
         target_vram_total: int,
+        opencl_device_index: int = -1,
         worker_params: Optional[Dict[str, Any]] = None,
     ) -> str:
         params = worker_params or {}
@@ -594,6 +595,7 @@ class WorkloadGpuWorkerMixin:
             target_gpu_index=target_gpu_index,
             target_vram_total=target_vram_total,
             compute_variant=compute_variant,
+            opencl_device_index=opencl_device_index,
             worker_params=worker_params,
         )
 
@@ -608,6 +610,7 @@ class WorkloadGpuWorkerMixin:
         target_id: str,
         target_gpu_index: int,
         target_vram_total: int,
+        opencl_device_index: int = -1,
         worker_params: Optional[Dict[str, Any]] = None,
         result_file: str = "",
     ) -> str:
@@ -621,6 +624,7 @@ class WorkloadGpuWorkerMixin:
             target_id,
             target_gpu_index,
             target_vram_total,
+            opencl_device_index=opencl_device_index,
             worker_params=worker_params,
             result_file=result_file,
         )

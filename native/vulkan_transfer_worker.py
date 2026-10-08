@@ -601,7 +601,11 @@ def score_device(info: dict, args: argparse.Namespace) -> float:
     target_device_id = (args.target_device_id or "").lower().removeprefix("0x")
     target_vendor = (args.target_vendor or "").lower()
     target_device_name = (getattr(args, "target_device_name", "") or "").strip().lower()
-    target_index = int(args.target_gpu_index)
+    target_index = int(args.vulkan_device_index)
+    if target_index < 0:
+        # Backward compatibility for older saved/direct commands where the
+        # single target index represented the Vulkan selector.
+        target_index = int(args.target_gpu_index)
     target_slot = normalize_pci_slot(args.target_slot or args.target_id or "")
     device_slot = normalize_pci_slot(info.get("pci_slot", ""))
     name = str(info.get("device_name", "")).lower()
@@ -808,6 +812,7 @@ def main() -> int:
     parser.add_argument("--target-id", default="")
     parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
+    parser.add_argument("--vulkan-device-index", type=int, default=-1)
     parser.add_argument("--target-vram-total", type=int, default=0)
     parser.add_argument("--buffer-bytes", type=int, default=128 * 1024 * 1024)
     parser.add_argument("--ramp-step-seconds", type=float, default=15.0)
@@ -898,6 +903,8 @@ def main() -> int:
         "target_id": args.target_id,
         "physical_gpu_id": args.physical_gpu_id,
         "target_gpu_index": args.target_gpu_index,
+        "telemetry_gpu_index": args.target_gpu_index,
+        "vulkan_device_index": args.vulkan_device_index,
         "target_vram_total": args.target_vram_total,
         "profile_mode": args.profile_mode,
         "profile_intensity": args.profile_intensity,

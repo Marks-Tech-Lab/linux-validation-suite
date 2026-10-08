@@ -23,25 +23,22 @@ def merge_vulkan_device_inventories(
     unused_native = list(native_devices)
     for runtime_device in runtime_devices:
         runtime_key = (
-            int(runtime_device.get("index", -1) or 0),
             str(runtime_device.get("vendorID", "") or "").lower(),
             str(runtime_device.get("deviceID", "") or "").lower(),
             str(runtime_device.get("deviceName", "") or "").lower(),
         )
-        match_index = next(
-            (
-                index
-                for index, native_device in enumerate(unused_native)
-                if (
-                    int(native_device.get("index", -1) or 0),
-                    str(native_device.get("vendorID", "") or "").lower(),
-                    str(native_device.get("deviceID", "") or "").lower(),
-                    str(native_device.get("deviceName", "") or "").lower(),
-                )
-                == runtime_key
-            ),
-            None,
-        )
+        candidates = [
+            index
+            for index, native_device in enumerate(unused_native)
+            if (
+                str(native_device.get("vendorID", "") or "").lower(),
+                str(native_device.get("deviceID", "") or "").lower(),
+                str(native_device.get("deviceName", "") or "").lower(),
+            ) == runtime_key
+        ]
+        # Provider ordinals may differ. Merge by a unique physical fingerprint;
+        # identical devices without stronger identity remain separate.
+        match_index = candidates[0] if len(candidates) == 1 else None
         if match_index is None:
             merged.append(dict(runtime_device))
             continue

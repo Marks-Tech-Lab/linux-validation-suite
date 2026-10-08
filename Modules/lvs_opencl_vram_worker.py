@@ -15,6 +15,7 @@ def build_opencl_vram_workload_script(
     target_id: str,
     target_gpu_index: int,
     target_vram_total: int,
+    opencl_device_index: int = -1,
     worker_params: Optional[Dict[str, Any]] = None,
     result_file: str = "",
 ) -> str:
@@ -49,6 +50,7 @@ def build_opencl_vram_workload_script(
         TARGET_SLOT = {json.dumps(target_slot)}
         TARGET_ID = {json.dumps(target_id)}
         TARGET_GPU_INDEX = {int(target_gpu_index)}
+        OPENCL_DEVICE_INDEX = {int(opencl_device_index)}
         TARGET_VRAM_TOTAL = {int(target_vram_total)}
         CAP_COMPUTE_UNITS = {compute_units}
         CAP_MAX_WORK_GROUP_SIZE = {max_work_group_size}
@@ -67,6 +69,8 @@ def build_opencl_vram_workload_script(
             "status": "ok",
             "error_count": 0,
             "verification_passes": 0,
+            "verification_required": True,
+            "verification_satisfied": False,
             "vram_mismatch_count": 0,
             "frames": 0,
             "buffer_count": 0,
@@ -88,6 +92,9 @@ def build_opencl_vram_workload_script(
             "target_id": TARGET_ID,
             "target_vendor": TARGET_VENDOR,
             "target_slot": TARGET_SLOT,
+            "target_gpu_index": TARGET_GPU_INDEX,
+            "telemetry_gpu_index": TARGET_GPU_INDEX,
+            "opencl_device_index": OPENCL_DEVICE_INDEX,
             "phase": "initializing",
             "phase_history": [],
             "runtime_target_cap_bytes": 0,
@@ -404,8 +411,8 @@ def build_opencl_vram_workload_script(
             if expected > 0 and mem > 0:
                 ratio = abs(mem - expected) / float(max(mem, expected))
                 score += max(0.0, 600.0 * (1.0 - min(1.0, ratio)))
-            if not device_slot and int(info.get("opencl_index", -1)) == TARGET_GPU_INDEX:
-                score += 75.0
+            if OPENCL_DEVICE_INDEX >= 0 and int(info.get("opencl_index", -1)) == OPENCL_DEVICE_INDEX:
+                score += 1000.0
             score -= float(int(info.get("opencl_index", 0))) * 0.01
             return score
 
@@ -598,7 +605,7 @@ def build_opencl_vram_workload_script(
                 raise RuntimeError(
                     f"OpenCL selected PCI slot {{selected_slot}} but target is {{target_slot}}"
                 )
-            if target_slot and not selected_slot and len(devices) > 1 and int(selected.get("opencl_index", -1)) != TARGET_GPU_INDEX:
+            if target_slot and not selected_slot and len(devices) > 1 and int(selected.get("opencl_index", -1)) != OPENCL_DEVICE_INDEX:
                 raise RuntimeError(
                     f"OpenCL could not verify PCI slot for target {{target_slot}}; selected index {{selected.get('opencl_index', -1)}}"
                 )
@@ -819,8 +826,7 @@ def build_opencl_vram_workload_script(
                     last_fill_monotonic = time.monotonic()
                 now_monotonic = time.monotonic()
                 if (
-                    phase_name == "verify"
-                    and buffers
+                    buffers
                     and (now_monotonic - last_verify_monotonic) >= verify_interval_seconds
                 ):
                     if SAFE_MODE_ENABLED and DEVICE_CLASS == "discrete":
@@ -858,6 +864,7 @@ def build_opencl_vram_workload_script(
                                 )
                                 break
                         state["verification_passes"] += 1
+                        state["verification_satisfied"] = True
                     last_verify_monotonic = now_monotonic
                 state["frames"] += 1
                 if state["frames"] % 4 == 0:
@@ -868,11 +875,15 @@ def build_opencl_vram_workload_script(
                     time.sleep(0.003)
                 else:
                     time.sleep(0.002)
+            if int(state.get("verification_passes") or 0) <= 0:
+                record_error("OpenCL VRAM ended before completing a required readback verification pass")
+                raise SystemExit(13)
         except Exception as exc:
             state["allocation_runtime_failed"] = True
             record_error(str(exc))
             raise SystemExit(12)
         finally:
+            state["verification_satisfied"] = int(state.get("verification_passes") or 0) > 0
             update_allocation_outcome()
             write_result()
             for buffer_handle, _ in buffers:
