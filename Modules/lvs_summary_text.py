@@ -171,10 +171,24 @@ class SummaryTextBuilder:
             if purpose != "-":
                 confidence_suffix = f"; confidence: {confidence}" if confidence != "-" else ""
                 lines.append(f"   Purpose: {purpose}{confidence_suffix}")
+            analysis = stage.get("AnalysisEvidence") if isinstance(stage.get("AnalysisEvidence"), dict) else {}
+            analysis_intent = str(analysis.get("intent") or "")
+            if analysis_intent and analysis_intent != "legacy_unspecified":
+                analysis_quality = str(analysis.get("quality") or "not_assessed")
+                usable_seconds = analysis.get("usable_duration_seconds")
+                usable_samples = analysis.get("usable_sample_count")
+                usable_text = f"; usable: {usable_seconds:.2f}s" if isinstance(usable_seconds, (int, float)) else ""
+                sample_text = f"; samples: {usable_samples}" if isinstance(usable_samples, int) else ""
+                lines.append(
+                    f"   Analysis: {analysis_intent} / {analysis_quality}{usable_text}{sample_text}"
+                )
             lines.append(f"   Targeted GPUs: {stage.get('TargetedGpuCount', 0)}")
             caveats = int(stage.get("ReportOnlyThresholdWouldWarnCount") or 0)
             if caveats:
                 lines.append(f"   Report-only threshold caveats: {caveats}")
+            insufficient = int(stage.get("ReportOnlyThresholdInsufficientEvidenceCount") or 0)
+            if insufficient:
+                lines.append(f"   Suppressed threshold recommendations: {insufficient}")
             self._append_stage_category_line(lines, "Warning", stage.get("WarningCategoryCounts"))
             self._append_stage_category_line(lines, "Error", stage.get("ErrorCategoryCounts"))
             coverage_notes = stage.get("CoverageNotes") if isinstance(stage.get("CoverageNotes"), list) else []

@@ -235,7 +235,16 @@ def run_setup_overview_text(
         completion = stage.modules.storage_benchmark.enabled
         trim = "trim n/a" if completion else f"trim {stage.normalization.trim_start_seconds}/{stage.normalization.trim_end_seconds}s"
         execution = "completion-based" if completion else f"{stage.duration_seconds}s"
-        lines.append(f"{index}. {label}: {execution}, {state}, {trim}")
+        expected = None if completion else max(
+            0, int(stage.duration_seconds or 0) - int(stage.normalization.trim_start_seconds) - int(stage.normalization.trim_end_seconds)
+        )
+        analysis = getattr(stage, "analysis", None)
+        analysis_text = ""
+        if analysis is not None:
+            analysis_text = f", analysis {analysis.intent}"
+        if expected is not None:
+            analysis_text += f", expected usable {expected}s"
+        lines.append(f"{index}. {label}: {execution}, {state}, {trim}{analysis_text}")
     lines.extend(
         [
             "",

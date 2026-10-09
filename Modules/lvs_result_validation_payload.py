@@ -89,6 +89,17 @@ def validate_parsed_report_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
                         f"{label} StageOutcomes.{display_name} does not match segment {display_name}",
                         {"stage_outcome": stage.get(stage_field), "segment": segment.get(segment_field)},
                     )
+            stage_analysis = stage.get("AnalysisEvidence")
+            segment_analysis = segment.get("AnalysisEvidence")
+            if stage_analysis is not None and segment_analysis is not None and stage_analysis != segment_analysis:
+                stage_alignment_warning_count += 1
+                _add_issue(
+                    issues,
+                    "warning",
+                    "stage_alignment",
+                    f"{label} StageOutcomes.AnalysisEvidence does not match segment AnalysisEvidence",
+                    {"stage_outcome": stage_analysis, "segment": segment_analysis},
+                )
         interpretation = segment.get("StabilityInterpretation") if isinstance(segment.get("StabilityInterpretation"), dict) else {}
         if interpretation:
             for field_name in ("OutcomeClass", "OutcomeSummary", "PrimaryPurpose", "BackendConfidence"):
@@ -131,6 +142,23 @@ def validate_parsed_report_payload(parsed: Dict[str, Any]) -> Dict[str, Any]:
                         "stage_alignment",
                         f"{label} ReportOnlyThresholdWouldWarnCount does not match segment threshold recommendations",
                         {"stage_outcome": stage_threshold_count, "segment": segment_threshold_count},
+                    )
+                try:
+                    stage_insufficient_count = int(stage.get("ReportOnlyThresholdInsufficientEvidenceCount") or 0)
+                except Exception:
+                    stage_insufficient_count = -1
+                try:
+                    segment_insufficient_count = int(recommendations.get("InsufficientEvidenceCount") or 0)
+                except Exception:
+                    segment_insufficient_count = -1
+                if stage_insufficient_count != segment_insufficient_count:
+                    stage_alignment_warning_count += 1
+                    _add_issue(
+                        issues,
+                        "warning",
+                        "stage_alignment",
+                        f"{label} ReportOnlyThresholdInsufficientEvidenceCount does not match segment threshold recommendations",
+                        {"stage_outcome": stage_insufficient_count, "segment": segment_insufficient_count},
                     )
         segment_gpu_metrics = segment.get("GpuMetrics") if isinstance(segment.get("GpuMetrics"), list) else []
         targeted_metric_count = sum(1 for metric in segment_gpu_metrics if isinstance(metric, dict) and bool(metric.get("Targeted")))

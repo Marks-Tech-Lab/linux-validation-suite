@@ -57,6 +57,7 @@ from smoke_tests.output_contract_checks import (
     assert_required_fields,
     assert_snake_case_keys,
 )
+from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -13365,6 +13366,7 @@ def test_profile_detail_presentation_helpers() -> None:
             "Legacy result compatibility: none",
             "Duration: 600s",
             "Trim: start=10s, end=20s",
+            "Expected analysis window: 570.0s",
             "Strict threshold warnings: enabled",
             "Enabled workloads: cpu, memory, gpu_3d, vram",
             "CPU: instruction=avx2, threads=8, mode=extreme, load=variable, priority=high",
@@ -28409,6 +28411,7 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_analysis_quality_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_gpu_backend_catalog import GPU_3D_BACKEND_CATALOG
+from .lvs_analysis_quality import telemetry_recommendation_suppression_reason
 
 
 WindowPredicateFn = Callable[[Any], bool]
@@ -32,6 +33,7 @@ class StageStabilityInterpreter:
         worker_state_summary: Dict[str, Any],
         *,
         strict_threshold_enabled: bool,
+        analysis_evidence: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         backend_profiles: List[Dict[str, Any]] = []
         if window.gpu_3d_backend_resolved:
@@ -158,6 +160,7 @@ class StageStabilityInterpreter:
             and not diagnostic_only
             and not is_vulkan_hash_baseline
             and not is_vulkan_stateful_memory
+            and str((analysis_evidence or {}).get("intent") or "legacy_unspecified") != "functional"
         )
         memory_path_candidate = bool(has_vram or is_vulkan_stateful_memory)
         if is_vulkan_hash_baseline:
@@ -170,6 +173,7 @@ class StageStabilityInterpreter:
             aggregate,
             compute_variants,
             strict_threshold_enabled=strict_threshold_enabled,
+            analysis_evidence=analysis_evidence or {},
         )
         strict_threshold_warning = (
             threshold_recommendations.get("StrictModeEnabled")
@@ -346,6 +350,7 @@ class StageStabilityInterpreter:
         compute_variants: List[str],
         *,
         strict_threshold_enabled: bool,
+        analysis_evidence: Dict[str, Any],
     ) -> Dict[str, Any]:
         checks: List[Dict[str, Any]] = []
         mode = "report_only"
@@ -356,13 +361,13 @@ class StageStabilityInterpreter:
             gpu_label = ", ".join(str(item) for item in target_ids) or str(entry.get("Name") or f"gpu{gpu_index}")
             if primary_purpose in {"gpu_saturation", "gpu_plus_vram_saturation"}:
                 sustain_90 = self._sustain_percent_from_entry(entry, "UsageSustain", 90.0)
-                busy_result = self._threshold_evaluation_result(
-                    entry.get("UsageAvg"),
-                    entry.get("UsageMax"),
-                    sustain_90,
-                    min_avg=85.0,
-                    min_max=95.0,
-                    min_sustain_percent=75.0,
+                suppression_reason = telemetry_recommendation_suppression_reason(
+                    analysis_evidence,
+                    entry.get("UsageSustain") if isinstance(entry.get("UsageSustain"), dict) else {},
+                )
+                busy_result = "insufficient_evidence" if suppression_reason else self._threshold_evaluation_result(
+                    entry.get("UsageAvg"), entry.get("UsageMax"), sustain_90,
+                    min_avg=85.0, min_max=95.0, min_sustain_percent=75.0,
                 )
                 if busy_result == "unobserved" and self._worker_verified_without_telemetry(entry):
                     busy_result = "telemetry_unobserved_worker_verified"
@@ -379,6 +384,9 @@ class StageStabilityInterpreter:
                         "ObservedMaxPercent": entry.get("UsageMax"),
                         "ObservedPercentAtOrAbove90": sustain_90,
                         "WorkerEvidence": dict(entry.get("WorkerEvidence") or {}),
+                        "EvidenceBasis": "normalized_telemetry",
+                        "AnalysisQuality": analysis_evidence.get("quality", "not_assessed"),
+                        "SuppressedReason": suppression_reason,
                         "Result": busy_result,
                     }
                 )
@@ -386,13 +394,16 @@ class StageStabilityInterpreter:
                 mem_sustain_25 = self._sustain_percent_from_entry(entry, "MemoryBusySustain", 25.0)
                 min_mem_max = 25.0 if primary_purpose == "vulkan_memory_path_validation" else None
                 min_mem_sustain = 30.0 if primary_purpose == "vulkan_memory_path_validation" else None
-                memory_result = self._threshold_evaluation_result(
-                    entry.get("MemoryBusyAvg"),
-                    entry.get("MemoryBusyMax"),
-                    mem_sustain_25,
-                    min_max=min_mem_max,
-                    min_sustain_percent=min_mem_sustain,
-                ) if min_mem_max is not None else "observed_only"
+                suppression_reason = telemetry_recommendation_suppression_reason(
+                    analysis_evidence,
+                    entry.get("MemoryBusySustain") if isinstance(entry.get("MemoryBusySustain"), dict) else {},
+                )
+                memory_result = "insufficient_evidence" if suppression_reason else (
+                    self._threshold_evaluation_result(
+                        entry.get("MemoryBusyAvg"), entry.get("MemoryBusyMax"), mem_sustain_25,
+                        min_max=min_mem_max, min_sustain_percent=min_mem_sustain,
+                    ) if min_mem_max is not None else "observed_only"
+                )
                 if memory_result == "unobserved" and self._worker_verified_without_telemetry(entry):
                     memory_result = "telemetry_unobserved_worker_verified"
                 checks.append(
@@ -407,6 +418,9 @@ class StageStabilityInterpreter:
                         "ObservedMaxPercent": entry.get("MemoryBusyMax"),
                         "ObservedPercentAtOrAbove25": mem_sustain_25,
                         "WorkerEvidence": dict(entry.get("WorkerEvidence") or {}),
+                        "EvidenceBasis": "normalized_telemetry",
+                        "AnalysisQuality": analysis_evidence.get("quality", "not_assessed"),
+                        "SuppressedReason": suppression_reason,
                         "Result": memory_result,
                     }
                 )
@@ -418,6 +432,9 @@ class StageStabilityInterpreter:
                     "Metric": "allocated_vram_percent",
                     "RecommendedMinPercent": 95.0,
                     "ObservedMinPercent": min_vram_allocation,
+                    "EvidenceBasis": "worker_direct",
+                    "AnalysisQuality": "not_applicable",
+                    "SuppressedReason": "",
                     "Result": "unobserved"
                     if not isinstance(min_vram_allocation, (int, float))
                     else ("meets_recommendation" if min_vram_allocation >= 95.0 else "would_warn"),
@@ -429,6 +446,9 @@ class StageStabilityInterpreter:
                     "Name": "vulkan_hash_correctness_baseline",
                     "Metric": "worker_integrity",
                     "ComputeVariants": compute_variants,
+                    "EvidenceBasis": "worker_direct",
+                    "AnalysisQuality": "not_applicable",
+                    "SuppressedReason": "",
                     "Result": "informational",
                     "Note": "Vulkan hash validates compute dispatch/readback correctness. It is not judged by saturation thresholds.",
                 }
@@ -440,6 +460,9 @@ class StageStabilityInterpreter:
             for check in checks
             if check.get("Result") == "telemetry_unobserved_worker_verified"
         )
+        insufficient_evidence_count = sum(
+            1 for check in checks if check.get("Result") == "insufficient_evidence"
+        )
         return {
             "Mode": mode,
             "StrictModeDefault": False,
@@ -447,6 +470,7 @@ class StageStabilityInterpreter:
             "WouldWarnCount": would_warn_count,
             "UnobservedCount": unobserved_count,
             "WorkerVerifiedNoTelemetryCount": worker_verified_no_telemetry_count,
+            "InsufficientEvidenceCount": insufficient_evidence_count,
             "Checks": checks,
         }
 

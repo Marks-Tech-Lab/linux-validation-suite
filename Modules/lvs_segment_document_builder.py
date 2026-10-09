@@ -109,6 +109,7 @@ class SegmentDocumentBuilder:
             "gpu_worker_state_summary": document_input.worker_state_summary,
             "duration": document_input.duration,
             "analysis_window": document_input.analysis_window,
+            "analysis_evidence": dict(getattr(window, "analysis_evidence", {}) or {}),
             "summary": self._segment_summary(document_input),
             "cpu": document_input.cpu_section,
         }
@@ -126,6 +127,7 @@ class SegmentDocumentBuilder:
             "TestDescription": window.display_name,
             "Duration": document_input.duration,
             "AnalysisWindow": document_input.analysis_window,
+            "AnalysisEvidence": dict(getattr(window, "analysis_evidence", {}) or {}),
             "Started": window.started_iso,
             "Ended": window.ended_iso,
             "Verdict": window.verdict,

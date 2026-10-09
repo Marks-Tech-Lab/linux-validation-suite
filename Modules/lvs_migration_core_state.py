@@ -346,7 +346,7 @@ def _canonical_profile_payload(path: Path, menu_groups: Any, *, expected_raw: by
         "menu_group": loader._normalize_menu_group(profile.menu_group),
         "require_all_stages_runnable": bool(profile.require_all_stages_runnable),
         "defaults": asdict(profile.defaults),
-        "stages": [asdict(stage) for stage in profile.stages],
+        "stages": [loader._stage_payload(stage) for stage in profile.stages],
     }
     description = loader._normalize_menu_description(profile.menu_description)
     if description:

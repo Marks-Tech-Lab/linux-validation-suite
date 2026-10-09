@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from .lvs_gpu_telemetry_warnings import gpu_telemetry_coverage_warnings
 from .lvs_stage_diagnostics import build_stage_diagnostics_payload
 from .lvs_telemetry_collector import TelemetryCollector
+from .lvs_analysis_quality import planned_analysis_evidence
 
 
 def build_stage_diagnostics(runner: Any, stage: Any, label: str) -> Dict[str, Any]:
@@ -59,6 +60,14 @@ def build_dry_run_report(
         if callable(close_telemetry):
             close_telemetry()
     plan = build_dry_run_plan(orchestrator.workload_runner, profile, labels)
+    for index, stage_plan in enumerate(plan):
+        if index >= len(profile.stages):
+            continue
+        analysis_evidence = planned_analysis_evidence(
+            profile.stages[index], profile.defaults.telemetry_interval_seconds,
+        )
+        stage_plan["analysis_evidence"] = analysis_evidence
+        stage_plan["expected_usable_seconds"] = analysis_evidence.get("expected_usable_seconds")
     profile_errors = list(validation["errors"])
     stage_errors: List[str] = []
     errors = list(profile_errors)

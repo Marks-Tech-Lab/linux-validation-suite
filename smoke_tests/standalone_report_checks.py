@@ -540,6 +540,16 @@ def run_standalone_report_checks() -> None:
             "analysis_ended_monotonic": 190,
             "analysis_duration_seconds": 80,
             "analysis_window_valid": True,
+            "analysis_evidence": {
+                "intent": "legacy_unspecified",
+                "quality": "not_assessed",
+                "usable_duration_seconds": 80,
+                "usable_sample_count": 3,
+                "sample_span_seconds": 70.0,
+                "minimum_usable_seconds": None,
+                "minimum_samples": None,
+                "reasons": [],
+            },
             "normalization_sources": {
                 "trim_start_seconds": "recorded_stage_window",
                 "trim_end_seconds": "recorded_stage_window",

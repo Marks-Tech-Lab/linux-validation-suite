@@ -983,6 +983,9 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
     threshold_recommendations = interpretation.get("ThresholdRecommendations", {})
     if not isinstance(threshold_recommendations, dict):
         threshold_recommendations = {}
+    analysis_evidence = segment.get("AnalysisEvidence", {})
+    if not isinstance(analysis_evidence, dict):
+        analysis_evidence = {}
     gpu_metrics = [
         metric for metric in segment.get("GpuMetrics", [])
         if isinstance(metric, dict) and metric.get("Targeted")
@@ -1021,6 +1024,8 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
         "WarningCategoryCounts": dict(interpretation.get("WarningCategoryCounts") or {}),
         "ErrorCategoryCounts": dict(interpretation.get("ErrorCategoryCounts") or {}),
         "ReportOnlyThresholdWouldWarnCount": threshold_recommendations.get("WouldWarnCount", 0),
+        "ReportOnlyThresholdInsufficientEvidenceCount": threshold_recommendations.get("InsufficientEvidenceCount", 0),
+        "AnalysisEvidence": dict(analysis_evidence),
         "TargetedGpuCount": interpretation.get("TargetedGpuCount", 0),
         "TargetedLoadQualityCounts": dict(interpretation.get("TargetedLoadQualityCounts") or {}),
         "CoverageNotes": coverage_notes,

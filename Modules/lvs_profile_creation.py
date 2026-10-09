@@ -10,6 +10,7 @@ from .lvs_profile_editor import ProfileEditor
 from .lvs_profile_models import (
     ProfileDefaults,
     StageConfig,
+    StageAnalysis,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -77,6 +78,7 @@ class ProfileCreationController:
                     enabled=True,
                     modules=draft.modules,
                     normalization=StageNormalization(defaults.trim_start_seconds, defaults.trim_end_seconds),
+                    analysis=StageAnalysis(intent="functional"),
                 )
             )
             labels.append(draft.label)

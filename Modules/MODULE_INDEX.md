@@ -118,6 +118,7 @@ Every other TUI helper must remain importable without Textual installed.
 | `lvs_profile_edit_view.py` | Internal | Builds frontend-neutral profile edit presentation data. |
 | `lvs_profile_creation.py`, `lvs_profile_save.py` | Internal | Create profiles and perform guarded validation/persistence. |
 | `lvs_profile_validation.py` | Internal policy | Defines shared validation rules for profile contracts. |
+| `lvs_analysis_quality.py` | Internal policy | Defines planned and observed normalized-analysis intent, coverage, and recommendation-suppression semantics. |
 | `lvs_profile_audit.py` | Internal | Builds profile audit payloads. |
 | `lvs_profile_reports.py`, `lvs_profile_report_text.py`, `lvs_profile_report_artifacts.py` | Internal | Build profile reports, render text, and write report artifacts. |
 | `lvs_settings.py` | Internal foundational contract | Defines and persists global settings. |

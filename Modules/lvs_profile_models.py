@@ -20,6 +20,12 @@ class StageNormalization:
 
 
 @dataclass
+class StageAnalysis:
+    intent: str = "functional"
+    minimum_usable_seconds: Optional[float] = None
+
+
+@dataclass
 class ModuleCpu:
     enabled: bool = False
     backend_preference: str = "auto"
@@ -96,6 +102,7 @@ class StageConfig:
     enabled: bool = True
     modules: StageModules = field(default_factory=StageModules)
     normalization: StageNormalization = field(default_factory=StageNormalization)
+    analysis: Optional[StageAnalysis] = None
     strict_threshold_recommendation_warnings: Optional[bool] = None
 
 

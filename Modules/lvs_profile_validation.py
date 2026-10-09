@@ -12,6 +12,7 @@ from .lvs_cpu_power_selection import POWER_AUTO_VALIDATION_RUNNERS
 from .lvs_cpu_backend_policy import CPU_BACKEND_PREFERENCES
 from .lvs_memory_execution import MEMORY_BACKEND_PREFERENCES
 from .lvs_profile_models import StageConfig, ValidationProfile, stage_execution_mode
+from .lvs_analysis_quality import ANALYSIS_INTENTS, NONFUNCTIONAL_ANALYSIS_INTENTS, planned_analysis_evidence
 
 
 class ProfileValidator:
@@ -50,6 +51,32 @@ class ProfileValidator:
                 errors.append(
                     f"{stage_ref} trim window is impossible: start={trim_start}s end={trim_end}s duration={stage.duration_seconds}s"
                 )
+
+            analysis = getattr(stage, "analysis", None)
+            if analysis is not None:
+                intent = str(getattr(analysis, "intent", "") or "").strip().lower()
+                if intent not in ANALYSIS_INTENTS:
+                    errors.append(f"{stage_ref} has invalid analysis.intent='{getattr(analysis, 'intent', '')}'")
+                minimum = getattr(analysis, "minimum_usable_seconds", None)
+                if minimum is not None:
+                    try:
+                        minimum_valid = (
+                            not isinstance(minimum, bool)
+                            and math.isfinite(float(minimum))
+                            and float(minimum) > 0.0
+                        )
+                    except (TypeError, ValueError):
+                        minimum_valid = False
+                    if not minimum_valid:
+                        errors.append(f"{stage_ref} analysis.minimum_usable_seconds must be a positive finite number")
+                if intent in NONFUNCTIONAL_ANALYSIS_INTENTS and minimum is None:
+                    errors.append(
+                        f"{stage_ref} analysis.minimum_usable_seconds is required for analysis.intent='{intent}'"
+                    )
+                if execution_mode == "duration" and intent in NONFUNCTIONAL_ANALYSIS_INTENTS and minimum is not None:
+                    planned = planned_analysis_evidence(stage, profile.defaults.telemetry_interval_seconds)
+                    if planned.get("quality") == "insufficient":
+                        warnings.extend(f"{stage_ref} {reason}" for reason in planned.get("reasons", []))
 
             storage = stage.modules.storage_benchmark
             if storage.enabled:

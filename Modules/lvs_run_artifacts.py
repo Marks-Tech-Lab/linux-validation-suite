@@ -21,6 +21,7 @@ from Modules.lvs_telemetry_samples import (
     extended_telemetry_metric_field_names,
     telemetry_metric_summaries,
 )
+from Modules.lvs_analysis_quality import evaluate_analysis_evidence
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,17 @@ def write_final_run_artifacts(
     run_error_events = run_finalization.error_events
 
     capture_run_end(ended_iso=ended_iso, since_iso=started_iso, verdict=overall_verdict)
+
+    for window in stage_windows:
+        window.analysis_evidence = evaluate_analysis_evidence(
+            window,
+            telemetry.samples,
+            getattr(
+                telemetry,
+                "interval_seconds",
+                getattr(getattr(profile, "defaults", None), "telemetry_interval_seconds", 0.0),
+            ),
+        )
 
     manifest_payload["ended"] = ended_iso
     manifest_payload["elapsed_seconds"] = round(total_elapsed, 2)

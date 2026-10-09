@@ -470,6 +470,17 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
     )
     analysis_end = max(analysis_start, uncollapsed_analysis_end)
     display_name = str(window.get("display_name") or window.get("name") or f"Stage {index + 1}")
+    recorded_analysis = window.get("analysis_evidence") if isinstance(window.get("analysis_evidence"), dict) else {}
+    analysis_evidence = dict(recorded_analysis) if recorded_analysis else {
+        "intent": str(window.get("analysis_intent") or "legacy_unspecified"),
+        "quality": "not_assessed",
+        "usable_duration_seconds": max(0.0, analysis_end - analysis_start),
+        "usable_sample_count": None,
+        "sample_span_seconds": None,
+        "minimum_usable_seconds": window.get("analysis_minimum_usable_seconds"),
+        "minimum_samples": None,
+        "reasons": [],
+    }
     return {
         "index": index,
         "stage_id": str(window.get("stage_id") or f"stage_{index + 1}"),
@@ -488,6 +499,7 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "analysis_ended_monotonic": analysis_end,
         "analysis_duration_seconds": max(0.0, analysis_end - analysis_start),
         "analysis_window_valid": analysis_window_valid,
+        "analysis_evidence": analysis_evidence,
         "normalization_sources": dict(window.get("normalization_sources") or {}),
         "native_outcome": _outcome(window.get("verdict")) or "unknown",
         "failures": [],
@@ -1052,6 +1064,26 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             if telemetry_rows
             else (_fallback_metrics(segments[stage["index"]]) if stage["index"] < len(segments) else [])
         )
+        if telemetry_rows and not isinstance(window.get("analysis_evidence"), dict):
+            timestamps = [
+                timestamp for timestamp, _ in telemetry_rows
+                if stage["analysis_started_monotonic"] <= timestamp <= stage["analysis_ended_monotonic"]
+            ] if stage["analysis_window_valid"] else []
+            stage["analysis_evidence"]["usable_sample_count"] = len(timestamps)
+            stage["analysis_evidence"]["sample_span_seconds"] = round(
+                timestamps[-1] - timestamps[0], 3
+            ) if len(timestamps) > 1 else 0.0
+        analysis = stage.get("analysis_evidence") or {}
+        if analysis.get("quality") in {"insufficient", "invalid"}:
+            item = {
+                "category": "analysis_evidence_insufficient",
+                "message": "; ".join(analysis.get("reasons") or []) or "Normalized telemetry evidence is insufficient.",
+                "source": "run_manifest.json",
+                "stage_index": stage["index"],
+                "stage_id": stage["stage_id"],
+            }
+            warnings.append(item)
+            stage["warnings"].append(item)
         stage["metric_summary_source"] = "raw_telemetry" if telemetry_rows else "parsed_segment_fallback"
         stage["metric_window_semantics"] = (
             "normalized_analysis_window"
@@ -1231,6 +1263,7 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
                     "analysis_ended_monotonic": stage["analysis_ended_monotonic"],
                     "analysis_duration_seconds": stage["analysis_duration_seconds"],
                     "analysis_window_valid": stage["analysis_window_valid"],
+                    "analysis_evidence": stage["analysis_evidence"],
                     "normalization_sources": stage["normalization_sources"],
                     "metric_summary_source": stage["metric_summary_source"],
                     "metric_window_semantics": stage["metric_window_semantics"],

@@ -19,6 +19,7 @@ from .lvs_profile_models import (
     ModuleVram,
     ProfileDefaults,
     StageConfig,
+    StageAnalysis,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -114,6 +115,18 @@ class ProfileLoader:
                 vram=ModuleVram(**modules_raw.get("vram", {})),
                 storage_benchmark=ModuleStorageBenchmark(**modules_raw.get("storage_benchmark", {})),
             )
+            analysis = None
+            if "analysis" in stage_raw:
+                analysis_raw = stage_raw.get("analysis")
+                if not isinstance(analysis_raw, dict):
+                    raise ValueError(f"stage '{stage_raw.get('id', '?')}' analysis must be an object")
+                unexpected = sorted(set(analysis_raw) - {"intent", "minimum_usable_seconds"})
+                if unexpected:
+                    raise ValueError(
+                        f"stage '{stage_raw.get('id', '?')}' analysis has unsupported fields: "
+                        + ", ".join(unexpected)
+                    )
+                analysis = StageAnalysis(**analysis_raw)
             stages.append(
                 StageConfig(
                     id=stage_raw["id"],
@@ -123,6 +136,7 @@ class ProfileLoader:
                     enabled=stage_raw.get("enabled", True),
                     modules=modules,
                     normalization=StageNormalization(**stage_raw.get("normalization", {})),
+                    analysis=analysis,
                     strict_threshold_recommendation_warnings=stage_raw.get("strict_threshold_recommendation_warnings"),
                 )
             )
@@ -154,12 +168,19 @@ class ProfileLoader:
             "menu_group": self._normalize_menu_group(profile.menu_group),
             "require_all_stages_runnable": bool(profile.require_all_stages_runnable),
             "defaults": asdict(profile.defaults),
-            "stages": [asdict(stage) for stage in profile.stages],
+            "stages": [self._stage_payload(stage) for stage in profile.stages],
         }
         menu_description = self._normalize_menu_description(profile.menu_description)
         if menu_description:
             payload["menu_description"] = menu_description
         JsonStore.write(path, payload)
+
+    @staticmethod
+    def _stage_payload(stage: StageConfig) -> Dict[str, Any]:
+        payload = asdict(stage)
+        if stage.analysis is None:
+            payload.pop("analysis", None)
+        return payload
 
     def ensure_example_profile(self) -> Path:
         path = self.profiles_dir / "PL Validation.json"

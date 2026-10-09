@@ -46,6 +46,9 @@ class StageWindow:
     worker_results: List[Dict[str, Any]] = field(default_factory=list)
     intel_gpu_top_sidecar: Optional[Dict[str, Any]] = None
     strict_threshold_recommendation_warnings: Optional[bool] = None
+    analysis_intent: str = "legacy_unspecified"
+    analysis_minimum_usable_seconds: Optional[float] = None
+    analysis_evidence: Dict[str, Any] = field(default_factory=dict)
     storage_benchmark_summary: Optional[Dict[str, Any]] = None
 
     @property

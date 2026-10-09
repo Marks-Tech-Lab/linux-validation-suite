@@ -23,6 +23,7 @@ from .lvs_profile_models import (
     ModuleStorageBenchmark,
     ModuleVram,
     StageConfig,
+    StageAnalysis,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -362,6 +363,7 @@ class ProfileEditor:
                 profile.defaults.trim_start_seconds,
                 profile.defaults.trim_end_seconds,
             ),
+            analysis=StageAnalysis(intent="functional"),
         )
 
     def add_stage(

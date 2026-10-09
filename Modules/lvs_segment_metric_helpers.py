@@ -92,6 +92,8 @@ class SegmentMetricHelper:
         if not values:
             return {
                 "SampleCount": 0,
+                "SampleSpanSeconds": 0.0,
+                "MaxGapSeconds": None,
                 "StdDev": None,
                 "Range": None,
                 "Thresholds": [],
@@ -99,6 +101,10 @@ class SegmentMetricHelper:
         sample_span_seconds = 0.0
         if len(points) > 1:
             sample_span_seconds = max(0.0, float(points[-1][0]) - float(points[0][0]))
+        maximum_gap_seconds = max(
+            (float(right[0]) - float(left[0]) for left, right in zip(points, points[1:])),
+            default=None,
+        )
         threshold_entries: List[Dict[str, Any]] = []
         for threshold in thresholds:
             count = sum(1 for value in values if value >= threshold)
@@ -113,6 +119,8 @@ class SegmentMetricHelper:
             )
         return {
             "SampleCount": len(values),
+            "SampleSpanSeconds": round(sample_span_seconds, 2),
+            "MaxGapSeconds": round(maximum_gap_seconds, 2) if maximum_gap_seconds is not None else None,
             "StdDev": round(statistics.pstdev(values), 2) if len(values) > 1 else 0.0,
             "Range": round(max(values) - min(values), 2),
             "Thresholds": threshold_entries,

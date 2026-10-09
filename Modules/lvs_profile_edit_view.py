@@ -159,10 +159,24 @@ def profile_stage_detail_lines(
     if stage.modules.storage_benchmark.enabled:
         lines.extend(["Execution: completion-based", "Duration: not applicable", "Trim: not applicable"])
     else:
+        expected = max(
+            0.0,
+            float(stage.duration_seconds or 0)
+            - float(stage.normalization.trim_start_seconds or 0)
+            - float(stage.normalization.trim_end_seconds or 0),
+        )
         lines.extend([
             f"Duration: {stage.duration_seconds}s",
             f"Trim: start={stage.normalization.trim_start_seconds}s, end={stage.normalization.trim_end_seconds}s",
+            f"Expected analysis window: {expected:.1f}s",
         ])
+    analysis = getattr(stage, "analysis", None)
+    if analysis is not None:
+        minimum = getattr(analysis, "minimum_usable_seconds", None)
+        lines.append(
+            f"Analysis intent: {analysis.intent}"
+            + (f" (minimum {float(minimum):.1f}s)" if minimum is not None else "")
+        )
     lines.append(f"Strict threshold warnings: {strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)}")
     module_names = stage_enabled_module_names(stage)
     lines.append(f"Enabled workloads: {', '.join(module_names) if module_names else 'none'}")

@@ -81,6 +81,7 @@ class SegmentMetricContextBuilder:
             gpu_order,
             gpu_targeting,
             gpu_device_classes,
+            analysis_evidence=dict(getattr(window, "analysis_evidence", {}) or {}),
         )
         gpu_observation_summary = self._gpu_metrics.observation_summary(gpu_targeting, gpu_metrics)
         gpu_power_stats = self._gpu_metrics.aggregate_metric_stats(gpu_metrics, "Power")
@@ -97,6 +98,7 @@ class SegmentMetricContextBuilder:
             gpu_metrics,
             worker_state_summary,
             strict_threshold_enabled=strict_threshold_enabled,
+            analysis_evidence=dict(getattr(window, "analysis_evidence", {}) or {}),
         )
 
         return SegmentDocumentInput(

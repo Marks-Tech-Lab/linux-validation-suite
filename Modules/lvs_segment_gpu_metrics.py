@@ -42,6 +42,7 @@ class GpuMetricSectionBuilder:
         gpu_order: Dict[int, int],
         gpu_targeting: List[Dict[str, Any]],
         gpu_device_classes: Dict[int, str],
+        analysis_evidence: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         targeting_map = {
             int(entry.get("GpuIndex", 0)): entry
@@ -91,7 +92,7 @@ class GpuMetricSectionBuilder:
             if not has_metric_values and not targeting.get("Targeted"):
                 continue
             worker_evidence = dict(targeting.get("WorkerEvidence") or {})
-            load_quality = self._gpu_load_quality(usage_stats, usage_sustain)
+            load_quality = self._gpu_load_quality(usage_stats, usage_sustain, analysis_evidence or {})
             if not has_metric_values and targeting.get("Targeted"):
                 worker_count = int(worker_evidence.get("WorkerResultCount") or 0)
                 worker_errors = int(worker_evidence.get("WorkerErrorCount") or 0)
@@ -233,9 +234,19 @@ class GpuMetricSectionBuilder:
             "ObservedOnlyVramUsedMaxGB": self.aggregate_metric_stats(observed_only_metrics, "VramUsedGB")["Max"],
         }
 
-    def _gpu_load_quality(self, usage_stats: Stats, usage_sustain: Dict[str, Any]) -> str:
+    def _gpu_load_quality(
+        self,
+        usage_stats: Stats,
+        usage_sustain: Dict[str, Any],
+        analysis_evidence: Dict[str, Any],
+    ) -> str:
         if not usage_stats.get("Max") and not usage_sustain.get("SampleCount"):
             return "unobserved"
+        intent = str(analysis_evidence.get("intent") or "legacy_unspecified")
+        if intent == "functional":
+            return "not_assessed_functional"
+        if intent in {"telemetry", "threshold", "sustained"} and analysis_evidence.get("quality") != "sufficient":
+            return "insufficient_analysis_evidence"
         avg = usage_stats.get("Avg")
         pct_75 = self._threshold_percent(usage_sustain, 75.0)
         pct_90 = self._threshold_percent(usage_sustain, 90.0)

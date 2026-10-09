@@ -113,6 +113,7 @@ def build_effective_profile_for_run(
                 enabled=effective_enabled,
                 modules=stage.modules,
                 normalization=stage.normalization,
+                analysis=stage.analysis,
                 strict_threshold_recommendation_warnings=stage.strict_threshold_recommendation_warnings,
             )
         )

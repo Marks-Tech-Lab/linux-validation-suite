@@ -601,6 +601,7 @@ def compile_chart_data(
                 "analysis_ended_monotonic": window.get("analysis_ended_monotonic"),
                 "analysis_duration_seconds": window.get("analysis_duration_seconds"),
                 "analysis_window_valid": bool(window.get("analysis_window_valid")),
+                "analysis_evidence": dict(window.get("analysis_evidence") or stage.get("analysis_evidence") or {}),
                 "normalization_sources": dict(window.get("normalization_sources") or {}),
                 "metric_window_semantics": window.get("metric_window_semantics"),
                 "families": families, "series": chart_series,

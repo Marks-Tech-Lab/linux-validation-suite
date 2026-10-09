@@ -116,7 +116,9 @@ def profile_execution_stage_header_line(stage: Dict[str, Any]) -> str:
 
 
 def profile_execution_trim_line(stage: Dict[str, Any]) -> str:
-    return f"  trim: start={stage.get('trim_start_seconds', 0)}s, end={stage.get('trim_end_seconds', 0)}s"
+    line = f"  trim: start={stage.get('trim_start_seconds', 0)}s, end={stage.get('trim_end_seconds', 0)}s"
+    expected = stage.get("expected_usable_seconds")
+    return line + (f" | expected analysis={float(expected):.1f}s" if expected is not None else "")
 
 
 def profile_execution_cpu_line(stage: Dict[str, Any]) -> str:
@@ -293,6 +295,13 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
         lines.append(profile_execution_stage_header_line(stage))
         if stage.get("trim_start_seconds") or stage.get("trim_end_seconds"):
             lines.append(profile_execution_trim_line(stage))
+        analysis = stage.get("analysis_evidence") if isinstance(stage.get("analysis_evidence"), dict) else {}
+        if analysis.get("intent") not in {None, "", "legacy_unspecified"}:
+            minimum = analysis.get("minimum_usable_seconds")
+            suffix = f", minimum={float(minimum):.1f}s" if minimum is not None else ""
+            lines.append(
+                f"  analysis: intent={analysis.get('intent')}, planned={analysis.get('quality')}{suffix}"
+            )
         lines.extend(profile_execution_system_memory_lines(stage))
         if "cpu" in (stage.get("workloads") or []):
             lines.append(profile_execution_cpu_line(stage))

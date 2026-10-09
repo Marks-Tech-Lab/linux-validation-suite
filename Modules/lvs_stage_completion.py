@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_runtime_memory_guard import refresh_runtime_memory_guard
 from Modules.lvs_profile_metadata import stage_result_metadata
+from Modules.lvs_analysis_quality import normalized_analysis_intent
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ def build_stage_check_window(
     if trim_end_seconds is None:
         trim_end_seconds = stage.normalization.trim_end_seconds
     metadata = stage_result_metadata(stage, display_name)
+    analysis = getattr(stage, "analysis", None)
     return stage_window_cls(
         stage_id=stage.id,
         stage_type=stage.name,
@@ -86,6 +88,8 @@ def build_stage_check_window(
         gpu_workers_initial=gpu_workers_initial or [],
         gpu_workers_final=gpu_workers_final or [],
         worker_results=worker_results or [],
+        analysis_intent=normalized_analysis_intent(getattr(analysis, "intent", None)),
+        analysis_minimum_usable_seconds=getattr(analysis, "minimum_usable_seconds", None),
     )
 
 
