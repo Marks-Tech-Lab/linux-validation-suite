@@ -38,12 +38,16 @@ from .lvs_gpu_identity import (
     normalize_pci_id,
     normalize_pci_slot,
     parse_vulkan_summary_devices,
+    pci_physical_gpu_id,
     pci_slot_sort_key,
     runtime_gpu_name_score,
     select_runtime_gpu_name,
     slot_for_vulkan_device,
     slot_from_mesa_vulkan_uuid,
 )
+from .lvs_gpu_memory_model import classify_gpu_memory
+from .lvs_gpu_targets import gpu_card_class
+from .lvs_vulkan_runtime import collect_vulkan_native_physical_devices, resolve_vulkan_library
 from .lvs_inventory_helpers import (
     apply_inxi_memory_fields,
     build_memory_speed_summary,
@@ -275,10 +279,13 @@ class SystemInfoCollector:
         return ""
 
     def _memory_gb(self) -> int:
+        return int(self._memory_total_bytes() / (1024 ** 3))
+
+    def _memory_total_bytes(self) -> int:
         try:
             pages = os.sysconf("SC_PHYS_PAGES")
             page_size = os.sysconf("SC_PAGE_SIZE")
-            return int((pages * page_size) / (1024 ** 3))
+            return int(pages * page_size)
         except Exception:
             return 0
 
@@ -407,6 +414,12 @@ class SystemInfoCollector:
             slot = str(gpu.get("pci_slot", "") or "").lower()
             if slot in vulkan_classes:
                 gpu.update(vulkan_classes[slot])
+            if str(gpu.get("device_class") or "unknown").strip().lower() == "unknown":
+                inferred_class = gpu_card_class(gpu)
+                if inferred_class:
+                    gpu["device_class"] = inferred_class
+                    gpu["device_class_source"] = "drm_driver_or_platform_topology"
+                    gpu["device_class_confidence"] = "medium"
         runtime_names = self._runtime_gpu_names_by_slot(drm_gpus)
         nvidia_gpus = self._discover_nvidia_smi_gpus()
         nvidia_by_slot = {
@@ -427,11 +440,12 @@ class SystemInfoCollector:
                         "name": nvidia_gpu.get("name") or gpu.get("name", ""),
                         "marketing_name": nvidia_gpu.get("name") or gpu.get("marketing_name", "") or gpu.get("name", ""),
                         "name_source": "nvidia_smi",
-                        "device_class": "discrete",
-                        "device_class_source": "nvidia_smi",
-                        "device_class_confidence": "high",
                         "driver": nvidia_gpu.get("driver") or gpu.get("driver", ""),
                         "memory": nvidia_gpu.get("memory") or gpu.get("memory", ""),
+                        "memory_bytes": int(nvidia_gpu.get("memory_bytes") or gpu.get("memory_bytes") or 0),
+                        "provider_memory_source": "nvidia_smi_memory_total"
+                        if int(nvidia_gpu.get("memory_bytes") or 0) > 0
+                        else "",
                     }
                 )
             else:
@@ -466,6 +480,25 @@ class SystemInfoCollector:
         merged = self._sort_gpus_for_export(merged)
         for gpu in merged:
             pcie_link = trusted_pcie_link_for_slot(gpu.get("pcie_link", {}), gpu.get("pci_slot", ""))
+            memory_profile = classify_gpu_memory(
+                target={
+                    **gpu,
+                    "slot": gpu.get("pci_slot", ""),
+                    "vram_total": int(gpu.get("memory_bytes") or 0),
+                    "vram_total_source": gpu.get("provider_memory_source", ""),
+                },
+                device_class=str(gpu.get("device_class") or "unknown"),
+                system_total_bytes=self._memory_total_bytes(),
+                vulkan_device_local_heap_bytes=int(gpu.get("vulkan_device_local_heap_bytes") or 0),
+            )
+            memory_architecture = str(memory_profile.get("memory_kind") or "unknown")
+            memory_presentation = (
+                "Shared / unified with system memory"
+                if memory_architecture == "shared"
+                else gpu.get("memory", "")
+                if memory_architecture == "dedicated"
+                else "Unknown"
+            )
             devices.append(
                 {
                     "Name": gpu["name"],
@@ -477,10 +510,35 @@ class SystemInfoCollector:
                     "DeviceClass": gpu.get("device_class", "unknown"),
                     "DeviceClassSource": gpu.get("device_class_source", ""),
                     "DeviceClassConfidence": gpu.get("device_class_confidence", "low"),
+                    "PhysicalGpuId": pci_physical_gpu_id(gpu.get("pci_slot", "")),
+                    "MemoryArchitecture": memory_architecture,
+                    "MemoryArchitectureSource": memory_profile.get("classification_source", "insufficient_evidence"),
+                    "MemoryArchitectureConfidence": memory_profile.get("classification_confidence", "low"),
+                    "DedicatedMemoryBytes": (
+                        int(memory_profile.get("dedicated_vram_capacity_bytes") or 0)
+                        if memory_architecture == "dedicated"
+                        else None
+                    ),
+                    "DedicatedMemoryStatus": (
+                        "reported_independent_pool"
+                        if memory_architecture == "dedicated"
+                        and int(memory_profile.get("dedicated_vram_capacity_bytes") or 0) > 0
+                        else "not_separately_reported"
+                        if memory_architecture == "shared"
+                        else "unknown"
+                    ),
+                    "ProviderReportedMemoryBytes": int(gpu.get("memory_bytes") or 0) or None,
+                    "ProviderReportedMemorySource": gpu.get("provider_memory_source", ""),
+                    "VulkanDeviceLocalHeapBytes": int(gpu.get("vulkan_device_local_heap_bytes") or 0) or None,
+                    "VulkanDeviceLocalHeapSemantics": (
+                        "api_addressable_capacity"
+                        if int(gpu.get("vulkan_device_local_heap_bytes") or 0) > 0
+                        else ""
+                    ),
                     "Card": gpu.get("card", ""),
                     "Chipset": gpu["chipset"],
                     "GpuDie": "",
-                    "Memory": gpu["memory"],
+                    "Memory": memory_presentation,
                     "Interface": gpu["pci_slot"],
                     "PcieLink": pcie_link,
                     "PcieMaxLinkSpeed": pcie_link.get("MaxLinkSpeed", ""),
@@ -496,11 +554,12 @@ class SystemInfoCollector:
             )
         return devices
 
-    def _vulkan_gpu_classes_by_slot(self, drm_gpus: List[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    def _vulkan_gpu_classes_by_slot(self, drm_gpus: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        by_slot = self._native_vulkan_gpu_details_by_slot(drm_gpus)
         from shutil import which
 
         if which("vulkaninfo") is None:
-            return {}
+            return by_slot
         try:
             completed = subprocess.run(
                 ["vulkaninfo", "--summary"],
@@ -510,12 +569,11 @@ class SystemInfoCollector:
                 timeout=15,
             )
         except Exception:
-            return {}
+            return by_slot
         text = completed.stdout or ""
         if completed.stderr:
             text += "\n" + completed.stderr
         devices = self._parse_vulkan_summary_devices(text)
-        by_slot: Dict[str, Dict[str, str]] = {}
         for device in devices:
             slot = self._slot_for_vulkan_device(device, drm_gpus)
             if not slot:
@@ -523,15 +581,42 @@ class SystemInfoCollector:
             device_class = self._device_class_from_vulkan_type(str(device.get("deviceType", "") or ""))
             if device_class == "unknown":
                 continue
-            by_slot[slot.lower()] = {
-                "device_class": device_class,
-                "device_class_source": "vulkaninfo",
-                "device_class_confidence": "high",
-            }
+            detail = by_slot.setdefault(slot.lower(), {})
+            if not str(detail.get("device_class") or "").strip():
+                detail.update({
+                    "device_class": device_class,
+                    "device_class_source": "vulkaninfo",
+                    "device_class_confidence": "high",
+                })
         return by_slot
 
-    def _discover_drm_gpus(self) -> List[Dict[str, str]]:
-        devices: List[Dict[str, str]] = []
+    def _native_vulkan_gpu_details_by_slot(self, drm_gpus: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        library = resolve_vulkan_library()
+        inventory = collect_vulkan_native_physical_devices(library)
+        by_slot: Dict[str, Dict[str, Any]] = {}
+        for device in inventory.get("devices", []) if inventory.get("available") else []:
+            slot = self._slot_for_vulkan_device(device, drm_gpus)
+            if not slot:
+                continue
+            device_class = self._device_class_from_vulkan_type(str(device.get("deviceType", "") or ""))
+            detail: Dict[str, Any] = {
+                "vulkan_device_local_heap_bytes": int(device.get("device_local_heap_bytes") or 0),
+                "vulkan_inventory_source": "libvulkan",
+                "vulkan_device_name": str(device.get("deviceName") or ""),
+            }
+            if device_class != "unknown":
+                detail.update(
+                    {
+                        "device_class": device_class,
+                        "device_class_source": "vulkan_native_physical_device_type",
+                        "device_class_confidence": "high",
+                    }
+                )
+            by_slot[slot.lower()] = detail
+        return by_slot
+
+    def _discover_drm_gpus(self) -> List[Dict[str, Any]]:
+        devices: List[Dict[str, Any]] = []
         gpu_index = 0
         for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
             if "-" in card.name:
@@ -574,6 +659,8 @@ class SystemInfoCollector:
                     "device_class_source": "",
                     "device_class_confidence": "low",
                     "memory": self._format_gib(vram_bytes),
+                    "memory_bytes": int(vram_bytes or 0),
+                    "provider_memory_source": "drm_mem_info_vram_total" if int(vram_bytes or 0) > 0 else "",
                     "pcie_link": pcie_link,
                 }
             )
@@ -824,7 +911,7 @@ print((renderer or b"").decode("utf-8", "ignore"))
     def _clean_runtime_gpu_name(self, name: str) -> str:
         return clean_runtime_gpu_name(name)
 
-    def _discover_nvidia_smi_gpus(self) -> List[Dict[str, str]]:
+    def _discover_nvidia_smi_gpus(self) -> List[Dict[str, Any]]:
         from shutil import which
 
         if which("nvidia-smi") is None:
@@ -840,15 +927,17 @@ print((renderer or b"").decode("utf-8", "ignore"))
             return []
         if completed.returncode != 0:
             return []
-        devices: List[Dict[str, str]] = []
+        devices: List[Dict[str, Any]] = []
         for line in (completed.stdout or "").splitlines():
             parts = [item.strip() for item in line.split(",")]
             if len(parts) < 4:
                 continue
             try:
                 memory_mb = float(parts[3])
+                memory_bytes = int(memory_mb * 1024 * 1024) if memory_mb > 0 else 0
                 memory = f"{round(memory_mb / 1024.0, 2)} GB" if memory_mb > 0 else ""
             except Exception:
+                memory_bytes = 0
                 memory = ""
             name = parts[0] or "NVIDIA GPU"
             slot = self._normalize_pci_slot(parts[1])
@@ -859,10 +948,12 @@ print((renderer or b"").decode("utf-8", "ignore"))
                     "chipset": name,
                     "driver": parts[2],
                     "pci_slot": slot,
-                    "device_class": "discrete",
-                    "device_class_source": "nvidia_smi",
-                    "device_class_confidence": "high",
+                    "device_class": "unknown",
+                    "device_class_source": "insufficient_topology_evidence",
+                    "device_class_confidence": "low",
                     "memory": memory,
+                    "memory_bytes": memory_bytes,
+                    "provider_memory_source": "nvidia_smi_memory_total" if memory_bytes > 0 else "",
                     "pcie_link": read_pcie_link_info(Path("/sys/bus/pci/devices") / slot, self._read_sysfs),
                 }
             )

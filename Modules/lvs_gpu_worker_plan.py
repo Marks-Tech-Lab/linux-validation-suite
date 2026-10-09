@@ -42,6 +42,7 @@ class GpuWorkerSpec:
     compute_variant: str = ""
     gpu_memory_kind: str = "unknown"
     memory_classification_source: str = ""
+    memory_classification_confidence: str = "low"
     memory_capacity_source: str = ""
     dedicated_vram_capacity_bytes: int = 0
     shared_addressable_capacity_bytes: int = 0
@@ -117,6 +118,7 @@ def serialize_gpu_worker_spec(worker: GpuWorkerSpec) -> Dict[str, Any]:
         "tuning_step": worker.tuning_step,
         "gpu_memory_kind": worker.gpu_memory_kind,
         "memory_classification_source": worker.memory_classification_source,
+        "memory_classification_confidence": worker.memory_classification_confidence,
         "memory_capacity_source": worker.memory_capacity_source,
         "dedicated_vram_capacity_bytes": worker.dedicated_vram_capacity_bytes,
         "shared_addressable_capacity_bytes": worker.shared_addressable_capacity_bytes,

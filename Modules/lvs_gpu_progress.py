@@ -227,9 +227,20 @@ def _first_payload_int(payloads: list[Dict[str, Any]], key: str) -> int | None:
 
 
 def gpu_vram_total_bytes_from_payloads(payloads: list[Dict[str, Any]]) -> int:
+    """Return only an independently established dedicated-memory capacity.
+
+    Vulkan DEVICE_LOCAL and OpenCL global sizes are API address-space limits;
+    they are not proof of a physically separate VRAM pool on unified-memory
+    hardware. Legacy payloads without semantic provenance therefore fail
+    closed rather than promoting a numeric capacity to dedicated VRAM.
+    """
     candidates: list[int] = []
     for payload in payloads:
-        for key in ("target_vram_total", "device_global_mem_bytes", "device_local_heap_bytes"):
+        memory_kind = str(payload.get("gpu_memory_kind") or payload.get("memory_kind") or "").strip().lower()
+        semantics = str(payload.get("reported_vram_total_semantics") or "").strip().lower()
+        if memory_kind != "dedicated" and semantics != "dedicated_capacity":
+            continue
+        for key in ("dedicated_vram_capacity_bytes", "target_vram_total"):
             try:
                 value = int(payload.get(key) or 0)
             except (TypeError, ValueError):
@@ -237,6 +248,27 @@ def gpu_vram_total_bytes_from_payloads(payloads: list[Dict[str, Any]]) -> int:
             if value > 0:
                 candidates.append(value)
     return max(candidates, default=0)
+
+
+def gpu_api_capacity_progress_parts(payloads: list[Dict[str, Any]]) -> list[str]:
+    """Present provider addressable limits without calling them physical VRAM."""
+    capacities = (
+        ("vulkan_device_local_api_capacity_gib", "device_local_heap_bytes"),
+        ("opencl_global_api_capacity_gib", "device_global_mem_bytes"),
+    )
+    parts: list[str] = []
+    for label, key in capacities:
+        values: list[int] = []
+        for payload in payloads:
+            try:
+                value = int(payload.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values.append(value)
+        if values:
+            parts.append(f"{label}={round(max(values) / float(1024 ** 3), 2)}")
+    return parts
 
 
 def _first_payload_text(payloads: list[Dict[str, Any]], key: str) -> str:

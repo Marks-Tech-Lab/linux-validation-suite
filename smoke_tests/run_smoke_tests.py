@@ -91,6 +91,7 @@ from Modules.lvs_gpu_stage_targets import (
 )
 from Modules.lvs_gpu_telemetry_warnings import gpu_telemetry_coverage_warnings
 from Modules.lvs_gpu_progress import (
+    gpu_api_capacity_progress_parts,
     gpu_vram_total_bytes_from_payloads,
     latest_sample_value,
     live_system_progress_parts,
@@ -301,7 +302,8 @@ from Modules.lvs_compat_export_gpu import (
     build_gpu_worker_validation_detail,
 )
 from Modules.lvs_compat_export_hardware import build_compatibility_hardware_sections
-from Modules.lvs_compat_export_metadata import build_compatibility_metadata_block
+from Modules.lvs_compat_export_metadata import build_compatibility_metadata_block, discrete_gpu_inventory
+from Modules.lvs_report_html import gpu_inventory_presentation_detail
 from Modules.lvs_export_contract import validate_export_contract_compatibility
 from Modules.lvs_report_helpers import (
     build_overall_stability_interpretation,
@@ -6819,6 +6821,12 @@ def test_compatibility_export_gpu_section() -> None:
                 "Chipset": "GB202",
                 "DriverVersion": "nvidia 575",
                 "Memory": "32 GB",
+                "DeviceClass": "discrete",
+                "DeviceClassSource": "vulkan_native_physical_device_type",
+                "MemoryArchitecture": "dedicated",
+                "MemoryArchitectureSource": "device_class:discrete",
+                "DedicatedMemoryBytes": 32 * GIB,
+                "DedicatedMemoryStatus": "reported_independent_pool",
             }
         ],
         segments=[segment],
@@ -6837,6 +6845,8 @@ def test_compatibility_export_gpu_section() -> None:
         "NVIDIA GeForce RTX 5090 #1",
         "GPU section display name",
     )
+    assert_equal(gpu_section["devices"][0]["gpu_device_class"], "discrete", "GPU section physical class")
+    assert_equal(gpu_section["devices"][0]["gpu_memory_architecture"], "dedicated", "GPU section memory architecture")
     expected_test_order = [
         "GPU Temperature (Temperature)",
         "GPU Hotspot Temperature (Temperature)",
@@ -7086,6 +7096,12 @@ def test_gpu_worker_validation_detail_builder() -> None:
         "renderer": "RADV",
         "resolved_device_name": "Resolved GPU",
         "result_path": "/tmp/gpu.json",
+        "gpu_memory_kind": "dedicated",
+        "memory_classification_source": "device_class:discrete",
+        "dedicated_vram_capacity_bytes": 32 * GIB,
+        "shared_addressable_capacity_bytes": 0,
+        "api_addressable_capacity_bytes": 32 * GIB,
+        "api_addressable_capacity_source": "reported_vram_total",
     }
     detail = build_gpu_worker_validation_detail(
         stage_name="VRAM Stage",
@@ -7116,6 +7132,10 @@ def test_gpu_worker_validation_detail_builder() -> None:
     assert_equal(detail["ActiveLoadFraction"], 0.877, "worker detail active load rounding")
     assert_equal(detail["AllocatedVramBytes"], 100, "worker detail allocated fallback")
     assert_equal(detail["TargetVramBytes"], 400, "worker detail target VRAM")
+    assert_equal(detail["AllocatedGpuMemoryBytes"], 100, "worker detail neutral allocated-memory alias")
+    assert_equal(detail["TargetGpuMemoryBytes"], 400, "worker detail neutral target-memory alias")
+    assert_equal(detail["GpuMemoryKind"], "dedicated", "worker detail memory architecture")
+    assert_equal(detail["DedicatedGpuMemoryBytes"], 32 * GIB, "worker detail dedicated capacity provenance")
     assert_equal(detail["AllocationPercent"], 25.0, "worker detail allocation percent")
     assert_equal(detail["VerifiedBufferIndexes"], [0, 2, 4], "worker detail verified buffers")
     assert_equal(detail["BufferDispatchAvg"], 14.5, "worker detail buffer dispatch avg")
@@ -7224,7 +7244,7 @@ def test_compatibility_export_metadata_block() -> None:
                 "BoardName": "Smoke Board Name",
             },
             "Bios": {"Name": "Smoke BIOS", "Version": "S1", "FullName": "Smoke BIOS S1"},
-            "Gpu": [{"Name": "Smoke GPU"}],
+            "Gpu": [{"Name": "Smoke GPU", "DeviceClass": "discrete"}],
         },
         "TestInfo": {
             "TestName": "Smoke Test",
@@ -17211,6 +17231,7 @@ def test_gpu_target_helpers() -> None:
             "driver": "nvidia",
             "vram_total": 24 * 1024 ** 3,
             "target_id": "0000:01:00.0",
+            "device_class": "discrete",
         },
         {
             "card": "card1",
@@ -17219,6 +17240,7 @@ def test_gpu_target_helpers() -> None:
             "driver": "amdgpu",
             "vram_total": 4 * 1024 ** 3,
             "target_id": "0000:02:00.0",
+            "device_class": "unknown",
         },
         {
             "card": "card2",
@@ -17919,6 +17941,7 @@ def test_system_info_gpu_pcie_attribution() -> None:
                     "device_class_source": "fixture",
                     "device_class_confidence": "high",
                     "memory": "",
+                    "memory_bytes": 0,
                     "pcie_link": {
                         "MaxLinkSpeed": "Unknown",
                         "CurrentLinkSpeed": "Unknown",
@@ -17942,6 +17965,8 @@ def test_system_info_gpu_pcie_attribution() -> None:
                     "device_class_source": "fixture",
                     "device_class_confidence": "high",
                     "memory": "8 GB",
+                    "memory_bytes": 8 * GIB,
+                    "provider_memory_source": "drm_mem_info_vram_total",
                     "pcie_link": {
                         "MaxLinkSpeed": "16.0 GT/s PCIe",
                         "CurrentLinkSpeed": "16.0 GT/s PCIe",
@@ -17965,6 +17990,8 @@ def test_system_info_gpu_pcie_attribution() -> None:
                     "device_class_source": "fixture",
                     "device_class_confidence": "high",
                     "memory": "4 GB",
+                    "memory_bytes": 4 * GIB,
+                    "provider_memory_source": "drm_mem_info_vram_total",
                     "pcie_link": {
                         "MaxLinkSpeed": "16.0 GT/s PCIe",
                         "CurrentLinkSpeed": "8.0 GT/s PCIe",
@@ -17992,6 +18019,9 @@ def test_system_info_gpu_pcie_attribution() -> None:
     assert_equal(by_slot["0000:00:02.0"]["PcieSlot"], "0000:00:02.0", "iGPU flat PCIe slot")
     assert_equal(by_slot["0000:05:00.0"]["PcieLink"], {}, "mismatched GPU PCIe link omitted")
     assert_equal(by_slot["0000:05:00.0"]["PcieSlot"], "", "mismatched GPU flat PCIe slot omitted")
+    assert_equal(by_slot["0000:00:02.0"]["MemoryArchitecture"], "shared", "mixed inventory iGPU is shared")
+    assert_equal(by_slot["0000:04:00.0"]["MemoryArchitecture"], "dedicated", "mixed inventory dGPU is dedicated")
+    assert_equal(by_slot["0000:04:00.0"]["DedicatedMemoryBytes"], 8 * GIB, "mixed inventory dGPU capacity")
     assert_equal(
         trusted_pcie_link_for_slot({"PciSlot": "0000:04:00.0", "CurrentLinkWidth": "16"}, "0000:05:00.0"),
         {},
@@ -18612,12 +18642,12 @@ def test_gpu_progress_helpers() -> None:
     assert_equal(
         gpu_vram_total_bytes_from_payloads(
             [
-                {"target_vram_total": 8 * 1024 ** 3},
+                {"gpu_memory_kind": "dedicated", "target_vram_total": 8 * 1024 ** 3},
                 {"device_local_heap_bytes": 6 * 1024 ** 3},
             ]
         ),
         8 * 1024 ** 3,
-        "GPU progress reuses the largest available worker VRAM total",
+        "GPU progress uses proven dedicated VRAM only",
     )
     assert_equal(gpu_vram_total_bytes_from_payloads([{}]), 0, "GPU progress handles missing VRAM total")
     assert_equal(
@@ -21310,7 +21340,15 @@ def test_gpu_worker_planner_helpers() -> None:
             return worker("gpu_3d", "python_egl_gles2", target)
 
         def _build_python_opencl_compute_worker(self, target: dict, profile_mode: str = "", profile_intensity: str = "", compute_variant: str = "") -> GpuWorkerSpec:
-            return worker("gpu_3d", "python_opencl_compute", target, compute_variant)
+            spec = worker("gpu_3d", "python_opencl_compute", target, compute_variant)
+            spec.system_memory_fixed_commitment_bytes = 16 * 1024 ** 2
+            return spec
+
+        def _gpu_target_by_id(self, target_id: str) -> dict:
+            return next(target for target in targets if target["target_id"] == target_id)
+
+        def _gpu_capability_profile(self, _target: dict) -> dict:
+            return {"memory_kind": "unknown", "classification_source": "insufficient_evidence"}
 
         def _vram_backend_candidates(self, vram: object) -> list[str]:
             return ["python_vulkan_compute"]
@@ -21358,6 +21396,25 @@ def test_gpu_worker_planner_helpers() -> None:
         [spec.workload for spec in stage_workers],
         ["vram", "vram"],
         "fused Vulkan VRAM worker suppresses duplicate 3D workers for same targets",
+    )
+    compute_only_stage = SimpleNamespace(
+        duration_seconds=30,
+        modules=SimpleNamespace(
+            gpu_3d=gpu,
+            vram=SimpleNamespace(gpus="all", allocation_percent=0, enabled=False),
+            memory=memory,
+        ),
+    )
+    compute_workers = build_stage_gpu_worker_specs(FakeRunner(), compute_only_stage)
+    opencl_worker = next(spec for spec in compute_workers if spec.backend == "python_opencl_compute")
+    assert_true(
+        opencl_worker.system_memory_budget_participation,
+        "unknown-topology OpenCL fixed commitment remains inside system-memory protection",
+    )
+    assert_equal(
+        opencl_worker.memory_budgetability,
+        "unknown_memory_kind_conservatively_system_budgeted",
+        "unknown OpenCL allocation provenance remains fail-closed",
     )
 
 
@@ -24561,6 +24618,189 @@ def test_gpu_memory_semantics_and_backend_independent_uma_classification() -> No
     unknown = classify_gpu_memory(target={}, device_class="unknown", system_total_bytes=total)
     assert_equal(unknown["memory_kind"], "unknown", "unknown GPU remains unknown without invented capacity")
     assert_equal(unknown["shared_addressable_capacity_bytes"], 0, "unknown GPU has no invented shared capacity")
+
+
+def test_gpu_physical_type_unified_memory_and_presentation_semantics() -> None:
+    total = 130_594_009_088
+    vulkan_heap = 97_945_506_816
+    opencl_global = total
+
+    conventional_dgpu = classify_gpu_memory(
+        target={"vendor": "AMD", "vram_total": 24 * GIB, "vram_total_source": "drm_mem_info_vram_total"},
+        device_class="discrete",
+        system_total_bytes=total,
+    )
+    assert_equal(conventional_dgpu["memory_kind"], "dedicated", "proven dGPU remains dedicated")
+    assert_equal(conventional_dgpu["dedicated_vram_capacity_bytes"], 24 * GIB, "dGPU capacity preserved")
+
+    conventional_igpu = classify_gpu_memory(
+        target={"vendor": "Intel", "driver": "i915", "vram_total": 0},
+        device_class="integrated",
+        system_total_bytes=total,
+        vulkan_device_local_heap_bytes=8 * GIB,
+    )
+    assert_equal(conventional_igpu["memory_kind"], "shared", "proven iGPU remains shared")
+    assert_equal(conventional_igpu["dedicated_vram_capacity_bytes"], 0, "iGPU API heap is not dedicated VRAM")
+
+    gb10 = classify_gpu_memory(
+        target={"vendor": "NVIDIA", "driver": "nvidia", "slot": "000f:01:00.0", "vram_total": 0},
+        device_class="integrated",
+        system_total_bytes=total,
+        opencl_global_mem_bytes=opencl_global,
+        vulkan_device_local_heap_bytes=vulkan_heap,
+    )
+    assert_equal(gb10["memory_kind"], "shared", "GB10-style Vulkan topology wins over NVIDIA identity")
+    assert_equal(gb10["dedicated_vram_capacity_bytes"], 0, "GB10-style API heap is not physical dedicated VRAM")
+    assert_equal(gb10["opencl_global_memory_bytes"], opencl_global, "OpenCL API capacity retained independently")
+    assert_equal(gb10["vulkan_device_local_heap_bytes"], vulkan_heap, "Vulkan API capacity retained independently")
+    assert_equal(gb10["shared_addressable_capacity_bytes"], vulkan_heap, "shared safety bound uses conservative common API capacity")
+
+    unknown_nvidia = classify_gpu_memory(
+        target={"vendor": "NVIDIA", "driver": "nvidia", "slot": "0000:01:00.0", "vram_total": 16 * GIB},
+        device_class="unknown",
+        system_total_bytes=total,
+    )
+    assert_equal(unknown_nvidia["memory_kind"], "unknown", "NVIDIA and PCI do not prove dedicated topology")
+    assert_equal(unknown_nvidia["dedicated_vram_capacity_bytes"], 0, "provider capacity is not promoted without topology")
+    assert_equal(unknown_nvidia["reported_vram_total_bytes"], 16 * GIB, "provider capacity remains descriptive evidence")
+    assert_equal(unknown_nvidia["system_memory_pool_ceiling_bytes"], total, "unknown topology retains conservative system-pool ceiling")
+    assert_equal(gpu_card_class({"vendor": "NVIDIA", "driver": "nvidia"}), "", "NVIDIA identity alone has no physical class")
+
+    vulkan_only_unknown = classify_gpu_memory(
+        target={}, device_class="unknown", system_total_bytes=total,
+        vulkan_device_local_heap_bytes=vulkan_heap,
+    )
+    assert_equal(vulkan_only_unknown["memory_kind"], "unknown", "Vulkan DEVICE_LOCAL alone does not prove dedicated memory")
+    opencl_only_unknown = classify_gpu_memory(
+        target={}, device_class="unknown", system_total_bytes=total,
+        opencl_global_mem_bytes=opencl_global // 2,
+    )
+    assert_equal(opencl_only_unknown["memory_kind"], "unknown", "OpenCL global memory alone does not prove dedicated memory")
+
+    mixed = [
+        {"Name": "Integrated GPU", "DeviceClass": "integrated"},
+        {"Name": "Discrete GPU", "DeviceClass": "discrete"},
+        {"Name": "Unknown GPU"},
+    ]
+    assert_equal(
+        [gpu["Name"] for gpu in discrete_gpu_inventory(mixed)], ["Discrete GPU"],
+        "compatibility dGPU metadata is per-device and fail-closed",
+    )
+
+    shared_inventory = {
+        "DeviceClass": "integrated", "MemoryArchitecture": "shared",
+        "DedicatedMemoryStatus": "not_separately_reported", "VulkanDeviceLocalHeapBytes": vulkan_heap,
+    }
+    detail = gpu_inventory_presentation_detail(shared_inventory)
+    assert_true("Shared / unified" in detail, "report labels unified memory explicitly")
+    assert_true("not separately reported" in detail, "report does not present zero as no usable memory")
+    assert_true("Vulkan device-local API capacity" in detail, "report preserves neutral Vulkan capacity")
+
+    assert_equal(
+        gpu_vram_total_bytes_from_payloads(
+            [{"gpu_memory_kind": "shared", "device_local_heap_bytes": vulkan_heap, "device_global_mem_bytes": opencl_global}]
+        ), 0, "shared API capacities are not displayed as dedicated VRAM",
+    )
+    assert_equal(
+        gpu_vram_total_bytes_from_payloads(
+            [{"gpu_memory_kind": "dedicated", "dedicated_vram_capacity_bytes": 24 * GIB}]
+        ), 24 * GIB, "proven dedicated VRAM remains available to progress presentation",
+    )
+    assert_equal(
+        gpu_vram_total_bytes_from_payloads([{"target_vram_total": 24 * GIB}]), 0,
+        "legacy numeric-only capacity remains conservative",
+    )
+    assert_equal(
+        gpu_api_capacity_progress_parts(
+            [{"device_local_heap_bytes": vulkan_heap, "device_global_mem_bytes": opencl_global}]
+        ),
+        ["vulkan_device_local_api_capacity_gib=91.22", "opencl_global_api_capacity_gib=121.63"],
+        "progress presents provider API capacities without calling them VRAM",
+    )
+
+    class Gb10SystemInfoCollector(SystemInfoCollector):
+        def _discover_drm_gpus(self):
+            return [{
+                "card": "card1", "name": "NVIDIA GPU 2B00", "marketing_name": "NVIDIA GPU 2B00",
+                "pci_name": "NVIDIA GPU 2B00", "name_source": "fixture", "chipset": "NVIDIA 2B00",
+                "driver": "nvidia", "pci_slot": "000f:01:00.0", "vendor_id": "10de", "device_id": "2b00",
+                "device_class": "unknown", "device_class_source": "", "device_class_confidence": "low",
+                "memory": "", "memory_bytes": 0, "provider_memory_source": "", "pcie_link": {},
+            }]
+
+        def _vulkan_gpu_classes_by_slot(self, _drm_gpus):
+            return {"000f:01:00.0": {
+                "device_class": "integrated", "device_class_source": "vulkan_native_physical_device_type",
+                "device_class_confidence": "high", "vulkan_device_local_heap_bytes": vulkan_heap,
+                "vulkan_inventory_source": "libvulkan", "vulkan_device_name": "NVIDIA GB10",
+            }}
+
+        def _runtime_gpu_names_by_slot(self, _drm_gpus):
+            return {}
+
+        def _discover_nvidia_smi_gpus(self):
+            return [{
+                "card": "", "name": "NVIDIA GB10", "chipset": "NVIDIA GB10", "driver": "580.82.09",
+                "pci_slot": "000f:01:00.0", "device_class": "unknown",
+                "device_class_source": "insufficient_topology_evidence", "device_class_confidence": "low",
+                "memory": "", "memory_bytes": 0, "provider_memory_source": "", "pcie_link": {},
+            }]
+
+        def _memory_total_bytes(self):
+            return total
+
+    system_gpu = Gb10SystemInfoCollector()._gpu_info()[0]
+    assert_equal(system_gpu["DeviceClass"], "integrated", "system_info consumes native Vulkan topology")
+    assert_equal(system_gpu["DeviceClassSource"], "vulkan_native_physical_device_type", "system_info topology provenance")
+    assert_equal(system_gpu["MemoryArchitecture"], "shared", "system_info separates shared memory architecture")
+    assert_equal(system_gpu["MemoryArchitectureConfidence"], "high", "system_info retains memory classification confidence")
+    assert_equal(system_gpu["DedicatedMemoryBytes"], None, "system_info does not invent dedicated GB10 memory")
+    assert_equal(system_gpu["VulkanDeviceLocalHeapBytes"], vulkan_heap, "system_info retains Vulkan API capacity")
+    assert_equal(system_gpu["PhysicalGpuId"], "pci:000f:01:00.0", "system_info retains stable physical identity")
+
+    import Modules.lvs_system_info as system_info_module
+    original_resolver = system_info_module.resolve_vulkan_library
+    original_collector = system_info_module.collect_vulkan_native_physical_devices
+    system_info_module.resolve_vulkan_library = lambda: "libvulkan-fixture.so"
+    system_info_module.collect_vulkan_native_physical_devices = lambda _library: {
+        "available": True,
+        "devices": [{
+            "deviceType": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+            "deviceName": "NVIDIA GB10", "vendorID": "0x10de", "deviceID": "0x2b00",
+            "device_local_heap_bytes": vulkan_heap,
+        }],
+    }
+    try:
+        native_details = SystemInfoCollector()._native_vulkan_gpu_details_by_slot([{
+            "pci_slot": "000f:01:00.0", "vendor_id": "10de", "device_id": "2b00",
+        }])
+    finally:
+        system_info_module.resolve_vulkan_library = original_resolver
+        system_info_module.collect_vulkan_native_physical_devices = original_collector
+    assert_equal(
+        native_details["000f:01:00.0"]["device_class"], "integrated",
+        "system_info native libvulkan path maps physical-device type to DRM target",
+    )
+    assert_equal(
+        native_details["000f:01:00.0"]["vulkan_device_local_heap_bytes"], vulkan_heap,
+        "system_info native libvulkan path preserves API heap capacity",
+    )
+
+    profile_path = archived_hardware_profile_path("GPU Unified Memory Classification and Allocation Confirmation.json")
+    loader = ProfileLoader(ROOT / "profiles")
+    profile = loader.load_profile(profile_path)
+    labels = loader.load_segment_labels(profile_path, profile)
+    assert_equal(SharedProfileValidator().validate(profile, labels)["errors"], [], "unified-memory validation profile validates")
+    assert_equal([stage.duration_seconds for stage in profile.stages], [30, 30], "validation stages remain short and bounded")
+    assert_true(profile.require_all_stages_runnable, "validation fails closed unless both provider stages are runnable")
+    assert_equal(
+        [stage.modules.vram.backend_preference for stage in profile.stages], ["vulkan", "opencl"],
+        "validation exercises both memory APIs through normal planning",
+    )
+    assert_equal(
+        [stage.modules.vram.allocation_percent for stage in profile.stages], [1, 1],
+        "validation uses a small policy-controlled allocation",
+    )
 
 
 def test_combined_uma_stage_budget_and_dgpu_invariants() -> None:
@@ -28387,6 +28627,7 @@ def main() -> int:
         test_runtime_memory_guard_state_and_claims,
         test_backend_minimum_viability_is_declared_per_worker,
         test_gpu_memory_semantics_and_backend_independent_uma_classification,
+        test_gpu_physical_type_unified_memory_and_presentation_semantics,
         test_combined_uma_stage_budget_and_dgpu_invariants,
         test_stage_budget_consumer_combinations_and_unknown_gpu_safety,
         test_gpu_capability_limits_chunking_and_device_ownership,

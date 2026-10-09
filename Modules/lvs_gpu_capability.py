@@ -41,8 +41,10 @@ def build_gpu_capability_profile(
         for token in ("cpu", "llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")
     )
     vram_total = int(target_data.get("vram_total") or 0)
-    target_id = str(target_data.get("target_id", "") or "").strip().lower()
-    discrete_ids = {str(value or "").strip().lower() for value in likely_discrete_ids}
+    # Keep the selection inventory argument for API compatibility. Selection
+    # order is not physical-topology evidence and therefore cannot classify a
+    # device as discrete.
+    _ = likely_discrete_ids
     explicit_class = str(explicit_device_class or "")
     vulkan_class = str(vulkan_device_class or "").strip().lower()
     if vulkan_class not in {"integrated", "apu", "uma", "discrete", "virtual", "cpu"}:
@@ -60,8 +62,7 @@ def build_gpu_capability_profile(
             and any(token in identity_text for token in ("iris", "uhd", "hd graphics"))
         )
     )
-    selection_discrete = bool(target_id and target_id in discrete_ids and vram_total > 0 and not integrated_identity)
-    device_class = vulkan_class or explicit_class or ("integrated" if integrated_identity else "discrete" if selection_discrete else "unknown")
+    device_class = vulkan_class or explicit_class or ("integrated" if integrated_identity else "unknown")
     profile: Dict[str, Any] = {
         "target_id": str(target_data.get("target_id", "") or ""),
         "vendor": str(target_data.get("vendor", "") or ""),
@@ -73,8 +74,6 @@ def build_gpu_capability_profile(
             if explicit_class
             else "identity"
             if integrated_identity
-            else "selection"
-            if device_class == "discrete"
             else "unknown"
         ),
         "vram_total": vram_total,

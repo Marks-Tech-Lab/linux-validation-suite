@@ -345,16 +345,10 @@ def discover_gpu_cards(
 
 
 def likely_discrete_gpu_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if len(cards) <= 1:
-        return [] if cards and gpu_card_class(cards[0]) == "integrated" else cards[:]
-    explicit_discrete = [card for card in cards if gpu_card_class(card) == "discrete"]
-    if explicit_discrete:
-        return explicit_discrete
-    candidates = [card for card in cards if gpu_card_class(card) != "integrated"]
-    max_vram = max((int(card.get("vram_total") or 0) for card in candidates), default=0)
-    threshold = max(1024 ** 3, int(max_vram * 0.25)) if max_vram > 0 else 1024 ** 3
-    discrete = [card for card in candidates if int(card.get("vram_total") or 0) >= threshold]
-    return discrete or cards[:]
+    # Selection ordinals, PCI presence, vendor, and a positive provider memory
+    # capacity do not prove board-level discrete topology. Workload discovery
+    # enriches cards with native Vulkan topology before this selector runs.
+    return [card for card in cards if gpu_card_class(card) == "discrete"]
 
 
 def gpu_card_class(card: Dict[str, Any]) -> str:
@@ -368,6 +362,8 @@ def gpu_card_class(card: Dict[str, Any]) -> str:
         return "integrated"
     if authoritative_class == "discrete":
         return "discrete"
+    if authoritative_class == "virtual":
+        return "virtual"
     vendor = str(card.get("vendor", "") or "").strip().lower()
     driver = str(card.get("driver", "") or "").strip().lower()
     platform_driver = str(card.get("platform_gpu_driver", "") or "").strip().lower()
@@ -375,8 +371,6 @@ def gpu_card_class(card: Dict[str, Any]) -> str:
         str(card.get(key, "") or "").strip().lower()
         for key in ("vendor", "name", "driver", "platform_gpu_driver")
     )
-    if vendor == "nvidia" or driver == "nvidia":
-        return "discrete"
     if driver in {"i915", "xe", "adreno", "panfrost", "panthor", "lima"}:
         return "integrated"
     if platform_driver in {"adreno", "panfrost", "panthor", "lima"}:
@@ -403,7 +397,15 @@ def enrich_gpu_cards_with_vulkan_device_classes(
         if not vulkan_device_is_hardware_gpu(device):
             continue
         device_type = str(device.get("deviceType", "") or "").strip().lower()
-        device_class = "integrated" if "integrated" in device_type else "discrete" if "discrete" in device_type else ""
+        device_class = (
+            "integrated"
+            if "integrated" in device_type
+            else "discrete"
+            if "discrete" in device_type
+            else "virtual"
+            if "virtual" in device_type
+            else ""
+        )
         if not device_class:
             continue
         slot = vulkan_device_pci_slot(device, enriched)
@@ -420,6 +422,7 @@ def enrich_gpu_cards_with_vulkan_device_classes(
         if target is not None:
             target["device_class"] = device_class
             target["device_class_source"] = "vulkan_physical_device_type"
+            target["device_class_confidence"] = "high"
     return enriched
 
 

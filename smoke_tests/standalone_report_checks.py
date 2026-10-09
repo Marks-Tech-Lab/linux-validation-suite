@@ -371,9 +371,9 @@ def _run_chart_data_checks() -> None:
         assert "gpu_0_vram_used_gib" in first and "gpu_0_vram_used_gb" not in first
         for field in ("gpu_0_vram_used_gib", "gpu_0_temp_memory_c", "gpu_0_memory_clock_mhz", "gpu_0_memory_busy_percent"):
             assert first[field]["primary"]
-        assert first["gpu_0_temp_memory_c"]["metric_label"] == "VRAM temperature"
-        assert first["gpu_0_memory_clock_mhz"]["metric_label"] == "VRAM clock" and first["gpu_0_memory_clock_mhz"]["display_unit"] == "GHz"
-        assert first["gpu_0_memory_busy_percent"]["metric_label"] == "VRAM utilization"
+        assert first["gpu_0_temp_memory_c"]["metric_label"] == "GPU memory temperature"
+        assert first["gpu_0_memory_clock_mhz"]["metric_label"] == "GPU memory clock" and first["gpu_0_memory_clock_mhz"]["display_unit"] == "GHz"
+        assert first["gpu_0_memory_busy_percent"]["metric_label"] == "GPU memory utilization"
         assert first["gpu_0_vddgfx_v"]["metric_family"] == "Voltage" and first["gpu_0_vddgfx_v"]["display_unit"] == "V"
         assert first["gpu_0_vddgfx_v"]["primary"] and first["gpu_0_vddgfx_v"]["selector_label"] == "GPU 1 VDDGFX"
         assert not first["gpu_0_memory_voltage_v"]["primary"]
@@ -385,7 +385,7 @@ def _run_chart_data_checks() -> None:
         assert first["gpu_0_power_limit_percent"]["metric_family"] == "Percentage"
         assert first["gpu_0_fan_percent"]["metric_family"] != "Utilization"
         assert first["gpu_0_utilization_percent"]["selector_label"] == "GPU 1 core"
-        assert first["gpu_0_memory_busy_percent"]["selector_label"] == "GPU 1 VRAM"
+        assert first["gpu_0_memory_busy_percent"]["selector_label"] == "GPU 1 GPU memory"
         assert not any("throttle" in field for field in first)
         for stage in chart["stages"]:
             for family in stage["families"]:
@@ -396,7 +396,7 @@ def _run_chart_data_checks() -> None:
             first[field] for field in ("gpu_0_temp_core_c", "gpu_0_temp_hotspot_c", "gpu_0_temp_memory_c")
         ]
         assert all(series["primary"] for series in gpu_temperatures)
-        assert [series["selector_label"] for series in gpu_temperatures] == ["GPU 1 core", "GPU 1 hotspot", "GPU 1 VRAM"]
+        assert [series["selector_label"] for series in gpu_temperatures] == ["GPU 1 core", "GPU 1 hotspot", "GPU 1 GPU memory"]
         assert len({series["selector_label"] for series in gpu_temperatures}) == 3
         assert first["storage_drive_0_temp_c"]["primary"]
         assert first["storage_drive_0_temp_c"]["metric_label"] == "Composite temperature"
@@ -1041,10 +1041,10 @@ def run_standalone_report_checks() -> None:
         assert "function axisScale(family,minimum,maximum)" in html_text
         assert "family==='Utilization'&&minimum>=0&&maximum<=100" in html_text
         assert "return {minimum:0,maximum:100,step:20}" in html_text
-        assert "'Power','Memory / VRAM','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'" in html_text
+        assert "'Power','Memory / GPU memory','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'" in html_text
         assert "nonnegative&&minimum>=0&&lower<0" in html_text
         assert "Temperature" not in html_text[html_text.index("nonnegative=["):html_text.index("].indexOf(family)>=")]
-        assert "component+' VRAM'" in html_text and "component+' hotspot'" in html_text
+        assert "component+' GPU memory'" in html_text and "component+' hotspot'" in html_text
         unavailable_html = render_report_html(report, {"available": False, "unavailable_reason": "raw_telemetry_absent", "stages": []})
         assert "No raw telemetry is available for this run." in unavailable_html
         assert '<option value="" selected>Select a stage…</option>' in unavailable_html

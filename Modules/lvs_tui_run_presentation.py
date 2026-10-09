@@ -352,7 +352,7 @@ def live_system_text(events: Iterable[object]) -> str:
         if row.clock_mhz is not None:
             lines.append(f"  Clock  {_compact_number(row.clock_mhz)} MHz")
         if row.vram_used_gib is not None:
-            lines.append(f"  VRAM   {_compact_number(row.vram_used_gib)} GiB used")
+            lines.append(f"  GPU memory  {_compact_number(row.vram_used_gib)} GiB used")
             if row.vram_total_gib is not None:
                 lines.append(f"         {_compact_number(row.vram_total_gib)} GiB total")
             if row.vram_used_percent is not None:
@@ -430,9 +430,9 @@ def live_snapshot_text(snapshot: LiveTelemetrySnapshot, *, stale: bool = False) 
         )
         detail = (
             _compact_clock(gpu.clock_mhz),
-            f"VRAM {_compact_number(gpu.vram_used_gib)}/{_compact_number(gpu.vram_total_gib)}G"
+            f"GPU mem {_compact_number(gpu.vram_used_gib)}/{_compact_number(gpu.vram_total_gib)}G"
             if gpu.vram_used_gib is not None and gpu.vram_total_gib is not None
-            else (f"VRAM {_compact_number(gpu.vram_used_gib)}G" if gpu.vram_used_gib is not None else None),
+            else (f"GPU mem {_compact_number(gpu.vram_used_gib)}G" if gpu.vram_used_gib is not None else None),
         )
         _append_compact_lines(lines, " " * len(gpu_prefix), detail)
         fan = None
@@ -441,8 +441,8 @@ def live_snapshot_text(snapshot: LiveTelemetrySnapshot, *, stale: bool = False) 
         elif gpu.fan_duty_percent is not None:
             fan = f"Fan {_compact_number(gpu.fan_duty_percent)}%"
         auxiliary = (
-            f"VR {_compact_number(gpu.vram_temperature_c)}C" if gpu.vram_temperature_c is not None else None,
-            f"busy {_compact_number(gpu.vram_busy_percent)}%" if gpu.vram_busy_percent is not None else None,
+            f"mem {_compact_number(gpu.vram_temperature_c)}C" if gpu.vram_temperature_c is not None else None,
+            f"mem busy {_compact_number(gpu.vram_busy_percent)}%" if gpu.vram_busy_percent is not None else None,
             fan,
             f"{_compact_number(gpu.vddgfx_v)}V" if gpu.vddgfx_v is not None else None,
         )
@@ -596,10 +596,10 @@ def live_snapshot_detail_text(
         for label, value, unit in (
             ("Load", gpu.utilization_percent, "%"), ("Core temperature", gpu.temperature_c, "C"),
             ("Hotspot", gpu.hotspot_c, "C"), ("Power", gpu.power_w, "W"),
-            ("Core clock", gpu.clock_mhz, "MHz"), ("VRAM used", gpu.vram_used_gib, "GiB"),
-            ("VRAM total", gpu.vram_total_gib, "GiB"), ("VRAM used", gpu.vram_used_percent, "%"),
-            ("VRAM busy", gpu.vram_busy_percent, "%"), ("VRAM clock", gpu.vram_clock_mhz, "MHz"),
-            ("VRAM temperature", gpu.vram_temperature_c, "C"), ("Fan duty", gpu.fan_duty_percent, "%"),
+            ("Core clock", gpu.clock_mhz, "MHz"), ("GPU memory used", gpu.vram_used_gib, "GiB"),
+            ("GPU memory total", gpu.vram_total_gib, "GiB"), ("GPU memory used", gpu.vram_used_percent, "%"),
+            ("GPU memory busy", gpu.vram_busy_percent, "%"), ("GPU memory clock", gpu.vram_clock_mhz, "MHz"),
+            ("GPU memory temperature", gpu.vram_temperature_c, "C"), ("Fan duty", gpu.fan_duty_percent, "%"),
             ("VDDGFX", gpu.vddgfx_v, "V"),
             ("VDDNB", gpu.vddnb_v, "V"),
         ):

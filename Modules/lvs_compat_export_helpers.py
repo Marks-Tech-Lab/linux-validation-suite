@@ -102,6 +102,7 @@ _ADDITIVE_GPU_MEMORY_PLAN_FIELDS = {
     "failure_reason",
     "gpu_memory_kind",
     "memory_classification_source",
+    "memory_classification_confidence",
     "memory_capacity_source",
     "dedicated_vram_capacity_bytes",
     "shared_addressable_capacity_bytes",

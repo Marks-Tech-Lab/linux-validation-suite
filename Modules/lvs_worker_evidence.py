@@ -70,6 +70,14 @@ def apply_worker_entry_context(
         payload.setdefault("resolved_device_name", getattr(gpu_spec, "resolved_device_name", ""))
         payload.setdefault("selection_ambiguous", getattr(gpu_spec, "selection_ambiguous", False))
         payload.setdefault("device_class", getattr(gpu_spec, "device_class", ""))
+        payload.setdefault("gpu_memory_kind", getattr(gpu_spec, "gpu_memory_kind", "unknown"))
+        payload.setdefault("memory_classification_source", getattr(gpu_spec, "memory_classification_source", ""))
+        payload.setdefault("memory_classification_confidence", getattr(gpu_spec, "memory_classification_confidence", "low"))
+        payload.setdefault("dedicated_vram_capacity_bytes", getattr(gpu_spec, "dedicated_vram_capacity_bytes", 0))
+        payload.setdefault("shared_addressable_capacity_bytes", getattr(gpu_spec, "shared_addressable_capacity_bytes", 0))
+        payload.setdefault("api_addressable_capacity_bytes", getattr(gpu_spec, "api_addressable_capacity_bytes", 0))
+        payload.setdefault("api_addressable_capacity_source", getattr(gpu_spec, "api_addressable_capacity_source", ""))
+        payload.setdefault("reported_vram_total_semantics", getattr(gpu_spec, "reported_vram_total_semantics", "unknown"))
     if getattr(entry, "stdout_path", None):
         payload.setdefault("stdout_path", entry.stdout_path)
     if getattr(entry, "stderr_path", None):

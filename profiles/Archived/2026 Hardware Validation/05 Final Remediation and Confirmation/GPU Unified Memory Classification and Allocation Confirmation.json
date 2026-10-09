@@ -1,0 +1,53 @@
+{
+  "profile_name": "GPU Unified Memory Classification and Allocation Confirmation",
+  "profile_type": "validation_schedule",
+  "menu_group": "gpu",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 0.5,
+    "trim_start_seconds": 5,
+    "trim_end_seconds": 5
+  },
+  "stages": [
+    {
+      "id": "vulkan_unified_memory_confirmation",
+      "name": "VRAM",
+      "duration_seconds": 30,
+      "enabled": true,
+      "modules": {
+        "cpu": {"enabled": false},
+        "memory": {"enabled": false},
+        "gpu_3d": {"enabled": false},
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 1,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "vulkan"
+        }
+      },
+      "normalization": {"trim_start_seconds": 5, "trim_end_seconds": 5},
+      "display_label": "GPU (Vulkan Unified Memory Classification)"
+    },
+    {
+      "id": "opencl_unified_memory_confirmation",
+      "name": "VRAM",
+      "duration_seconds": 30,
+      "enabled": true,
+      "modules": {
+        "cpu": {"enabled": false},
+        "memory": {"enabled": false},
+        "gpu_3d": {"enabled": false},
+        "vram": {
+          "enabled": true,
+          "allocation_percent": 1,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "opencl"
+        }
+      },
+      "normalization": {"trim_start_seconds": 5, "trim_end_seconds": 5},
+      "display_label": "GPU (OpenCL Unified Memory Classification)"
+    }
+  ]
+}

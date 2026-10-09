@@ -44,30 +44,78 @@ def classify_gpu_memory(
     driver = str(target_data.get("driver", "") or "").strip().lower()
     vendor = str(target_data.get("vendor", "") or "").strip().lower()
     slot = str(target_data.get("slot", "") or "").strip().lower()
+    device_class_source = str(
+        target_data.get("device_class_source")
+        or target_data.get("DeviceClassSource")
+        or ""
+    ).strip()
 
+    explicit_memory_architecture = str(
+        target_data.get("memory_architecture")
+        or target_data.get("MemoryArchitecture")
+        or ""
+    ).strip().lower()
     shared_evidence = ""
     dedicated_evidence = ""
-    if normalized_class in {"integrated", "apu", "uma"}:
+    classification_confidence = "low"
+    if explicit_memory_architecture == "shared":
+        shared_evidence = str(
+            target_data.get("memory_architecture_source")
+            or target_data.get("MemoryArchitectureSource")
+            or "explicit_memory_architecture"
+        )
+        classification_confidence = str(
+            target_data.get("memory_architecture_confidence")
+            or target_data.get("MemoryArchitectureConfidence")
+            or "high"
+        )
+    elif explicit_memory_architecture == "dedicated" and target_total > 0:
+        dedicated_evidence = str(
+            target_data.get("memory_architecture_source")
+            or target_data.get("MemoryArchitectureSource")
+            or "explicit_memory_architecture"
+        )
+        classification_confidence = str(
+            target_data.get("memory_architecture_confidence")
+            or target_data.get("MemoryArchitectureConfidence")
+            or "high"
+        )
+    elif normalized_class in {"integrated", "apu", "uma"}:
         shared_evidence = f"device_class:{normalized_class}"
-    elif normalized_class == "discrete":
+        if device_class_source:
+            shared_evidence += f":{device_class_source}"
+        classification_confidence = str(
+            target_data.get("device_class_confidence")
+            or target_data.get("DeviceClassConfidence")
+            or "high"
+        )
+    elif normalized_class == "discrete" and target_total > 0:
         dedicated_evidence = "device_class:discrete"
+        if device_class_source:
+            dedicated_evidence += f":{device_class_source}"
+        classification_confidence = str(
+            target_data.get("device_class_confidence")
+            or target_data.get("DeviceClassConfidence")
+            or "high"
+        )
     elif driver == "i915":
         shared_evidence = "intel_integrated_driver"
+        classification_confidence = "medium"
     elif any(token in identity for token in ("adreno", "snapdragon", "qualcomm")):
         shared_evidence = "platform_identity"
+        classification_confidence = "medium"
     elif any(token in identity for token in ("radeon graphics", "amd apu")):
         shared_evidence = "apu_identity"
+        classification_confidence = "medium"
     elif vendor == "intel" and any(token in identity for token in ("iris", "uhd", "hd graphics")):
         shared_evidence = "intel_integrated_identity"
+        classification_confidence = "medium"
     elif not slot and driver and driver not in {"nvidia", "nouveau"}:
         shared_evidence = "non_pci_platform_device"
-    elif vendor == "nvidia" or driver in {"nvidia", "nouveau"}:
-        dedicated_evidence = "nvidia_identity"
-    elif target_total > 0:
-        # Preserve existing dedicated-GPU behavior when evidence is ambiguous.
-        dedicated_evidence = "explicit_capacity_compatibility"
+        classification_confidence = "medium"
     elif system_total > 0 and opencl_global >= int(system_total * 0.75):
         shared_evidence = "opencl_system_memory_ratio"
+        classification_confidence = "medium"
 
     memory_kind = "shared" if shared_evidence else "dedicated" if dedicated_evidence else "unknown"
     dedicated_capacity = target_total if memory_kind == "dedicated" else 0
@@ -96,6 +144,7 @@ def classify_gpu_memory(
     return {
         "memory_kind": memory_kind,
         "classification_source": shared_evidence or dedicated_evidence or "insufficient_evidence",
+        "classification_confidence": classification_confidence if memory_kind != "unknown" else "low",
         "dedicated_vram_capacity_bytes": dedicated_capacity,
         "dedicated_vram_capacity_source": str(target_data.get("vram_total_source") or "reported_vram_total") if dedicated_capacity else "",
         "shared_addressable_capacity_bytes": shared_capacity,
@@ -123,7 +172,7 @@ def classify_gpu_memory(
         "ambiguous_integrated_vram_report_bytes": ambiguous_or_stolen,
         "opencl_global_memory_bytes": opencl_global,
         "vulkan_device_local_heap_bytes": vulkan_heap,
-        "system_memory_pool_ceiling_bytes": system_total if memory_kind == "shared" else 0,
+        "system_memory_pool_ceiling_bytes": system_total if memory_kind in {"shared", "unknown"} else 0,
         "current_gpu_memory_used_bytes": current_used,
         "current_gpu_memory_used_source": str(target_data.get("vram_used_source") or "") if current_used is not None else "",
         "current_gpu_memory_available_bytes": None,

@@ -10,6 +10,15 @@ from .lvs_compat_export_helpers import compatibility_elapsed_string, has_core_ty
 from .lvs_core import now_local_iso
 
 
+def discrete_gpu_inventory(gpus: Iterable[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Return only GPUs whose physical topology is explicitly discrete."""
+    return [
+        gpu
+        for gpu in gpus
+        if str(gpu.get("DeviceClass") or "").strip().lower() == "discrete"
+    ]
+
+
 def build_compatibility_metadata_block(
     metadata: Any,
     started_iso: str,
@@ -30,6 +39,7 @@ def build_compatibility_metadata_block(
     window_list = list(windows)
     all_error_events = context["all_error_events"]
     gpus = system_info["Hardware"].get("Gpu", [])
+    discrete_gpus = discrete_gpu_inventory(gpus)
     block = {
         "SerialNumber": metadata.serial,
         "Department": metadata.dept,
@@ -69,9 +79,9 @@ def build_compatibility_metadata_block(
         "BiosFullName": context["bios_full_name"],
         "HasPCores": has_core_type_data(parser_output, "P"),
         "HasECores": has_core_type_data(parser_output, "E"),
-        "HasDGPU": bool(gpus),
-        "DgpuName": gpus[0].get("Name", "-") if gpus else "-",
-        "DiscreteGpuNames": [gpu.get("Name", "") for gpu in gpus if gpu.get("Name")],
+        "HasDGPU": bool(discrete_gpus),
+        "DgpuName": discrete_gpus[0].get("Name", "-") if discrete_gpus else "-",
+        "DiscreteGpuNames": [gpu.get("Name", "") for gpu in discrete_gpus if gpu.get("Name")],
         "MaxWallWattage": metadata.wall_wattage or "-",
         "Case": metadata.case_sku or "-",
         "Description": metadata.description or "-",

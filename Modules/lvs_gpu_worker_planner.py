@@ -317,12 +317,16 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
             memory_kind in {"shared", "unknown"}
             and (
                 int(worker.target_vram_bytes or 0) > 0
-                or int(worker.system_memory_fixed_commitment_bytes or 0) > 0
+                or (
+                    memory_kind == "unknown"
+                    and int(worker.system_memory_fixed_commitment_bytes or 0) > 0
+                )
                 or (worker.workload == "vram" and requested_percent > 0)
             )
             and (
                 worker.workload == "vram"
                 or worker.backend in {"python_vulkan_compute", "python_vulkan_transfer"}
+                or int(worker.system_memory_fixed_commitment_bytes or 0) > 0
             )
         )
         if budgetable:
@@ -348,6 +352,7 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
                 worker,
                 gpu_memory_kind=memory_kind,
                 memory_classification_source=str(capability.get("classification_source") or ""),
+                memory_classification_confidence=str(capability.get("classification_confidence") or "low"),
                 memory_capacity_source=str(
                     capability.get("shared_addressable_capacity_source")
                     if memory_kind == "shared"

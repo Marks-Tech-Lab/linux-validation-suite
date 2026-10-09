@@ -258,3 +258,11 @@ All validation below was non-hardware and launched no sustained workload.
 ## Evidence preservation
 
 No file under `results/` was altered, renamed, deleted, or reparsed in place. No sustained hardware workload was launched by this audit.
+
+## NVIDIA GB10 unified-memory confirmation addendum — 2026-10-08
+
+Physical Spark validation of `GPU Unified Memory Classification and Allocation Confirmation` is **PASS**. No rerun is required. Direct system inventory, planner, allocation-budget, runtime-guard, worker-result, compatibility-export, and lifecycle evidence confirms integrated/shared-memory classification, separate Vulkan and OpenCL API-capacity semantics, no dedicated-VRAM claim, bounded allocation, common system-memory budget participation with the one-GiB reserve intact, real Vulkan/OpenCL readback verification, stable PCI identity `pci:000f:01:00.0`, and clean result persistence.
+
+The executed 30-second Vulkan and OpenCL stages used five-second start and end trims. Their normalized telemetry windows were approximately 21 seconds. Those windows are valid for the saved point-in-time report statistics but are **not** accepted as sustained utilization, thermal, performance-threshold, or threshold-tuning evidence. This limitation does not weaken the direct functional and allocation evidence required by the profile.
+
+The completed one-off profile is archived unchanged under `profiles/Archived/2026 Hardware Validation/05 Final Remediation and Confirmation/`, outside active profile discovery. The physical diagnostics and executed results remain local and ignored.

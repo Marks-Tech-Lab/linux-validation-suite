@@ -9,6 +9,7 @@ from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
 _MEMORY_PLAN_FIELDS = (
     "gpu_memory_kind",
     "memory_classification_source",
+    "memory_classification_confidence",
     "memory_capacity_source",
     "dedicated_vram_capacity_bytes",
     "shared_addressable_capacity_bytes",

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from Modules.lvs_faults import faults_for_stage_window
 from Modules.lvs_gpu_progress import (
+    gpu_api_capacity_progress_parts,
     gpu_vram_total_bytes_from_payloads,
     live_system_progress_parts,
     other_gpu_progress_summary,
@@ -90,6 +91,7 @@ def stage_target_gpu_progress_summary(
             planned_states,
             target_vram_total=target_vram_total,
         )
+        state_details.extend(gpu_api_capacity_progress_parts(live_payloads))
         summaries.append(target_gpu_progress_summary(gpu_index, target, metrics, state_details))
     other_summary = other_gpu_progress_summary(telemetry, targets)
     return stage_gpu_progress_summary(

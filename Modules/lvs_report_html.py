@@ -30,6 +30,37 @@ def _number(value: Any, unit: str = "") -> str:
     return f"{_escape(text)}{_escape(suffix)}"
 
 
+def _gib_from_bytes(value: Any) -> str:
+    try:
+        size = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    return f"{size / float(1024 ** 3):,.2f} GiB" if size > 0 else ""
+
+
+def gpu_inventory_presentation_detail(inventory: Dict[str, Any]) -> str:
+    device_class = _value_from(inventory, ("DeviceClass",))
+    architecture = str(inventory.get("MemoryArchitecture") or "").strip().lower()
+    details = [device_class] if device_class else []
+    if architecture == "shared":
+        details.append("Shared / unified with system memory")
+        details.append("Dedicated GPU memory not separately reported")
+    elif architecture == "dedicated":
+        dedicated = _gib_from_bytes(inventory.get("DedicatedMemoryBytes"))
+        details.append(f"Dedicated GPU memory {dedicated}" if dedicated else "Dedicated GPU memory")
+    elif architecture:
+        details.append("Memory architecture unknown")
+    elif inventory.get("Memory"):
+        details.append(str(inventory["Memory"]))
+    provider_capacity = _gib_from_bytes(inventory.get("ProviderReportedMemoryBytes"))
+    if provider_capacity and architecture != "dedicated":
+        details.append(f"Provider-reported memory capacity {provider_capacity} (physical pool unproven)")
+    vulkan_capacity = _gib_from_bytes(inventory.get("VulkanDeviceLocalHeapBytes"))
+    if vulkan_capacity:
+        details.append(f"Vulkan device-local API capacity {vulkan_capacity}")
+    return " · ".join(details)
+
+
 def _clock_range(metric: Optional[Dict[str, Any]]) -> str:
     if not metric:
         return "—"
@@ -191,7 +222,7 @@ def _system_identity(hardware: Dict[str, Any], components: Optional[Dict[str, Di
             continue
         name = str(gpu.get("label") or "") if mapped_gpus else _value_from(gpu, ("Name", "MarketingName", "DeviceName", "Model", "name"))
         inventory = next((item for item in gpus if name and name in _value_from(item, ("Name", "MarketingName", "DeviceName", "Model", "name"))), {})
-        detail = " · ".join(filter(None, (_value_from(inventory, ("DeviceClass",)), _value_from(inventory, ("Memory",)))))
+        detail = gpu_inventory_presentation_detail(inventory)
         gpu_rows.append((f"GPU {index + 1}", " · ".join(filter(None, (name, detail)))))
     storage_rows: List[tuple[str, str]] = []
     for index, drive in enumerate(storage):
@@ -446,7 +477,7 @@ def _friendly_metric_label(metric: Dict[str, Any], components: Dict[str, Dict[st
         if metric_class == "percentage":
             return f"{component} memory-busy utilization" if "memory_busy" in field else f"{component} utilization"
         if metric_class in {"memory_usage", "other_numeric"} and "vram_used" in field:
-            return f"{component} VRAM used"
+            return f"{component} GPU memory used"
     if component_id.startswith("memory_module:") and metric_class == "temperature":
         return f"{component} temperature"
     if component_id.startswith("storage:") and metric_class == "temperature":
@@ -523,10 +554,10 @@ def _metric_name(metric: Dict[str, Any]) -> str:
     }.get(metric_class)
     if named:
         if metric_class == "memory_usage" and "vram_used" in field:
-            return "VRAM used"
+            return "GPU memory used"
         return named
     if "vram_used_gb" in field:
-        return "VRAM used (compatibility GB field)"
+        return "GPU memory used (compatibility GB field)"
     if field == "memory_used_gb":
         return "Used memory (compatibility GB field)"
     prefix = {
@@ -895,7 +926,7 @@ def _telemetry_field_rows(component: Dict[str, Any], series_by_field: Dict[str, 
     for field in component.get("telemetry_fields", []):
         series = series_by_field.get(str(field), {"field": field, "component_id": component_id})
         metric_name = _metric_name(series)
-        preserve_prefix = metric_name.startswith(("VRAM", "NAND", "VDD", "SOC", "RPM"))
+        preserve_prefix = metric_name.startswith(("GPU memory", "NAND", "VDD", "SOC", "RPM"))
         metric_phrase = metric_name if preserve_prefix else metric_name[:1].lower() + metric_name[1:]
         component_label = str(component.get("display_label") or component.get("label") or "").strip() or _short_component_label(component_id)
         label = metric_name if component_id == "memory:system" else f'{component_label} {metric_phrase}'
@@ -1094,7 +1125,7 @@ function chartableStages(){return payload.stages.filter(function(item){return it
 function loadStage(resolved){stage=resolved;selected.clear();stageDescription.textContent=stage.description||'';stageDescription.hidden=!stage.description;metricSelect.replaceChildren();stage.families.forEach(function(family){var option=document.createElement('option');option.value=option.textContent=family;metricSelect.appendChild(option);});metricSelect.value=stage.families.indexOf('Temperature')>=0?'Temperature':stage.families[0];var startTrim=+stage.trim_start_seconds||0,endTrim=+stage.trim_end_seconds||0;notice.textContent=startTrim||endTrim?'Showing normalized analysis window · '+formatTrim(startTrim)+' trimmed from start · '+formatTrim(endTrim)+' trimmed from end':'Showing full analyzed stage';workspace.hidden=false;setFamily();}
 function syncExplorerFromStageSelect(){var resolved=stageById(stageSelect.value),chartable=chartableStages();if(!resolved||!Array.isArray(resolved.series)||!resolved.series.length)resolved=chartable[0]||null;if(resolved){stageSelect.value=resolved.stage_id;loadStage(resolved);return;}stage=null;selected.clear();workspace.hidden=true;stageDescription.hidden=true;setEmpty(payload&&payload.available?'No chartable telemetry is available for this stage.':'No raw telemetry is available for this run.');}
 function formatTrim(value){return Number.isInteger(value)?value+'s':value.toFixed(2).replace(/0+$/,'').replace(/\.$/,'')+'s';}
-function conciseLabel(item,items){if(item.selector_label)return item.selector_label;if(item.advanced_group==='cpu_cores')return item.display_label||item.component_label||('Core '+item.core_index);var component=item.component_label,metric=item.metric_label,same=items.filter(function(candidate){return candidate.component_id===item.component_id;});if(same.length===1)return component;if(metric==='Temperature'||metric==='Power'||metric==='Utilization'||metric==='Clock')return component+(metric==='Clock'&&same.some(function(candidate){return candidate.metric_label==='VRAM clock';})?' core':'');if(metric==='Fan speed'||metric==='Fan duty')return component+' fan';if(metric==='VRAM temperature'||metric==='VRAM clock'||metric==='VRAM utilization'||metric==='VRAM used')return component+' VRAM';if(metric==='Hotspot temperature')return component+' hotspot';if(metric==='Composite temperature')return component+' composite';var sensor=metric.match(/^Sensor (\d+)/);if(sensor)return component+' sensor '+sensor[1];return component+' '+metric.toLowerCase();}
+function conciseLabel(item,items){if(item.selector_label)return item.selector_label;if(item.advanced_group==='cpu_cores')return item.display_label||item.component_label||('Core '+item.core_index);var component=item.component_label,metric=item.metric_label,same=items.filter(function(candidate){return candidate.component_id===item.component_id;});if(same.length===1)return component;if(metric==='Temperature'||metric==='Power'||metric==='Utilization'||metric==='Clock')return component+(metric==='Clock'&&same.some(function(candidate){return candidate.metric_label==='GPU memory clock';})?' core':'');if(metric==='Fan speed'||metric==='Fan duty')return component+' fan';if(metric==='GPU memory temperature'||metric==='GPU memory clock'||metric==='GPU memory utilization'||metric==='GPU memory used')return component+' GPU memory';if(metric==='Hotspot temperature')return component+' hotspot';if(metric==='Composite temperature')return component+' composite';var sensor=metric.match(/^Sensor (\d+)/);if(sensor)return component+' sensor '+sensor[1];return component+' '+metric.toLowerCase();}
 function selector(item,items){var label=conciseLabel(item,items),row=document.createElement('label');row.className='chart-series-row'+(selected.has(item.series_id)?' selected':'');row.tabIndex=0;row.dataset.seriesId=item.series_id;var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.series_id);checkbox.setAttribute('aria-label',label);var text=document.createElement('span');text.textContent=label;row.append(checkbox,text);checkbox.addEventListener('change',function(){if(checkbox.checked)selected.add(item.series_id);else selected.delete(item.series_id);row.classList.toggle('selected',checkbox.checked);draw();});row.addEventListener('keydown',function(event){if(event.target===row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();checkbox.click();}});row.addEventListener('mouseenter',function(){hovered=item.series_id;draw();});row.addEventListener('mouseleave',function(){hovered=null;draw();});return row;}
 function coreGroupLabel(coreClass,count){if(coreClass==='performance')return 'Performance cores ('+count+')';if(coreClass==='efficiency')return 'Efficiency cores ('+count+')';if(coreClass==='unknown')return 'Unclassified cores ('+count+')';return 'CPU cores ('+count+')';}
 function setCoreGroupSelection(cores,checked,coreList){cores.forEach(function(item){if(checked)selected.add(item.series_id);else selected.delete(item.series_id);});coreList.querySelectorAll('.chart-series-row').forEach(function(row){var active=selected.has(row.dataset.seriesId),checkbox=row.querySelector('input');row.classList.toggle('selected',active);if(checkbox)checkbox.checked=active;});draw();}
@@ -1106,7 +1137,7 @@ function renderLegend(items,allItems){var signature=items.map(function(item){ret
 function formatElapsed(seconds,precise){seconds=Math.max(0,seconds);var whole=Math.floor(seconds),hours=Math.floor(whole/3600),minutes=Math.floor((whole%3600)/60),secs=precise?(seconds%60).toFixed(1).padStart(4,'0'):String(whole%60).padStart(2,'0');return hours?hours+':'+String(minutes).padStart(2,'0')+':'+secs:String(minutes).padStart(2,'0')+':'+secs;}
 function nearest(item,time){if(item.encoding==='plateau_runs'){var runs=item.data.runs||[],answer=null;for(var i=0;i<runs.length;i++){if(time>=+runs[i][0])answer=runs[i];else break;}if(!answer&&runs.length)answer=runs[0];return answer?{t:Math.min(Math.max(time,+answer[0]),+answer[1]),v:+answer[2]}:null;}var times=item.data.t||[],values=item.data.v||[],best=-1,distance=Infinity;for(var j=0;j<times.length;j++){var candidate=Math.abs(+times[j]-time);if(candidate<distance){distance=candidate;best=j;}}return best>=0?{t:+times[best],v:+values[best]}:null;}
 function niceStep(range,targetTicks){var rough=Math.max(range,Number.EPSILON)/targetTicks,power=Math.pow(10,Math.floor(Math.log10(rough))),fraction=rough/power,nice=fraction<1.5?1:fraction<3?2:fraction<7?5:10;return nice*power;}
-function axisScale(family,minimum,maximum){if(family==='Utilization'&&minimum>=0&&maximum<=100)return {minimum:0,maximum:100,step:20};var spread=maximum-minimum,expand=spread?spread*.08:Math.max(Math.abs(minimum)*.05,1),paddedMinimum=minimum-expand,paddedMaximum=maximum+expand,step=niceStep(paddedMaximum-paddedMinimum,5),lower=Math.floor(paddedMinimum/step)*step,upper=Math.ceil(paddedMaximum/step)*step,nonnegative=['Power','Memory / VRAM','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'].indexOf(family)>=0;if(nonnegative&&minimum>=0&&lower<0){lower=0;step=niceStep(Math.max(maximum-lower,1),5);upper=Math.ceil(maximum/step)*step;}if(upper<=lower)upper=lower+step;return {minimum:lower,maximum:upper,step:step};}
+function axisScale(family,minimum,maximum){if(family==='Utilization'&&minimum>=0&&maximum<=100)return {minimum:0,maximum:100,step:20};var spread=maximum-minimum,expand=spread?spread*.08:Math.max(Math.abs(minimum)*.05,1),paddedMinimum=minimum-expand,paddedMaximum=maximum+expand,step=niceStep(paddedMaximum-paddedMinimum,5),lower=Math.floor(paddedMinimum/step)*step,upper=Math.ceil(paddedMaximum/step)*step,nonnegative=['Power','Memory / GPU memory','Utilization','Fan speed','Fan duty','Percentage','Voltage','Current','Clock'].indexOf(family)>=0;if(nonnegative&&minimum>=0&&lower<0){lower=0;step=niceStep(Math.max(maximum-lower,1),5);upper=Math.ceil(maximum/step)*step;}if(upper<=lower)upper=lower+step;return {minimum:lower,maximum:upper,step:step};}
 function tooltipColumnCount(count,width,height){var rows=Math.max(5,Math.floor((height-68)/21)),needed=Math.max(1,Math.ceil(count/rows)),allowed=width>=1100?5:width>=820?4:width>=580?3:width>=390?2:1;return Math.min(needed,allowed);}
 function positionTooltip(width,height){tooltip.style.left='0px';tooltip.style.top='0px';var tooltipWidth=tooltip.offsetWidth,tooltipHeight=tooltip.offsetHeight,x=mouseX+12,y=mouseY+12;if(x+tooltipWidth>width-8)x=mouseX-tooltipWidth-12;if(y+tooltipHeight>height-8)y=mouseY-tooltipHeight-12;tooltip.style.left=Math.max(8,Math.min(x,width-tooltipWidth-8))+'px';tooltip.style.top=Math.max(8,Math.min(y,height-tooltipHeight-8))+'px';}
 function draw(){if(!stage||workspace.hidden)return;var ratio=window.devicePixelRatio||1,width=Math.max(300,canvas.clientWidth),height=Math.max(280,canvas.clientHeight);if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(height*ratio)){canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);}context.setTransform(ratio,0,0,ratio,0,0);context.clearRect(0,0,width,height);var allItems=familySeries(),items=allItems.filter(function(item){return selected.has(item.series_id);});if(!items.length){setEmpty('Select one or more series to display.');return;}emptyNode.hidden=true;renderLegend(items,allItems);var decodedItems=items.map(function(item){return {item:item,decoded:decoded(item)};}),values=[];decodedItems.forEach(function(entry){entry.decoded.points.forEach(function(point){values.push(point[1]);});});var rawMinimum=Math.min.apply(null,values),rawMaximum=Math.max.apply(null,values),scale=axisScale(metricSelect.value,rawMinimum,rawMaximum),yMin=scale.minimum,yMax=scale.maximum,duration=Math.max(+stage.analysis_duration_seconds||0,1),left=62,right=18,top=18,bottom=38,plotW=width-left-right,plotH=height-top-bottom,x=function(t){return left+(t/duration)*plotW;},y=function(v){return top+(yMax-v)/(yMax-yMin)*plotH;};context.font='12px system-ui';context.lineWidth=1;context.textAlign='right';context.textBaseline='middle';for(var value=yMin,tick=0;value<=yMax+scale.step*.001&&tick<20;value+=scale.step,tick++){var yy=y(value);context.strokeStyle='#e3e7ee';context.beginPath();context.moveTo(left,yy);context.lineTo(width-right,yy);context.stroke();context.fillStyle='#6b7280';context.fillText(formatValue(value),left-8,yy);}context.textAlign='center';context.textBaseline='top';for(var xt=0;xt<=5;xt++){var elapsed=duration*xt/5,xx=x(elapsed);context.fillStyle='#6b7280';context.fillText(formatElapsed(elapsed,false),xx,height-bottom+9);}context.save();context.translate(14,top+plotH/2);context.rotate(-Math.PI/2);context.textAlign='center';context.fillStyle='#6b7280';context.fillText(items[0].display_unit,0,0);context.restore();decodedItems.forEach(function(entry){var points=entry.decoded.points;if(!points.length)return;context.globalAlpha=hovered&&hovered!==entry.item.series_id?0.22:1;context.strokeStyle=colorFor(entry.item.series_id,items);context.lineWidth=hovered===entry.item.series_id?3:1.8;context.beginPath();context.moveTo(x(points[0][0]),y(points[0][1]));for(var p=1;p<points.length;p++){if(entry.decoded.step)context.lineTo(x(points[p][0]),y(points[p-1][1]));context.lineTo(x(points[p][0]),y(points[p][1]));}context.stroke();});context.globalAlpha=1;if(mouseX!==null&&mouseX>=left&&mouseX<=width-right){context.strokeStyle='#667085';context.setLineDash([3,3]);context.beginPath();context.moveTo(mouseX,top);context.lineTo(mouseX,top+plotH);context.stroke();context.setLineDash([]);var elapsed=(mouseX-left)/plotW*duration,entries=[];items.forEach(function(item){var point=nearest(item,elapsed);if(point)entries.push('<div class="chart-tooltip-entry"><span>'+escapeText(conciseLabel(item,allItems))+'</span><b>'+formatValue(point.v)+' '+escapeText(item.display_unit)+'</b></div>');});var columns=tooltipColumnCount(entries.length,width,height);tooltip.style.setProperty('--tooltip-columns',columns);tooltip.style.width=Math.min(width-16,Math.max(230,columns*190))+'px';tooltip.innerHTML='<strong>'+formatElapsed(elapsed,true)+'</strong><div class="chart-tooltip-values">'+entries.join('')+'</div>';tooltip.hidden=false;tooltip.classList.toggle('scrollable',tooltip.scrollHeight>tooltip.clientHeight+1);positionTooltip(width,height);}else tooltip.hidden=true;}

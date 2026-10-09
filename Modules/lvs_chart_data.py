@@ -22,7 +22,7 @@ from .lvs_output_contract_identity import (
 FULL_SAMPLE_LIMIT = 1_900
 PLOTTED_POINT_BUDGET = 1_800
 FAMILY_ORDER = (
-    "Temperature", "Clock", "Power", "Utilization", "Memory / VRAM",
+    "Temperature", "Clock", "Power", "Utilization", "Memory / GPU memory",
     "Voltage", "Current", "Fan speed", "Fan duty", "Percentage",
 )
 
@@ -189,7 +189,7 @@ def _family(series: Mapping[str, Any]) -> Optional[str]:
     if metric_class == "power":
         return "Power"
     if metric_class == "memory_usage":
-        return "Memory / VRAM"
+        return "Memory / GPU memory"
     if metric_class == "voltage":
         return "Voltage"
     if metric_class == "current":
@@ -217,7 +217,7 @@ def _display_unit(family: str, source_unit: str) -> Optional[Tuple[str, float]]:
         "Power": ({"w", "watt", "watts"}, "W"),
         "Utilization": ({"percent", "%"}, "%"),
         "Percentage": ({"percent", "%"}, "%"),
-        "Memory / VRAM": ({"gib", "gb"}, "GiB" if source == "gib" else "GB"),
+        "Memory / GPU memory": ({"gib", "gb"}, "GiB" if source == "gib" else "GB"),
         "Voltage": ({"v", "volt", "volts"}, "V"),
         "Current": ({"a", "amp", "amps"}, "A"),
     }
@@ -265,7 +265,7 @@ def _metric_label(series: Mapping[str, Any], family: str) -> str:
         if "hotspot" in field or "junction" in field:
             return "Hotspot temperature"
         if field.startswith("gpu_") and any(token in field for token in ("memory", "vram")):
-            return "VRAM temperature"
+            return "GPU memory temperature"
         if field.startswith("storage_"):
             source_label = str(series.get("source_label") or "").strip().lower()
             if re.search(r"(?:^|[\s:_-])controller(?:\s+temperature)?$", source_label):
@@ -279,15 +279,15 @@ def _metric_label(series: Mapping[str, Any], family: str) -> str:
                 return "Composite temperature"
         return "Temperature"
     if family == "Clock" and field.startswith("gpu_") and any(token in field for token in ("memory", "vram", "mclk")):
-        return "VRAM clock"
+        return "GPU memory clock"
     if family == "Clock":
         return "Clock"
     if family == "Utilization" and field.startswith("gpu_") and any(token in field for token in ("memory", "vram")):
-        return "VRAM utilization"
+        return "GPU memory utilization"
     if family == "Utilization":
         return "Utilization"
-    if family == "Memory / VRAM":
-        return "VRAM used" if field.startswith("gpu_") else "Used memory"
+    if family == "Memory / GPU memory":
+        return "GPU memory used" if field.startswith("gpu_") else "Used memory"
     if family == "Fan speed":
         return {
             "cpu_fan": "CPU fan", "system_fan": "System fan",
@@ -372,8 +372,8 @@ def _selector_label(series: Mapping[str, Any], family_items: Sequence[Mapping[st
         return f"{component} VDDGFX"
     if metric == "CPU SoC":
         return "CPU SoC"
-    if metric in {"VRAM temperature", "VRAM clock", "VRAM utilization", "VRAM used"}:
-        return f"{component} VRAM"
+    if metric in {"GPU memory temperature", "GPU memory clock", "GPU memory utilization", "GPU memory used"}:
+        return f"{component} GPU memory"
     if metric == "Hotspot temperature":
         return f"{component} hotspot"
     if metric == "Composite temperature":
