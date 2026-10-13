@@ -93,6 +93,7 @@ def dependency_summary_text(
     ]
     for key, label in [
         ("cpu_temp_c", "CPU temp"),
+        ("platform_thermal_zone_temp_c", "Platform thermal zones"),
         ("cpu_power_w", "CPU package power"),
         ("memory_temp_c", "Memory temp"),
         ("gpu_temp_c", "GPU temp"),
@@ -465,6 +466,7 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
     lines.append("Telemetry")
     telemetry_labels = {
         "cpu_temp_c": "CPU temperature",
+        "platform_thermal_zone_temp_c": "Platform thermal zones",
         "cpu_power_w": "CPU package power",
         "cpu_clock_mhz": "CPU clock",
         "cpu_utilization_percent": "CPU utilization",

@@ -22,6 +22,11 @@ from .lvs_platform_hwmon import (
     platform_hwmon_classification,
     valid_platform_temperature,
 )
+from .lvs_temperature_provenance import (
+    classify_hwmon_temperature,
+    classify_thermal_zone_type,
+    is_cpu_temperature_provenance,
+)
 from .lvs_telemetry_cpu import parse_cpu_list
 from .lvs_telemetry_bmc import (
     BmcSnapshot,
@@ -348,6 +353,7 @@ def discover_thermal_zones(
             "source_path": str(zone),
             "temperature_c": current,
             "trip_points": [],
+            **classify_thermal_zone_type(zone_type),
             "evidence": {
                 "temperature_c": _evidence(
                     provider="linux_thermal_zone", source=str(zone / "temp"), raw_field="temp",
@@ -399,11 +405,15 @@ def discover_cpu_thermals(
             if current is None:
                 continue
             label = read_text(hwmon / f"{stem}_label") or stem
+            provenance = classify_hwmon_temperature(provider, label)
+            if not is_cpu_temperature_provenance(provenance):
+                continue
             record: Dict[str, Any] = {
                 "provider": provider,
                 "source_path": str(input_path),
                 "label": label,
                 "temperature_c": current,
+                **provenance,
                 "evidence": {"temperature_c": _evidence(
                     provider=provider, source=str(input_path), raw_field=input_path.name,
                     raw_value=raw, raw_units="millidegrees_c", normalized_value=current,
@@ -420,9 +430,8 @@ def discover_cpu_thermals(
             # AMD k10temp/zenpower thresholds are intentionally not normalized.
             sensors.append(record)
     cpu_zones = [
-        zone
-        for zone in discover_thermal_zones(thermal_root, read_text)
-        if any(token in zone["zone_type"].lower() for token in ("cpu", "package", "pkg"))
+        zone for zone in discover_thermal_zones(thermal_root, read_text)
+        if is_cpu_temperature_provenance(zone)
     ]
     result: Dict[str, Any] = {"sensors": sensors, "platform_thermal_zones": cpu_zones}
     if len(package_tjmax) == 1:

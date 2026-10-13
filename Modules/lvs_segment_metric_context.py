@@ -51,6 +51,15 @@ class SegmentMetricContextBuilder:
         p_core_clock_stats = self._cpu_clocks.aggregate_core_clock_stats_by_type(core_clocks, "P")
         e_core_clock_stats = self._cpu_clocks.aggregate_core_clock_stats_by_type(core_clocks, "E")
         cpu_temp_stats = self._metric_helper.metric_stats(samples, "cpu_temp_c")
+        cpu_temp_source = next(iter(getattr(telemetry, "_cpu_temp_sources", ())), {})
+        cpu_temp_provenance = {
+            key: cpu_temp_source[key]
+            for key in (
+                "semantic_classification", "component_scope", "confidence", "provider",
+                "kind", "label", "raw_label", "path", "zone_id", "threshold_source",
+            )
+            if cpu_temp_source.get(key) not in (None, "")
+        }
         cpu_power_stats = self._metric_helper.metric_stats(samples, "cpu_power_w")
         cpu_section = self._cpu_metrics.metric_section(
             samples,
@@ -65,6 +74,7 @@ class SegmentMetricContextBuilder:
         ram_temp_stats = self._temperature_metrics.aggregate_memory_temp_stats(memory_temp_modules)
         storage_temp_drives = self._temperature_metrics.storage_temp_entries(samples, telemetry)
         storage_temp_stats = self._temperature_metrics.aggregate_storage_temp_stats(storage_temp_drives)
+        platform_thermal_zones = self._temperature_metrics.platform_thermal_zone_entries(samples, telemetry)
 
         gpu_targeting = self._gpu_targeting.targeting_details(
             window,
@@ -111,12 +121,14 @@ class SegmentMetricContextBuilder:
             e_core_clock_stats=e_core_clock_stats,
             cpu_clock_stats=cpu_clock_stats,
             cpu_temp_stats=cpu_temp_stats,
+            cpu_temp_provenance=cpu_temp_provenance,
             cpu_power_stats=cpu_power_stats,
             cpu_section=cpu_section,
             memory_temp_modules=memory_temp_modules,
             ram_temp_stats=ram_temp_stats,
             storage_temp_drives=storage_temp_drives,
             storage_temp_stats=storage_temp_stats,
+            platform_thermal_zones=platform_thermal_zones,
             gpu_temp_groups=gpu_temp_groups,
             gpu_metrics=gpu_metrics,
             gpu_observation_summary=gpu_observation_summary,

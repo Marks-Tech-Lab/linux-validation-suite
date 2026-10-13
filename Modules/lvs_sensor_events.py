@@ -18,6 +18,7 @@ def _threshold_event(
     threshold: float,
     threshold_source: str,
     verb: str,
+    threshold_semantics: str = "",
 ) -> Dict[str, Any]:
     return create_stability_event(
         category,
@@ -30,6 +31,7 @@ def _threshold_event(
             "max": round(peak, 2),
             "threshold": threshold,
             "threshold_source": threshold_source,
+            "threshold_semantics": threshold_semantics,
         },
     )
 
@@ -59,6 +61,15 @@ def stage_sensor_events(
     events: list[Dict[str, Any]] = []
     fail_threshold_severity = "error" if abort_on_fail_threshold else "warning"
     thresholds: list[tuple[str, str]] = [("cpu_temp_c", "cpu_temperature")]
+    platform_zone_keys = sorted(
+        {
+            key
+            for sample in samples
+            for key in getattr(sample, "values", {})
+            if key.startswith("platform_thermal_zone_") and key.endswith("_temp_c")
+        }
+    )
+    thresholds.extend((key, "platform_temperature") for key in platform_zone_keys)
     gpu_core_keys = sorted(
         {
             key
@@ -87,6 +98,7 @@ def stage_sensor_events(
                     peak=peak,
                     threshold=fail_value,
                     threshold_source=threshold_source,
+                    threshold_semantics=str(threshold_info.get("fail_semantics") or "") if threshold_info else "",
                     verb="reached fail threshold",
                 )
             )
@@ -100,6 +112,7 @@ def stage_sensor_events(
                     peak=peak,
                     threshold=warn_value,
                     threshold_source=threshold_source,
+                    threshold_semantics=str(threshold_info.get("warn_semantics") or "") if threshold_info else "",
                     verb="exceeded warning threshold",
                 )
             )

@@ -456,6 +456,29 @@ def run_standalone_report_checks() -> None:
             "contract_version", "kind",
         }.issubset(report)
         assert report["run"]["report_outcome"] == "PASS"
+        legacy_acpi = root / "legacy_acpi"
+        legacy_acpi.mkdir()
+        _build_fixture(legacy_acpi)
+        legacy_sources = json.loads((legacy_acpi / "telemetry_source_map.json").read_text(encoding="utf-8"))
+        legacy_sources["fields"]["cpu_temp_c"] = {
+            "category": "cpu", "metric": "temperature_c", "kind": "thermal_zone",
+            "label": "acpitz", "path": "/sys/class/thermal/thermal_zone0/temp",
+        }
+        _write_json(legacy_acpi, "telemetry_source_map.json", legacy_sources)
+        legacy_report = compile_report_data(legacy_acpi, generated_at="fixed")
+        legacy_component = next(
+            component for component in legacy_report["components"]
+            if "cpu_temp_c" in component["telemetry_fields"]
+        )
+        assert legacy_component["component_id"] == "platform:thermal_zone:legacy"
+        assert legacy_component["label"] == "ACPI platform thermal zone (legacy field)"
+        assert not any(
+            metric.get("field") == "cpu_temp_c" and metric.get("component_id") == "cpu:aggregate"
+            for stage in legacy_report["stages"] for metric in stage["metrics"]
+        )
+        legacy_html = render_report_html(legacy_report)
+        assert "ACPI platform thermal zone (legacy field)" in legacy_html
+        assert "CPU aggregate temperature" not in legacy_html
         assert [stage["stage_id"] for stage in report["stages"]] == ["cpu_stage", "gpu_stage"]
         first = report["stages"][0]
         assert first["display_label"] == "CPU <load>" and first["stage_type"] == "CPU"
@@ -717,7 +740,7 @@ def run_standalone_report_checks() -> None:
         fallback_report = compile_report_data(fallback, generated_at="fixed")
         assert len(fallback_report["stages"]) == 1
         assert any(metric["summary_source"] == "parsed_segment_fallback" for metric in fallback_report["stages"][0]["metrics"])
-        assert any(component["component_id"] == "cpu:aggregate" for component in fallback_report["components"])
+        assert any(component["component_id"] == "temperature:legacy_unknown" for component in fallback_report["components"])
         assert fallback_report["provenance"]["metric_summary_source"] == "parsed_segment_fallback"
         assert fallback_report["chart_catalog"]["raw_artifact"] is None
         assert fallback_report["chart_catalog"]["source_map_artifact"] is None

@@ -724,7 +724,7 @@ def _metric_group(component_id: str) -> str:
         return "Storage"
     if component_id.startswith("bmc:"):
         return "BMC / IPMI"
-    if component_id.startswith("device:"):
+    if component_id.startswith(("device:", "platform:")):
         return "Platform"
     return "Other"
 

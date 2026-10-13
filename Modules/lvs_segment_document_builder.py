@@ -15,12 +15,14 @@ class SegmentDocumentInput:
     e_core_clock_stats: Dict[str, Optional[float]]
     cpu_clock_stats: Dict[str, Optional[float]]
     cpu_temp_stats: Dict[str, Optional[float]]
+    cpu_temp_provenance: Dict[str, Any]
     cpu_power_stats: Dict[str, Optional[float]]
     cpu_section: Dict[str, Any]
     memory_temp_modules: List[Dict[str, Any]]
     ram_temp_stats: Dict[str, Optional[float]]
     storage_temp_drives: List[Dict[str, Any]]
     storage_temp_stats: Dict[str, Optional[float]]
+    platform_thermal_zones: List[Dict[str, Any]]
     gpu_temp_groups: Dict[str, Any]
     gpu_metrics: List[Dict[str, Any]]
     gpu_observation_summary: Dict[str, Any]
@@ -176,6 +178,7 @@ class SegmentDocumentBuilder:
             },
             "Temperatures": {
                 "Cpu": document_input.cpu_temp_stats,
+                "CpuProvenance": document_input.cpu_temp_provenance,
                 "Vrm": dict(document_input.empty_stats),
                 "Gpu": {
                     **document_input.gpu_temp_groups,
@@ -190,6 +193,7 @@ class SegmentDocumentBuilder:
                     "Overall": document_input.storage_temp_stats,
                     "Drives": document_input.storage_temp_drives,
                 },
+                "PlatformThermalZones": document_input.platform_thermal_zones,
             },
             "Power": {
                 "Cpu": document_input.cpu_power_stats,

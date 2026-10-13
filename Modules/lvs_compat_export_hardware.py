@@ -68,6 +68,51 @@ def build_storage_tests(parser_output: dict[str, Any]) -> dict[str, Any]:
     return {"Drive Temperature (Temperature)": drive_temp_tests}
 
 
+def build_platform_thermal_zone_tests(parser_output: dict[str, Any]) -> list[dict[str, Any]]:
+    by_zone: dict[tuple[str, str], dict[str, Any]] = {}
+    for segment in parser_output.get("Segments", []) if isinstance(parser_output.get("Segments"), list) else []:
+        if not isinstance(segment, dict):
+            continue
+        temperatures = segment.get("Temperatures", {}) if isinstance(segment.get("Temperatures"), dict) else {}
+        for zone in temperatures.get("PlatformThermalZones", []) if isinstance(temperatures.get("PlatformThermalZones"), list) else []:
+            if not isinstance(zone, dict):
+                continue
+            identity = (str(zone.get("ZoneId") or ""), str(zone.get("Source") or ""))
+            record = by_zone.setdefault(identity, {
+                "device": str(zone.get("SensorName") or zone.get("ZoneId") or "Platform thermal zone"),
+                "zone_id": identity[0],
+                "zone_type": str(zone.get("ZoneType") or ""),
+                "source": identity[1],
+                "confidence": str(zone.get("Confidence") or "unknown"),
+                "threshold_source": str(zone.get("ThresholdSource") or ""),
+                "trip_points": list(zone.get("TripPoints") or []),
+                "results": {},
+            })
+            record["results"][str(segment.get("Label") or segment.get("Name") or "Stage")] = {
+                "max": (zone.get("Temperatures") or {}).get("Max"),
+                "avg": (zone.get("Temperatures") or {}).get("Avg"),
+                "min": (zone.get("Temperatures") or {}).get("Min"),
+            }
+    return [by_zone[key] for key in sorted(by_zone)]
+
+
+def cpu_temperature_compatibility_name(parser_output: dict[str, Any]) -> tuple[str, str]:
+    provenance: dict[str, Any] = {}
+    for segment in parser_output.get("Segments", []) if isinstance(parser_output.get("Segments"), list) else []:
+        temperatures = segment.get("Temperatures", {}) if isinstance(segment, dict) else {}
+        candidate = temperatures.get("CpuProvenance", {}) if isinstance(temperatures, dict) else {}
+        if isinstance(candidate, dict) and candidate:
+            provenance = candidate
+            break
+    semantic = str(provenance.get("semantic_classification") or "")
+    names = {
+        "cpu_package_temperature": "CPU Package (Temperature)",
+        "cpu_core_temperature": "CPU Core (Temperature)",
+        "cpu_subsystem_temperature": "CPU Subsystem (Temperature)",
+    }
+    return names.get(semantic, "CPU Temperature (Provenance Unknown)"), semantic or "unknown"
+
+
 def build_compatibility_hardware_sections(
     *,
     system_info: dict[str, Any],
@@ -103,6 +148,13 @@ def build_compatibility_hardware_sections(
         "power_limit_2": compatibility_cpu_power_limit_value(cpu_power_limits, "short_term"),
         "power_limit_1": compatibility_cpu_power_limit_value(cpu_power_limits, "long_term"),
     }
+    platform_zone_tests = build_platform_thermal_zone_tests(parser_output)
+    cpu_temperature_test_name, cpu_temperature_provenance = cpu_temperature_compatibility_name(parser_output)
+    cpu_devices["cpu_temperature_provenance"] = cpu_temperature_provenance
+    if platform_zone_tests:
+        cpu_devices["cpu_temperature_availability"] = (
+            "measured" if any(sample.values.get("cpu_temp_c") is not None for sample in samples) else "unavailable"
+        )
     return {
         "Memory": {
             "devices": hardware["Memory"].get("Modules", []),
@@ -113,11 +165,18 @@ def build_compatibility_hardware_sections(
             "devices": hardware.get("Storage", []),
             "tests": build_storage_tests(parser_output),
         },
+        "Platform": {
+            "devices": [
+                {key: item[key] for key in ("zone_id", "zone_type", "source", "confidence", "threshold_source", "trip_points")}
+                for item in platform_zone_tests
+            ],
+            "tests": {"Thermal Zone (Temperature)": platform_zone_tests} if platform_zone_tests else {},
+        },
         "Gpu": gpu_section,
         "Cpu": {
             "devices": dict(cpu_devices),
             "tests": {
-                "CPU Package (Temperature)": build_segment_stats_by_device(
+                cpu_temperature_test_name: build_segment_stats_by_device(
                     windows,
                     samples,
                     "cpu_temp_c",

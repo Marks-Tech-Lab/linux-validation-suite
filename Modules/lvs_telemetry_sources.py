@@ -238,6 +238,8 @@ def telemetry_source_record(
         "component_locator",
         "thresholds",
         "threshold_source",
+        "warn_threshold_semantics",
+        "fail_threshold_semantics",
         "sampling_mode",
         "native_refresh_interval_seconds",
         "stale_after_seconds",
@@ -247,6 +249,12 @@ def telemetry_source_record(
         "family",
         "unit",
         "semantic_classification",
+        "component_scope",
+        "zone_id",
+        "zone_index",
+        "zone_type",
+        "trip_points",
+        "alias_paths",
         "source_scope",
         "measurement_semantics",
     ):
@@ -401,7 +409,8 @@ def build_telemetry_source_map(
     for source in device_temp_source_list:
         field = str(source.get("key") or "")
         if field:
-            fields[field] = telemetry_source_record(field, source, category="device", metric="temperature_c")
+            category = "platform" if source.get("kind") == "platform_thermal_zone" else "device"
+            fields[field] = telemetry_source_record(field, source, category=category, metric="temperature_c")
 
     for source in direct_hwmon_source_list:
         field = str(source.get("key") or "")
@@ -710,6 +719,10 @@ def build_telemetry_capability_summary(
         source for source in device_temp_source_list
         if source.get("kind") == "wifi_temp"
     ]
+    platform_zone_source_list = [
+        source for source in device_temp_source_list
+        if source.get("kind") == "platform_thermal_zone"
+    ]
     gpu_source_list = list(gpu_sources)
     direct_hwmon_source_list = list(direct_hwmon_sources)
     cpu_power_unreadable_source_list = list(cpu_power_unreadable_sources)
@@ -739,6 +752,16 @@ def build_telemetry_capability_summary(
             "available": cpu_temp_source is not None,
             "source": describe_source(cpu_temp_source) if cpu_temp_source else "not found",
             "thresholds": metric_thresholds("cpu_temp_c"),
+        },
+        "platform_thermal_zone_temp_c": {
+            "available": bool(platform_zone_source_list),
+            "source": describe_source(platform_zone_source_list[0]) if platform_zone_source_list else "not found",
+            "count": len(platform_zone_source_list),
+            "sources": [describe_source(source) for source in platform_zone_source_list],
+            "threshold_count": sum(
+                1 for source in platform_zone_source_list
+                if source.get("warn_threshold_c") is not None or source.get("fail_threshold_c") is not None
+            ),
         },
         "cpu_power_w": {
             "available": cpu_power_source is not None,

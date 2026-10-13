@@ -303,7 +303,10 @@ from Modules.lvs_compat_export_gpu import (
     build_gpu_worker_metric_test,
     build_gpu_worker_validation_detail,
 )
-from Modules.lvs_compat_export_hardware import build_compatibility_hardware_sections
+from Modules.lvs_compat_export_hardware import (
+    build_compatibility_hardware_sections,
+    cpu_temperature_compatibility_name,
+)
 from Modules.lvs_compat_export_metadata import build_compatibility_metadata_block, discrete_gpu_inventory
 from Modules.lvs_report_html import gpu_inventory_presentation_detail
 from Modules.lvs_export_contract import validate_export_contract_compatibility
@@ -1003,8 +1006,13 @@ from Modules.lvs_telemetry_cpu import (
 from Modules.lvs_telemetry_device import (
     discover_board_temp_sources,
     discover_nic_temp_sources,
+    discover_platform_thermal_zone_sources,
     discover_wifi_temp_sources,
     read_device_temps,
+)
+from Modules.lvs_temperature_provenance import (
+    classify_hwmon_temperature,
+    classify_thermal_zone_type,
 )
 from Modules.lvs_worker_evidence import (
     apply_worker_entry_context,
@@ -6670,6 +6678,16 @@ def test_compatibility_export_metric_helpers() -> None:
 
 
 def test_compatibility_export_hardware_sections() -> None:
+    assert_equal(
+        cpu_temperature_compatibility_name({"Segments": [{"Temperatures": {"CpuProvenance": {"semantic_classification": "cpu_subsystem_temperature"}}}]}),
+        ("CPU Subsystem (Temperature)", "cpu_subsystem_temperature"),
+        "compatibility CPU subsystem label",
+    )
+    assert_equal(
+        cpu_temperature_compatibility_name({"Segments": [{"Temperatures": {"Cpu": {"Min": 40}}}]}),
+        ("CPU Temperature (Provenance Unknown)", "unknown"),
+        "legacy missing provenance is not promoted to package",
+    )
     window = StageWindow(
         stage_id="segment_1",
         stage_type="Combined",
@@ -6702,6 +6720,11 @@ def test_compatibility_export_hardware_sections() -> None:
                     ]
                 },
                 "Temperatures": {
+                    "CpuProvenance": {
+                        "semantic_classification": "cpu_package_temperature",
+                        "component_scope": "cpu_package",
+                        "confidence": "high",
+                    },
                     "Memory": {
                         "Modules": [
                             {
@@ -6745,7 +6768,7 @@ def test_compatibility_export_hardware_sections() -> None:
         },
         gpu_section=gpu_section,
     )
-    assert_equal(list(sections), ["Memory", "Storage", "Gpu", "Cpu", "CpuCores"], "hardware section order")
+    assert_equal(list(sections), ["Memory", "Storage", "Platform", "Gpu", "Cpu", "CpuCores"], "hardware section order")
     assert_equal(sections["Memory"]["summary"]["OperatingSpeedMTs"], 5600, "hardware memory speed summary")
     assert_equal(sections["Gpu"], gpu_section, "hardware prebuilt GPU section")
     assert_equal(sections["Cpu"]["devices"]["aggregate_cpu_model"], "Fixture CPU", "hardware aggregate CPU model")
@@ -16642,6 +16665,96 @@ def test_telemetry_memory_helpers() -> None:
         assert_equal(spd_sources[1]["key"], "memory_module_1_temp_c", "SPD5118 memory source key")
 
 
+def test_acpi_temperature_provenance_and_safety() -> None:
+    assert_equal(classify_thermal_zone_type("acpitz")["component_scope"], "platform", "ACPI zone is platform")
+    assert_equal(classify_thermal_zone_type("x86_pkg_temp")["component_scope"], "cpu_package", "x86 package zone")
+    assert_equal(classify_thermal_zone_type("cpu0-0-top-thermal")["component_scope"], "cpu_core", "ARM core zone")
+    assert_equal(classify_thermal_zone_type("cpuss0-top-thermal")["component_scope"], "cpu_subsystem", "ARM subsystem zone")
+    assert_equal(classify_thermal_zone_type("soc-thermal")["component_scope"], "soc", "SoC zone")
+    assert_equal(classify_hwmon_temperature("coretemp", "Package id 0")["component_scope"], "cpu_package", "Intel package")
+    assert_equal(classify_hwmon_temperature("coretemp", "Core 3")["component_scope"], "cpu_core", "Intel core")
+    assert_equal(classify_hwmon_temperature("k10temp", "Tctl")["component_scope"], "cpu_package", "AMD Tctl")
+    assert_equal(classify_hwmon_temperature("k10temp", "Tdie")["component_scope"], "cpu_package", "AMD Tdie")
+    assert_equal(classify_hwmon_temperature("acpitz", "temp1")["component_scope"], "platform", "ACPI hwmon")
+    assert_equal(classify_hwmon_temperature("mystery", "temp1")["component_scope"], "unknown", "generic hwmon")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp)
+        thermal = root / "thermal"
+        hwmon = root / "hwmon"
+        temperatures = [84700, 71900, 79600, 71700, 84700, 60300, 71000]
+        for index, value in enumerate(temperatures):
+            zone = thermal / f"thermal_zone{index}"
+            zone.mkdir(parents=True)
+            (zone / "type").write_text("acpitz\n", encoding="utf-8")
+            (zone / "temp").write_text(f"{value}\n", encoding="utf-8")
+            (zone / "trip_point_0_type").write_text("critical\n", encoding="utf-8")
+            (zone / "trip_point_0_temp").write_text("104800\n", encoding="utf-8")
+        alias = thermal / "thermal_zone0" / "hwmon0"
+        alias.mkdir()
+        (alias / "temp1_input").write_text("84700\n", encoding="utf-8")
+        hwmon.mkdir()
+        (hwmon / "hwmon0").symlink_to(alias, target_is_directory=True)
+
+        cpu_sources = discover_cpu_temp_sources(hwmon_root=hwmon, thermal_root=thermal)
+        assert_equal(cpu_sources, [], "ambiguous ACPI zones are not CPU sources")
+        zones = discover_platform_thermal_zone_sources(
+            thermal_root=thermal,
+            hwmon_root=hwmon,
+            thermal_zone_thresholds=lambda _zone: (99.8, 104.8, "thermal_zone_trip"),
+        )
+        assert_equal(len(zones), 7, "all Spark ACPI zones retained")
+        assert_equal([source["key"] for source in zones], [f"platform_thermal_zone_{i}_temp_c" for i in range(7)], "stable zone keys")
+        assert_equal(read_device_temps(zones)["platform_thermal_zone_0_temp_c"], 84.7, "platform zone sampled")
+        assert_equal(read_device_temps(zones)["platform_thermal_zone_4_temp_c"], 84.7, "equal zones remain distinct")
+        assert_equal(zones[0]["alias_paths"], [], "co-located but distinct hwmon channel is not assumed an alias")
+        assert_equal(zones[0]["trip_points"][0]["temperature_c"], 104.8, "firmware trip retained")
+        assert_equal(zones[0]["semantic_classification"], "platform_thermal_zone_temperature", "zone provenance retained")
+        claimed = discover_platform_thermal_zone_sources(
+            thermal_root=thermal,
+            hwmon_root=hwmon,
+            claimed_sources=[{"path": str(thermal / "thermal_zone2" / "temp")}],
+        )
+        assert_equal(len(claimed), 6, "same-path specialized source suppresses duplicate zone telemetry")
+
+        samples = [Sample(1.0, {"platform_thermal_zone_0_temp_c": 105.0, "cpu_temp_c": 80.0})]
+        events = stage_sensor_events(
+            samples=samples,
+            stage_name="fixture",
+            metric_thresholds=lambda key: (
+                {
+                    "warn_c": 99.8, "fail_c": 104.8, "source": "thermal_zone_trip",
+                    "warn_semantics": "derived_5c_below_firmware_critical",
+                    "fail_semantics": "firmware_critical_trip",
+                }
+                if key.startswith("platform_thermal_zone_")
+                else {"warn_c": 95.0, "fail_c": 100.0, "source": "suite_default"}
+            ),
+            abort_on_fail_threshold=True,
+            gpu_thermal_throttle_hint_c=90.0,
+            gpu_hotspot_warn_c=100.0,
+            gpu_hotspot_fail_c=110.0,
+            gpu_memory_temp_warn_c=95.0,
+            gpu_memory_temp_fail_c=105.0,
+        )
+        platform_event = next(event for event in events if event["category"] == "platform_temperature")
+        assert_equal(platform_event["severity"], "error", "platform critical trip remains actionable")
+        assert_equal(platform_event["details"]["threshold_source"], "thermal_zone_trip", "zone threshold provenance")
+        assert_equal(platform_event["details"]["threshold_semantics"], "firmware_critical_trip", "zone threshold semantics")
+        no_threshold_events = stage_sensor_events(
+            samples=[Sample(1.0, {"platform_thermal_zone_0_temp_c": 149.0})],
+            stage_name="fixture",
+            metric_thresholds=lambda _key: None,
+            abort_on_fail_threshold=True,
+            gpu_thermal_throttle_hint_c=90.0,
+            gpu_hotspot_warn_c=100.0,
+            gpu_hotspot_fail_c=110.0,
+            gpu_memory_temp_warn_c=95.0,
+            gpu_memory_temp_fail_c=105.0,
+        )
+        assert_equal(no_threshold_events, [], "platform zone does not inherit CPU defaults")
+
+
 def test_telemetry_cpu_helpers() -> None:
     assert_true(score_cpu_temp_source("k10temp", "Tctl") > score_cpu_temp_source("acpitz", "temp1"), "CPU temp source scoring")
     assert_true(score_thermal_zone("x86_pkg_temp") > score_thermal_zone("acpitz"), "thermal zone scoring")
@@ -18824,7 +18937,7 @@ def test_gpu_progress_helpers() -> None:
     )
     assert_equal(
         system_only_progress,
-        " | cpu_package_temp_c=64.0 | memory_used_gib=12.5",
+        " | cpu_temp_c=64.0 | memory_used_gib=12.5",
         "orchestrator progress exposes collected system values without GPU targets",
     )
     mapped_spec = GpuWorkerSpec(
@@ -28730,6 +28843,7 @@ def main() -> int:
         test_telemetry_sampling_helpers,
         test_telemetry_sample_csv_helpers,
         test_telemetry_memory_helpers,
+        test_acpi_temperature_provenance_and_safety,
         test_telemetry_cpu_helpers,
         test_authoritative_hybrid_core_type_topology_fixtures,
         test_cpu_utilization_telemetry_helpers,

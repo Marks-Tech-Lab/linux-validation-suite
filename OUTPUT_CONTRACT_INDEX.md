@@ -281,6 +281,19 @@ new consumers. Phase 2B does not remove or mark the `_gb` fields as deprecated
 for operator-facing use, and it does not change `parsed_results_custom.json`,
 `system_info.json`, storage benchmark contracts, or profile sidecar labels.
 
+### Additive Temperature Provenance Fields
+
+New runs may add `platform_thermal_zone_<zone-index>_temp_c` columns to
+`raw_telemetry.csv`. Their `telemetry_source_map.json` entries preserve the
+zone ID/type, source path, semantic classification, confidence, trip points,
+threshold source, and any proven aliases. `cpu_temp_c` remains the established
+numeric CPU-temperature field, but new collection populates it only from a
+CPU-attributable source. Parsed temperature sections may add
+`PlatformThermalZones`, and compatibility exports may add a `Platform`
+hardware section. Existing fields, casing, and numeric types are unchanged;
+historical results without provenance remain readable as legacy unknown
+temperature evidence.
+
 ## Future Canonical Parsed-Result Milestone
 
 Phase 1 clarification, Phase 2A identity, and Phase 2B telemetry alias work are

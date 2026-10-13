@@ -55,6 +55,7 @@ class LiveTelemetrySnapshot:
     interval_seconds: float
     cpu_utilization_percent: Optional[float] = None
     cpu_temperature_c: Optional[float] = None
+    cpu_temperature_label: str = "CPU temperature"
     cpu_power_w: Optional[float] = None
     cpu_clock_mhz: Optional[float] = None
     cpu_vcore_v: Optional[float] = None
@@ -268,6 +269,12 @@ def build_live_telemetry_snapshot(collector: Any, sample: Any, *, state: str = "
     )
     memory_used = _first(values, ("memory_used_gib", "memory_used_gb"))
     memory_total = _number(getattr(collector, "memory_total_gib", None))
+    cpu_temp_source = next(iter(getattr(collector, "_cpu_temp_sources", ())), {})
+    cpu_temp_label = {
+        "cpu_package_temperature": "Package temperature",
+        "cpu_core_temperature": "CPU core temperature",
+        "cpu_subsystem_temperature": "CPU subsystem temperature",
+    }.get(str(cpu_temp_source.get("semantic_classification") or ""), "CPU temperature")
     return LiveTelemetrySnapshot(
         state=state,
         sequence=len(getattr(collector, "samples", ())),
@@ -275,6 +282,7 @@ def build_live_telemetry_snapshot(collector: Any, sample: Any, *, state: str = "
         interval_seconds=float(getattr(collector, "interval_seconds", 2.0)),
         cpu_utilization_percent=_number(values.get("cpu_utilization_percent")),
         cpu_temperature_c=_number(values.get("cpu_temp_c")),
+        cpu_temperature_label=cpu_temp_label,
         cpu_power_w=_number(values.get("cpu_power_w")),
         cpu_clock_mhz=_number(values.get("cpu_clock_mhz")),
         cpu_vcore_v=cpu_vcore,

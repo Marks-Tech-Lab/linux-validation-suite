@@ -79,7 +79,16 @@ def live_system_progress_parts(telemetry: Any) -> list[str]:
     package_temps = _matching_progress_values(values, r"cpu_package_\d+_temp_c")
     cpu_temp_c = max(package_temps) if package_temps else _progress_number(values.get("cpu_temp_c"))
     if cpu_temp_c is not None:
-        parts.append(f"cpu_package_temp_c={round(cpu_temp_c, 2)}")
+        semantic = str(
+            next(iter(getattr(telemetry, "_cpu_temp_sources", ())), {}).get("semantic_classification") or ""
+        )
+        key = (
+            "cpu_package_temp_c" if package_temps or semantic == "cpu_package_temperature"
+            else "cpu_subsystem_temp_c" if semantic == "cpu_subsystem_temperature"
+            else "cpu_core_temp_c" if semantic == "cpu_core_temperature"
+            else "cpu_temp_c"
+        )
+        parts.append(f"{key}={round(cpu_temp_c, 2)}")
 
     cpu_power_w = _progress_number(values.get("cpu_power_w"))
     if cpu_power_w is None:

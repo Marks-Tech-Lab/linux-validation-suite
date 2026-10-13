@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_telemetry_sampling import parse_power_text_w, parse_temperature_text
+from .lvs_temperature_provenance import (
+    CPU_SUBSYSTEM_TEMPERATURE,
+    classify_hwmon_temperature,
+    classify_thermal_zone_type,
+    is_cpu_temperature_provenance,
+)
 
 
 ReadText = Callable[[Path], Optional[str]]
@@ -407,8 +413,6 @@ def score_thermal_zone(zone_type: str) -> int:
         score += 70
     if "pkg" in text or "package" in text:
         score += 60
-    if "acpitz" in text:
-        score += 10
     return score
 
 
@@ -453,6 +457,9 @@ def aggregate_cpu_thermal_source(sources: Iterable[Dict[str, Any]]) -> Optional[
         "threshold_source": "aggregate_thermal_zone_trips" if warn_values or fail_values else "suite_default",
         "sources": components,
         "component_count": len(components),
+        "semantic_classification": CPU_SUBSYSTEM_TEMPERATURE,
+        "component_scope": "cpu_subsystem",
+        "confidence": "high",
     }
 
 
@@ -532,6 +539,9 @@ def discover_cpu_temp_sources(
             if read_text(path) is None:
                 continue
             label = sensor_label(path)
+            provenance = classify_hwmon_temperature(hwmon_name, label)
+            if not is_cpu_temperature_provenance(provenance):
+                continue
             warn_threshold_c, fail_threshold_c, threshold_source = hwmon_temp_thresholds(path)
             sources.append(
                 {
@@ -543,6 +553,9 @@ def discover_cpu_temp_sources(
                     "warn_threshold_c": warn_threshold_c,
                     "fail_threshold_c": fail_threshold_c,
                     "threshold_source": threshold_source,
+                    "provider": hwmon_name,
+                    "raw_label": label,
+                    **provenance,
                 }
             )
 
@@ -553,6 +566,9 @@ def discover_cpu_temp_sources(
         if read_text(path) is None:
             continue
         zone_type = read_text(zone_dir / "type") or ""
+        provenance = classify_thermal_zone_type(zone_type)
+        if not is_cpu_temperature_provenance(provenance):
+            continue
         warn_threshold_c, fail_threshold_c, threshold_source = thermal_zone_thresholds(zone_dir)
         sources.append(
             {
@@ -563,6 +579,10 @@ def discover_cpu_temp_sources(
                 "warn_threshold_c": warn_threshold_c,
                 "fail_threshold_c": fail_threshold_c,
                 "threshold_source": threshold_source,
+                "provider": "linux_thermal_zone",
+                "raw_label": zone_type,
+                "zone_id": zone_dir.name,
+                **provenance,
             }
         )
 

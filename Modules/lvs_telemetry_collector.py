@@ -65,7 +65,11 @@ from .lvs_telemetry_cpu import (
     score_rapl_source,
     score_thermal_zone,
 )
-from .lvs_telemetry_device import discover_device_temp_sources, read_device_temps
+from .lvs_telemetry_device import (
+    discover_device_temp_sources,
+    discover_platform_thermal_zone_sources,
+    read_device_temps,
+)
 from .lvs_telemetry_hwmon import discover_direct_hwmon_sources, read_direct_hwmon_values
 from .lvs_telemetry_edac import discover_llcc_edac_sources, read_llcc_edac_counters
 from .lvs_telemetry_memory import (
@@ -163,9 +167,9 @@ class TelemetryCollector:
         self._bmc_memory_aliases: Dict[str, str] = {}
         self._llcc_edac_sources = self._discover_llcc_edac_sources()
         self._storage_temp_sources = self._discover_storage_temp_sources()
+        self._gpu_sources = self._discover_gpu_sources()
         self._device_temp_sources = self._discover_device_temp_sources()
         self._direct_hwmon_sources, self._hwmon_sensor_candidates = self._discover_direct_hwmon_sources()
-        self._gpu_sources = self._discover_gpu_sources()
         self._energy_source_state: Dict[str, Dict[str, float]] = {}
         self._last_cpu_package_power_values: Dict[str, float] = {}
         self.memory_total_gib: Optional[float] = None
@@ -190,6 +194,18 @@ class TelemetryCollector:
             if not self._cpu_temp_sources:
                 return None
             return self._source_thresholds(self._cpu_temp_sources[0], CPU_TEMP_WARN_C, CPU_TEMP_FAIL_C)
+        for source in self._device_temp_sources:
+            if source.get("key") == key and source.get("kind") == "platform_thermal_zone":
+                if source.get("warn_threshold_c") is None and source.get("fail_threshold_c") is None:
+                    return None
+                return {
+                    "warn_c": source.get("warn_threshold_c"),
+                    "fail_c": source.get("fail_threshold_c"),
+                    "source": source.get("threshold_source") or "thermal_zone_trip",
+                    "derived_from_hardware": True,
+                    "warn_semantics": source.get("warn_threshold_semantics") or "",
+                    "fail_semantics": source.get("fail_threshold_semantics") or "",
+                }
         for source in self._gpu_sources:
             if source.get("key") == key and str(source.get("metric", "")).startswith("temp_"):
                 if source["metric"] == "temp_core_c":
@@ -699,7 +715,17 @@ class TelemetryCollector:
         return discover_storage_temp_sources(read_text=self._safe_read_text)
 
     def _discover_device_temp_sources(self) -> List[Dict[str, Any]]:
-        return discover_device_temp_sources(read_text=self._safe_read_text)
+        device_sources = discover_device_temp_sources(read_text=self._safe_read_text)
+        return device_sources + discover_platform_thermal_zone_sources(
+            read_text=self._safe_read_text,
+            thermal_zone_thresholds=self._thermal_zone_thresholds,
+            claimed_sources=[
+                *self._memory_temp_sources,
+                *self._storage_temp_sources,
+                *self._gpu_sources,
+                *device_sources,
+            ],
+        )
 
     def _discover_gpu_sources(self) -> List[Dict[str, Any]]:
         return discover_gpu_sources(

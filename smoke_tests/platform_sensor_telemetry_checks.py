@@ -22,6 +22,7 @@ from Modules.lvs_telemetry_device import (
     discover_board_temp_sources,
     discover_device_temp_sources,
     discover_platform_temp_sources,
+    discover_platform_thermal_zone_sources,
     read_device_temps,
 )
 from Modules.lvs_telemetry_memory import (
@@ -174,6 +175,28 @@ def run_platform_sensor_telemetry_checks() -> None:
         assert vrm_mos_record["available"] is True
         assert vrm_mos_record["kind"] == "platform_temp"
         assert vrm_mos_record["component_classification"] == "vrm_mos"
+
+        acpi_zone = root / "acpi_thermal" / "thermal_zone3"
+        _write(acpi_zone / "type", "acpitz")
+        _write(acpi_zone / "temp", "84700")
+        _write(acpi_zone / "trip_point_0_type", "critical")
+        _write(acpi_zone / "trip_point_0_temp", "104800")
+        zones = discover_platform_thermal_zone_sources(
+            thermal_root=root / "acpi_thermal",
+            hwmon_root=root / "missing_hwmon",
+            thermal_zone_thresholds=lambda _zone: (99.8, 104.8, "thermal_zone_trip"),
+        )
+        zone_map = build_telemetry_source_map(
+            cpu_temp_source=None, cpu_package_temp_sources=[], cpu_power_source=None,
+            cpu_clock_source=None, cpu_core_clock_sources=[], memory_temp_sources=[],
+            storage_temp_sources=[], gpu_sources=[], gpu_cards=[], device_temp_sources=zones,
+        )
+        zone_record = zone_map["fields"]["platform_thermal_zone_3_temp_c"]
+        assert zone_record["category"] == "platform"
+        assert zone_record["zone_id"] == "thermal_zone3"
+        assert zone_record["zone_type"] == "acpitz"
+        assert zone_record["confidence"] == "medium"
+        assert zone_record["trip_points"][0]["temperature_c"] == 104.8
 
         dimm_root = root / "dimm_hwmon"
         spd = _sensor(dimm_root, "hwmon1", "spd5118", "", "41000")

@@ -16,6 +16,13 @@ from .lvs_output_contract_identity import (
     REPORT_DATA_KIND,
     stamp_contract_identity,
 )
+from .lvs_temperature_provenance import (
+    PLATFORM_ZONE_TEMPERATURE,
+    UNKNOWN_TEMPERATURE,
+    classify_hwmon_temperature,
+    classify_thermal_zone_type,
+    is_cpu_temperature_provenance,
+)
 
 
 SOURCE_ARTIFACTS = (
@@ -184,6 +191,21 @@ def _source_index(field: str, source: Dict[str, Any], key: str, pattern: str) ->
 def _component_id(field: str, source: Dict[str, Any]) -> Tuple[str, str]:
     category = str(source.get("category") or "").lower()
     classification = str(source.get("component_classification") or "").lower()
+    if field == "cpu_temp_c":
+        semantic = str(source.get("semantic_classification") or "")
+        kind = str(source.get("kind") or "")
+        label = str(source.get("raw_label") or source.get("label") or "")
+        if not semantic:
+            provenance = (
+                classify_thermal_zone_type(label)
+                if kind == "thermal_zone"
+                else classify_hwmon_temperature(str(source.get("provider") or source.get("hwmon_name") or kind), label)
+            )
+            semantic = provenance["semantic_classification"]
+        if semantic == PLATFORM_ZONE_TEMPERATURE:
+            return "platform:thermal_zone:legacy", PLATFORM_ZONE_TEMPERATURE
+        if semantic == UNKNOWN_TEMPERATURE and not is_cpu_temperature_provenance({"component_scope": source.get("component_scope", "")}):
+            return "temperature:legacy_unknown", UNKNOWN_TEMPERATURE
     if category == "cpu_package" or re.match(r"cpu_package_\d+_", field):
         index = _source_index(field, source, "package_id", r"cpu_package_(\d+)_")
         return f"cpu:package:{index}", "cpu_package"
@@ -236,6 +258,10 @@ def _component_label(component_id: str, component_class: str, source: Dict[str, 
         return str(info.get("device_name") or f"Storage {index}")
     if component_id == "memory:system":
         return "System memory"
+    if component_id == "platform:thermal_zone:legacy":
+        return "ACPI platform thermal zone (legacy field)"
+    if component_id == "temperature:legacy_unknown":
+        return "Temperature (legacy provenance unknown)"
     return str(source.get("label") or source.get("raw_label") or component_class.replace("_", " ").title())
 
 
@@ -565,7 +591,7 @@ def _fallback_metric(field: str, component_id: str, metric_class: str, unit: str
 def _fallback_metrics(segment: Dict[str, Any]) -> List[Dict[str, Any]]:
     metrics: List[Dict[str, Any]] = []
     specs = (
-        ("cpu_temp_c", "cpu:aggregate", "temperature", "c", (("Temperatures", "Cpu"),)),
+        ("cpu_temp_c", "temperature:legacy_unknown", "temperature", "c", (("Temperatures", "Cpu"),)),
         ("cpu_clock_mhz", "cpu:aggregate", "clock", "mhz", (("Clocks", "AllCoreAverage"),)),
         ("cpu_power_w", "cpu:aggregate", "power", "w", (("Power", "Cpu"),)),
     )
@@ -608,6 +634,20 @@ def _fallback_metrics(segment: Dict[str, Any]) -> List[Dict[str, Any]]:
         row = _fallback_metric(f"storage_drive_{index}_temp_c", f"storage:{index}", "temperature", "c", entry.get("Temperatures"))
         if row:
             metrics.append(row)
+    for index, entry in enumerate(
+        temperatures.get("PlatformThermalZones", [])
+        if isinstance(temperatures.get("PlatformThermalZones"), list) else []
+    ):
+        zone_id = str(entry.get("ZoneId") or f"thermal_zone{index}") if isinstance(entry, dict) else f"thermal_zone{index}"
+        match = re.search(r"(\d+)$", zone_id)
+        zone_index = int(match.group(1)) if match else index
+        row = _fallback_metric(
+            f"platform_thermal_zone_{zone_index}_temp_c",
+            f"platform:platform_thermal_zone:{zone_index}",
+            "temperature", "c", entry.get("Temperatures") if isinstance(entry, dict) else None,
+        )
+        if row:
+            metrics.append(row)
     return sorted(metrics, key=lambda item: (item["component_id"], item["metric_class"], item["field"]))
 
 
@@ -623,6 +663,7 @@ def _ensure_metric_components(components: List[Dict[str, Any]], stages: List[Dic
                 "label": {
                     "cpu:aggregate": "CPU",
                     "memory:system": "System memory",
+                    "temperature:legacy_unknown": "Temperature (legacy provenance unknown)",
                 }.get(component_id, component_id.replace(":", " ").replace("_", " ").title()),
                 "identity": {},
                 "telemetry_fields": [],

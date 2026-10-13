@@ -64,6 +64,7 @@ def fixture_collector(core_count: int = 24, *, bmc_fresh: bool = True):
         _cpu_core_topology=topology,
         _cpu_core_clock_sources=clock_sources,
         _cpu_core_utilization_sources=utilization_sources,
+        _cpu_temp_sources=[{"semantic_classification": "cpu_package_temperature"}],
         _memory_temp_sources=[{"key": "memory_module_0_temp_c", "label": "DIMM 1", "unit": "celsius", "provider": "hwmon"}],
         _storage_temp_sources=[{"key": "storage_drive_0_temp_c", "label": "NVMe 1 Composite", "unit": "celsius", "provider": "nvme"}],
         _device_temp_sources=[],
@@ -129,8 +130,21 @@ def run_live_tui_telemetry_checks() -> None:
     assert "CPU  82%" in compact and "GPU2 96%" in compact and "Pump 2800 RPM" in compact
     assert max(map(len, compact.splitlines())) <= 32
     detail = live_snapshot_detail_text(snapshot)
-    for expected in ("Performance cores (8)", "Efficiency cores (16)", "Fan duty: 45 %", "VDDGFX: 0.9 V", "VDDNB: 0.9 V", "+12V"):
+    for expected in ("Package temperature: 74 C", "Performance cores (8)", "Efficiency cores (16)", "Fan duty: 45 %", "VDDGFX: 0.9 V", "VDDNB: 0.9 V", "+12V"):
         assert expected in detail, expected
+    platform_collector = fixture_collector()
+    platform_collector._cpu_temp_sources = []
+    platform_collector._device_temp_sources = [{
+        "key": "platform_thermal_zone_0_temp_c", "label": "acpitz thermal_zone0",
+        "unit": "celsius", "provider": "linux_thermal_zone",
+        "semantic_classification": "platform_thermal_zone_temperature",
+    }]
+    platform_sample = Sample(100.0, {"platform_thermal_zone_0_temp_c": 84.7})
+    platform_collector.samples.append(platform_sample)
+    platform_snapshot = build_live_telemetry_snapshot(platform_collector, platform_sample)
+    assert platform_snapshot.cpu_temperature_c is None
+    assert platform_snapshot.platform[0].label == "acpitz thermal_zone0"
+    assert "Platform" in live_snapshot_detail_text(platform_snapshot)
     assert live_snapshot_is_stale(snapshot, 105.0) is False
     assert live_snapshot_is_stale(snapshot, 107.0) is True
     assert live_system_layout(terminal_width=123, run_active=True).visible is False

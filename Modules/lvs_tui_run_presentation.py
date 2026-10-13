@@ -231,7 +231,9 @@ def live_system_metrics(events: Iterable[object]) -> tuple[LiveSystemMetrics, bo
         if not isinstance(fields, dict):
             continue
         metrics = LiveSystemMetrics(
-            cpu_package_temp_c=_metric_number(fields.get("cpu_package_temp_c")),
+            cpu_package_temp_c=_metric_number(
+                fields.get("cpu_package_temp_c", fields.get("cpu_subsystem_temp_c", fields.get("cpu_core_temp_c", fields.get("cpu_temp_c"))))
+            ),
             cpu_package_power_w=_metric_number(fields.get("cpu_package_power_w")),
             cpu_clock_mhz=_metric_number(fields.get("cpu_clock_mhz")),
             cpu_utilization_percent=_metric_number(fields.get("cpu_utilization_percent")),
@@ -561,7 +563,7 @@ def live_snapshot_detail_text(
     cpu_rows = []
     for label, value, unit in (
         ("Load", snapshot.cpu_utilization_percent, "%"),
-        ("Package temperature", snapshot.cpu_temperature_c, "C"),
+        (snapshot.cpu_temperature_label, snapshot.cpu_temperature_c, "C"),
         ("Package power", snapshot.cpu_power_w, "W"),
         ("Aggregate clock", snapshot.cpu_clock_mhz, "MHz"),
         ("Measured Vcore", snapshot.cpu_vcore_v, "V"),

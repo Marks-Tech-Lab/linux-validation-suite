@@ -70,6 +70,27 @@ class TemperatureMetricSectionBuilder:
             "Max": round(max(maxs), 2) if maxs else None,
         }
 
+    def platform_thermal_zone_entries(self, samples: List[Any], telemetry: Optional[Any]) -> List[Dict[str, Any]]:
+        sources = {
+            str(source.get("key") or ""): source
+            for source in getattr(telemetry, "_device_temp_sources", [])
+            if source.get("kind") == "platform_thermal_zone" and source.get("key")
+        }
+        entries: List[Dict[str, Any]] = []
+        for key, source in sorted(sources.items(), key=lambda item: int(item[1].get("zone_index", 0) or 0)):
+            entries.append({
+                "ZoneId": str(source.get("zone_id") or ""),
+                "ZoneType": str(source.get("zone_type") or source.get("raw_label") or ""),
+                "SensorName": str(source.get("label") or source.get("zone_id") or key),
+                "Source": str(source.get("path") or ""),
+                "SemanticClassification": str(source.get("semantic_classification") or ""),
+                "Confidence": str(source.get("confidence") or "unknown"),
+                "ThresholdSource": str(source.get("threshold_source") or ""),
+                "TripPoints": list(source.get("trip_points") or []),
+                "Temperatures": self._metric_stats(samples, key),
+            })
+        return entries
+
     def storage_temp_entries(self, samples: List[Any], telemetry: Optional[Any]) -> List[Dict[str, Any]]:
         source_by_key = {
             str(source.get("key", "")): source

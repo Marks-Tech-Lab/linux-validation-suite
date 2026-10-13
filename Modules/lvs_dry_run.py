@@ -106,7 +106,13 @@ def build_dry_run_report(
         errors.append(completeness_message)
 
     if "cpu" in enabled_workloads and not telemetry_capabilities["cpu_temp_c"]["available"]:
-        warnings.append("CPU temperature telemetry unavailable; thermal metrics will be blank")
+        if telemetry_capabilities.get("platform_thermal_zone_temp_c", {}).get("available"):
+            count = int(telemetry_capabilities["platform_thermal_zone_temp_c"].get("count", 0) or 0)
+            warnings.append(
+                f"CPU-specific temperature telemetry unavailable; {count} platform thermal zone(s) remain monitored"
+            )
+        else:
+            warnings.append("CPU temperature telemetry unavailable; thermal metrics will be blank")
     if {"cpu", "memory"} & enabled_workloads and not telemetry_capabilities["cpu_power_w"]["available"]:
         warnings.append("CPU power telemetry unavailable; CPU package power metrics will be blank")
     if "memory" in enabled_workloads and not telemetry_capabilities["memory_used_gb"]["available"]:

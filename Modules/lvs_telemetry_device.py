@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_telemetry_cpu import read_temperature_path
+from Modules.lvs_telemetry_sampling import parse_temperature_text
+from Modules.lvs_temperature_provenance import classify_thermal_zone_type
 from Modules.lvs_platform_hwmon import (
     TRUSTED_PLATFORM_TELEMETRY_CLASSES,
     canonical_temperature_identity,
@@ -19,6 +21,118 @@ from Modules.lvs_platform_hwmon import (
 
 ReadText = Callable[[Path], Optional[str]]
 ReadTemperature = Callable[[Path], Optional[float]]
+ThermalZoneThresholds = Callable[[Path], tuple[Optional[float], Optional[float], str]]
+
+
+def _zone_index(path: Path) -> int:
+    try:
+        return int(path.name.removeprefix("thermal_zone"))
+    except ValueError:
+        return 0
+
+
+def _thermal_zone_aliases(zone_dir: Path, hwmon_root: Path) -> List[str]:
+    """Return only aliases proven to resolve to the exact same sensor file."""
+    zone_temp = zone_dir / "temp"
+    aliases: List[str] = []
+    for hwmon in sorted(hwmon_root.glob("hwmon*")):
+        for path in sorted(hwmon.glob("temp*_input")):
+            try:
+                if path.samefile(zone_temp):
+                    aliases.append(str(path))
+            except Exception:
+                continue
+    return aliases
+
+
+def discover_platform_thermal_zone_sources(
+    thermal_root: Path = Path("/sys/class/thermal"),
+    hwmon_root: Path = Path("/sys/class/hwmon"),
+    read_text: ReadText | None = None,
+    thermal_zone_thresholds: ThermalZoneThresholds | None = None,
+    claimed_sources: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Discover non-CPU thermal zones as distinct, continuously sampled sources."""
+    if read_text is None:
+        read_text = read_text_device_sysfs
+    if thermal_zone_thresholds is None:
+        thermal_zone_thresholds = lambda _zone: (None, None, "suite_default")
+    claimed_paths: List[Path] = []
+    for source in claimed_sources or []:
+        candidates = [source, *(source.get("sources") or [])]
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("path"):
+                claimed_paths.append(Path(str(candidate["path"])))
+    sources: List[Dict[str, Any]] = []
+    for zone_dir in sorted(thermal_root.glob("thermal_zone*"), key=_zone_index):
+        path = zone_dir / "temp"
+        if any(
+            str(candidate) == str(path)
+            or (candidate.exists() and path.exists() and candidate.samefile(path))
+            for candidate in claimed_paths
+        ):
+            continue
+        if parse_temperature_text(read_text(path)) is None:
+            continue
+        zone_type = str(read_text(zone_dir / "type") or zone_dir.name).strip()
+        provenance = classify_thermal_zone_type(zone_type)
+        if str(provenance.get("component_scope") or "").startswith("cpu_"):
+            continue
+        zone_index = _zone_index(zone_dir)
+        warn_c, fail_c, threshold_source = thermal_zone_thresholds(zone_dir)
+        trip_points: List[Dict[str, Any]] = []
+        for type_path in sorted(zone_dir.glob("trip_point_*_type")):
+            suffix = type_path.name.removeprefix("trip_point_").removesuffix("_type")
+            temp_path = zone_dir / f"trip_point_{suffix}_temp"
+            temperature_c = parse_temperature_text(read_text(temp_path), upper_bound=200.0)
+            if temperature_c is None:
+                continue
+            trip_points.append({
+                "trip_index": int(suffix),
+                "trip_type": str(read_text(type_path) or "unknown").strip().lower(),
+                "temperature_c": temperature_c,
+                "source": str(temp_path),
+            })
+        trip_types = {str(item.get("trip_type") or "") for item in trip_points}
+        warn_semantics = (
+            "firmware_warning_trip"
+            if trip_types & {"hot", "passive"}
+            else "derived_5c_below_firmware_critical" if warn_c is not None and "critical" in trip_types
+            else ""
+        )
+        fail_semantics = "firmware_critical_trip" if "critical" in trip_types and fail_c is not None else ""
+        sources.append({
+            "kind": "platform_thermal_zone",
+            "provider": "linux_thermal_zone",
+            "path": str(path),
+            "label": f"{zone_type} {zone_dir.name}",
+            "raw_label": zone_type,
+            "zone_type": zone_type,
+            "zone_id": zone_dir.name,
+            "zone_index": zone_index,
+            "sensor_index": zone_index,
+            "key": f"platform_thermal_zone_{zone_index}_temp_c",
+            "metric": "temperature_c",
+            "unit": "celsius",
+            "warn_threshold_c": warn_c,
+            "fail_threshold_c": fail_c,
+            "threshold_source": threshold_source,
+            "warn_threshold_semantics": warn_semantics,
+            "fail_threshold_semantics": fail_semantics,
+            "thresholds": {
+                "warn_c": warn_c,
+                "fail_c": fail_c,
+                "source": threshold_source,
+                "derived_from_hardware": threshold_source != "suite_default",
+            },
+            "trip_points": trip_points,
+            "alias_paths": _thermal_zone_aliases(zone_dir, hwmon_root),
+            "source_scope": "platform_thermal_zone",
+            "component_classification": "platform_thermal_zone",
+            "measurement_semantics": "measured_temperature",
+            **provenance,
+        })
+    return sources
 
 
 def read_text_device_sysfs(path: Path) -> Optional[str]:
