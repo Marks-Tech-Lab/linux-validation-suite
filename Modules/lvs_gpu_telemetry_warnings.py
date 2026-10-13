@@ -36,13 +36,28 @@ def gpu_telemetry_coverage_warnings(
         driver = str(gpu.get("driver") or "").strip()
         missing_important = [name for name in missing if name in IMPORTANT_GPU_TELEMETRY_METRICS]
         available_important = [name for name in available if name in IMPORTANT_GPU_TELEMETRY_METRICS]
+        query_errors = [
+            name for name in missing_important
+            if str((metrics.get(name) or {}).get("measurement_status") or "") == "query_error"
+        ]
         if vendor.lower() == "nvidia" and driver.lower() == "nvidia" and not available_important:
-            warnings.append(
-                f"GPU telemetry missing for NVIDIA GPU {label}; nvidia-smi does not expose this card, "
-                "so temperature/power/utilization/VRAM metrics will be blank. This can indicate a GPU/driver dropout."
-            )
+            if query_errors:
+                warnings.append(
+                    f"GPU telemetry query failed for NVIDIA GPU {label}; "
+                    "temperature/power/utilization/VRAM metrics may be blank. This can indicate a provider or GPU/driver dropout."
+                )
+            else:
+                warnings.append(
+                    f"GPU telemetry unavailable for NVIDIA GPU {label}; nvidia-smi exposed the device but no important metrics, "
+                    "so temperature/power/utilization/VRAM metrics will be blank"
+                )
         elif missing_important:
+            unavailable = [
+                name for name in missing_important
+                if str((metrics.get(name) or {}).get("measurement_status") or "") == "unavailable"
+            ]
+            qualifier = "unavailable" if unavailable else "missing"
             warnings.append(
-                f"GPU telemetry partial for GPU {label}; missing {', '.join(missing_important)} metrics will be blank"
+                f"GPU telemetry partial for GPU {label}; {qualifier} {', '.join(missing_important)} metrics will be blank"
             )
     return warnings

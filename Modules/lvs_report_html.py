@@ -1063,9 +1063,21 @@ def _reference_tables(
         f'<div class="table-wrap"><table><thead><tr><th>Component</th><th>Provider</th><th>Semantics</th><th>Values</th></tr></thead><tbody>{clock_rows}</tbody></table></div>'
         if clock_rows else '<p class="muted compact">No provider-backed clock capability data was recorded.</p>'
     )
+    availability_rows = "".join(
+        "<tr>"
+        f'<td><code>{_escape(item.get("field"))}</code><small>{_escape(item.get("component_id"))}</small></td>'
+        f'<td>{_escape(item.get("provider"))}</td><td>{_escape(item.get("measurement_status"))}</td>'
+        f'<td>{_escape(item.get("capability_status"))}</td><td>{_escape(item.get("reason"))}</td></tr>'
+        for item in references.get("telemetry_availability", [])
+    )
+    availability = (
+        f'<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Provider</th><th>Measurement</th><th>Capability</th><th>Reason</th></tr></thead><tbody>{availability_rows}</tbody></table></div>'
+        if availability_rows else '<p class="muted compact">No explicitly unavailable GPU telemetry fields were recorded.</p>'
+    )
     return f'''<details class="hardware-references secondary-disclosure"><summary>Hardware references and advanced details</summary>
       <div class="disclosure-body"><h3>Temperature limits</h3>{temperatures}
-      <h3>Clock capabilities</h3>{clocks}</div>
+      <h3>Clock capabilities</h3>{clocks}
+      <h3>Unavailable GPU telemetry</h3>{availability}</div>
       <details class="advanced-telemetry-mapping secondary-disclosure"><summary>Advanced telemetry mapping</summary>
         <div class="advanced-group-list">{_advanced_telemetry_mapping(components, chart_catalog, stages)}</div>
       </details>

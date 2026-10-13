@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_gpu_identity import normalize_pci_slot
+from .lvs_telemetry_nvidia import nvidia_field_observation
 from .lvs_platform_hwmon import (
     normalize_platform_temperature_c,
     platform_hwmon_classification,
@@ -460,12 +461,19 @@ def parse_nvidia_query_csv(text: str) -> List[Dict[str, Any]]:
             "pci_bus_id": normalize_pci_slot(parts[0]).lower(),
             "provider": "nvidia_smi",
             "evidence": {},
+            "field_observations": {},
         }
         raw_fields = (
             "clocks.current.graphics", "clocks.current.sm", "clocks.current.memory",
             "clocks.max.graphics", "clocks.max.sm", "clocks.max.memory", "temperature.gpu",
         )
         for field, raw_field, raw in zip(fields[1:], raw_fields, parts[1:]):
+            observation = nvidia_field_observation(
+                raw,
+                query_field=raw_field,
+                upper_bound=150.0 if field == "temperature_c" else 20000.0,
+            )
+            row["field_observations"][field] = observation
             value = _number(raw)
             if value is not None and value >= 0:
                 row[field] = round(value, 2)

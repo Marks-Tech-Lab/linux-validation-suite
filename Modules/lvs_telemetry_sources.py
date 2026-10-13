@@ -17,6 +17,13 @@ from .lvs_telemetry_samples import telemetry_unit_alias_name
 TelemetrySource = Dict[str, Any]
 
 
+def telemetry_source_is_available(source: Optional[TelemetrySource]) -> bool:
+    if not source:
+        return False
+    status = str(source.get("measurement_status") or "").strip().lower()
+    return status == "measured" if status else True
+
+
 def source_thresholds(source: TelemetrySource, default_warn: float, default_fail: float) -> Dict[str, Any]:
     warn = source.get("warn_threshold_c")
     fail = source.get("fail_threshold_c")
@@ -49,6 +56,9 @@ def preferred_metric_source(
     candidates = sources_for_metric(sources, metric)
     if not candidates:
         return None
+    available_candidates = [source for source in candidates if telemetry_source_is_available(source)]
+    if available_candidates:
+        candidates = available_candidates
 
     def score(source: TelemetrySource) -> tuple[int, int, int]:
         threshold_source = str(source.get("threshold_source") or "")
@@ -150,9 +160,10 @@ def telemetry_source_record(
         record["available"] = False
         return record
 
+    available = telemetry_source_is_available(source)
     record.update(
         {
-            "available": True,
+            "available": available,
             "kind": source.get("kind", ""),
             "label": source.get("label", ""),
             "path": source.get("path", ""),
@@ -203,6 +214,11 @@ def telemetry_source_record(
         "clock_capability",
         "temperature_capability",
         "source_quality",
+        "capability_status",
+        "measurement_status",
+        "measurement_reason",
+        "observed_sample_count",
+        "availability_basis",
         "provider",
         "raw_label",
         "normalized_label",
@@ -400,20 +416,43 @@ def build_telemetry_source_map(
     for source in gpu_source_list:
         field = str(source.get("key") or "")
         if field:
-            fields[field] = telemetry_source_record(
+            candidate = telemetry_source_record(
                 field,
                 source,
                 category="gpu",
                 metric=str(source.get("metric") or field),
             )
+            existing = fields.get(field)
+            if (
+                existing is None
+                or (candidate.get("available") and not existing.get("available"))
+                or (
+                    candidate.get("available") == existing.get("available")
+                    and (
+                        int(candidate.get("observed_sample_count", 0) or 0) > int(existing.get("observed_sample_count", 0) or 0)
+                        or (
+                            int(candidate.get("observed_sample_count", 0) or 0) == int(existing.get("observed_sample_count", 0) or 0)
+                            and int(candidate.get("source_quality", 0) or 0) > int(existing.get("source_quality", 0) or 0)
+                        )
+                    )
+                )
+            ):
+                fields[field] = candidate
             alias_name = telemetry_unit_alias_name(field)
             if alias_name:
-                fields[alias_name] = telemetry_source_record(
+                alias_candidate = telemetry_source_record(
                     alias_name,
                     source,
                     category="gpu",
                     metric="vram_used_gib",
                 )
+                alias_existing = fields.get(alias_name)
+                if (
+                    alias_existing is None
+                    or (alias_candidate.get("available") and not alias_existing.get("available"))
+                    or int(alias_candidate.get("observed_sample_count", 0) or 0) > int(alias_existing.get("observed_sample_count", 0) or 0)
+                ):
+                    fields[alias_name] = alias_candidate
 
     for source in bmc_source_list:
         field = str(source.get("key") or "")
@@ -514,7 +553,7 @@ def metric_gpu_count(sources: Iterable[TelemetrySource], metric: str) -> int:
         {
             int(source.get("gpu_index", 0) or 0)
             for source in sources
-            if source.get("metric") == metric
+            if source.get("metric") == metric and telemetry_source_is_available(source)
         }
     )
 
@@ -588,14 +627,25 @@ def build_gpu_telemetry_matrix(
         if not label:
             continue
         existing = info["metrics"].get(label, {})
-        if existing.get("available") and int(existing.get("source_quality", 0) or 0) >= int(source.get("source_quality", 0) or 0):
+        source_available = telemetry_source_is_available(source)
+        if existing.get("available") and (
+            not source_available
+            or (
+                int(existing.get("observed_sample_count", 0) or 0) >= int(source.get("observed_sample_count", 0) or 0)
+                and int(existing.get("source_quality", 0) or 0) >= int(source.get("source_quality", 0) or 0)
+            )
+        ):
             continue
         info["metrics"][label] = {
-            "available": True,
+            "available": source_available,
             "source": telemetry_source_description(source),
             "kind": source.get("kind", ""),
             "metric": metric,
             "source_quality": int(source.get("source_quality", 0) or 0),
+            "observed_sample_count": int(source.get("observed_sample_count", 0) or 0),
+            "capability_status": source.get("capability_status", "unknown"),
+            "measurement_status": source.get("measurement_status", "unknown"),
+            "reason": source.get("measurement_reason", ""),
         }
 
     return [per_gpu[index] for index in sorted(per_gpu)]
@@ -665,7 +715,24 @@ def build_telemetry_capability_summary(
     cpu_power_unreadable_source_list = list(cpu_power_unreadable_sources)
 
     def first_source_for_metric(metric: str) -> Optional[TelemetrySource]:
-        return next((source for source in gpu_source_list if source.get("metric") == metric), None)
+        candidates = [source for source in gpu_source_list if source.get("metric") == metric]
+        return next((source for source in candidates if telemetry_source_is_available(source)), candidates[0] if candidates else None)
+
+    def gpu_metric_available(metric: str) -> bool:
+        return any(
+            source.get("metric") == metric and telemetry_source_is_available(source)
+            for source in gpu_source_list
+        )
+
+    def gpu_metric_status(metric: str) -> Dict[str, Any]:
+        source = first_source_for_metric(metric)
+        if source is None:
+            return {"capability_status": "unknown", "measurement_status": "unknown", "reason": "source_not_found"}
+        return {
+            "capability_status": source.get("capability_status", "supported" if telemetry_source_is_available(source) else "unknown"),
+            "measurement_status": source.get("measurement_status", "measured" if telemetry_source_is_available(source) else "unknown"),
+            "reason": source.get("measurement_reason", ""),
+        }
 
     capabilities: Dict[str, Dict[str, Any]] = {
         "cpu_temp_c": {
@@ -753,55 +820,64 @@ def build_telemetry_capability_summary(
             "evidence_only": True,
         },
         "gpu_temp_c": {
-            "available": any(source.get("metric") == "temp_core_c" for source in gpu_source_list),
+            "available": gpu_metric_available("temp_core_c"),
             "source": describe_source(gpu_temp_source) if gpu_temp_source else "not found",
             "count": metric_gpu_count(gpu_source_list, "temp_core_c"),
             "thresholds": metric_thresholds(str(gpu_temp_source.get("key") or "")) if gpu_temp_source else None,
             "thresholds_by_gpu": gpu_metric_threshold_summary("temp_core_c"),
+            **gpu_metric_status("temp_core_c"),
         },
         "gpu_memory_temp_c": {
-            "available": any(source.get("metric") == "temp_memory_c" for source in gpu_source_list),
+            "available": gpu_metric_available("temp_memory_c"),
             "source": describe_source(first_source_for_metric("temp_memory_c")),
             "count": metric_gpu_count(gpu_source_list, "temp_memory_c"),
             "thresholds_by_gpu": gpu_metric_threshold_summary("temp_memory_c"),
+            **gpu_metric_status("temp_memory_c"),
         },
         "gpu_power_w": {
-            "available": any(source.get("metric") == "power_w" for source in gpu_source_list),
+            "available": gpu_metric_available("power_w"),
             "source": describe_source(first_source_for_metric("power_w")),
             "count": metric_gpu_count(gpu_source_list, "power_w"),
+            **gpu_metric_status("power_w"),
         },
         "gpu_clock_mhz": {
-            "available": any(source.get("metric") == "clock_mhz" for source in gpu_source_list),
+            "available": gpu_metric_available("clock_mhz"),
             "source": describe_source(first_source_for_metric("clock_mhz")),
             "count": metric_gpu_count(gpu_source_list, "clock_mhz"),
+            **gpu_metric_status("clock_mhz"),
         },
         "gpu_memory_clock_mhz": {
-            "available": any(source.get("metric") == "memory_clock_mhz" for source in gpu_source_list),
+            "available": gpu_metric_available("memory_clock_mhz"),
             "source": describe_source(first_source_for_metric("memory_clock_mhz")),
             "count": metric_gpu_count(gpu_source_list, "memory_clock_mhz"),
+            **gpu_metric_status("memory_clock_mhz"),
         },
         "gpu_busy_percent": {
-            "available": any(source.get("metric") == "busy_percent" for source in gpu_source_list),
+            "available": gpu_metric_available("busy_percent"),
             "source": describe_source(first_source_for_metric("busy_percent")),
             "count": metric_gpu_count(gpu_source_list, "busy_percent"),
+            **gpu_metric_status("busy_percent"),
         },
         "gpu_memory_busy_percent": {
-            "available": any(source.get("metric") == "memory_busy_percent" for source in gpu_source_list),
+            "available": gpu_metric_available("memory_busy_percent"),
             "source": describe_source(first_source_for_metric("memory_busy_percent")),
             "count": metric_gpu_count(gpu_source_list, "memory_busy_percent"),
+            **gpu_metric_status("memory_busy_percent"),
         },
         "gpu_vram_used_gb": {
-            "available": any(source.get("metric") == "vram_used_gb" for source in gpu_source_list),
+            "available": gpu_metric_available("vram_used_gb"),
             "source": describe_source(first_source_for_metric("vram_used_gb")),
             "count": metric_gpu_count(gpu_source_list, "vram_used_gb"),
+            **gpu_metric_status("vram_used_gb"),
         },
         "gpu_fan_percent": {
-            "available": any(source.get("metric") == "fan_percent" for source in gpu_source_list),
+            "available": gpu_metric_available("fan_percent"),
             "source": describe_source(first_source_for_metric("fan_percent")),
             "count": metric_gpu_count(gpu_source_list, "fan_percent"),
+            **gpu_metric_status("fan_percent"),
         },
         "gpu_fan_rpm": {
-            "available": any(source.get("metric") == "fan_rpm" for source in gpu_source_list),
+            "available": gpu_metric_available("fan_rpm"),
             "source": describe_source(first_source_for_metric("fan_rpm")),
             "count": metric_gpu_count(gpu_source_list, "fan_rpm"),
         },

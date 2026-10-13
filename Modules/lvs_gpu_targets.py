@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_gpu_identity import apply_physical_gpu_identity, gpu_vendor_name, normalize_pci_id, normalize_pci_slot
+from .lvs_telemetry_nvidia import discover_nvidia_smi_gpus as discover_nvidia_provider_gpus
 
 
 CommandExists = Callable[[str], bool]
@@ -109,46 +109,7 @@ def discover_nvidia_smi_gpus(
     command_exists: CommandExists,
     command_env: CommandEnv,
 ) -> List[Dict[str, Any]]:
-    if not command_exists("nvidia-smi"):
-        return []
-    cmd = [
-        "nvidia-smi",
-        "--query-gpu=index,pci.bus_id,uuid,name,driver_version,memory.total",
-        "--format=csv,noheader,nounits",
-    ]
-    try:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=command_env(),
-        )
-    except Exception:
-        return []
-    if completed.returncode != 0:
-        return []
-    gpus: List[Dict[str, Any]] = []
-    for line in (completed.stdout or "").splitlines():
-        parts = [item.strip() for item in line.split(",")]
-        if len(parts) < 6:
-            continue
-        try:
-            memory_mb = float(parts[5])
-        except Exception:
-            memory_mb = 0.0
-        gpus.append(
-            {
-                "index": parts[0],
-                "slot": normalize_pci_slot(parts[1]),
-                "uuid": parts[2],
-                "name": parts[3],
-                "driver": parts[4],
-                "memory_mb": memory_mb,
-            }
-        )
-    return gpus
+    return discover_nvidia_provider_gpus(command_exists, command_env)
 
 
 def discover_gpu_cards(
@@ -327,10 +288,11 @@ def discover_gpu_cards(
         if not nvidia_gpu:
             continue
         if int(card.get("vram_total") or 0) <= 0:
-            memory_mb = float(nvidia_gpu.get("memory_mb", 0.0) or 0.0)
-            if memory_mb > 0:
+            memory_mb = nvidia_gpu.get("memory_mb")
+            if memory_mb is not None and float(memory_mb) > 0:
                 card["vram_total"] = int(memory_mb * 1024 * 1024)
                 card["vram_total_source"] = "nvidia_smi_memory_total"
+        card["nvidia_memory_total_observation"] = dict(nvidia_gpu.get("memory_total_observation") or {})
         if str(card.get("vendor", "") or "").strip().lower() == "nvidia":
             card["name"] = str(nvidia_gpu.get("name", "") or card.get("name", ""))
             card["nvidia_index"] = (

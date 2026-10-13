@@ -558,6 +558,13 @@ def run_standalone_report_checks() -> None:
             "metric_window_semantics": "normalized_analysis_window",
         }
         assert report["hardware_references"]["clock_capabilities"]
+        availability_report = json.loads(json.dumps(report))
+        availability_report["hardware_references"]["telemetry_availability"] = [{
+            "field": "gpu_1_vram_used_gb", "component_id": "gpu:1", "provider": "nvidia_smi",
+            "measurement_status": "unavailable", "capability_status": "unknown", "reason": "provider_reported_na",
+        }]
+        availability_html = render_report_html(availability_report)
+        assert "Unavailable GPU telemetry" in availability_html and "provider_reported_na" in availability_html
         assert not report["review"]["warnings"]
         assert report == compile_report_data(root, generated_at="2026-01-03T00:00:00+00:00")
 

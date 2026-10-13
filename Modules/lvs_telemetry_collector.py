@@ -724,7 +724,7 @@ class TelemetryCollector:
     def _discover_gpu_cards(self) -> List[Dict[str, Any]]:
         return discover_gpu_cards()
 
-    def _read_nvidia_smi_gpu_metrics(self) -> Dict[str, Dict[str, Optional[float]]]:
+    def _read_nvidia_smi_gpu_metrics(self) -> Dict[str, Dict[str, Any]]:
         return read_nvidia_smi_gpu_metrics(self._gpu_sources, self._command_env)
 
     def _run_nvidia_smi_query(self, fields: List[str]) -> Optional[subprocess.CompletedProcess[str]]:

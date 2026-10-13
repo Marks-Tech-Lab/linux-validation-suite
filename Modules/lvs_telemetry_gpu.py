@@ -598,6 +598,7 @@ def discover_gpu_sources(
         label_prefix = gpu.get("name") or gpu.get("card") or f"GPU {mapped_gpu_index}"
         metric_specs = (
             ("temp_core_c", "temperature.gpu", "temperature"),
+            ("temp_memory_c", "temperature.memory", "memory temperature"),
             ("power_w", "power.draw", "power"),
             ("clock_mhz", "clocks.current.graphics", "graphics clock"),
             ("memory_clock_mhz", "clocks.current.memory", "memory clock"),
@@ -607,6 +608,7 @@ def discover_gpu_sources(
             ("fan_percent", "fan.speed", "fan speed"),
         )
         for metric, query_field, label in metric_specs:
+            observation = dict((gpu.get("metric_observations") or {}).get(metric) or {})
             sources.append(
                 {
                     "kind": "nvidia_smi",
@@ -618,6 +620,11 @@ def discover_gpu_sources(
                     "key": f"gpu_{mapped_gpu_index}_{metric}",
                     "slot": slot,
                     "query_field": query_field,
+                    "capability_status": observation.get("capability_status", "unknown"),
+                    "measurement_status": observation.get("measurement_status", "unknown"),
+                    "measurement_reason": observation.get("reason", "insufficient_evidence"),
+                    "probe_value": observation.get("value"),
+                    "availability_basis": "probe" if observation else "unknown",
                 }
             )
         for event_source in gpu.get("clock_event_reason_fields", []) or []:
@@ -637,23 +644,12 @@ def discover_gpu_sources(
                     "slot": slot,
                     "query_field": query_field,
                     "evidence_only": True,
+                    "capability_status": "supported",
+                    "measurement_status": "measured",
+                    "measurement_reason": "",
+                    "availability_basis": "probe",
                 }
             )
-        if gpu.get("memory_temperature_c") is not None:
-            sources.append(
-                {
-                    "kind": "nvidia_smi",
-                    "path": f"nvidia-smi:{slot or mapped_gpu_index}",
-                    "label": f"{label_prefix} memory temperature",
-                    "gpu_index": int(mapped_gpu_index),
-                    "card": str(gpu.get("card", "") or ""),
-                    "metric": "temp_memory_c",
-                    "key": f"gpu_{mapped_gpu_index}_temp_memory_c",
-                    "slot": slot,
-                    "query_field": "temperature.memory",
-                }
-            )
-
     intel_cards = [
         card
         for card in cards
@@ -736,11 +732,12 @@ def read_gpu_values(
     read_text: ReadText,
     read_text_sudo: ReadText,
     energy_source_state: Dict[str, Dict[str, float]],
-    nvidia_snapshot: Dict[str, Dict[str, Optional[float]]],
+    nvidia_snapshot: Dict[str, Dict[str, Any]],
     intel_gpu_top_snapshot: Dict[int, Dict[str, Optional[float]]],
     sample_time: Optional[float] = None,
 ) -> Dict[str, Optional[float]]:
     values: Dict[str, Optional[float]] = {}
+    selected_sources: Dict[str, Dict[str, Any]] = {}
     for source in gpu_sources:
         metric = source.get("metric")
         value: Optional[float] = None
@@ -748,6 +745,13 @@ def read_gpu_values(
             slot = str(source.get("slot") or "").lower()
             nvidia_values = nvidia_snapshot.get(slot, {})
             value = nvidia_values.get(metric)
+            if value is not None:
+                actual_query_field = (nvidia_values.get("_query_fields") or {}).get(metric)
+                if actual_query_field:
+                    source["query_field"] = actual_query_field
+                    source["measurement_semantics"] = (
+                        "provider_average" if str(actual_query_field).endswith(".average") else "provider_instantaneous"
+                    )
         elif source["kind"] == "intel_gpu_top":
             intel_values = intel_gpu_top_snapshot.get(int(source.get("gpu_index", 0)), {})
             value = intel_values.get(metric)
@@ -798,5 +802,13 @@ def read_gpu_values(
             if raw is not None:
                 value = parse_voltage_text_v(raw)
         if value is not None:
-            values[str(source["key"])] = value
+            key = str(source["key"])
+            values[key] = value
+            selected_sources[key] = source
+    for source in selected_sources.values():
+        source["observed_sample_count"] = int(source.get("observed_sample_count", 0) or 0) + 1
+        source["measurement_status"] = "measured"
+        source["capability_status"] = "supported"
+        source["measurement_reason"] = ""
+        source["availability_basis"] = "observed_samples"
     return values

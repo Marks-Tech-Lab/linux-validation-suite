@@ -47,6 +47,7 @@ from .lvs_gpu_identity import (
 )
 from .lvs_gpu_memory_model import classify_gpu_memory
 from .lvs_gpu_targets import gpu_card_class
+from .lvs_telemetry_nvidia import discover_nvidia_smi_gpus
 from .lvs_vulkan_runtime import collect_vulkan_native_physical_devices, resolve_vulkan_library
 from .lvs_inventory_helpers import (
     apply_inxi_memory_fields,
@@ -442,10 +443,15 @@ class SystemInfoCollector:
                         "name_source": "nvidia_smi",
                         "driver": nvidia_gpu.get("driver") or gpu.get("driver", ""),
                         "memory": nvidia_gpu.get("memory") or gpu.get("memory", ""),
-                        "memory_bytes": int(nvidia_gpu.get("memory_bytes") or gpu.get("memory_bytes") or 0),
+                        "memory_bytes": (
+                            nvidia_gpu.get("memory_bytes")
+                            if nvidia_gpu.get("memory_bytes") is not None
+                            else gpu.get("memory_bytes")
+                        ),
                         "provider_memory_source": "nvidia_smi_memory_total"
-                        if int(nvidia_gpu.get("memory_bytes") or 0) > 0
+                        if nvidia_gpu.get("memory_bytes") is not None
                         else "",
+                        "provider_memory_observation": dict(nvidia_gpu.get("provider_memory_observation") or {}),
                     }
                 )
             else:
@@ -529,6 +535,7 @@ class SystemInfoCollector:
                     ),
                     "ProviderReportedMemoryBytes": int(gpu.get("memory_bytes") or 0) or None,
                     "ProviderReportedMemorySource": gpu.get("provider_memory_source", ""),
+                    "ProviderReportedMemoryObservation": dict(gpu.get("provider_memory_observation") or {}),
                     "VulkanDeviceLocalHeapBytes": int(gpu.get("vulkan_device_local_heap_bytes") or 0) or None,
                     "VulkanDeviceLocalHeapSemantics": (
                         "api_addressable_capacity"
@@ -912,52 +919,35 @@ print((renderer or b"").decode("utf-8", "ignore"))
         return clean_runtime_gpu_name(name)
 
     def _discover_nvidia_smi_gpus(self) -> List[Dict[str, Any]]:
-        from shutil import which
-
-        if which("nvidia-smi") is None:
-            return []
-        cmd = [
-            "nvidia-smi",
-            "--query-gpu=name,pci.bus_id,driver_version,memory.total",
-            "--format=csv,noheader,nounits",
-        ]
-        try:
-            completed = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=10)
-        except Exception:
-            return []
-        if completed.returncode != 0:
-            return []
-        devices: List[Dict[str, Any]] = []
-        for line in (completed.stdout or "").splitlines():
-            parts = [item.strip() for item in line.split(",")]
-            if len(parts) < 4:
-                continue
-            try:
-                memory_mb = float(parts[3])
-                memory_bytes = int(memory_mb * 1024 * 1024) if memory_mb > 0 else 0
-                memory = f"{round(memory_mb / 1024.0, 2)} GB" if memory_mb > 0 else ""
-            except Exception:
-                memory_bytes = 0
-                memory = ""
-            name = parts[0] or "NVIDIA GPU"
-            slot = self._normalize_pci_slot(parts[1])
-            devices.append(
+        devices = discover_nvidia_smi_gpus(
+            lambda name: shutil.which(name) is not None,
+            lambda: dict(os.environ),
+        )
+        normalized: List[Dict[str, Any]] = []
+        for device in devices:
+            memory_mb = device.get("memory_mb")
+            memory_bytes = int(float(memory_mb) * 1024 * 1024) if memory_mb is not None and float(memory_mb) > 0 else None
+            memory = f"{round(float(memory_mb) / 1024.0, 2)} GB" if memory_mb is not None and float(memory_mb) > 0 else ""
+            name = str(device.get("name") or "NVIDIA GPU")
+            slot = self._normalize_pci_slot(str(device.get("slot") or ""))
+            normalized.append(
                 {
                     "card": "",
                     "name": name,
                     "chipset": name,
-                    "driver": parts[2],
+                    "driver": str(device.get("driver") or ""),
                     "pci_slot": slot,
                     "device_class": "unknown",
                     "device_class_source": "insufficient_topology_evidence",
                     "device_class_confidence": "low",
                     "memory": memory,
                     "memory_bytes": memory_bytes,
-                    "provider_memory_source": "nvidia_smi_memory_total" if memory_bytes > 0 else "",
+                    "provider_memory_source": "nvidia_smi_memory_total" if memory_bytes is not None else "",
+                    "provider_memory_observation": dict(device.get("memory_total_observation") or {}),
                     "pcie_link": read_pcie_link_info(Path("/sys/bus/pci/devices") / slot, self._read_sysfs),
                 }
             )
-        return devices
+        return normalized
 
     def _normalize_pci_slot(self, slot: str) -> str:
         return normalize_pci_slot(slot)

@@ -310,6 +310,8 @@ def build_gpu_metric_test(segments: list[dict[str, Any]], field: str) -> list[di
             stats = metric.get(field, {})
             if not device_name or not isinstance(stats, dict):
                 continue
+            if not any(stats.get(name) is not None for name in ("Max", "Avg", "Min")):
+                continue
             results.setdefault(str(device_name), {})[str(label)] = {
                 "max": stats.get("Max"),
                 "avg": stats.get("Avg"),

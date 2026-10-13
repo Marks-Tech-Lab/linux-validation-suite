@@ -1223,6 +1223,21 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             if context.get(key) not in (None, ""):
                 item[key] = context[key]
         chart_series.append(item)
+    telemetry_availability = []
+    for field, source in sorted((source_map.get("fields") or {}).items()):
+        if not isinstance(source, dict) or source.get("category") != "gpu":
+            continue
+        status = str(source.get("measurement_status") or "")
+        if not status or status == "measured":
+            continue
+        telemetry_availability.append({
+            "field": field,
+            "component_id": field_context.get(field, {}).get("component_id", ""),
+            "provider": source.get("kind") or source.get("provider") or "",
+            "measurement_status": status,
+            "capability_status": source.get("capability_status", "unknown"),
+            "reason": source.get("measurement_reason", ""),
+        })
     payload: Dict[str, Any] = {
         "generated_at": generated_at,
         "generator": {"name": APP_NAME, "version": APP_VERSION, "module": "Modules.lvs_report"},
@@ -1243,6 +1258,7 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
         "hardware_references": {
             "temperature_limits": temperature_limits,
             "clock_capabilities": clock_capabilities,
+            "telemetry_availability": telemetry_availability,
         },
         "components": components,
         "stages": stages,

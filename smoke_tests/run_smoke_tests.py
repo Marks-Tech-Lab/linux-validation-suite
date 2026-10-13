@@ -263,6 +263,7 @@ from Modules.lvs_opencl_compute_worker import (
 from Modules.lvs_telemetry_nvidia import (
     NVIDIA_CLOCK_EVENT_REASON_FIELDS,
     discover_nvidia_smi_gpus,
+    nvidia_field_observation,
     parse_nvidia_active_flag,
     read_nvidia_smi_gpu_metrics,
 )
@@ -908,6 +909,7 @@ from Modules.lvs_telemetry_sources import (
     preferred_metric_source,
     source_thresholds,
     telemetry_source_description,
+    telemetry_source_record,
     unreadable_source_description,
 )
 from Modules.lvs_telemetry_sampling import (
@@ -6555,6 +6557,14 @@ def test_compatibility_export_metric_helpers() -> None:
         build_gpu_metric_test([gpu_segment], "Power")[0]["results"]["GPU Smoke"]["max"],
         575.0,
         "compat GPU metric test max",
+    )
+    assert_equal(
+        build_gpu_metric_test(
+            [{"TestType": "GB10", "GpuMetrics": [{"DisplayName": "NVIDIA GB10 #1", "VramUsedGB": {"Max": None, "Avg": None, "Min": None}}]}],
+            "VramUsedGB",
+        ),
+        [],
+        "compat export omits null-only unavailable metric",
     )
     environment_segment = {
         "TestType": "Memory/Storage Smoke",
@@ -15955,9 +15965,159 @@ def test_telemetry_nvidia_helpers() -> None:
         assert_equal(parse_nvidia_active_flag("Active"), 1.0, "NVIDIA active flag parsing active")
         assert_equal(parse_nvidia_active_flag("Not Active"), 0.0, "NVIDIA active flag parsing inactive")
         assert_equal(parse_nvidia_active_flag("[Not Supported]"), None, "NVIDIA active flag unsupported absent")
-        assert_true(any("power.draw.average" in " ".join(call) for call in calls), "NVIDIA telemetry asks for average power fallback field")
+        assert_true(not any("power.draw.average" in " ".join(call) for call in calls), "NVIDIA telemetry skips average power query when instantaneous power is measured")
     finally:
         lvs_telemetry_nvidia.subprocess.run = original_run
+
+    def isolated_field_run(cmd, **_kwargs):
+        fields = next(part for part in cmd if part.startswith("--query-gpu=")).removeprefix("--query-gpu=").split(",")
+        values = {
+            "index": "0", "pci.bus_id": "0000:01:00.0", "uuid": "GPU-test", "name": "NVIDIA Test",
+            "driver_version": "580", "memory.total": "8192", "temperature.gpu": "51",
+            "temperature.memory": "N/A", "power.draw": "25", "clocks.current.graphics": "1800",
+            "utilization.gpu": "10", "utilization.memory": "0", "memory.used": "4", "fan.speed": "30",
+        }
+        if any(field.startswith("clocks_event_reasons.") for field in fields):
+            return SimpleNamespace(returncode=1, stdout="", stderr="Unknown query field")
+        if "clocks.current.memory" in fields:
+            return SimpleNamespace(returncode=1, stdout="", stderr="Unknown query field clocks.current.memory")
+        return SimpleNamespace(returncode=0, stdout=", ".join(values[field] for field in fields) + "\n", stderr="")
+
+    try:
+        lvs_telemetry_nvidia.subprocess.run = isolated_field_run
+        isolated = discover_nvidia_smi_gpus(lambda name: name == "nvidia-smi", lambda: {"PATH": "/usr/bin"})[0]
+        assert_equal(isolated["metric_observations"]["memory_clock_mhz"]["measurement_status"], "query_error", "failed optional field is isolated")
+        assert_equal(isolated["metric_observations"]["fan_percent"]["value"], 30.0, "other optional field remains measured")
+        assert_equal(isolated["metric_observations"]["power_w"]["value"], 25.0, "base telemetry survives optional failure")
+    finally:
+        lvs_telemetry_nvidia.subprocess.run = original_run
+
+    def gb10_run(cmd, **_kwargs):
+        fields = next(part for part in cmd if part.startswith("--query-gpu=")).removeprefix("--query-gpu=").split(",")
+        values = {
+            "index": "0", "pci.bus_id": "000F:01:00.0", "uuid": "GPU-gb10", "name": "NVIDIA GB10",
+            "driver_version": "580.178.04", "memory.total": "[N/A]", "temperature.gpu": "50",
+            "temperature.memory": "N/A", "power.draw": "7.58", "clocks.current.graphics": "1950",
+            "clocks.current.memory": "N/A", "utilization.gpu": "1", "utilization.memory": "0",
+            "memory.used": "[N/A]", "fan.speed": "N/A",
+        }
+        if any(field.startswith("clocks_event_reasons.") for field in fields):
+            return SimpleNamespace(returncode=1, stdout="", stderr="Unknown query field")
+        return SimpleNamespace(returncode=0, stdout=", ".join(values[field] for field in fields) + "\n", stderr="")
+
+    try:
+        lvs_telemetry_nvidia.subprocess.run = gb10_run
+        gb10 = discover_nvidia_smi_gpus(lambda name: name == "nvidia-smi", lambda: {"PATH": "/usr/bin"})[0]
+        assert_equal(gb10["slot"], "000f:01:00.0", "GB10 physical slot normalization")
+        assert_equal(gb10["memory_mb"], None, "GB10 framebuffer total N/A remains unknown")
+        assert_equal(gb10["memory_total_observation"]["measurement_status"], "unavailable", "GB10 memory status")
+        assert_equal(gb10["metric_observations"]["memory_busy_percent"]["value"], 0.0, "GB10 genuine zero retained")
+        assert_equal(gb10["metric_observations"]["vram_used_gb"]["measurement_status"], "unavailable", "GB10 VRAM used unavailable")
+    finally:
+        lvs_telemetry_nvidia.subprocess.run = original_run
+
+
+def test_nvidia_observation_status_and_optional_query_isolation() -> None:
+    measured_zero = nvidia_field_observation("0", query_field="utilization.memory", upper_bound=100.0)
+    assert_equal(measured_zero["measurement_status"], "measured", "NVIDIA numeric zero is measured")
+    assert_equal(measured_zero["value"], 0.0, "NVIDIA numeric zero value")
+    unavailable = nvidia_field_observation("[N/A]", query_field="memory.used")
+    assert_equal(unavailable["measurement_status"], "unavailable", "NVIDIA N/A is unavailable")
+    assert_equal(unavailable["capability_status"], "unknown", "NVIDIA N/A capability remains unknown")
+    unsupported = nvidia_field_observation("[Not Supported]", query_field="fan.speed")
+    assert_equal(unsupported["capability_status"], "unsupported", "explicit unsupported capability")
+    assert_equal(
+        nvidia_field_observation(query_field="fan.speed", queried=False)["measurement_status"],
+        "not_collected",
+        "unqueried NVIDIA field",
+    )
+    assert_equal(
+        nvidia_field_observation(query_field="fan.speed", query_error="query_exit_1")["measurement_status"],
+        "query_error",
+        "NVIDIA query error",
+    )
+
+    calls: list[list[str]] = []
+    original_run = lvs_telemetry_nvidia.subprocess.run
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        fields = next(part for part in cmd if part.startswith("--query-gpu=")).removeprefix("--query-gpu=").split(",")
+        if fields == ["pci.bus_id", "power.draw.average"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="Unknown query field power.draw.average")
+        values = {
+            "pci.bus_id": "0000:01:00.0", "temperature.gpu": "50", "power.draw": "N/A",
+            "clocks.current.graphics": "1950", "clocks.current.memory": "N/A",
+            "utilization.gpu": "1", "utilization.memory": "0", "memory.used": "N/A", "fan.speed": "42",
+        }
+        return SimpleNamespace(returncode=0, stdout=", ".join(values[field] for field in fields) + "\n", stderr="")
+
+    try:
+        lvs_telemetry_nvidia.subprocess.run = fake_run
+        snapshot = read_nvidia_smi_gpu_metrics(
+            [{"kind": "nvidia_smi", "metric": "power_w"}, {"kind": "nvidia_smi", "metric": "fan_percent"}],
+            lambda: {"PATH": "/usr/bin"},
+        )
+        assert_equal(snapshot["0000:01:00.0"]["fan_percent"], 42.0, "average power failure preserves fan")
+        assert_equal(snapshot["0000:01:00.0"]["power_w"], None, "unsupported average power remains absent")
+    finally:
+        lvs_telemetry_nvidia.subprocess.run = original_run
+
+    average_source = {
+        "kind": "nvidia_smi", "metric": "power_w", "key": "gpu_0_power_w",
+        "slot": "0000:01:00.0", "query_field": "power.draw",
+    }
+    read_gpu_values(
+        [average_source], lambda _path: None, lambda _path: None, {},
+        {"0000:01:00.0": {"power_w": 124.5, "_query_fields": {"power_w": "power.draw.average"}}},
+        {}, 1.0,
+    )
+    assert_equal(average_source["query_field"], "power.draw.average", "average power fallback provenance")
+    assert_equal(average_source["measurement_semantics"], "provider_average", "average power fallback semantics")
+
+
+def test_nvidia_partial_availability_and_same_semantic_fallback() -> None:
+    unavailable_nvidia = {
+        "kind": "nvidia_smi", "metric": "vram_used_gb", "key": "gpu_1_vram_used_gb",
+        "gpu_index": 1, "slot": "000f:01:00.0", "path": "nvidia-smi:000f:01:00.0",
+        "query_field": "memory.used", "measurement_status": "unavailable",
+        "capability_status": "unknown", "measurement_reason": "provider_reported_na",
+    }
+    measured_zero = {
+        "kind": "nvidia_smi", "metric": "memory_busy_percent", "key": "gpu_1_memory_busy_percent",
+        "gpu_index": 1, "slot": "000f:01:00.0", "path": "nvidia-smi:000f:01:00.0",
+        "query_field": "utilization.memory", "measurement_status": "measured",
+        "capability_status": "supported", "observed_sample_count": 35,
+    }
+    unavailable_record = telemetry_source_record(
+        unavailable_nvidia["key"], unavailable_nvidia, category="gpu", metric="vram_used_gb"
+    )
+    zero_record = telemetry_source_record(
+        measured_zero["key"], measured_zero, category="gpu", metric="memory_busy_percent"
+    )
+    assert_true(not unavailable_record["available"], "NVIDIA N/A source is not available")
+    assert_equal(unavailable_record["measurement_status"], "unavailable", "source map unavailable status")
+    assert_true(zero_record["available"], "measured zero source remains available")
+
+    fallback = {
+        "kind": "gpu_sensor", "metric": "temp_core_c", "key": "gpu_1_temp_core_c",
+        "gpu_index": 1, "slot": "000f:01:00.0", "path": "/sys/class/drm/card1/temp1_input",
+        "measurement_status": "measured", "capability_status": "supported", "source_quality": 90,
+    }
+    unavailable_temp = {
+        "kind": "nvidia_smi", "metric": "temp_core_c", "key": "gpu_1_temp_core_c",
+        "gpu_index": 1, "slot": "000f:01:00.0", "path": "nvidia-smi:000f:01:00.0",
+        "measurement_status": "unavailable", "capability_status": "unknown", "source_quality": 0,
+    }
+    matrix = build_gpu_telemetry_matrix(
+        [{"gpu_index": 1, "card": "card1", "slot": "000f:01:00.0", "vendor": "NVIDIA", "driver": "nvidia"}],
+        [fallback, unavailable_temp, unavailable_nvidia, measured_zero],
+    )
+    metrics = matrix[0]["metrics"]
+    assert_true(metrics["temperature"]["available"], "available same-semantic fallback wins")
+    assert_equal(metrics["temperature"]["kind"], "gpu_sensor", "fallback provenance is preserved")
+    assert_true(not metrics["vram_used"]["available"], "partial GB10 framebuffer telemetry unavailable")
+    assert_true(metrics["memory_busy"]["available"], "partial GB10 measured zero telemetry available")
 
 
 def test_telemetry_nvidia_event_reasons_absent_when_unsupported() -> None:
@@ -27956,8 +28116,12 @@ def test_gpu_telemetry_warning_helpers() -> None:
     assert_equal(gpu_telemetry_coverage_warnings(capabilities, {"cpu"}), [], "no GPU telemetry warning for CPU-only")
     warnings = gpu_telemetry_coverage_warnings(capabilities, {"gpu_3d"})
     assert_equal(len(warnings), 2, "GPU telemetry warning count")
-    assert_true("nvidia-smi does not expose this card" in warnings[0], "NVIDIA dropout warning")
+    assert_true("telemetry unavailable" in warnings[0], "NVIDIA exposed device without measurements warning")
     assert_true("missing power metrics" in warnings[1], "partial telemetry warning")
+
+    capabilities["gpu_telemetry_by_gpu"]["gpus"][0]["metrics"]["temperature"]["measurement_status"] = "query_error"
+    query_warning = gpu_telemetry_coverage_warnings(capabilities, {"gpu_3d"})[0]
+    assert_true("query failed" in query_warning, "NVIDIA provider query failure is distinct from unavailable fields")
 
 
 def test_nvidia_opencl_env_uses_only_nvml_identity() -> None:
@@ -28557,6 +28721,8 @@ def main() -> int:
         test_telemetry_sensor_io_helpers,
         test_telemetry_device_helpers,
         test_telemetry_nvidia_helpers,
+        test_nvidia_observation_status_and_optional_query_isolation,
+        test_nvidia_partial_availability_and_same_semantic_fallback,
         test_telemetry_nvidia_event_reasons_absent_when_unsupported,
         test_telemetry_intel_helpers,
         test_telemetry_gpu_helpers,
