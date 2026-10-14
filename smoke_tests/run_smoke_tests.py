@@ -447,9 +447,13 @@ from Modules.lvs_cpu_power_selection import (
     select_power_cpu_candidate,
 )
 from Modules.lvs_cpu_topology import (
+    classify_cpu_performance_classes,
     collect_cpu_topology_info,
     cpu_package_devices_from_topology,
+    decode_arm_midr,
+    discover_cpu_architectural_identities,
     parse_lscpu_cpu_identity,
+    parse_proc_cpuinfo_identities,
     parse_proc_cpuinfo_models,
 )
 from Modules.lvs_cpu_targeting import (
@@ -17218,8 +17222,13 @@ def test_authoritative_hybrid_core_type_topology_fixtures() -> None:
         make_topology(root, [(0, 0, "0", 4000000), (1, 1, "1", 2000000)])
         (root / "cpu0" / "cpu_capacity").write_text("1024", encoding="utf-8")
         (root / "cpu1" / "cpu_capacity").write_text("512", encoding="utf-8")
-        topology = discover_cpu_core_topology(root)
-        assert_equal((topology[0]["core_type"], topology[1]["core_type"]), ("P", "E"), "AArch64 capacity topology remains supported")
+        topology = discover_cpu_core_topology(root, cpuinfo_text="", architecture="aarch64")
+        assert_equal((topology[0]["core_type"], topology[1]["core_type"]), ("U", "U"), "AArch64 capacity does not invent Intel P/E")
+        assert_equal(
+            (topology[0]["performance_class"], topology[1]["performance_class"]),
+            ("higher_capacity", "lower_capacity"),
+            "AArch64 neutral capacity topology remains supported",
+        )
 
 
 def test_cpu_utilization_telemetry_helpers() -> None:
@@ -18505,6 +18514,193 @@ model name  : AMD EPYC 9255 24-Core Processor
             return "Vendor ID: Qualcomm\nModel name: Oryon\n"
 
     assert_equal(ArmIdentityCollector()._cpu_name(), "Qualcomm Oryon", "system inventory ARM CPU identity fallback")
+
+
+def test_arm_architectural_identity_and_performance_topology_fixtures() -> None:
+    x925_midr = 0x410FD850
+    a725_midr = 0x410FD870
+    x925 = decode_arm_midr(hex(x925_midr))
+    a725 = decode_arm_midr(hex(a725_midr))
+    assert_equal(x925["Model"], "ARM Cortex-X925", "X925 MIDR decode")
+    assert_equal(x925["Implementer"], "0x41", "X925 implementer retained")
+    assert_equal(x925["Part"], "0xd85", "X925 part retained")
+    assert_equal(a725["Model"], "ARM Cortex-A725", "A725 MIDR decode")
+    assert_equal(a725["Part"], "0xd87", "A725 part retained")
+    assert_equal(decode_arm_midr("bad")["Reason"], "invalid_midr", "malformed MIDR remains unknown")
+    unknown = decode_arm_midr("0x510f9990")
+    assert_equal(unknown["Status"], "unknown_model", "unknown Qualcomm part remains unknown")
+    assert_equal(unknown["Implementer"], "0x51", "unknown implementer evidence retained")
+    assert_equal(decode_arm_midr("0x510f0010")["Model"], "Qualcomm Oryon", "Oryon MIDR decode")
+    cppc_classes, cppc_sources, _cppc_values = classify_cpu_performance_classes({
+        "cpu0": {"CppcHighestPerf": 108}, "cpu1": {"CppcHighestPerf": 110},
+        "cpu5": {"CppcHighestPerf": 150}, "cpu6": {"CppcHighestPerf": 154},
+    })
+    assert_equal(
+        {key: cppc_classes[key] for key in sorted(cppc_classes)},
+        {"cpu0": "lower_capacity", "cpu1": "lower_capacity", "cpu5": "higher_capacity", "cpu6": "higher_capacity"},
+        "nearby CPPC values form stable neutral tiers",
+    )
+    assert_equal(set(cppc_sources.values()), {"acpi_cppc_highest_perf"}, "CPPC performance source retained")
+
+    proc_text = """processor: 2
+CPU implementer: 0x41
+CPU architecture: 8
+CPU variant: 0x1
+CPU part: 0xd87
+CPU revision: 3
+
+processor: 7
+model name: Synthetic descriptive core
+
+processor: 9
+CPU implementer: 0x51
+"""
+    proc = parse_proc_cpuinfo_identities(proc_text)
+    assert_equal(proc[2]["Model"], "ARM Cortex-A725", "proc cpuinfo ARM identity fallback")
+    assert_equal(proc[2]["Variant"], "0x1", "proc cpuinfo variant retained")
+    assert_equal(proc[7]["Status"], "described", "per-core model remains descriptive")
+    assert_equal(proc[9]["Reason"], "partial_architectural_identity", "partial proc identity reason")
+    assert_equal(proc[9]["Implementer"], "0x51", "partial proc implementer retained")
+    assert_equal(parse_proc_cpuinfo_models(proc_text)[7], "Synthetic descriptive core", "legacy model parser retained")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "cpu"
+        lower_ids = {0, 1, 2, 3, 4, 10, 11, 12, 13, 14}
+        higher_ids = set(range(20)) - lower_ids
+        # Architectural identities are deliberately interleaved independently
+        # of the two firmware cluster IDs and capacity classes.
+        x925_ids = {0, 2, 4, 6, 8, 10, 12, 14, 16, 18}
+        cpuinfo_blocks = []
+        for cpu_id in range(20):
+            cpu_dir = root / f"cpu{cpu_id}"
+            topology_dir = cpu_dir / "topology"
+            cpufreq_dir = cpu_dir / "cpufreq"
+            midr_dir = cpu_dir / "regs" / "identification"
+            topology_dir.mkdir(parents=True)
+            cpufreq_dir.mkdir()
+            midr_dir.mkdir(parents=True)
+            (topology_dir / "physical_package_id").write_text("36", encoding="utf-8")
+            (topology_dir / "cluster_id").write_text("56" if cpu_id < 10 else "1144", encoding="utf-8")
+            (topology_dir / "core_id").write_text(str(cpu_id), encoding="utf-8")
+            (topology_dir / "thread_siblings_list").write_text(str(cpu_id), encoding="utf-8")
+            (cpu_dir / "cpu_capacity").write_text("512" if cpu_id in lower_ids else "1024", encoding="utf-8")
+            (cpufreq_dir / "cpuinfo_max_freq").write_text("2808000" if cpu_id in lower_ids else "3900000", encoding="utf-8")
+            (cpufreq_dir / "scaling_cur_freq").write_text("2808000" if cpu_id in lower_ids else "3900000", encoding="utf-8")
+            midr = x925_midr if cpu_id in x925_ids else a725_midr
+            (midr_dir / "midr_el1").write_text(hex(midr), encoding="utf-8")
+            # Opposite proc identity proves sysfs MIDR precedence.
+            proc_part = "0xd87" if cpu_id in x925_ids else "0xd85"
+            cpuinfo_blocks.append(
+                f"processor: {cpu_id}\nCPU implementer: 0x41\nCPU architecture: 8\n"
+                f"CPU variant: 0x0\nCPU part: {proc_part}\nCPU revision: 0\n"
+            )
+        cpuinfo = "\n".join(cpuinfo_blocks)
+        read = lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None
+        identities = discover_cpu_architectural_identities(root, cpuinfo, read)
+        assert_equal(identities[0]["Model"], "ARM Cortex-X925", "sysfs MIDR precedes conflicting proc identity")
+        assert_equal(identities[1]["Model"], "ARM Cortex-A725", "interleaved A725 identity")
+        assert_equal(identities[0]["Source"], "sysfs_midr_el1", "MIDR source retained")
+
+        inventory = collect_cpu_topology_info(
+            cpu_root=root,
+            cpuinfo_text=cpuinfo,
+            read_text=read,
+            fallback_name="ARM Cortex-A725",
+            architecture="aarch64",
+        )
+        assert_equal(inventory["LogicalCpuCount"], 20, "Spark fixture logical count")
+        assert_equal(inventory["PhysicalCoreCount"], 20, "Spark fixture physical count")
+        assert_equal(len(inventory["Packages"][0]["Clusters"]), 2, "Spark fixture clusters preserved")
+        assert_equal(inventory["Packages"][0]["Clusters"][0]["LogicalCpuRange"], "0-9", "cluster 56 range")
+        assert_equal(inventory["Packages"][0]["Clusters"][1]["LogicalCpuRange"], "10-19", "cluster 1144 range")
+        assert_equal(inventory["CoreIdentitySummary"]["Complete"], True, "complete identity summary")
+        assert_equal(
+            inventory["Aggregate"]["CoreModelCounts"],
+            [
+                {"Model": "ARM Cortex-A725", "PhysicalCoreCount": 10},
+                {"Model": "ARM Cortex-X925", "PhysicalCoreCount": 10},
+            ],
+            "heterogeneous architectural model counts",
+        )
+        assert_equal(
+            inventory["NameSummary"],
+            "10x ARM Cortex-A725 + 10x ARM Cortex-X925",
+            "heterogeneous count-based aggregate name",
+        )
+        assert_equal(
+            inventory["Aggregate"]["PerformanceClassCounts"],
+            {"higher_capacity": 10, "lower_capacity": 10},
+            "performance classes remain independent",
+        )
+        assert_equal(inventory["Packages"][0]["LogicalCpus"][0]["PerformanceClass"], "lower_capacity", "CPU0 capacity tier")
+        assert_equal(inventory["Packages"][0]["LogicalCpus"][5]["PerformanceClass"], "higher_capacity", "CPU5 capacity tier")
+        assert_equal(inventory["Packages"][0]["LogicalCpus"][0]["CoreType"], "U", "ARM identity does not invent P/E type")
+
+        telemetry = discover_cpu_core_topology(
+            root,
+            read_text=read,
+            cpuinfo_text=cpuinfo,
+            architecture="aarch64",
+        )
+        telemetry_summary = cpu_core_classification_summary_from_topology(telemetry)
+        assert_equal((telemetry_summary["p_core_count"], telemetry_summary["e_core_count"]), (0, 0), "ARM capacity does not assert P/E")
+        assert_equal(telemetry_summary["unknown_core_count"], 20, "ARM Intel core type remains not applicable")
+        assert_equal(telemetry_summary["architectural_identity_complete"], True, "telemetry identity complete")
+        assert_equal(telemetry_summary["performance_class_counts"], {"higher_capacity": 10, "lower_capacity": 10}, "telemetry performance tiers")
+        arm_parser_output = {
+            "Segments": [{"Clocks": {"Cores": [
+                {"CoreType": entry["core_type"], "PerformanceClass": entry["performance_class"]}
+                for entry in telemetry.values()
+            ]}}]
+        }
+        assert_true(not has_core_type_data(arm_parser_output, "P"), "ARM capacity does not assert compatibility P-cores")
+        assert_true(not has_core_type_data(arm_parser_output, "E"), "ARM capacity does not assert compatibility E-cores")
+        sources = discover_cpu_core_clock_sources(telemetry, cpu_root=root, read_text=read)
+        assert_true(sources[0]["label"].startswith("ARM Cortex-X925 CPU 0"), "source-map label uses architectural model")
+        assert_equal(sources[0]["performance_class"], "lower_capacity", "source-map retains independent capacity")
+        source_record = telemetry_source_record(
+            sources[0]["key"], sources[0], category="cpu_core", metric="clock_mhz"
+        )
+        assert_equal(source_record["core_model"], "ARM Cortex-X925", "serialized source map retains core model")
+        assert_equal(source_record["core_identity_source"], "sysfs_midr_el1", "serialized source map retains identity provenance")
+        assert_equal(source_record["performance_class"], "lower_capacity", "serialized source map retains performance class")
+
+        # Removing selected MIDRs exercises proc fallback, partial identity,
+        # noncontiguous IDs, and explicit unknown handling without ordering guesses.
+        (root / "cpu2" / "regs" / "identification" / "midr_el1").unlink()
+        fallback = discover_cpu_architectural_identities(root, cpuinfo, read)
+        assert_equal(fallback[2]["Source"], "proc_cpuinfo", "proc identity fallback")
+        assert_equal(fallback[2]["FallbackReason"], "sysfs_midr_unavailable", "MIDR fallback reason")
+        partial_info = collect_cpu_topology_info(
+            cpu_root=root,
+            cpuinfo_text="processor: 0\nCPU implementer: 0x41\nCPU part: 0xd85\n",
+            read_text=lambda path: None if path.name == "midr_el1" else read(path),
+            fallback_name="ARM Cortex-A725",
+            architecture="aarch64",
+        )
+        assert_equal(partial_info["CoreIdentitySummary"]["Complete"], False, "partial identity remains incomplete")
+        assert_equal(partial_info["CoreIdentitySummary"]["PhysicalUnknownCoreCount"], 19, "partial unknown count")
+        assert_true("Unknown ARM core" in partial_info["NameSummary"], "partial summary names unknown cores")
+
+    with TemporaryDirectory(dir="/tmp") as tmp:
+        root = Path(tmp) / "cpu"
+        for cpu_id, capacity in ((2, 512), (7, 1024)):
+            topology_dir = root / f"cpu{cpu_id}" / "topology"
+            topology_dir.mkdir(parents=True)
+            (topology_dir / "physical_package_id").write_text("0", encoding="utf-8")
+            (topology_dir / "core_id").write_text(str(cpu_id), encoding="utf-8")
+            (topology_dir / "thread_siblings_list").write_text(str(cpu_id), encoding="utf-8")
+            (root / f"cpu{cpu_id}" / "cpu_capacity").write_text(str(capacity), encoding="utf-8")
+        read = lambda path: path.read_text(encoding="utf-8").strip() if path.exists() else None
+        unknown_arm = collect_cpu_topology_info(
+            cpu_root=root,
+            cpuinfo_text="",
+            read_text=read,
+            fallback_name="ARM Cortex-A725",
+            architecture="aarch64",
+        )
+        assert_equal(unknown_arm["NameSummary"], "2-core heterogeneous ARM CPU (1 higher-capacity, 1 lower-capacity)", "no identity avoids false homogeneous model")
+        assert_equal(unknown_arm["Packages"][0]["LogicalCpuRange"], "2,7", "noncontiguous CPU IDs retained")
 
 
 def test_cpu_target_sets_affinity_and_common_isa_policy() -> None:
@@ -28857,6 +29053,7 @@ def main() -> int:
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,
         test_cpu_topology_helpers,
+        test_arm_architectural_identity_and_performance_topology_fixtures,
         test_cpu_target_sets_affinity_and_common_isa_policy,
         test_x86_native_kernel_exact_prerequisites,
         test_run_progress_helpers,

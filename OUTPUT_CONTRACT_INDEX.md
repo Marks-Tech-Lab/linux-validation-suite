@@ -294,6 +294,20 @@ hardware section. Existing fields, casing, and numeric types are unchanged;
 historical results without provenance remain readable as legacy unknown
 temperature evidence.
 
+### Additive CPU Topology Identity Fields
+
+New `system_info.json` CPU topology records may preserve per-logical-CPU ARM
+architectural identity as `CoreModel`, `CoreIdentity`, identity status/source/
+confidence, raw MIDR implementer/part/variant/revision evidence, and neutral
+`PerformanceClass` evidence. Topology summaries may add `CoreIdentitySummary`
+and `PerformanceClassSummary`; telemetry source-map and parsed core-clock rows
+carry the equivalent snake_case or established PascalCase fields appropriate
+to their enclosing contract. These additions do not redefine legacy
+`CoreType`: `P` and `E` remain architecture-specific core-type evidence and
+are not inferred from ARM capacity, CPPC, frequency, cluster, or CPU ordering.
+Historical results without the additive evidence remain readable and are not
+retroactively assigned an architectural model or performance class.
+
 ## Future Canonical Parsed-Result Milestone
 
 Phase 1 clarification, Phase 2A identity, and Phase 2B telemetry alias work are

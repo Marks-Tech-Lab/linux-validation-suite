@@ -275,6 +275,25 @@ def run_live_tui_telemetry_checks() -> None:
     assert "CPU cores (32)" in homogeneous_detail
     assert "Performance cores" not in homogeneous_detail
 
+    arm_mixed = fixture_collector(2)
+    arm_mixed._cpu_core_topology = {
+        0: {
+            **arm_mixed._cpu_core_topology[0],
+            "core_type": "U", "classification_source": "arm_architectural_core_type_not_applicable",
+            "core_model": "ARM Cortex-A725", "performance_class": "lower_capacity",
+        },
+        1: {
+            **arm_mixed._cpu_core_topology[1],
+            "core_type": "U", "classification_source": "arm_architectural_core_type_not_applicable",
+            "core_model": "ARM Cortex-X925", "performance_class": "higher_capacity",
+        },
+    }
+    arm_sample = sample_for(arm_mixed)
+    arm_detail = live_snapshot_detail_text(build_live_telemetry_snapshot(arm_mixed, arm_sample))
+    assert "Higher-capacity CPU cores (1)" in arm_detail and "Lower-capacity CPU cores (1)" in arm_detail
+    assert "ARM Cortex-X925 CPU 1" in arm_detail and "ARM Cortex-A725 CPU 0" in arm_detail
+    assert "Performance cores" not in arm_detail and "Efficiency cores" not in arm_detail
+
     stale_bmc = fixture_collector(bmc_fresh=False)
     stale_sample = sample_for(stale_bmc)
     stale_bmc.samples.append(stale_sample)

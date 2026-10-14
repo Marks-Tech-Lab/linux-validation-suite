@@ -200,6 +200,24 @@ def _system_identity(hardware: Dict[str, Any], components: Optional[Dict[str, Di
         if unknown_cores not in (None, "", 0):
             parts.append(f"{unknown_cores} unclassified")
         system_rows.append(("Cores", " · ".join(parts)))
+    identity = topology.get("CoreIdentitySummary", {}) if isinstance(topology.get("CoreIdentitySummary"), dict) else {}
+    models = identity.get("Models", []) if isinstance(identity.get("Models"), list) else []
+    if models:
+        model_text = " · ".join(
+            f'{item.get("PhysicalCoreCount", 0)}× {item.get("Model", "Unknown CPU core")}'
+            for item in models if isinstance(item, dict)
+        )
+        unknown_identity = int(identity.get("PhysicalUnknownCoreCount", 0) or 0)
+        if unknown_identity:
+            model_text += (" · " if model_text else "") + f"{unknown_identity}× unknown identity"
+        system_rows.append(("ARM core models", model_text))
+    performance = topology.get("PerformanceClassSummary", {}) if isinstance(topology.get("PerformanceClassSummary"), dict) else {}
+    classes = performance.get("Classes", {}) if isinstance(performance.get("Classes"), dict) else {}
+    useful_classes = [(key, value) for key, value in classes.items() if key != "unknown" and value]
+    if useful_classes:
+        system_rows.append(("Performance classes", " · ".join(
+            f'{value}× {key.replace("_", "-")}' for key, value in useful_classes
+        )))
 
     total_label = "OS-reported memory" if memory.get("TotalPhysicalMemoryGB") not in (None, "") else "Total"
     memory_rows: List[tuple[str, str]] = [(total_label, _memory_total(memory))]
@@ -391,6 +409,12 @@ def _core_group_label(core_class: str, count: int) -> str:
         return f"Performance cores ({count})"
     if core_class == "efficiency":
         return f"Efficiency cores ({count})"
+    if core_class == "higher_capacity":
+        return f"Higher-capacity CPU cores ({count})"
+    if core_class == "intermediate_capacity":
+        return f"Intermediate-capacity CPU cores ({count})"
+    if core_class == "lower_capacity":
+        return f"Lower-capacity CPU cores ({count})"
     if core_class == "unknown":
         return f"Unclassified cores ({count})"
     return f"CPU cores ({count})"
@@ -765,7 +789,10 @@ def _metric_table(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) 
                     f'<details class="metric-subgroup nested-disclosure"><summary>CPU cores ({core_count})</summary>{_metric_grid(core_metrics, include_header=False)}</details>'
                 )
             else:
-                for core_class in ("performance", "efficiency", "unknown"):
+                for core_class in (
+                    "performance", "efficiency", "higher_capacity",
+                    "intermediate_capacity", "lower_capacity", "unknown",
+                ):
                     class_metrics = by_class.get(core_class, [])
                     if not class_metrics:
                         continue
@@ -1010,7 +1037,10 @@ def _advanced_telemetry_mapping(
             if ordered_cores:
                 core_sections.append(_telemetry_table(ordered_cores, series_by_field))
         else:
-            for core_class in ("performance", "efficiency", "unknown"):
+            for core_class in (
+                "performance", "efficiency", "higher_capacity",
+                "intermediate_capacity", "lower_capacity", "unknown",
+            ):
                 class_cores = by_class.get(core_class, [])
                 if class_cores:
                     core_sections.append(
@@ -1146,11 +1176,11 @@ function syncExplorerFromStageSelect(){var resolved=stageById(stageSelect.value)
 function formatTrim(value){return Number.isInteger(value)?value+'s':value.toFixed(2).replace(/0+$/,'').replace(/\.$/,'')+'s';}
 function conciseLabel(item,items){if(item.selector_label)return item.selector_label;if(item.advanced_group==='cpu_cores')return item.display_label||item.component_label||('Core '+item.core_index);var component=item.component_label,metric=item.metric_label,same=items.filter(function(candidate){return candidate.component_id===item.component_id;});if(same.length===1)return component;if(metric==='Temperature'||metric==='Power'||metric==='Utilization'||metric==='Clock')return component+(metric==='Clock'&&same.some(function(candidate){return candidate.metric_label==='GPU memory clock';})?' core':'');if(metric==='Fan speed'||metric==='Fan duty')return component+' fan';if(metric==='GPU memory temperature'||metric==='GPU memory clock'||metric==='GPU memory utilization'||metric==='GPU memory used')return component+' GPU memory';if(metric==='Hotspot temperature')return component+' hotspot';if(metric==='Composite temperature')return component+' composite';var sensor=metric.match(/^Sensor (\d+)/);if(sensor)return component+' sensor '+sensor[1];return component+' '+metric.toLowerCase();}
 function selector(item,items){var label=conciseLabel(item,items),row=document.createElement('label');row.className='chart-series-row'+(selected.has(item.series_id)?' selected':'');row.tabIndex=0;row.dataset.seriesId=item.series_id;var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=selected.has(item.series_id);checkbox.setAttribute('aria-label',label);var text=document.createElement('span');text.textContent=label;row.append(checkbox,text);checkbox.addEventListener('change',function(){if(checkbox.checked)selected.add(item.series_id);else selected.delete(item.series_id);row.classList.toggle('selected',checkbox.checked);draw();});row.addEventListener('keydown',function(event){if(event.target===row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();checkbox.click();}});row.addEventListener('mouseenter',function(){hovered=item.series_id;draw();});row.addEventListener('mouseleave',function(){hovered=null;draw();});return row;}
-function coreGroupLabel(coreClass,count){if(coreClass==='performance')return 'Performance cores ('+count+')';if(coreClass==='efficiency')return 'Efficiency cores ('+count+')';if(coreClass==='unknown')return 'Unclassified cores ('+count+')';return 'CPU cores ('+count+')';}
+function coreGroupLabel(coreClass,count){if(coreClass==='performance')return 'Performance cores ('+count+')';if(coreClass==='efficiency')return 'Efficiency cores ('+count+')';if(coreClass==='higher_capacity')return 'Higher-capacity CPU cores ('+count+')';if(coreClass==='intermediate_capacity')return 'Intermediate-capacity CPU cores ('+count+')';if(coreClass==='lower_capacity')return 'Lower-capacity CPU cores ('+count+')';if(coreClass==='unknown')return 'Unclassified cores ('+count+')';return 'CPU cores ('+count+')';}
 function setCoreGroupSelection(cores,checked,coreList){cores.forEach(function(item){if(checked)selected.add(item.series_id);else selected.delete(item.series_id);});coreList.querySelectorAll('.chart-series-row').forEach(function(row){var active=selected.has(row.dataset.seriesId),checkbox=row.querySelector('input');row.classList.toggle('selected',active);if(checkbox)checkbox.checked=active;});draw();}
 function coreAction(label,cores,checked,coreList){var button=document.createElement('button');button.type='button';button.className='chart-core-action';button.textContent=label;button.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();setCoreGroupSelection(cores,checked,coreList);});button.addEventListener('keydown',function(event){event.stopPropagation();});return button;}
 function appendCoreGroup(body,cores,items,title){var coreDetails=document.createElement('details');coreDetails.className='chart-core-series';var coreSummary=document.createElement('summary'),summaryTitle=document.createElement('span'),actions=document.createElement('span');summaryTitle.textContent=title;summaryTitle.className='chart-core-title';actions.className='chart-core-actions';var coreList=document.createElement('div');coreList.className='chart-series-list';actions.append(coreAction('Select all',cores,true,coreList),document.createTextNode(' · '),coreAction('Clear',cores,false,coreList));coreSummary.append(summaryTitle,actions);cores.forEach(function(item){coreList.appendChild(selector(item,items));});coreDetails.append(coreSummary,coreList);body.appendChild(coreDetails);}
-function renderSelectors(items){seriesNode.replaceChildren();var primary=items.filter(function(item){return item.primary;}),advanced=items.filter(function(item){return !item.primary;}),primaryWrap=document.createElement('div');primaryWrap.className='chart-series-list';primary.forEach(function(item){primaryWrap.appendChild(selector(item,items));});seriesNode.appendChild(primaryWrap);if(!advanced.length)return;var details=document.createElement('details');details.className='chart-advanced-series';var summary=document.createElement('summary');summary.textContent='Advanced series';var body=document.createElement('div');body.className='chart-advanced-body',cores=advanced.filter(function(item){return item.advanced_group==='cpu_cores';}).sort(function(left,right){return left.core_index-right.core_index;}),other=advanced.filter(function(item){return item.advanced_group!=='cpu_cores';});if(cores.length){var byClass={},classes=[];cores.forEach(function(item){var key=item.core_class||'unknown';if(!byClass[key]){byClass[key]=[];classes.push(key);}byClass[key].push(item);});var hasCoreClass=cores.some(function(item){return item.core_class;}),known=classes.filter(function(key){return key!=='unknown';});if(!hasCoreClass||(known.length<=1&&classes.indexOf('unknown')<0)){appendCoreGroup(body,cores,items,'CPU cores ('+cores.length+')');}else{['performance','efficiency','unknown'].forEach(function(key){if(byClass[key])appendCoreGroup(body,byClass[key],items,coreGroupLabel(key,byClass[key].length));});}}if(other.length){var otherList=document.createElement('div');otherList.className='chart-series-list';other.forEach(function(item){otherList.appendChild(selector(item,items));});body.appendChild(otherList);}details.append(summary,body);seriesNode.appendChild(details);}
+function renderSelectors(items){seriesNode.replaceChildren();var primary=items.filter(function(item){return item.primary;}),advanced=items.filter(function(item){return !item.primary;}),primaryWrap=document.createElement('div');primaryWrap.className='chart-series-list';primary.forEach(function(item){primaryWrap.appendChild(selector(item,items));});seriesNode.appendChild(primaryWrap);if(!advanced.length)return;var details=document.createElement('details');details.className='chart-advanced-series';var summary=document.createElement('summary');summary.textContent='Advanced series';var body=document.createElement('div');body.className='chart-advanced-body',cores=advanced.filter(function(item){return item.advanced_group==='cpu_cores';}).sort(function(left,right){return left.core_index-right.core_index;}),other=advanced.filter(function(item){return item.advanced_group!=='cpu_cores';});if(cores.length){var byClass={},classes=[];cores.forEach(function(item){var key=item.core_class||'unknown';if(!byClass[key]){byClass[key]=[];classes.push(key);}byClass[key].push(item);});var hasCoreClass=cores.some(function(item){return item.core_class;}),known=classes.filter(function(key){return key!=='unknown';});if(!hasCoreClass||(known.length<=1&&classes.indexOf('unknown')<0)){appendCoreGroup(body,cores,items,'CPU cores ('+cores.length+')');}else{['performance','efficiency','higher_capacity','intermediate_capacity','lower_capacity','unknown'].forEach(function(key){if(byClass[key])appendCoreGroup(body,byClass[key],items,coreGroupLabel(key,byClass[key].length));});}}if(other.length){var otherList=document.createElement('div');otherList.className='chart-series-list';other.forEach(function(item){otherList.appendChild(selector(item,items));});body.appendChild(otherList);}details.append(summary,body);seriesNode.appendChild(details);}
 function colorFor(id,items){var index=items.findIndex(function(item){return item.series_id===id;});return palette[(index<0?0:index)%palette.length];}
 function renderLegend(items,allItems){var signature=items.map(function(item){return item.series_id;}).join('|');if(legend.dataset.series!==signature){legend.replaceChildren();items.forEach(function(item){var entry=document.createElement('span');entry.className='chart-legend-item';entry.dataset.seriesId=item.series_id;var swatch=document.createElement('i');swatch.style.background=colorFor(item.series_id,items);entry.append(swatch,document.createTextNode(conciseLabel(item,allItems)));entry.addEventListener('mouseenter',function(){hovered=item.series_id;draw();});entry.addEventListener('mouseleave',function(){hovered=null;draw();});legend.appendChild(entry);});legend.dataset.series=signature;}legend.querySelectorAll('.chart-legend-item').forEach(function(entry){entry.classList.toggle('deemphasized',Boolean(hovered&&entry.dataset.seriesId!==hovered));entry.classList.toggle('emphasized',entry.dataset.seriesId===hovered);});}
 function formatElapsed(seconds,precise){seconds=Math.max(0,seconds);var whole=Math.floor(seconds),hours=Math.floor(whole/3600),minutes=Math.floor((whole%3600)/60),secs=precise?(seconds%60).toFixed(1).padStart(4,'0'):String(whole%60).padStart(2,'0');return hours?hours+':'+String(minutes).padStart(2,'0')+':'+secs:String(minutes).padStart(2,'0')+':'+secs;}

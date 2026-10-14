@@ -33,8 +33,11 @@ class CpuClockMetricSectionBuilder:
         for key in core_keys:
             core_index = self.core_index_from_key(key)
             source = source_by_key.get(key, {})
-            core_type = str(source.get("core_type", "P") or "P")
-            core_class = str(source.get("core_class", "E-Core" if core_type == "E" else "P-Core") or "P-Core")
+            core_type = str(source.get("core_type", "U") or "U")
+            core_class = str(
+                source.get("core_class", "E-Core" if core_type == "E" else ("P-Core" if core_type == "P" else "Unknown Core Type"))
+                or "Unknown Core Type"
+            )
             physical_core_index = source.get("physical_core_index")
             entries.append(
                 {
@@ -49,6 +52,14 @@ class CpuClockMetricSectionBuilder:
                     "ThreadSiblings": source.get("thread_siblings", []),
                     "ClassificationSource": source.get("classification_source", "homogeneous_fallback"),
                     "ClassificationValue": source.get("classification_value"),
+                    "CoreModel": source.get("core_model", ""),
+                    "CoreIdentityStatus": source.get("core_identity_status", "unknown"),
+                    "CoreIdentitySource": source.get("core_identity_source", "none"),
+                    "CoreIdentityConfidence": source.get("core_identity_confidence", "none"),
+                    "CoreIdentity": source.get("core_identity", {}),
+                    "PerformanceClass": source.get("performance_class", "unknown"),
+                    "PerformanceClassSource": source.get("performance_class_source", "unavailable"),
+                    "PerformanceClassValue": source.get("performance_class_value"),
                     "Stats": self._metric_stats(samples, key),
                 }
             )

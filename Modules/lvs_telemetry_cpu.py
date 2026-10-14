@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import re
 import statistics
+import platform
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_telemetry_sampling import parse_power_text_w, parse_temperature_text
+from .lvs_cpu_topology import (
+    classify_cpu_performance_classes,
+    discover_cpu_architectural_identities,
+)
 from .lvs_temperature_provenance import (
     CPU_SUBSYSTEM_TEMPERATURE,
     classify_hwmon_temperature,
@@ -938,14 +943,16 @@ def aggregate_cpu_package_power_source(sources: Iterable[Dict[str, Any]]) -> Opt
 
 def classify_physical_cpu_cores(
     physical: Dict[str, Dict[str, Any]],
+    architecture: str = "",
 ) -> tuple[Dict[str, str], Dict[str, str], Dict[str, Optional[int]]]:
+    arm_architecture = str(architecture or "").lower() in {"arm", "arm64", "aarch64", "armv8", "armv8l"}
     explicit: Dict[str, str] = {}
     for key, physical_entry in physical.items():
         entry = physical_entry.get("entry", {})
         parsed = parse_explicit_core_type(str(entry.get("explicit_core_type", "") or ""))
         if parsed:
             explicit[key] = parsed
-    if explicit and len(explicit) == len(physical):
+    if explicit and len(explicit) == len(physical) and not arm_architecture:
         return (
             explicit,
             {key: "explicit_core_type" for key in physical},
@@ -1017,6 +1024,13 @@ def classify_physical_cpu_cores(
             {key: None for key in physical},
         )
 
+    if arm_architecture:
+        return (
+            {key: "U" for key in physical},
+            {key: "arm_architectural_core_type_not_applicable" for key in physical},
+            {key: None for key in physical},
+        )
+
     # P/E labels are Intel architectural core types. Do not infer them from
     # frequency tiers on non-Intel x86 processors.
     if probe_entries:
@@ -1069,6 +1083,8 @@ def discover_cpu_core_topology(
     cpu_root: Path = Path("/sys/devices/system/cpu"),
     read_text: ReadText = read_text_cpu_sysfs,
     core_type_probe: Optional[Dict[str, Any]] = None,
+    cpuinfo_text: Optional[str] = None,
+    architecture: str = "",
 ) -> Dict[int, Dict[str, Any]]:
     cpu_dirs = sorted(
         [path for path in cpu_root.glob("cpu[0-9]*") if path.is_dir()],
@@ -1076,6 +1092,15 @@ def discover_cpu_core_topology(
     )
     logical: Dict[int, Dict[str, Any]] = {}
     physical: Dict[str, Dict[str, Any]] = {}
+    resolved_architecture = str(architecture or platform.machine() or "")
+    identity_text = (
+        str(cpuinfo_text)
+        if cpuinfo_text is not None
+        else str(read_text(Path("/proc/cpuinfo")) or "")
+    )
+    identities = discover_cpu_architectural_identities(cpu_root, identity_text, read_text)
+    if not resolved_architecture and any(identity.get("Implementer") for identity in identities.values()):
+        resolved_architecture = "arm64"
     probe_by_cpu = {
         int(item.get("cpu_id")): dict(item)
         for item in list((core_type_probe or {}).get("logical_cpus") or [])
@@ -1121,6 +1146,15 @@ def discover_cpu_core_topology(
             "classification_source": "homogeneous_fallback",
             "classification_value": None,
             "core_type_probe": probe_by_cpu.get(cpu_index, {}),
+            "core_identity": identities.get(cpu_index, {}),
+            "core_model": (
+                identities.get(cpu_index, {}).get("Model", "")
+                if identities.get(cpu_index, {}).get("Status") == "identified"
+                else ""
+            ),
+            "core_identity_status": identities.get(cpu_index, {}).get("Status", "unknown"),
+            "core_identity_source": identities.get(cpu_index, {}).get("Source", "none"),
+            "core_identity_confidence": identities.get(cpu_index, {}).get("Confidence", "none"),
         }
         logical[cpu_index] = entry
         current = physical.get(physical_key)
@@ -1143,7 +1177,22 @@ def discover_cpu_core_topology(
     for entry in logical.values():
         entry["physical_core_index"] = physical_index_by_key.get(str(entry.get("physical_core_key", "")), 0)
 
-    class_by_physical, source_by_physical, value_by_physical = classify_physical_cpu_cores(physical)
+    class_by_physical, source_by_physical, value_by_physical = classify_physical_cpu_cores(
+        physical,
+        resolved_architecture,
+    )
+    performance_records = {
+        key: {
+            "CpuCapacity": physical_entry.get("entry", {}).get("cpu_capacity"),
+            "CppcHighestPerf": physical_entry.get("entry", {}).get("cppc_highest_perf"),
+            "CpuinfoMaxFreqKHz": physical_entry.get("entry", {}).get("cpuinfo_max_freq_khz"),
+            "BaseFrequencyKHz": physical_entry.get("entry", {}).get("base_frequency_khz"),
+        }
+        for key, physical_entry in physical.items()
+    }
+    performance_by_physical, performance_source_by_physical, performance_value_by_physical = (
+        classify_cpu_performance_classes(performance_records)
+    )
     for entry in logical.values():
         key = str(entry.get("physical_core_key", ""))
         core_type = class_by_physical.get(key, "P")
@@ -1151,6 +1200,9 @@ def discover_cpu_core_topology(
         entry["core_class"] = "E-Core" if core_type == "E" else ("P-Core" if core_type == "P" else "Unknown Core Type")
         entry["classification_source"] = source_by_physical.get(key, "homogeneous_fallback")
         entry["classification_value"] = value_by_physical.get(key)
+        entry["performance_class"] = performance_by_physical.get(key, "unknown")
+        entry["performance_class_source"] = performance_source_by_physical.get(key, "unavailable")
+        entry["performance_class_value"] = performance_value_by_physical.get(key)
     return logical
 
 
@@ -1163,15 +1215,36 @@ def cpu_core_classification_summary_from_topology(cpu_core_topology: Dict[int, D
     }
     physical_type: Dict[str, str] = {}
     source_counts: Dict[str, int] = {}
+    identity_candidates: Dict[str, set[str]] = {}
+    performance_classes: Dict[str, int] = {}
     for entry in entries:
         key = str(entry.get("physical_core_key", ""))
         if key:
             physical_type.setdefault(key, str(entry.get("core_type", "P") or "P"))
         source = str(entry.get("classification_source", "homogeneous_fallback") or "homogeneous_fallback")
         source_counts[source] = source_counts.get(source, 0) + 1
+        if key:
+            model = str(entry.get("core_model") or "")
+            if entry.get("core_identity_status") == "identified" and model:
+                identity_candidates.setdefault(key, set()).add(model)
+            else:
+                identity_candidates.setdefault(key, set()).add("")
+        if key and key not in performance_classes:
+            performance_classes[key] = str(entry.get("performance_class") or "unknown")
     p_physical = sum(1 for value in physical_type.values() if value == "P")
     e_physical = sum(1 for value in physical_type.values() if value == "E")
     unknown_physical = sum(1 for value in physical_type.values() if value not in {"P", "E"})
+    model_counts: Dict[str, int] = {}
+    unknown_identity_keys: set[str] = set()
+    for key, models in identity_candidates.items():
+        if len(models) == 1 and "" not in models:
+            model = next(iter(models))
+            model_counts[model] = model_counts.get(model, 0) + 1
+        else:
+            unknown_identity_keys.add(key)
+    performance_counts: Dict[str, int] = {}
+    for performance_class in performance_classes.values():
+        performance_counts[performance_class] = performance_counts.get(performance_class, 0) + 1
     return {
         "logical_count": len(entries),
         "physical_count": len(physical_keys),
@@ -1182,6 +1255,10 @@ def cpu_core_classification_summary_from_topology(cpu_core_topology: Dict[int, D
         "has_e_cores": e_physical > 0,
         "has_unknown_cores": unknown_physical > 0,
         "sources": source_counts,
+        "architectural_model_counts": dict(sorted(model_counts.items())),
+        "architectural_identity_complete": bool(physical_keys) and not unknown_identity_keys,
+        "unknown_architectural_identity_count": len(unknown_identity_keys),
+        "performance_class_counts": dict(sorted(performance_counts.items())),
     }
 
 
@@ -1200,11 +1277,23 @@ def discover_cpu_core_clock_sources(
         if cpu_index < 0:
             continue
         topology = cpu_core_topology.get(cpu_index, {})
+        model = str(topology.get("core_model") or "")
+        performance_class = str(topology.get("performance_class") or "unknown")
+        if model:
+            clock_label = f"{model} CPU {cpu_index} Clock"
+        elif topology.get("core_type") in {"P", "E"} and topology.get("classification_source") != "homogeneous_fallback":
+            clock_label = f"{topology.get('core_class')} {cpu_index} Clock"
+        elif performance_class == "higher_capacity":
+            clock_label = f"Higher-capacity CPU {cpu_index} Clock"
+        elif performance_class == "lower_capacity":
+            clock_label = f"Lower-capacity CPU {cpu_index} Clock"
+        else:
+            clock_label = f"Core {cpu_index} Clock"
         sources.append(
             {
                 "kind": "cpufreq_core",
                 "path": str(path),
-                "label": f"{topology.get('core_class', 'P-Core')} {cpu_index} Clock",
+                "label": clock_label,
                 "key": f"cpu_core_{cpu_index}_clock_mhz",
                 "cpu_index": cpu_index,
                 "core_type": topology.get("core_type", "P"),
@@ -1215,6 +1304,14 @@ def discover_cpu_core_clock_sources(
                 "classification_source": topology.get("classification_source", "homogeneous_fallback"),
                 "classification_value": topology.get("classification_value"),
                 "core_type_probe": topology.get("core_type_probe", {}),
+                "core_model": model,
+                "core_identity": topology.get("core_identity", {}),
+                "core_identity_status": topology.get("core_identity_status", "unknown"),
+                "core_identity_source": topology.get("core_identity_source", "none"),
+                "core_identity_confidence": topology.get("core_identity_confidence", "none"),
+                "performance_class": performance_class,
+                "performance_class_source": topology.get("performance_class_source", "unavailable"),
+                "performance_class_value": topology.get("performance_class_value"),
             }
         )
     return sources

@@ -188,6 +188,7 @@ class SystemInfoCollector:
             read_text=self._read_sysfs,
             fallback_name=base_name,
             core_type_probe=self._cpu_core_type_probe,
+            architecture=platform.machine(),
         )
         name = str(topology.get("NameSummary") or base_name or "Unknown CPU")
         return {

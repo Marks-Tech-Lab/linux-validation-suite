@@ -276,7 +276,14 @@ def _identity(source: Dict[str, Any]) -> Dict[str, Any]:
     return {key: source[key] for key in allowed if source.get(key) not in (None, "", [], {})}
 
 
-def _core_presentation(index: int, raw_class: str, source: str) -> Dict[str, Any]:
+def _core_presentation(
+    index: int,
+    raw_class: str,
+    source: str,
+    *,
+    core_model: str = "",
+    performance_class: str = "",
+) -> Dict[str, Any]:
     normalized = raw_class.strip().lower()
     if normalized in {"p", "p-core"}:
         core_class, core_class_label, prefix = "performance", "Performance core", "P-Core"
@@ -286,18 +293,36 @@ def _core_presentation(index: int, raw_class: str, source: str) -> Dict[str, Any
         core_class, core_class_label, prefix = "efficiency", "Efficiency core", "E-Core"
     elif normalized in {"efficiency", "efficient", "efficiency core"}:
         core_class, core_class_label, prefix = "efficiency", "Efficiency core", "Efficiency core"
+    elif performance_class in {"higher_capacity", "intermediate_capacity", "lower_capacity"}:
+        core_class = performance_class
+        core_class_label = performance_class.replace("_", " ").capitalize() + " core"
+        prefix = performance_class.replace("_", "-").capitalize() + " CPU"
     else:
         core_class, core_class_label, prefix = "unknown", "Unclassified core", "Core"
+    if core_model:
+        prefix = f"{core_model} CPU"
     return {
         "core_index": index,
         "core_class": core_class,
         "core_class_label": core_class_label,
         "display_label": f"{prefix} {index}",
         "core_type_source": source,
+        "core_model": core_model,
+        "performance_class": performance_class or "unknown",
     }
 
 
 def _core_presentation_from_source(index: int, source: Dict[str, Any]) -> Dict[str, Any]:
+    core_model = str(source.get("core_model") or "")
+    performance_class = str(source.get("performance_class") or "")
+    if core_model or performance_class:
+        return _core_presentation(
+            index,
+            str(source.get("core_type") or source.get("core_class") or ""),
+            str(source.get("classification_source") or source.get("core_identity_source") or ""),
+            core_model=core_model,
+            performance_class=performance_class,
+        )
     text = " ".join(str(source.get(key) or "") for key in ("label", "raw_label", "source"))
     match = re.search(r"\b([PE])-Core\s+\d+\b", text, re.IGNORECASE)
     if match:
@@ -343,6 +368,8 @@ def _hardware_maps(source_map: Dict[str, Any], system_info: Dict[str, Any]) -> D
                 int(cpu_id),
                 str(logical.get("CoreType") or logical.get("CoreClass") or ""),
                 source or str(evidence.get("evidence_source") or ""),
+                core_model=str(logical.get("CoreModel") or ""),
+                performance_class=str(logical.get("PerformanceClass") or ""),
             )
     return {"gpu": gpu, "storage": storage, "cpu_core_presentation": core_presentation}
 
@@ -388,6 +415,7 @@ def _build_components(source_map: Dict[str, Any], csv_fields: Iterable[str], sys
             core_presentation = {
                 key: component[key] for key in (
                     "core_index", "core_class", "core_class_label", "display_label", "core_type_source",
+                    "core_model", "performance_class",
                 ) if key in component
             }
         if core_presentation:
@@ -556,7 +584,10 @@ def _raw_stage_metrics(stage: Dict[str, Any], telemetry_rows: List[Tuple[float, 
             metric["provider"] = context["provider"]
         if context["source_label"]:
             metric["source_label"] = context["source_label"]
-        for key in ("core_index", "core_class", "core_class_label", "display_label", "core_type_source"):
+        for key in (
+            "core_index", "core_class", "core_class_label", "display_label", "core_type_source",
+            "core_model", "performance_class",
+        ):
             if context.get(key) not in (None, ""):
                 metric[key] = context[key]
         for key in (
@@ -904,7 +935,8 @@ def _clock_capabilities(evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
             "affected_logical_cpus": list(group.get("affected_logical_cpus") or []),
         }
         for key in (
-            "core_class", "base_frequency_mhz", "hardware_min_frequency_mhz",
+            "core_class", "core_model", "performance_class",
+            "base_frequency_mhz", "hardware_min_frequency_mhz",
             "hardware_max_frequency_mhz", "policy_min_frequency_mhz", "policy_max_frequency_mhz",
         ):
             if group.get(key) is not None:

@@ -578,8 +578,18 @@ def live_snapshot_detail_text(
         groups: dict[str, list[LiveCpuCore]] = {}
         for core in snapshot.cpu_cores:
             groups.setdefault(core.core_class, []).append(core)
-        labels = {"performance": "Performance cores", "efficiency": "Efficiency cores", "unknown": "CPU cores"}
-        for core_class in ("performance", "efficiency", "unknown"):
+        labels = {
+            "performance": "Performance cores",
+            "efficiency": "Efficiency cores",
+            "higher_capacity": "Higher-capacity CPU cores",
+            "intermediate_capacity": "Intermediate-capacity CPU cores",
+            "lower_capacity": "Lower-capacity CPU cores",
+            "unknown": "CPU cores",
+        }
+        for core_class in (
+            "performance", "efficiency", "higher_capacity",
+            "intermediate_capacity", "lower_capacity", "unknown",
+        ):
             cores = groups.get(core_class, [])
             if not cores:
                 continue

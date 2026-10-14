@@ -136,15 +136,27 @@ def _core_class(topology: Mapping[str, Any]) -> str:
         return "performance"
     if core_type == "E":
         return "efficiency"
+    performance_class = str(topology.get("performance_class") or "")
+    if performance_class in {"higher_capacity", "intermediate_capacity", "lower_capacity"}:
+        return performance_class
     return "unknown"
 
 
 def _core_label(index: int, topology: Mapping[str, Any]) -> str:
+    model = str(topology.get("core_model") or "")
+    if model:
+        return f"{model} CPU {index}"
     classification = _core_class(topology)
     if classification == "performance" and str(topology.get("classification_source")) != "homogeneous_fallback":
         return f"P-Core {index}"
     if classification == "efficiency":
         return f"E-Core {index}"
+    if classification == "higher_capacity":
+        return f"Higher-capacity CPU {index}"
+    if classification == "intermediate_capacity":
+        return f"Intermediate-capacity CPU {index}"
+    if classification == "lower_capacity":
+        return f"Lower-capacity CPU {index}"
     return f"Core {index}"
 
 

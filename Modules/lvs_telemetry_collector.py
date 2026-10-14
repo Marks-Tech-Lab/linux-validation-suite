@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import time
 import shutil
@@ -662,6 +663,8 @@ class TelemetryCollector:
         return discover_cpu_core_topology(
             read_text=self._safe_read_text,
             core_type_probe=self._cpu_core_type_probe,
+            cpuinfo_text=self._safe_read_text(Path("/proc/cpuinfo")) or "",
+            architecture=platform.machine(),
         )
 
     def _classify_physical_cpu_cores(

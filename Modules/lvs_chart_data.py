@@ -565,6 +565,8 @@ def compile_chart_data(
                     "core_class": component_meta.get("core_class") if core_match else None,
                     "core_class_label": component_meta.get("core_class_label") if core_match else None,
                     "core_type_source": component_meta.get("core_type_source") if core_match else None,
+                    "core_model": component_meta.get("core_model") if core_match else None,
+                    "performance_class": component_meta.get("performance_class") if core_match else None,
                     "provider": str(item.get("provider") or ""),
                     "source_label": str(item.get("source_label") or ""),
                     "source": str(item.get("source") or ""),

@@ -155,6 +155,25 @@ def parse_cpu_frequency_policy(
         record["core_type"] = next(iter(core_types))
         record["core_class"] = "P core" if record["core_type"] == "P" else "E core"
         record["core_classification_sources"] = sorted(item for item in classifications if item)
+    performance_classes = {
+        str(topology[cpu].get("performance_class") or "unknown")
+        for cpu in affected if cpu in topology
+    }
+    performance_sources = {
+        str(topology[cpu].get("performance_class_source") or "unavailable")
+        for cpu in affected if cpu in topology
+    }
+    if len(performance_classes) == 1:
+        performance_class = next(iter(performance_classes))
+        if performance_class != "unknown":
+            record["performance_class"] = performance_class
+            record["performance_classification_sources"] = sorted(performance_sources)
+    core_models = {
+        str(topology[cpu].get("core_model") or "")
+        for cpu in affected if cpu in topology and topology[cpu].get("core_model")
+    }
+    if len(core_models) == 1:
+        record["core_model"] = next(iter(core_models))
     capability_values = {
         int(topology[cpu]["cppc_highest_perf"])
         for cpu in affected
@@ -292,7 +311,7 @@ def discover_cpu_frequency(
 
 def group_cpu_frequency_policies(policies: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     fields = (
-        "core_class",
+        "core_class", "core_model", "performance_class",
         "base_frequency_mhz",
         "hardware_min_frequency_mhz",
         "hardware_max_frequency_mhz",

@@ -1011,11 +1011,26 @@ def run_standalone_report_checks() -> None:
                 **report["hardware"],
                 "cpu": {
                     **report["hardware"]["cpu"],
-                    "Topology": {"Aggregate": {"PhysicalCoreCount": 3, "PCoreCount": 2, "ECoreCount": 1, "UnknownCoreTypeCount": 0}},
+                    "Topology": {
+                        "Aggregate": {"PhysicalCoreCount": 3, "PCoreCount": 2, "ECoreCount": 1, "UnknownCoreTypeCount": 0},
+                        "CoreIdentitySummary": {
+                            "Models": [
+                                {"Model": "ARM Cortex-X925", "PhysicalCoreCount": 2},
+                                {"Model": "ARM Cortex-A725", "PhysicalCoreCount": 1},
+                            ],
+                            "PhysicalUnknownCoreCount": 0,
+                            "Complete": True,
+                        },
+                        "PerformanceClassSummary": {
+                            "Classes": {"higher_capacity": 2, "lower_capacity": 1},
+                        },
+                    },
                 },
             },
         })
         assert "<dt>Cores</dt><dd>3 total · 2 performance · 1 efficiency</dd>" in topology_html
+        assert "<dt>ARM core models</dt><dd>2× ARM Cortex-X925 · 1× ARM Cortex-A725</dd>" in topology_html
+        assert "<dt>Performance classes</dt><dd>2× higher-capacity · 1× lower-capacity</dd>" in topology_html
         assert "<dt>Cores</dt>" not in html_text
         assert html_text.lower().count("<script") == 3
         assert "http://" not in html_text and "https://" not in html_text
