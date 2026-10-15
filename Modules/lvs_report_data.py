@@ -554,6 +554,7 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "analysis_duration_seconds": max(0.0, analysis_end - analysis_start),
         "analysis_window_valid": analysis_window_valid,
         "analysis_evidence": analysis_evidence,
+        "gpu_evaluation_evidence": dict(window.get("gpu_evaluation_evidence") or {}),
         "normalization_sources": dict(window.get("normalization_sources") or {}),
         "native_outcome": _outcome(window.get("verdict")) or "unknown",
         "failures": [],
@@ -1035,6 +1036,8 @@ def _windows_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
             "failure_reasons": list(segment.get("FailureReasons") or []),
             "error_events": list(segment.get("ErrorEvents") or []),
             "system_faults": list(segment.get("SystemFaults") or []),
+            "analysis_evidence": dict(segment.get("AnalysisEvidence") or {}),
+            "gpu_evaluation_evidence": dict(segment.get("GpuEvaluationEvidence") or {}),
         })
     return windows
 
@@ -1151,6 +1154,19 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             item = {
                 "category": "analysis_evidence_insufficient",
                 "message": "; ".join(analysis.get("reasons") or []) or "Normalized telemetry evidence is insufficient.",
+                "source": "run_manifest.json",
+                "stage_index": stage["index"],
+                "stage_id": stage["stage_id"],
+            }
+            warnings.append(item)
+            stage["warnings"].append(item)
+        gpu_evaluation = stage.get("gpu_evaluation_evidence") or {}
+        for evaluation in gpu_evaluation.get("evaluations", []) if isinstance(gpu_evaluation, dict) else []:
+            if not isinstance(evaluation, dict) or evaluation.get("status") not in {"insufficient_evidence", "invalid"}:
+                continue
+            item = {
+                "category": "gpu_performance_evidence_insufficient",
+                "message": str(evaluation.get("reason") or "GPU performance evidence is insufficient."),
                 "source": "run_manifest.json",
                 "stage_index": stage["index"],
                 "stage_id": stage["stage_id"],

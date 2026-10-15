@@ -147,7 +147,7 @@ def telemetry_recommendation_suppression_reason(
 ) -> str:
     intent = normalized_analysis_intent(analysis_evidence.get("intent"))
     if intent == LEGACY_ANALYSIS_INTENT:
-        return ""
+        return "legacy stage has no explicit threshold-analysis intent"
     if intent not in THRESHOLD_ANALYSIS_INTENTS:
         return f"analysis intent '{intent}' does not authorize threshold conclusions"
     if analysis_evidence.get("quality") != "sufficient":

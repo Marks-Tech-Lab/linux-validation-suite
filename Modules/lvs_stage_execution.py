@@ -254,6 +254,12 @@ def execute_stage_runtime(
         strict_threshold_recommendation_warnings=strict_threshold_recommendation_warnings,
         gpu_workers_final=stage_evaluation.gpu_workers_final,
     )
+    stage_completion.stage_window.gpu_evaluation_requirements = dict(
+        stage_evaluation.gpu_evaluation_requirements
+    )
+    stage_completion.stage_window.gpu_evaluation_evidence = dict(
+        stage_evaluation.gpu_evaluation_evidence
+    )
     return StageExecutionResult(
         stage_completion=stage_completion,
         stage_processes=stage_processes,

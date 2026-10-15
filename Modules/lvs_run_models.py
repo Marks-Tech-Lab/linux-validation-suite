@@ -49,6 +49,8 @@ class StageWindow:
     analysis_intent: str = "legacy_unspecified"
     analysis_minimum_usable_seconds: Optional[float] = None
     analysis_evidence: Dict[str, Any] = field(default_factory=dict)
+    gpu_evaluation_requirements: Dict[str, Any] = field(default_factory=dict)
+    gpu_evaluation_evidence: Dict[str, Any] = field(default_factory=dict)
     storage_benchmark_summary: Optional[Dict[str, Any]] = None
 
     @property

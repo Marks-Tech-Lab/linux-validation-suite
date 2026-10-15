@@ -302,6 +302,13 @@ def profile_execution_summary_lines(report: Dict[str, Any]) -> List[str]:
             lines.append(
                 f"  analysis: intent={analysis.get('intent')}, planned={analysis.get('quality')}{suffix}"
             )
+        gpu_evaluation = stage.get("gpu_evaluation") if isinstance(stage.get("gpu_evaluation"), dict) else {}
+        for metric, requirement in (gpu_evaluation.get("requirements") or {}).items():
+            lines.append(
+                "  GPU evaluation: "
+                f"{metric} >= {requirement.get('minimum_percent')}% for "
+                f"{requirement.get('minimum_sustain_seconds')}s ({requirement.get('source')})"
+            )
         lines.extend(profile_execution_system_memory_lines(stage))
         if "cpu" in (stage.get("workloads") or []):
             lines.append(profile_execution_cpu_line(stage))

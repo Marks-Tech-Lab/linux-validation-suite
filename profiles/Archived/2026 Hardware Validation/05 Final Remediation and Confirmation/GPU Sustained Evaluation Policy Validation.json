@@ -1,0 +1,49 @@
+{
+  "profile_name": "GPU Sustained Evaluation Policy Validation",
+  "profile_type": "validation_schedule",
+  "menu_group": "gpu",
+  "menu_description": "Sustained Vulkan stress evidence collection without a universal utilization target",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30
+  },
+  "stages": [
+    {
+      "id": "vulkan_sustained_policy",
+      "name": "3D Adaptive",
+      "display_label": "GPU (Vulkan Sustained Policy Validation)",
+      "duration_seconds": 600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": false
+        },
+        "memory": {
+          "enabled": false
+        },
+        "gpu_3d": {
+          "enabled": true,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "priority": "high",
+          "backend_preference": "vulkan_compute",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": false
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "analysis": {
+        "intent": "sustained",
+        "minimum_usable_seconds": 540
+      }
+    }
+  ]
+}

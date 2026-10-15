@@ -114,6 +114,7 @@ def build_effective_profile_for_run(
                 modules=stage.modules,
                 normalization=stage.normalization,
                 analysis=stage.analysis,
+                gpu_evaluation=stage.gpu_evaluation,
                 strict_threshold_recommendation_warnings=stage.strict_threshold_recommendation_warnings,
             )
         )

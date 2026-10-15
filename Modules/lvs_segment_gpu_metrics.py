@@ -126,6 +126,8 @@ class GpuMetricSectionBuilder:
                     "Usage": usage_stats,
                     "UsageSustain": usage_sustain,
                     "LoadQuality": load_quality,
+                    "LoadQualityEvidenceBasis": "descriptive_normalized_telemetry",
+                    "LoadQualityBinding": False,
                     "MemoryUsage": memory_usage_stats,
                     "MemoryUsageSustain": memory_usage_sustain,
                     "VramUsedGB": vram_used_stats,
@@ -243,8 +245,12 @@ class GpuMetricSectionBuilder:
         if not usage_stats.get("Max") and not usage_sustain.get("SampleCount"):
             return "unobserved"
         intent = str(analysis_evidence.get("intent") or "legacy_unspecified")
+        if intent == "legacy_unspecified":
+            return "not_assessed_legacy"
         if intent == "functional":
             return "not_assessed_functional"
+        if intent == "telemetry":
+            return "observed_only"
         if intent in {"telemetry", "threshold", "sustained"} and analysis_evidence.get("quality") != "sufficient":
             return "insufficient_analysis_evidence"
         avg = usage_stats.get("Avg")

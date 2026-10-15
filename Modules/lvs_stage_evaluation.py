@@ -17,6 +17,8 @@ class StageEvaluationResult:
     stage_abort_reason: str
     stage_worker_results: List[Dict[str, Any]]
     gpu_workers_final: List[Dict[str, Any]]
+    gpu_evaluation_requirements: Dict[str, Any]
+    gpu_evaluation_evidence: Dict[str, Any]
 
 
 def evaluate_completed_stage(
@@ -111,7 +113,13 @@ def evaluate_completed_stage(
         gpu_targets=gpu_targets,
         gpu_workers_initial=gpu_workers_initial,
         gpu_workers_final=gpu_workers_final,
+        worker_results=stage_worker_results,
+        gpu_3d_backend_preference=gpu_3d_backend_preference,
+        gpu_3d_backend_resolved=gpu_3d_backend_resolved,
+        vram_backend_preference=vram_backend_preference,
+        vram_backend_resolved=vram_backend_resolved,
     )
+    gpu_window.verdict = stage_verdict
 
     stage_utilization_events = [] if operator_stop_requested else utilization_events_func(gpu_window)
     if stage_utilization_events:
@@ -201,4 +209,6 @@ def evaluate_completed_stage(
         stage_abort_reason=stage_abort_reason,
         stage_worker_results=stage_worker_results,
         gpu_workers_final=gpu_workers_final,
+        gpu_evaluation_requirements=dict(getattr(gpu_window, "gpu_evaluation_requirements", {}) or {}),
+        gpu_evaluation_evidence=dict(getattr(gpu_window, "gpu_evaluation_evidence", {}) or {}),
     )

@@ -112,6 +112,7 @@ class SegmentDocumentBuilder:
             "duration": document_input.duration,
             "analysis_window": document_input.analysis_window,
             "analysis_evidence": dict(getattr(window, "analysis_evidence", {}) or {}),
+            "gpu_evaluation_evidence": dict(getattr(window, "gpu_evaluation_evidence", {}) or {}),
             "summary": self._segment_summary(document_input),
             "cpu": document_input.cpu_section,
         }
@@ -130,6 +131,7 @@ class SegmentDocumentBuilder:
             "Duration": document_input.duration,
             "AnalysisWindow": document_input.analysis_window,
             "AnalysisEvidence": dict(getattr(window, "analysis_evidence", {}) or {}),
+            "GpuEvaluationEvidence": dict(getattr(window, "gpu_evaluation_evidence", {}) or {}),
             "Started": window.started_iso,
             "Ended": window.ended_iso,
             "Verdict": window.verdict,

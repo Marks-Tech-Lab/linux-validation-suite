@@ -82,6 +82,23 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
         lines.append(f"   GPU: {intensity}, {target}")
     if stage.modules.vram.enabled:
         lines.append(f"   VRAM: {stage.modules.vram.allocation_percent}%")
+    analysis = getattr(stage, "analysis", None)
+    if analysis is not None:
+        minimum = getattr(analysis, "minimum_usable_seconds", None)
+        minimum_text = f", minimum {float(minimum):g}s" if minimum is not None else ""
+        lines.append(f"   Analysis: {getattr(analysis, 'intent', 'functional')}{minimum_text}")
+    gpu_evaluation = getattr(stage, "gpu_evaluation", None)
+    if gpu_evaluation is not None:
+        for metric_name in ("gpu_busy", "memory_busy"):
+            requirement = getattr(gpu_evaluation, metric_name, None)
+            if requirement is None:
+                continue
+            label = "GPU busy" if metric_name == "gpu_busy" else "Memory-controller busy"
+            requirement_kind = "required" if bool(getattr(requirement, "required", True)) else "advisory"
+            lines.append(
+                f"   {label}: >= {float(requirement.minimum_percent):g}% for "
+                f"{float(requirement.minimum_sustain_seconds):g}s ({requirement_kind})"
+            )
     legacy_bucket = derive_legacy_bucket_category(stage)
     lines.append("   Legacy compatibility: " + (f"{legacy_bucket} (derived)" if legacy_bucket else "none"))
     return lines

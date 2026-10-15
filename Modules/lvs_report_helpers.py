@@ -986,6 +986,9 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
     analysis_evidence = segment.get("AnalysisEvidence", {})
     if not isinstance(analysis_evidence, dict):
         analysis_evidence = {}
+    gpu_evaluation_evidence = segment.get("GpuEvaluationEvidence", {})
+    if not isinstance(gpu_evaluation_evidence, dict):
+        gpu_evaluation_evidence = {}
     gpu_metrics = [
         metric for metric in segment.get("GpuMetrics", [])
         if isinstance(metric, dict) and metric.get("Targeted")
@@ -1026,6 +1029,7 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
         "ReportOnlyThresholdWouldWarnCount": threshold_recommendations.get("WouldWarnCount", 0),
         "ReportOnlyThresholdInsufficientEvidenceCount": threshold_recommendations.get("InsufficientEvidenceCount", 0),
         "AnalysisEvidence": dict(analysis_evidence),
+        "GpuEvaluationEvidence": dict(gpu_evaluation_evidence),
         "TargetedGpuCount": interpretation.get("TargetedGpuCount", 0),
         "TargetedLoadQualityCounts": dict(interpretation.get("TargetedLoadQualityCounts") or {}),
         "CoverageNotes": coverage_notes,
@@ -1036,6 +1040,8 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
                 "Name": metric.get("DisplayName") or metric.get("Name"),
                 "DisplayName": metric.get("DisplayName") or metric.get("Name"),
                 "LoadQuality": metric.get("LoadQuality"),
+                "LoadQualityEvidenceBasis": metric.get("LoadQualityEvidenceBasis", "descriptive_normalized_telemetry"),
+                "LoadQualityBinding": bool(metric.get("LoadQualityBinding", False)),
                 "TargetIds": list(metric.get("TargetIds", [])),
                 "Cards": list(metric.get("Cards", [])),
                 "Slots": list(metric.get("Slots", [])),

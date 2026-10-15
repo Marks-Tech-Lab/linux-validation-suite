@@ -13,6 +13,7 @@ from .lvs_cpu_backend_policy import CPU_BACKEND_PREFERENCES
 from .lvs_memory_execution import MEMORY_BACKEND_PREFERENCES
 from .lvs_profile_models import StageConfig, ValidationProfile, stage_execution_mode
 from .lvs_analysis_quality import ANALYSIS_INTENTS, NONFUNCTIONAL_ANALYSIS_INTENTS, planned_analysis_evidence
+from .lvs_gpu_evaluation_policy import normalized_gpu_evaluation_requirements
 
 
 class ProfileValidator:
@@ -77,6 +78,47 @@ class ProfileValidator:
                     planned = planned_analysis_evidence(stage, profile.defaults.telemetry_interval_seconds)
                     if planned.get("quality") == "insufficient":
                         warnings.extend(f"{stage_ref} {reason}" for reason in planned.get("reasons", []))
+
+            gpu_requirements = normalized_gpu_evaluation_requirements(getattr(stage, "gpu_evaluation", None))
+            for metric_name, requirement in gpu_requirements.items():
+                minimum_percent = requirement.get("minimum_percent")
+                minimum_sustain = requirement.get("minimum_sustain_seconds")
+                if minimum_percent is None or not 0.0 <= float(minimum_percent) <= 100.0:
+                    errors.append(
+                        f"{stage_ref} gpu_evaluation.{metric_name}.minimum_percent must be a finite number from 0 through 100"
+                    )
+                if minimum_sustain is None or float(minimum_sustain) <= 0.0:
+                    errors.append(
+                        f"{stage_ref} gpu_evaluation.{metric_name}.minimum_sustain_seconds must be a positive finite number"
+                    )
+                if analysis is None or str(getattr(analysis, "intent", "")).strip().lower() not in {"threshold", "sustained"}:
+                    errors.append(
+                        f"{stage_ref} gpu_evaluation.{metric_name} requires analysis.intent='threshold' or 'sustained'"
+                    )
+                expected_usable = None
+                if execution_mode == "duration" and stage.duration_seconds is not None:
+                    expected_usable = float(stage.duration_seconds) - float(trim_start) - float(trim_end)
+                if (
+                    expected_usable is not None
+                    and isinstance(minimum_sustain, (int, float))
+                    and float(minimum_sustain) > expected_usable
+                ):
+                    errors.append(
+                        f"{stage_ref} gpu_evaluation.{metric_name}.minimum_sustain_seconds "
+                        f"({float(minimum_sustain):.1f}s) exceeds the planned usable analysis window ({expected_usable:.1f}s)"
+                    )
+                if metric_name == "gpu_busy":
+                    variant = str(stage.modules.gpu_3d.compute_variant or "").strip().lower().replace("-", "_")
+                    if not stage.modules.gpu_3d.enabled or variant != "stress_hash":
+                        errors.append(
+                            f"{stage_ref} gpu_evaluation.gpu_busy requires an enabled gpu_3d stress_hash workload"
+                        )
+                elif metric_name == "memory_busy" and not (
+                    stage.modules.gpu_3d.enabled or stage.modules.vram.enabled
+                ):
+                    errors.append(
+                        f"{stage_ref} gpu_evaluation.memory_busy requires an enabled GPU workload"
+                    )
 
             storage = stage.modules.storage_benchmark
             if storage.enabled:

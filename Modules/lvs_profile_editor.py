@@ -17,6 +17,7 @@ from .lvs_gpu_backend_catalog import (
 )
 from .lvs_profile_loader import ProfileLoader
 from .lvs_profile_models import (
+    GpuMetricEvaluationRequirement,
     ModuleCpu,
     ModuleGpu3D,
     ModuleMemory,
@@ -24,6 +25,7 @@ from .lvs_profile_models import (
     ModuleVram,
     StageConfig,
     StageAnalysis,
+    StageGpuEvaluation,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -474,6 +476,38 @@ class ProfileEditor:
             stage.strict_threshold_recommendation_warnings
         )
         return stage.strict_threshold_recommendation_warnings
+
+    def set_stage_gpu_evaluation_requirement(
+        self,
+        stage: StageConfig,
+        metric: str,
+        minimum_percent: float,
+        minimum_sustain_seconds: float,
+        *,
+        required: bool = True,
+    ) -> GpuMetricEvaluationRequirement:
+        metric_name = str(metric or "").strip().lower()
+        if metric_name not in {"gpu_busy", "memory_busy"}:
+            raise ValueError("GPU evaluation metric must be 'gpu_busy' or 'memory_busy'")
+        requirement = GpuMetricEvaluationRequirement(
+            minimum_percent=float(minimum_percent),
+            minimum_sustain_seconds=float(minimum_sustain_seconds),
+            required=bool(required),
+        )
+        if stage.gpu_evaluation is None:
+            stage.gpu_evaluation = StageGpuEvaluation()
+        setattr(stage.gpu_evaluation, metric_name, requirement)
+        return requirement
+
+    def clear_stage_gpu_evaluation_requirement(self, stage: StageConfig, metric: str) -> None:
+        metric_name = str(metric or "").strip().lower()
+        if metric_name not in {"gpu_busy", "memory_busy"}:
+            raise ValueError("GPU evaluation metric must be 'gpu_busy' or 'memory_busy'")
+        if stage.gpu_evaluation is None:
+            return
+        setattr(stage.gpu_evaluation, metric_name, None)
+        if stage.gpu_evaluation.gpu_busy is None and stage.gpu_evaluation.memory_busy is None:
+            stage.gpu_evaluation = None
 
     def set_stage_label(self, profile: ValidationProfile, labels: List[str], index: int, label: str) -> List[str]:
         self._require_stage_index(profile, index)

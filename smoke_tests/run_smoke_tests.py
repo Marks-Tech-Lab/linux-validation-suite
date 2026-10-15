@@ -58,6 +58,7 @@ from smoke_tests.output_contract_checks import (
     assert_snake_case_keys,
 )
 from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
+from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -19780,14 +19781,13 @@ def test_gpu_stage_event_helpers() -> None:
     )
     assert_equal(
         [event["category"] for event in backend_events],
-        ["gpu_backend_effectiveness", "gpu_backend_effectiveness", "gpu_backend_effectiveness"],
+        ["gpu_backend_effectiveness", "gpu_backend_effectiveness"],
         "GPU backend effectiveness categories",
     )
-    assert_true("smoke test" in backend_events[0]["message"], "GPU compatibility backend warning")
-    assert_true("under-drove" in backend_events[1]["message"], "GPU high-load underdrive warning")
-    assert_equal(backend_events[1]["details"]["expected_avg_busy_percent"], 70.0, "GPU high-load expected avg")
-    assert_equal(backend_events[2]["severity"], "info", "GPU diagnostic backend info")
-    assert_true("shader power saturation" in backend_events[2]["message"], "GPU diagnostic low power wording")
+    assert_equal(backend_events[0]["severity"], "info", "GPU compatibility backend informational")
+    assert_true("no performance threshold was inferred" in backend_events[0]["message"], "GPU compatibility backend semantics")
+    assert_equal(backend_events[1]["severity"], "info", "GPU diagnostic backend info")
+    assert_true("shader power saturation" in backend_events[1]["message"], "GPU diagnostic low power wording")
 
     utilization_events = target_gpu_utilization_events(
         target_gpus={
@@ -28885,6 +28885,7 @@ def test_service_orchestrator_factory_injection() -> None:
 def main() -> int:
     tests = [
         run_analysis_quality_checks,
+        run_gpu_evaluation_policy_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,

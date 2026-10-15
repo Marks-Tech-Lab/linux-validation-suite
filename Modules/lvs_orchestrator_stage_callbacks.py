@@ -18,9 +18,10 @@ from Modules.lvs_gpu_progress import (
 )
 from Modules.lvs_gpu_stage_events import (
     gpu_backend_effectiveness_events,
-    target_gpu_utilization_events,
     vram_target_attainment_events,
 )
+from Modules.lvs_gpu_evaluation_policy import evaluate_gpu_stage_policy
+from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_gpu_stage_targets import (
     stage_target_gpu_details_from_processes,
     stage_target_gpu_details_from_worker_dicts,
@@ -108,16 +109,51 @@ def stage_target_gpu_utilization_events(
 ) -> List[Dict[str, Any]]:
     target_gpus = stage_target_gpu_details_from_worker_dicts(window.gpu_workers_final or window.gpu_workers_initial)
     samples = samples_for_stage_window(telemetry.samples, window)
-    return target_gpu_utilization_events(
+    source_fields: Dict[str, Dict[str, Any]] = {}
+    try:
+        source_fields = dict(telemetry.source_map().get("fields") or {})
+    except Exception:
+        source_fields = {}
+    evidence = evaluate_gpu_stage_policy(
+        window=window,
         target_gpus=target_gpus,
         samples=samples,
-        stage_name=window.display_name,
         telemetry_interval_seconds=telemetry.interval_seconds,
-        target_busy_threshold=float(orchestrator.settings.target_gpu_busy_min_percent or 0.0),
-        target_busy_sustain=float(orchestrator.settings.target_gpu_busy_sustain_seconds or 0.0),
-        target_mem_busy_threshold=float(orchestrator.settings.target_gpu_memory_busy_min_percent or 0.0),
-        target_mem_busy_sustain=float(orchestrator.settings.target_gpu_memory_busy_sustain_seconds or 0.0),
+        settings=orchestrator.settings,
+        source_fields=source_fields,
     )
+    window.gpu_evaluation_requirements = dict(evidence.get("requirements") or {})
+    window.gpu_evaluation_evidence = evidence
+    events: List[Dict[str, Any]] = []
+    for evaluation in evidence.get("evaluations", []):
+        if not evaluation.get("required"):
+            continue
+        status = str(evaluation.get("status") or "")
+        if status not in {"missed", "insufficient_evidence", "invalid"}:
+            continue
+        category = (
+            "gpu_performance_requirement_missed"
+            if status == "missed"
+            else "gpu_performance_evidence_insufficient"
+        )
+        threshold = evaluation.get("minimum_percent")
+        required_seconds = evaluation.get("minimum_sustain_seconds")
+        events.append(
+            create_stability_event(
+                category,
+                "error",
+                window.display_name,
+                str(evaluation.get("metric_key") or "gpu_performance"),
+                (
+                    f"target GPU {evaluation.get('physical_gpu_id')} did not sustain "
+                    f"{evaluation.get('metric')} >= {threshold}% for {required_seconds}s"
+                    if status == "missed"
+                    else f"target GPU {evaluation.get('physical_gpu_id')} performance requirement could not be verified: {evaluation.get('reason')}"
+                ),
+                dict(evaluation),
+            )
+        )
+    return events
 
 
 def stage_gpu_backend_effectiveness_events(

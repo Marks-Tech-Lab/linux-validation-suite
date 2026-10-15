@@ -22,6 +22,8 @@ from Modules.lvs_telemetry_samples import (
     telemetry_metric_summaries,
 )
 from Modules.lvs_analysis_quality import evaluate_analysis_evidence
+from Modules.lvs_gpu_evaluation_policy import evaluate_gpu_stage_policy
+from Modules.lvs_gpu_stage_targets import stage_target_gpu_details_from_worker_dicts
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,25 @@ def write_final_run_artifacts(
                 getattr(getattr(profile, "defaults", None), "telemetry_interval_seconds", 0.0),
             ),
         )
+        target_gpus = stage_target_gpu_details_from_worker_dicts(
+            window.gpu_workers_final or window.gpu_workers_initial
+        )
+        if target_gpus:
+            try:
+                source_fields = dict(telemetry.source_map().get("fields") or {})
+            except Exception:
+                source_fields = {}
+            window.gpu_evaluation_evidence = evaluate_gpu_stage_policy(
+                window=window,
+                target_gpus=target_gpus,
+                samples=telemetry.samples,
+                telemetry_interval_seconds=getattr(
+                    telemetry,
+                    "interval_seconds",
+                    getattr(getattr(profile, "defaults", None), "telemetry_interval_seconds", 0.0),
+                ),
+                source_fields=source_fields,
+            )
 
     manifest_payload["ended"] = ended_iso
     manifest_payload["elapsed_seconds"] = round(total_elapsed, 2)

@@ -6,7 +6,8 @@ from __future__ import annotations
 import statistics
 from typing import Any, Callable, Dict
 
-from Modules.lvs_stability_events import create_stability_event, threshold_run_seconds
+from Modules.lvs_stability_events import create_stability_event
+from Modules.lvs_gpu_evaluation_policy import maximum_qualifying_seconds
 
 
 def _sample_values(samples: list[Any], key: str) -> list[float]:
@@ -19,6 +20,19 @@ def _sample_values(samples: list[Any], key: str) -> list[float]:
         if value is not None:
             values.append(float(value))
     return values
+
+
+def _timestamp_values(samples: list[Any], key: str) -> list[tuple[float, float | None]]:
+    values: list[tuple[float, float | None]] = []
+    for sample in samples:
+        sample_values = getattr(sample, "values", {})
+        value = sample_values.get(key) if isinstance(sample_values, dict) else None
+        try:
+            numeric = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+            values.append((float(getattr(sample, "timestamp")), numeric))
+        except (TypeError, ValueError):
+            continue
+    return sorted(values)
 
 
 def vram_target_attainment_events(
@@ -190,7 +204,9 @@ def target_gpu_utilization_events(
             busy_key = f"gpu_{gpu_index}_busy_percent"
             busy_values = _sample_values(samples, busy_key)
             max_busy = round(max(busy_values), 2) if busy_values else None
-            max_busy_run = threshold_run_seconds(samples, busy_key, target_busy_threshold, telemetry_interval_seconds)
+            max_busy_run = maximum_qualifying_seconds(
+                _timestamp_values(samples, busy_key), target_busy_threshold, telemetry_interval_seconds
+            )
             if max_busy_run < target_busy_sustain:
                 events.append(
                     create_stability_event(
@@ -232,7 +248,9 @@ def target_gpu_utilization_events(
                 )
             else:
                 max_mem_busy = round(max(mem_busy_values), 2)
-                max_mem_busy_run = threshold_run_seconds(samples, mem_busy_key, target_mem_busy_threshold, telemetry_interval_seconds)
+                max_mem_busy_run = maximum_qualifying_seconds(
+                    _timestamp_values(samples, mem_busy_key), target_mem_busy_threshold, telemetry_interval_seconds
+                )
                 if max_mem_busy_run < target_mem_busy_sustain:
                     events.append(
                         create_stability_event(
@@ -317,46 +335,7 @@ def gpu_backend_effectiveness_events(
             "backend_resolved_3d": gpu_3d_backend_resolved,
             "device_class": device_class,
         }
-        if load_classes <= {"compatibility"} and (max_busy is None or max_busy < 10.0):
-            severity = "warning"
-            message = (
-                f"target GPU {target_label} reached only {max_busy if max_busy is not None else 'no'}% busy "
-                + f"with compatibility backend(s) {backend_list}; treat this stage as a smoke test, not a stress result"
-            )
-        elif "mixed" in load_classes and (max_busy is None or max_busy < 15.0):
-            severity = "warning"
-            message = (
-                f"target GPU {target_label} reached only {max_busy if max_busy is not None else 'no'}% busy "
-                + f"with mixed-load backend(s) {backend_list}; this stage did not produce meaningful GPU stress"
-            )
-        elif "high_load" in load_classes:
-            expected_avg_busy = 70.0
-            expected_max_busy = 90.0
-            if avg_busy is None or max_busy is None:
-                severity = "warning"
-                message = (
-                    f"target GPU {target_label} did not expose enough busy telemetry to judge maintained backend(s) {backend_list}"
-                )
-                details.update(
-                    {
-                        "expected_avg_busy_percent": expected_avg_busy,
-                        "expected_max_busy_percent": expected_max_busy,
-                    }
-                )
-            elif avg_busy < expected_avg_busy or max_busy < expected_max_busy:
-                severity = "warning"
-                message = (
-                    f"target GPU {target_label} under-drove maintained backend(s) {backend_list}: "
-                    + f"avg busy {avg_busy}% / max busy {max_busy}% "
-                    + f"(expected roughly avg >= {expected_avg_busy}% and max >= {expected_max_busy}%)"
-                )
-                details.update(
-                    {
-                        "expected_avg_busy_percent": expected_avg_busy,
-                        "expected_max_busy_percent": expected_max_busy,
-                    }
-                )
-        elif "diagnostic" in load_classes:
+        if "diagnostic" in load_classes:
             severity = "info"
             if device_class == "discrete" and avg_power is not None and avg_power < 70.0:
                 message = (
@@ -373,6 +352,13 @@ def gpu_backend_effectiveness_events(
                     "saturation_result": False,
                 }
             )
+        elif load_classes <= {"compatibility"} or "mixed" in load_classes:
+            severity = "info"
+            message = (
+                f"target GPU {target_label} used non-saturation backend(s) {backend_list}; "
+                "busy telemetry is descriptive and no performance threshold was inferred"
+            )
+            details.update({"saturation_result": False, "evaluation_status": "not_applicable"})
         if severity and message:
             events.append(
                 create_stability_event(

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 
 from .lvs_gpu_backend_catalog import GPU_3D_BACKEND_CATALOG
-from .lvs_analysis_quality import telemetry_recommendation_suppression_reason
 
 
 WindowPredicateFn = Callable[[Any], bool]
@@ -174,6 +173,7 @@ class StageStabilityInterpreter:
             compute_variants,
             strict_threshold_enabled=strict_threshold_enabled,
             analysis_evidence=analysis_evidence or {},
+            window=window,
         )
         strict_threshold_warning = (
             threshold_recommendations.get("StrictModeEnabled")
@@ -248,6 +248,8 @@ class StageStabilityInterpreter:
                     "Workloads": list(metric.get("Workloads", [])),
                     "Backends": list(metric.get("Backends", [])),
                     "LoadQuality": str(metric.get("LoadQuality") or "unknown"),
+                    "LoadQualityEvidenceBasis": str(metric.get("LoadQualityEvidenceBasis") or "descriptive_normalized_telemetry"),
+                    "LoadQualityBinding": bool(metric.get("LoadQualityBinding", False)),
                     "WorkerEvidence": dict(metric.get("WorkerEvidence") or {}),
                     "UsageMin": (metric.get("Usage") or {}).get("Min"),
                     "UsageAvg": (metric.get("Usage") or {}).get("Avg"),
@@ -292,56 +294,6 @@ class StageStabilityInterpreter:
             return "medium"
         return "medium"
 
-    def _sustain_percent_from_entry(self, entry: Dict[str, Any], sustain_key: str, threshold: float) -> Optional[float]:
-        sustain = entry.get(sustain_key)
-        if not isinstance(sustain, dict):
-            return None
-        for threshold_entry in sustain.get("Thresholds", []):
-            if not isinstance(threshold_entry, dict):
-                continue
-            entry_threshold = threshold_entry.get("Threshold")
-            if not isinstance(entry_threshold, (int, float)):
-                continue
-            if abs(float(entry_threshold) - float(threshold)) > 0.001:
-                continue
-            percent = threshold_entry.get("PercentAtOrAbove")
-            return float(percent) if isinstance(percent, (int, float)) else None
-        return None
-
-    def _worker_verified_without_telemetry(self, entry: Dict[str, Any]) -> bool:
-        evidence = entry.get("WorkerEvidence")
-        if not isinstance(evidence, dict):
-            return False
-        try:
-            worker_count = int(evidence.get("WorkerResultCount") or 0)
-            successful_workers = int(evidence.get("SuccessfulWorkerResultCount") or 0)
-            worker_errors = int(evidence.get("WorkerErrorCount") or 0)
-            verification_passes = int(evidence.get("VerificationPasses") or 0)
-        except Exception:
-            return False
-        return worker_count > 0 and successful_workers == worker_count and worker_errors == 0 and verification_passes > 0
-
-    def _threshold_evaluation_result(
-        self,
-        observed_avg: Optional[float],
-        observed_max: Optional[float],
-        sustain_percent: Optional[float],
-        *,
-        min_avg: Optional[float] = None,
-        min_max: Optional[float] = None,
-        min_sustain_percent: Optional[float] = None,
-    ) -> str:
-        if observed_avg is None and observed_max is None and sustain_percent is None:
-            return "unobserved"
-        misses: List[str] = []
-        if min_avg is not None and (observed_avg is None or observed_avg < min_avg):
-            misses.append("avg")
-        if min_max is not None and (observed_max is None or observed_max < min_max):
-            misses.append("max")
-        if min_sustain_percent is not None and (sustain_percent is None or sustain_percent < min_sustain_percent):
-            misses.append("sustain")
-        return "would_warn" if misses else "meets_recommendation"
-
     def _stage_threshold_recommendations(
         self,
         primary_purpose: str,
@@ -351,79 +303,52 @@ class StageStabilityInterpreter:
         *,
         strict_threshold_enabled: bool,
         analysis_evidence: Dict[str, Any],
+        window: Any = None,
     ) -> Dict[str, Any]:
         checks: List[Dict[str, Any]] = []
         mode = "report_only"
         strict_enabled = bool(strict_threshold_enabled)
-        for entry in targeted_gpu_results:
-            gpu_index = entry.get("GpuIndex")
-            target_ids = entry.get("TargetIds") or []
-            gpu_label = ", ".join(str(item) for item in target_ids) or str(entry.get("Name") or f"gpu{gpu_index}")
-            if primary_purpose in {"gpu_saturation", "gpu_plus_vram_saturation"}:
-                sustain_90 = self._sustain_percent_from_entry(entry, "UsageSustain", 90.0)
-                suppression_reason = telemetry_recommendation_suppression_reason(
-                    analysis_evidence,
-                    entry.get("UsageSustain") if isinstance(entry.get("UsageSustain"), dict) else {},
-                )
-                busy_result = "insufficient_evidence" if suppression_reason else self._threshold_evaluation_result(
-                    entry.get("UsageAvg"), entry.get("UsageMax"), sustain_90,
-                    min_avg=85.0, min_max=95.0, min_sustain_percent=75.0,
-                )
-                if busy_result == "unobserved" and self._worker_verified_without_telemetry(entry):
-                    busy_result = "telemetry_unobserved_worker_verified"
-                checks.append(
-                    {
-                        "Name": "target_gpu_busy_saturation",
-                        "Metric": "gpu_busy_percent",
-                        "GpuIndex": gpu_index,
-                        "Target": gpu_label,
-                        "RecommendedMinAvgPercent": 85.0,
-                        "RecommendedMinMaxPercent": 95.0,
-                        "RecommendedMinPercentAtOrAbove90": 75.0,
-                        "ObservedAvgPercent": entry.get("UsageAvg"),
-                        "ObservedMaxPercent": entry.get("UsageMax"),
-                        "ObservedPercentAtOrAbove90": sustain_90,
-                        "WorkerEvidence": dict(entry.get("WorkerEvidence") or {}),
-                        "EvidenceBasis": "normalized_telemetry",
-                        "AnalysisQuality": analysis_evidence.get("quality", "not_assessed"),
-                        "SuppressedReason": suppression_reason,
-                        "Result": busy_result,
-                    }
-                )
-            if primary_purpose in {"vulkan_memory_path_validation", "gpu_plus_vram_saturation"}:
-                mem_sustain_25 = self._sustain_percent_from_entry(entry, "MemoryBusySustain", 25.0)
-                min_mem_max = 25.0 if primary_purpose == "vulkan_memory_path_validation" else None
-                min_mem_sustain = 30.0 if primary_purpose == "vulkan_memory_path_validation" else None
-                suppression_reason = telemetry_recommendation_suppression_reason(
-                    analysis_evidence,
-                    entry.get("MemoryBusySustain") if isinstance(entry.get("MemoryBusySustain"), dict) else {},
-                )
-                memory_result = "insufficient_evidence" if suppression_reason else (
-                    self._threshold_evaluation_result(
-                        entry.get("MemoryBusyAvg"), entry.get("MemoryBusyMax"), mem_sustain_25,
-                        min_max=min_mem_max, min_sustain_percent=min_mem_sustain,
-                    ) if min_mem_max is not None else "observed_only"
-                )
-                if memory_result == "unobserved" and self._worker_verified_without_telemetry(entry):
-                    memory_result = "telemetry_unobserved_worker_verified"
-                checks.append(
-                    {
-                        "Name": "target_gpu_memory_path_activity",
-                        "Metric": "gpu_memory_busy_percent",
-                        "GpuIndex": gpu_index,
-                        "Target": gpu_label,
-                        "RecommendedMinMaxPercent": min_mem_max,
-                        "RecommendedMinPercentAtOrAbove25": min_mem_sustain,
-                        "ObservedAvgPercent": entry.get("MemoryBusyAvg"),
-                        "ObservedMaxPercent": entry.get("MemoryBusyMax"),
-                        "ObservedPercentAtOrAbove25": mem_sustain_25,
-                        "WorkerEvidence": dict(entry.get("WorkerEvidence") or {}),
-                        "EvidenceBasis": "normalized_telemetry",
-                        "AnalysisQuality": analysis_evidence.get("quality", "not_assessed"),
-                        "SuppressedReason": suppression_reason,
-                        "Result": memory_result,
-                    }
-                )
+        policy = dict(getattr(window, "gpu_evaluation_evidence", {}) or {}) if window is not None else {}
+        for evaluation in policy.get("evaluations", []):
+            if not isinstance(evaluation, dict):
+                continue
+            status = str(evaluation.get("status") or "unknown")
+            required = bool(evaluation.get("required"))
+            result = {
+                "met": "meets_requirement",
+                "missed": "requirement_missed" if required else "would_warn",
+                "insufficient_evidence": "insufficient_evidence",
+                "not_assessed_legacy": "not_assessed_legacy",
+                "not_applicable": "not_applicable",
+                "invalid": "insufficient_evidence",
+            }.get(status, status)
+            checks.append(
+                {
+                    "Name": "target_gpu_busy_requirement"
+                    if evaluation.get("metric") == "gpu_busy"
+                    else "target_gpu_memory_busy_requirement",
+                    "Metric": evaluation.get("metric_key"),
+                    "MetricSemantics": evaluation.get("metric_semantics"),
+                    "GpuIndex": evaluation.get("gpu_index"),
+                    "Target": evaluation.get("physical_gpu_id"),
+                    "MinimumPercent": evaluation.get("minimum_percent"),
+                    "MinimumSustainSeconds": evaluation.get("minimum_sustain_seconds"),
+                    "MeasuredQualifyingSeconds": evaluation.get("measured_qualifying_seconds"),
+                    "ObservedSampleCount": evaluation.get("observed_sample_count"),
+                    "ObservedSpanSeconds": evaluation.get("observed_span_seconds"),
+                    "MaximumGapSeconds": evaluation.get("maximum_gap_seconds"),
+                    "Provider": evaluation.get("provider"),
+                    "ThresholdSource": evaluation.get("threshold_source"),
+                    "Required": required,
+                    "WorkloadEligible": evaluation.get("workload_eligible"),
+                    "EvidenceBasis": "normalized_telemetry",
+                    "AnalysisQuality": evaluation.get("analysis_quality", analysis_evidence.get("quality", "not_assessed")),
+                    "SuppressedReason": evaluation.get("reason") if status in {
+                        "insufficient_evidence", "not_assessed_legacy", "not_applicable", "invalid"
+                    } else "",
+                    "Result": result,
+                }
+            )
         min_vram_allocation = aggregate.get("MinVramAllocationPercent")
         if primary_purpose in {"gpu_plus_vram_saturation", "vram_integrity_and_allocation"}:
             checks.append(
@@ -463,6 +388,15 @@ class StageStabilityInterpreter:
         insufficient_evidence_count = sum(
             1 for check in checks if check.get("Result") == "insufficient_evidence"
         )
+        not_assessed_legacy_count = sum(
+            1 for check in checks if check.get("Result") == "not_assessed_legacy"
+        )
+        not_applicable_count = sum(
+            1 for check in checks if check.get("Result") == "not_applicable"
+        )
+        requirement_missed_count = sum(
+            1 for check in checks if check.get("Result") == "requirement_missed"
+        )
         return {
             "Mode": mode,
             "StrictModeDefault": False,
@@ -471,6 +405,10 @@ class StageStabilityInterpreter:
             "UnobservedCount": unobserved_count,
             "WorkerVerifiedNoTelemetryCount": worker_verified_no_telemetry_count,
             "InsufficientEvidenceCount": insufficient_evidence_count,
+            "NotAssessedLegacyCount": not_assessed_legacy_count,
+            "NotApplicableCount": not_applicable_count,
+            "RequirementMissedCount": requirement_missed_count,
+            "GpuEvaluationPolicy": policy,
             "Checks": checks,
         }
 

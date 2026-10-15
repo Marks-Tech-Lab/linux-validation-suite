@@ -10,7 +10,8 @@ from typing import Any, Dict, List
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
 from .lvs_gpu_backend_resolution import gpu_backend_resolution_messages, gpu_excluded_targets_summary
 from .lvs_profile_metadata import stage_result_metadata
-from .lvs_analysis_quality import impossible_runtime_sustain_requirements, planned_analysis_evidence
+from .lvs_analysis_quality import planned_analysis_evidence
+from .lvs_gpu_evaluation_policy import planned_gpu_evaluation
 from .lvs_stage_gpu_diagnostics import (
     build_stage_gpu_backend_diagnostics,
     gpu_3d_backend_identity_warnings,
@@ -693,7 +694,9 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     telemetry_interval = float(getattr(settings, "sample_interval_seconds", 0.0) or 0.0)
     analysis_evidence = planned_analysis_evidence(stage, telemetry_interval)
     expected_usable = analysis_evidence.get("expected_usable_seconds")
-    issues.extend(impossible_runtime_sustain_requirements(stage, expected_usable, settings))
+    gpu_evaluation = planned_gpu_evaluation(stage, settings, expected_usable)
+    issues.extend(gpu_evaluation.get("issues", []))
+    warnings.extend(gpu_evaluation.get("warnings", []))
 
     payload = {
         "stage_id": stage.id,
@@ -705,6 +708,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         "trim_end_seconds": stage.normalization.trim_end_seconds,
         "expected_usable_seconds": expected_usable,
         "analysis_evidence": analysis_evidence,
+        "gpu_evaluation": gpu_evaluation,
         "workloads": workloads,
         "gpu_target_mode": runner._gpu_target_summary(gpu_target_mode),
         "gpu_3d_mode": stage.modules.gpu_3d.mode if stage.modules.gpu_3d.enabled else "",

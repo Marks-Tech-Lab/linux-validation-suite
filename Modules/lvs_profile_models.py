@@ -26,6 +26,19 @@ class StageAnalysis:
 
 
 @dataclass
+class GpuMetricEvaluationRequirement:
+    minimum_percent: float
+    minimum_sustain_seconds: float
+    required: bool = True
+
+
+@dataclass
+class StageGpuEvaluation:
+    gpu_busy: Optional[GpuMetricEvaluationRequirement] = None
+    memory_busy: Optional[GpuMetricEvaluationRequirement] = None
+
+
+@dataclass
 class ModuleCpu:
     enabled: bool = False
     backend_preference: str = "auto"
@@ -103,6 +116,7 @@ class StageConfig:
     modules: StageModules = field(default_factory=StageModules)
     normalization: StageNormalization = field(default_factory=StageNormalization)
     analysis: Optional[StageAnalysis] = None
+    gpu_evaluation: Optional[StageGpuEvaluation] = None
     strict_threshold_recommendation_warnings: Optional[bool] = None
 
 

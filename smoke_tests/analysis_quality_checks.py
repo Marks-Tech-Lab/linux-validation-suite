@@ -202,11 +202,10 @@ def run_analysis_quality_checks() -> None:
         strict_threshold_enabled=True, analysis_evidence={**one, "intent": "sustained"},
     )
     checks = {item["Name"]: item for item in recommendations["Checks"]}
-    assert checks["target_gpu_busy_saturation"]["Result"] == "insufficient_evidence"
-    assert checks["target_gpu_busy_saturation"]["EvidenceBasis"] == "normalized_telemetry"
+    assert "target_gpu_busy_saturation" not in checks
     assert checks["vram_allocation_attainment"]["Result"] == "meets_recommendation"
     assert checks["vram_allocation_attainment"]["EvidenceBasis"] == "worker_direct"
-    assert recommendations["WouldWarnCount"] == 0 and recommendations["InsufficientEvidenceCount"] >= 1
+    assert recommendations["WouldWarnCount"] == 0 and recommendations["InsufficientEvidenceCount"] == 0
 
     # N: an observed dangerous temperature remains an immediate safety event.
     thermal = stage_sensor_events(

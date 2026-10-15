@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_runtime_memory_guard import refresh_runtime_memory_guard
@@ -90,6 +91,9 @@ def build_stage_check_window(
         worker_results=worker_results or [],
         analysis_intent=normalized_analysis_intent(getattr(analysis, "intent", None)),
         analysis_minimum_usable_seconds=getattr(analysis, "minimum_usable_seconds", None),
+        gpu_evaluation_requirements=(
+            asdict(stage.gpu_evaluation) if getattr(stage, "gpu_evaluation", None) is not None else {}
+        ),
     )
 
 

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from .lvs_core import JsonStore
 from .lvs_option_defaults import DEFAULT_PROFILE_MENU_GROUPS
 from .lvs_profile_models import (
+    GpuMetricEvaluationRequirement,
     ModuleCpu,
     ModuleGpu3D,
     ModuleMemory,
@@ -20,6 +21,7 @@ from .lvs_profile_models import (
     ProfileDefaults,
     StageConfig,
     StageAnalysis,
+    StageGpuEvaluation,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -127,6 +129,42 @@ class ProfileLoader:
                         + ", ".join(unexpected)
                     )
                 analysis = StageAnalysis(**analysis_raw)
+            gpu_evaluation = None
+            if "gpu_evaluation" in stage_raw:
+                evaluation_raw = stage_raw.get("gpu_evaluation")
+                if not isinstance(evaluation_raw, dict):
+                    raise ValueError(f"stage '{stage_raw.get('id', '?')}' gpu_evaluation must be an object")
+                unexpected = sorted(set(evaluation_raw) - {"gpu_busy", "memory_busy"})
+                if unexpected:
+                    raise ValueError(
+                        f"stage '{stage_raw.get('id', '?')}' gpu_evaluation has unsupported fields: "
+                        + ", ".join(unexpected)
+                    )
+                requirements = {}
+                for metric_name in ("gpu_busy", "memory_busy"):
+                    if metric_name not in evaluation_raw:
+                        continue
+                    requirement_raw = evaluation_raw.get(metric_name)
+                    if requirement_raw is None:
+                        continue
+                    if not isinstance(requirement_raw, dict):
+                        raise ValueError(
+                            f"stage '{stage_raw.get('id', '?')}' gpu_evaluation.{metric_name} must be an object"
+                        )
+                    requirement_unexpected = sorted(
+                        set(requirement_raw) - {"minimum_percent", "minimum_sustain_seconds", "required"}
+                    )
+                    if requirement_unexpected:
+                        raise ValueError(
+                            f"stage '{stage_raw.get('id', '?')}' gpu_evaluation.{metric_name} has unsupported fields: "
+                            + ", ".join(requirement_unexpected)
+                        )
+                    if "required" in requirement_raw and not isinstance(requirement_raw.get("required"), bool):
+                        raise ValueError(
+                            f"stage '{stage_raw.get('id', '?')}' gpu_evaluation.{metric_name}.required must be true or false"
+                        )
+                    requirements[metric_name] = GpuMetricEvaluationRequirement(**requirement_raw)
+                gpu_evaluation = StageGpuEvaluation(**requirements)
             stages.append(
                 StageConfig(
                     id=stage_raw["id"],
@@ -137,6 +175,7 @@ class ProfileLoader:
                     modules=modules,
                     normalization=StageNormalization(**stage_raw.get("normalization", {})),
                     analysis=analysis,
+                    gpu_evaluation=gpu_evaluation,
                     strict_threshold_recommendation_warnings=stage_raw.get("strict_threshold_recommendation_warnings"),
                 )
             )
@@ -180,6 +219,12 @@ class ProfileLoader:
         payload = asdict(stage)
         if stage.analysis is None:
             payload.pop("analysis", None)
+        if stage.gpu_evaluation is None:
+            payload.pop("gpu_evaluation", None)
+        elif isinstance(payload.get("gpu_evaluation"), dict):
+            payload["gpu_evaluation"] = {
+                key: value for key, value in payload["gpu_evaluation"].items() if value is not None
+            }
         return payload
 
     def ensure_example_profile(self) -> Path:

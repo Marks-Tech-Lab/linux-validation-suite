@@ -22,12 +22,15 @@ from Modules.lvs_cli_launcher import (
 from Modules.lvs_compat_exporter import CompatibilityExporter
 from Modules.lvs_core import APP_NAME, APP_VERSION, JsonStore
 from Modules.lvs_profile_models import (
+    GpuMetricEvaluationRequirement,
     ModuleCpu,
     ModuleGpu3D,
     ModuleMemory,
     ModuleVram,
     ProfileDefaults,
     StageConfig,
+    StageAnalysis,
+    StageGpuEvaluation,
     StageModules,
     StageNormalization,
     ValidationProfile,
@@ -81,6 +84,7 @@ __all__ = [
     "DEFAULT_TRIM_START_SECONDS",
     "GlobalSettings",
     "GoogleDriveUploader",
+    "GpuMetricEvaluationRequirement",
     "JsonStore",
     "Launcher",
     "ModuleCpu",
@@ -97,6 +101,8 @@ __all__ = [
     "SegmentParser",
     "SettingsManager",
     "StageConfig",
+    "StageAnalysis",
+    "StageGpuEvaluation",
     "StageModules",
     "StageNormalization",
     "StageWindow",
