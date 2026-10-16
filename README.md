@@ -26,9 +26,9 @@ available on each host.
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current release is `v0.4.0-alpha`, a substantial feature
-alpha focused on telemetry visibility, standalone reporting, profile workflow
-improvements, run timing, and transactional migration while retaining
+pre-releases. The current release is `v0.5.0-alpha`, a hardware-correctness and
+GPU-workload alpha focused on truthful cross-platform discovery, telemetry,
+evaluation, verification, and scalable Vulkan compute stress while retaining
 first-class x86_64 and AArch64 support.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
@@ -38,6 +38,23 @@ baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
 Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
 intended for early validation and feedback; hardware-sensitive and experimental
 areas are identified below.
+
+## Hardware Scalability
+
+LVS is designed to scale from old, weak, and memory-constrained hardware to
+modern high-end workstations and compute platforms. Workload intensity,
+concurrency, duration, and CPU, GPU, RAM, VRAM, and storage allocations must be
+derived from the relevant capabilities and available resources rather than
+model-specific assumptions. Shared and dedicated memory remain distinct, and
+available-memory budgets, competing allocations, safety reserves, runtime
+guards, real execution, and integrity verification remain authoritative.
+
+Optional ISA instructions, GPU extensions, drivers, telemetry providers, and
+hardware features may be unsupported or unavailable. LVS preserves portable
+fallbacks where they are valid and reports unsupported, unavailable, untested,
+insufficient-evidence, and failed states separately. See the
+[hardware scalability contract](ARCHITECTURE_MAP.md#hardware-scalability-contract)
+for the persistent design and regression requirements.
 
 ## Fresh Clone And First Run
 
@@ -323,7 +340,7 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The runtime version is `0.4.0-alpha`, corresponding to the `v0.4.0-alpha`
+The runtime version is `0.5.0-alpha`, corresponding to the `v0.5.0-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -351,6 +368,73 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 `parsed_results_custom.json` and its compatibility aliases remain unchanged.
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
+
+## Release Notes — v0.5.0-alpha
+
+Linux Validation Suite v0.5.0-alpha is a hardware-correctness and GPU-workload
+alpha release. It builds on v0.4.0-alpha without changing the established
+compatibility-era result contract.
+
+### CPU and platform correctness
+
+- Corrected AArch64 native CPU execution, fallback shutdown, worker-result
+  persistence, instruction intent, and Power Auto fallback ordering.
+- Added evidence-based ACPI thermal-zone provenance so ambiguous `acpitz`
+  readings remain distinct platform zones rather than fabricated CPU-package
+  temperatures, while preserving firmware trip safety.
+- Added authoritative per-CPU MIDR discovery and Cortex-X925/A725 decoding,
+  separating architectural identity from neutral capacity tiers, topology, and
+  ISA capabilities.
+
+### GPU discovery, telemetry, and memory semantics
+
+- Preserved stable physical-GPU identity across telemetry, Vulkan/OpenCL
+  providers, worker routing, compatibility output, and multi-GPU results.
+- Corrected NVIDIA partial-telemetry and `N/A` handling so measured zero,
+  unavailable measurements, unsupported fields, and query errors remain
+  distinct without discarding valid power, temperature, clock, or utilization
+  readings.
+- Corrected unified/shared-memory presentation and budgeting: Vulkan
+  device-local and OpenCL global capacities remain API measurements, not
+  invented dedicated VRAM.
+- Added generic non-PCI platform-GPU inventory and reporting while excluding
+  software Vulkan devices, and preserved valid Vulkan memory type/heap index
+  zero in compatibility serialization.
+
+### Evaluation and Vulkan workload effectiveness
+
+- Added explicit analysis intent and post-trim evidence quality, separating
+  worker execution, functional validation, telemetry quality, threshold
+  analysis, and sustained conclusions.
+- Corrected GPU evaluation eligibility so functional and legacy stages cannot
+  manufacture saturation verdicts, missing telemetry is not a measured miss,
+  and verified allocation/readback remains independent of utilization
+  heuristics.
+- Improved sustained Vulkan compute stress with legal device-specific dispatch
+  geometry, bounded adaptive batching, command-buffer reuse, time-based initial,
+  periodic, and final readback verification, and low-overhead worker timing and
+  GPU timestamp provenance.
+- Corrected workload reporting so compute-stress intent is not presented as
+  proof of numerical saturation or power saturation.
+
+### Validation
+
+- The complete non-hardware smoke suite passed: 262/262.
+- All 23 active profiles and archived profile fixtures passed validation.
+- Physical validation covered AArch64 CPU/Power Auto behavior and GPU execution,
+  identity, telemetry, memory semantics, safety, and Vulkan worker integrity on
+  materially different NVIDIA, AMD, Intel, and Qualcomm systems. This is broad
+  acceptance evidence, not a claim of universal hardware coverage.
+
+### Known limitations
+
+- Universal numerical GPU saturation calibration was not performed.
+- Extremely old and very small-memory GPU compatibility is not yet
+  comprehensively physically tested.
+- A legacy `card1` physical-identity label inconsistency remains a nonblocking
+  follow-up.
+- SVE, SVE2, and SME remain future AArch64 capability work. Alpha status remains
+  appropriate.
 
 ## Release Notes — v0.3.1-alpha
 

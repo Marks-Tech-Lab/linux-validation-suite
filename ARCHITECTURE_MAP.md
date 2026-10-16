@@ -15,6 +15,41 @@ Before splitting more code, classify the task:
 
 Do the first. Avoid the second.
 
+## Hardware Scalability Contract
+
+LVS must remain useful and safe across very old, weak, memory-constrained
+systems and modern high-end workstations and compute platforms. Workload and
+allocation changes must therefore follow these rules:
+
+- Scale CPU, GPU, RAM, VRAM, storage, workload intensity, concurrency, and test
+  duration from independently established capabilities and currently available
+  resources. A model name, vendor, clock, topology class, or one API capacity is
+  not a substitute for the capability being sized.
+- Avoid hardware-model-specific assumptions and fixed allocation floors or
+  workload ceilings that unnecessarily exclude weak devices or underuse capable
+  ones. High-performance devices should receive proportionally substantial
+  work only when the relevant capability and safety evidence supports it.
+- Respect competing allocations, shared-versus-dedicated memory semantics,
+  available-memory budgets, safety reserves, and runtime guards. Compute
+  intensity and memory allocation are separate decisions.
+- Treat unsupported ISA instructions, optional GPU extensions, drivers,
+  telemetry providers, and hardware features as explicit capability states.
+  Preserve older supported instruction sets and portable fallback
+  implementations; fail closed where a requested capability has no safe
+  fallback.
+- Require genuine hardware execution, bounded integrity verification, and
+  truthful reporting at every capability tier. Keep `unavailable`,
+  `unsupported`, `untested`, `insufficient_evidence`, and actual execution
+  failure semantically distinct.
+- Maintain deterministic regression coverage for low-resource, high-resource,
+  heterogeneous, and missing-capability cases. Major workload, scheduling, or
+  allocation changes require an explicit cross-hardware scalability review and
+  proportionate physical validation where behavior is hardware-dependent.
+
+These requirements do not create universal performance thresholds or imply
+that every hardware generation has been physically tested. They define how LVS
+must adapt safely and report the evidence it actually has.
+
 ## Entrypoints
 
 - `linux_validation_suite.py`: CLI compatibility entrypoint. It re-exports legacy symbols and starts `Launcher().start()` when run directly.

@@ -4,11 +4,11 @@ The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
 included. Alpha releases are published as pre-releases; the current
-`v0.4.0-alpha` release expands telemetry, standalone reporting, profile
-workflow, run timing, and transactional migration while preserving first-class
-AArch64 support alongside x86_64 and the established evidence and
-output-compatibility boundaries. It is validated with the full smoke suite and
-the committed hardware-acceptance records.
+`v0.5.0-alpha` release advances cross-platform hardware correctness, evidence
+quality, GPU telemetry and memory semantics, and scalable verified Vulkan
+compute stress while preserving first-class AArch64 and x86_64 support and the
+established output-compatibility boundaries. It is validated with the full
+smoke suite and multi-system physical hardware acceptance.
 
 Use this checklist when updating the public repository. Publish only generic
 Linux Validation Suite (LVS) code, examples, documentation, and empty runtime
