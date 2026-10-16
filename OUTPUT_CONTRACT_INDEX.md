@@ -26,7 +26,7 @@ breaking change even when the producing module is internal.
 | --- | --- | --- |
 | `parsed_results_custom.json` | OCCT/legacy compatibility contract | Frozen compatibility export. Its lowercase, PascalCase, snake_case, and human-readable test keys are intentional. |
 | `parsed_results_extended.json` | Mixed compatibility artifact | Snake_case LVS wrapper containing `system_info` and `compatibility_export`, both of which retain their existing schemas. It is extended, not normalized. |
-| `system_info.json` | Mixed compatibility artifact | Hardware inventory uses established PascalCase sections with some snake_case detail records and is mirrored into `parsed_results_custom.json` as `SystemInfo`. |
+| `system_info.json` | Mixed compatibility artifact | Hardware inventory uses established PascalCase sections with some snake_case detail records and is mirrored into `parsed_results_custom.json` as `SystemInfo`. GPU inventory may include additive canonical physical identity, identity provenance, and platform-device path fields; their absence in historical results remains valid. |
 | `run_manifest.json` | Mixed compatibility artifact | Versioned `linux_validation_suite.run_manifest` v1 envelope with `kind: run_manifest`. LVS lifecycle fields are snake_case. Per-stage `analysis_evidence` and additive `gpu_evaluation_evidence` keep execution outcome separate from telemetry-performance sufficiency. Raw backend details, including Vulkan properties such as `deviceName`, remain verbatim within backend/detail sections. |
 | `run_metadata.json` | LVS-owned snake_case contract | Serialized run identity and operator metadata. Existing names are compatibility-sensitive. |
 | `profile_used.json` | LVS-owned snake_case contract | Effective profile and stage configuration used by the run. |
@@ -44,7 +44,7 @@ read-only, normalized health values and source/status notes; raw `smartctl` or
 
 | Artifact | Classification | Ownership and compatibility notes |
 | --- | --- | --- |
-| `worker_results/*_cpu.json`, `*_memory.json`, `*_gpu_3d_*.json`, `*_vram_*.json` | LVS-owned snake_case contract | Worker evidence consumed by stage postprocessing. Treat existing keys as semi-public implementation contracts. |
+| `worker_results/*_cpu.json`, `*_memory.json`, `*_gpu_3d_*.json`, `*_vram_*.json` | LVS-owned snake_case contract | Worker evidence consumed by stage postprocessing. Treat existing keys as semi-public implementation contracts. Vulkan compute workers add bounded startup checkpoints/fault-diagnostic state, timing, dispatch/submission, verification-cadence, device-limit, and optional GPU-timestamp evidence; absence of those additive fields preserves the historical contract. |
 | Intel GPU sidecar `*.json` | Embedded external/vendor/raw payload | Raw `intel_gpu_top` output; preserve it verbatim. |
 | Intel GPU sidecar `*.summary.json` | LVS-owned snake_case contract | LVS summary of raw Intel GPU sidecar evidence. |
 | `gpu_safety_marker.json` | LVS-owned snake_case contract | Local operational state used for interrupted-run safety. |

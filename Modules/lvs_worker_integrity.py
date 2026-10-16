@@ -31,7 +31,22 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
 
 
 def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
-    return not worker_verification_required(payload) or worker_verification_passes(payload) > 0
+    if not worker_verification_required(payload):
+        return True
+    if worker_verification_passes(payload) <= 0:
+        return False
+    # New workers that explicitly promise bounded initial/final verification
+    # must complete both. Historical payloads do not carry these keys and keep
+    # their established pass-count contract.
+    for snake_key, compat_key in (
+        ("initial_verification_completed", "InitialVerificationCompleted"),
+        ("final_verification_completed", "FinalVerificationCompleted"),
+    ):
+        if snake_key in payload or compat_key in payload:
+            value = payload.get(snake_key, payload.get(compat_key))
+            if value is not None and not bool(value):
+                return False
+    return True
 
 
 def worker_result_successful(payload: Dict[str, Any]) -> bool:

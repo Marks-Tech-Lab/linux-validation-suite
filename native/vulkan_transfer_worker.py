@@ -574,6 +574,24 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
     limits_offset = 296
     max_storage_buffer_range = int.from_bytes(raw[limits_offset + 28:limits_offset + 32], "little")
     max_memory_allocation_count = int.from_bytes(raw[limits_offset + 36:limits_offset + 40], "little")
+    # VkPhysicalDeviceLimits is part of the core ABI. Keep these offsets next
+    # to the existing buffer/allocation limits so internal Vulkan workers can
+    # select legal compute geometry even when no Python Vulkan binding exists.
+    max_compute_work_group_count = [
+        int.from_bytes(raw[limits_offset + offset : limits_offset + offset + 4], "little")
+        for offset in (220, 224, 228)
+    ]
+    max_compute_work_group_invocations = int.from_bytes(
+        raw[limits_offset + 232 : limits_offset + 236], "little"
+    )
+    max_compute_work_group_size = [
+        int.from_bytes(raw[limits_offset + offset : limits_offset + offset + 4], "little")
+        for offset in (236, 240, 244)
+    ]
+    timestamp_compute_and_graphics = bool(
+        int.from_bytes(raw[limits_offset + 420 : limits_offset + 424], "little")
+    )
+    timestamp_period = struct.unpack_from("<f", raw, limits_offset + 424)[0]
     type_names = {
         0: "other",
         1: "integrated",
@@ -591,6 +609,11 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
         "device_name": name,
         "max_storage_buffer_range_bytes": max_storage_buffer_range,
         "max_memory_allocation_count": max_memory_allocation_count,
+        "max_compute_work_group_count": max_compute_work_group_count,
+        "max_compute_work_group_invocations": max_compute_work_group_invocations,
+        "max_compute_work_group_size": max_compute_work_group_size,
+        "timestamp_compute_and_graphics": timestamp_compute_and_graphics,
+        "timestamp_period_nanoseconds": float(timestamp_period) if timestamp_period > 0 else 0.0,
         "pci_slot": read_pci_slot(vk, physical_device),
     }
 

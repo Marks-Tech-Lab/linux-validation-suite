@@ -38,6 +38,7 @@ from .lvs_gpu_identity import (
     normalize_pci_id,
     normalize_pci_slot,
     parse_vulkan_summary_devices,
+    physical_gpu_identity,
     pci_physical_gpu_id,
     pci_slot_sort_key,
     runtime_gpu_name_score,
@@ -46,7 +47,7 @@ from .lvs_gpu_identity import (
     slot_from_mesa_vulkan_uuid,
 )
 from .lvs_gpu_memory_model import classify_gpu_memory
-from .lvs_gpu_targets import gpu_card_class
+from .lvs_gpu_targets import discover_gpu_cards, gpu_card_class
 from .lvs_telemetry_nvidia import discover_nvidia_smi_gpus
 from .lvs_vulkan_runtime import collect_vulkan_native_physical_devices, resolve_vulkan_library
 from .lvs_inventory_helpers import (
@@ -85,6 +86,7 @@ class SystemInfoCollector:
         self._pci_device_names: Optional[Dict[str, Dict[str, str]]] = None
         self._privileged_helper_enabled = bool(privileged_helper_enabled)
         self._cpu_core_type_probe = dict(cpu_core_type_probe or {})
+        self._native_vulkan_inventory_cache: Optional[Dict[str, Any]] = None
 
     def collect(
         self,
@@ -422,6 +424,11 @@ class SystemInfoCollector:
                     gpu["device_class"] = inferred_class
                     gpu["device_class_source"] = "drm_driver_or_platform_topology"
                     gpu["device_class_confidence"] = "medium"
+        for physical_gpu_id, detail in self._native_vulkan_platform_details(drm_gpus).items():
+            for gpu in drm_gpus:
+                if str(gpu.get("physical_gpu_id") or "") == physical_gpu_id:
+                    gpu.update(detail)
+                    break
         runtime_names = self._runtime_gpu_names_by_slot(drm_gpus)
         nvidia_gpus = self._discover_nvidia_smi_gpus()
         nvidia_by_slot = {
@@ -517,7 +524,13 @@ class SystemInfoCollector:
                     "DeviceClass": gpu.get("device_class", "unknown"),
                     "DeviceClassSource": gpu.get("device_class_source", ""),
                     "DeviceClassConfidence": gpu.get("device_class_confidence", "low"),
-                    "PhysicalGpuId": pci_physical_gpu_id(gpu.get("pci_slot", "")),
+                    "PhysicalGpuId": str(
+                        gpu.get("physical_gpu_id")
+                        or pci_physical_gpu_id(gpu.get("pci_slot", ""))
+                    ),
+                    "PhysicalGpuIdentitySource": gpu.get("gpu_identity_source", ""),
+                    "PhysicalGpuIdentityConfidence": gpu.get("identity_confidence", ""),
+                    "PlatformDevicePath": gpu.get("platform_gpu_path", ""),
                     "MemoryArchitecture": memory_architecture,
                     "MemoryArchitectureSource": memory_profile.get("classification_source", "insufficient_evidence"),
                     "MemoryArchitectureConfidence": memory_profile.get("classification_confidence", "low"),
@@ -599,8 +612,7 @@ class SystemInfoCollector:
         return by_slot
 
     def _native_vulkan_gpu_details_by_slot(self, drm_gpus: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        library = resolve_vulkan_library()
-        inventory = collect_vulkan_native_physical_devices(library)
+        inventory = self._native_vulkan_inventory()
         by_slot: Dict[str, Dict[str, Any]] = {}
         for device in inventory.get("devices", []) if inventory.get("available") else []:
             slot = self._slot_for_vulkan_device(device, drm_gpus)
@@ -623,55 +635,129 @@ class SystemInfoCollector:
             by_slot[slot.lower()] = detail
         return by_slot
 
-    def _discover_drm_gpus(self) -> List[Dict[str, Any]]:
-        devices: List[Dict[str, Any]] = []
-        gpu_index = 0
-        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
-            if "-" in card.name:
+    def _native_vulkan_inventory(self) -> Dict[str, Any]:
+        if self._native_vulkan_inventory_cache is None:
+            library = resolve_vulkan_library()
+            self._native_vulkan_inventory_cache = collect_vulkan_native_physical_devices(library)
+        return self._native_vulkan_inventory_cache
+
+    def _native_vulkan_platform_details(self, gpus: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Associate hardware Vulkan devices with non-PCI platform GPUs conservatively."""
+        inventory = self._native_vulkan_inventory()
+        if not inventory.get("available"):
+            return {}
+        platform_gpus = [
+            gpu for gpu in gpus
+            if not str(gpu.get("pci_slot") or "").strip()
+            and str(gpu.get("physical_gpu_id") or "").startswith("platform:")
+        ]
+        if not platform_gpus:
+            return {}
+        devices = []
+        for device in inventory.get("devices", []):
+            raw_name = str(device.get("deviceName") or "")
+            device_type = str(device.get("deviceType") or "").lower()
+            if "cpu" in device_type or self._is_unhelpful_runtime_gpu_name(raw_name):
                 continue
-            device_dir = card / "device"
-            vendor = self._read_sysfs(device_dir / "vendor") or ""
-            device = self._read_sysfs(device_dir / "device") or ""
-            vram_bytes = self._read_sysfs_int(device_dir / "mem_info_vram_total")
-            slot = ""
-            uevent = self._read_sysfs(device_dir / "uevent") or ""
-            for line in uevent.splitlines():
-                if line.startswith("PCI_SLOT_NAME="):
-                    slot = line.split("=", 1)[1].strip()
-                    break
-            driver_link = device_dir / "driver" / "module"
-            driver = driver_link.resolve().name if driver_link.exists() else ""
-            vendor_name = self._vendor_name(vendor)
-            resolved_name = self._lookup_pci_device_name(vendor, device)
-            device_code = self._normalize_pci_id(device).upper()
-            pci_name = resolved_name or f"{vendor_name} GPU {device_code}".strip()
-            name = self._friendly_pci_gpu_name(vendor_name, pci_name, device_code)
-            name_source = "pci_ids" if resolved_name else "vendor_device_id"
-            if name != pci_name:
-                name_source = f"friendly_{name_source}"
-            chipset = f"{vendor_name} {device_code}".strip()
-            pcie_link = read_pcie_link_info(device_dir, self._read_sysfs)
-            devices.append(
-                {
-                    "card": card.name,
-                    "name": name,
-                    "marketing_name": name,
-                    "pci_name": pci_name,
-                    "name_source": name_source,
-                    "chipset": chipset,
-                    "driver": driver,
-                    "pci_slot": slot,
-                    "vendor_id": self._normalize_pci_id(vendor),
-                    "device_id": self._normalize_pci_id(device),
-                    "device_class": "unknown",
-                    "device_class_source": "",
-                    "device_class_confidence": "low",
-                    "memory": self._format_gib(vram_bytes),
-                    "memory_bytes": int(vram_bytes or 0),
-                    "provider_memory_source": "drm_mem_info_vram_total" if int(vram_bytes or 0) > 0 else "",
-                    "pcie_link": pcie_link,
-                }
+            if self._slot_for_vulkan_device(device, gpus):
+                continue
+            devices.append(device)
+
+        matches: Dict[str, Dict[str, Any]] = {}
+        remaining_devices = list(devices)
+        remaining_gpus = list(platform_gpus)
+        for gpu in list(remaining_gpus):
+            identity_tokens = {
+                str(gpu.get(key) or "").strip().lower()
+                for key in ("driver", "platform_gpu_driver")
+                if len(str(gpu.get(key) or "").strip()) >= 3
+            }
+            compatible = gpu.get("platform_gpu_compatible") or []
+            identity_tokens.update(
+                token
+                for value in compatible
+                for token in re.split(r"[^a-z0-9]+", str(value).lower())
+                if len(token) >= 4 and token not in {"gpu", "graphics"}
             )
+            candidates = [
+                device for device in remaining_devices
+                if any(token in str(device.get("deviceName") or "").lower() for token in identity_tokens)
+            ]
+            if len(candidates) == 1:
+                device = candidates[0]
+                matches[str(gpu["physical_gpu_id"])] = device
+                remaining_gpus.remove(gpu)
+                remaining_devices.remove(device)
+        if len(remaining_gpus) == 1 and len(remaining_devices) == 1:
+            matches[str(remaining_gpus[0]["physical_gpu_id"])] = remaining_devices[0]
+
+        details: Dict[str, Dict[str, Any]] = {}
+        for physical_gpu_id, device in matches.items():
+            device_class = self._device_class_from_vulkan_type(str(device.get("deviceType") or ""))
+            raw_name = str(device.get("deviceName") or "")
+            detail: Dict[str, Any] = {
+                "vulkan_device_local_heap_bytes": int(device.get("device_local_heap_bytes") or 0),
+                "vulkan_inventory_source": "libvulkan",
+                "vulkan_device_name": raw_name,
+                "vulkan_device_index": device.get("index"),
+                "vulkan_platform_association_source": "platform_identity_or_unique_hardware_device",
+            }
+            clean_name = self._clean_runtime_gpu_name(raw_name)
+            if clean_name:
+                detail.update({
+                    "name": clean_name,
+                    "marketing_name": clean_name,
+                    "name_source": "vulkan_native_physical_device",
+                    "runtime_name_raw": raw_name,
+                })
+            if device_class != "unknown":
+                detail.update({
+                    "device_class": device_class,
+                    "device_class_source": "vulkan_native_physical_device_type",
+                    "device_class_confidence": "high",
+                })
+            details[physical_gpu_id] = detail
+        return details
+
+    def _discover_drm_gpus(self) -> List[Dict[str, Any]]:
+        cards = discover_gpu_cards(
+            pci_name_lookup=lambda vendor, device: self._lookup_pci_device_name(vendor, device),
+            safe_read_int=self._read_sysfs_int,
+        )
+        devices: List[Dict[str, Any]] = []
+        for card in cards:
+            slot = str(card.get("slot") or "")
+            vendor_name = str(card.get("vendor") or "Unknown")
+            device_code = self._normalize_pci_id(card.get("device") or "").upper()
+            resolved_pci_name = self._lookup_pci_device_name(card.get("vendor_id") or "", card.get("device") or "") if slot else None
+            discovered_name = str(card.get("name") or "").strip()
+            pci_name = str(resolved_pci_name or discovered_name or f"{vendor_name} GPU {device_code}").strip()
+            name = (
+                self._friendly_pci_gpu_name(vendor_name, pci_name, device_code)
+                if slot else pci_name
+            )
+            vram_bytes = int(card.get("vram_total") or 0)
+            device_dir = Path("/sys/class/drm") / str(card.get("card") or "") / "device"
+            identity = physical_gpu_identity(card)
+            devices.append({
+                **card,
+                **identity,
+                "name": name,
+                "marketing_name": name,
+                "pci_name": pci_name,
+                "name_source": "pci_ids" if slot and resolved_pci_name else "platform_device_tree" if not slot else "vendor_device_id",
+                "chipset": f"{vendor_name} {device_code}".strip() if device_code else name,
+                "pci_slot": slot,
+                "vendor_id": self._normalize_pci_id(card.get("vendor_id") or ""),
+                "device_id": self._normalize_pci_id(card.get("device") or ""),
+                "device_class": str(card.get("device_class") or "unknown"),
+                "device_class_source": str(card.get("device_class_source") or ""),
+                "device_class_confidence": str(card.get("device_class_confidence") or "low"),
+                "memory": self._format_gib(vram_bytes),
+                "memory_bytes": vram_bytes,
+                "provider_memory_source": str(card.get("vram_total_source") or ""),
+                "pcie_link": read_pcie_link_info(device_dir, self._read_sysfs) if slot else {},
+            })
         return devices
 
     def _sort_gpus_for_export(self, gpus: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -705,6 +791,8 @@ class SystemInfoCollector:
             return False
         device_class = str(gpu.get("device_class", "") or "").strip().lower()
         if device_class in {"discrete", "integrated", "apu", "external", "virtual"}:
+            return True
+        if str(gpu.get("physical_gpu_id") or "").startswith("platform:") and gpu.get("gpu_device_role") == "3d_gpu":
             return True
         if self._gpu_vendor_family_from_inventory(gpu) in {"amd", "nvidia", "intel"}:
             return True

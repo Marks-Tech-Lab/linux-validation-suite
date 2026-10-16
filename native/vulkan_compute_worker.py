@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import ctypes
+import faulthandler
 import json
 import math
 import os
@@ -97,6 +98,21 @@ from vulkan_transfer_worker import (
 )
 
 VK_ACCESS_SHADER_READ_BIT = 0x00000020
+VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO = 11
+VK_QUERY_TYPE_TIMESTAMP = 2
+VK_QUERY_RESULT_64_BIT = 0x00000001
+VK_QUERY_RESULT_WAIT_BIT = 0x00000002
+
+
+class VkQueryPoolCreateInfo(ctypes.Structure):
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("queryType", ctypes.c_uint32),
+        ("queryCount", ctypes.c_uint32),
+        ("pipelineStatistics", ctypes.c_uint32),
+    ]
 
 
 def _words_for_string(value: str) -> list[int]:
@@ -108,6 +124,42 @@ def _words_for_string(value: str) -> list[int]:
 
 def _inst(opcode: int, operands: list[int]) -> list[int]:
     return [((1 + len(operands)) << 16) | opcode, *operands]
+
+
+def validate_generated_compute_spirv_structure(words: list[int]) -> None:
+    """Fail closed on generator ordering errors before a driver sees SPIR-V.
+
+    This is deliberately a narrow invariant check for the module emitted in
+    this file, not a replacement for a complete SPIR-V validator.  Types,
+    constants, and module-scope variables emitted by this generator must all
+    precede OpFunction.
+    """
+    if len(words) < 5 or int(words[0]) != 0x07230203:
+        raise RuntimeError("generated compute SPIR-V has an invalid header")
+    module_only_opcodes = {19, 21, 23, 29, 30, 32, 33, 43, 59}
+    offset = 5
+    function_seen = False
+    function_end_seen = False
+    while offset < len(words):
+        instruction = int(words[offset])
+        word_count = instruction >> 16
+        opcode = instruction & 0xFFFF
+        if word_count <= 0 or offset + word_count > len(words):
+            raise RuntimeError(
+                f"generated compute SPIR-V has an invalid instruction at word {offset}"
+            )
+        if opcode == 54:  # OpFunction
+            function_seen = True
+        elif function_seen and opcode in module_only_opcodes:
+            raise RuntimeError(
+                "generated compute SPIR-V emits a module-scope declaration "
+                f"after OpFunction (opcode={opcode}, word={offset})"
+            )
+        elif opcode == 56:  # OpFunctionEnd
+            function_end_seen = True
+        offset += word_count
+    if not function_seen or not function_end_seen or offset != len(words):
+        raise RuntimeError("generated compute SPIR-V has an incomplete function body")
 
 
 def normalize_kernel_variant(value: str) -> str:
@@ -143,13 +195,105 @@ def resolve_dispatch_repeats(kernel_variant: str, requested_repeats: int = 0) ->
     return kernel_dispatch_repeats(variant)
 
 
-def compute_shader_spirv(compute_rounds: int, kernel_variant: str = "hash") -> bytes:
+def select_compute_local_size(
+    max_work_group_invocations: int,
+    max_work_group_size: list[int] | tuple[int, ...],
+) -> int:
+    size_x = int(max_work_group_size[0]) if max_work_group_size else 0
+    legal_maximum = min(
+        value for value in (int(max_work_group_invocations or 0), size_x) if value > 0
+    ) if any(value > 0 for value in (int(max_work_group_invocations or 0), size_x)) else 128
+    for candidate in (256, 128, 64, 32, 16, 8, 4, 2, 1):
+        if candidate <= legal_maximum:
+            return candidate
+    return 1
+
+
+def compute_dispatch_dimensions(
+    work_items: int,
+    local_size_x: int,
+    max_group_counts: list[int] | tuple[int, ...],
+) -> tuple[int, int, int, int]:
+    local_size = max(1, int(local_size_x or 1))
+    total_groups = max(1, int(math.ceil(max(1, int(work_items)) / float(local_size))))
+    limits = [max(1, int(value or 0)) for value in list(max_group_counts or [])[:3]]
+    while len(limits) < 3:
+        limits.append(65535)
+    if total_groups <= limits[0]:
+        return total_groups, 1, 1, total_groups * local_size
+    minimum_y = max(2, int(math.ceil(total_groups / float(limits[0]))))
+    for groups_y in range(minimum_y, min(limits[1], total_groups) + 1):
+        if total_groups % groups_y:
+            continue
+        groups_x = total_groups // groups_y
+        if groups_x <= limits[0]:
+            return groups_x, groups_y, 1, total_groups * local_size
+    minimum_z = max(
+        2,
+        int(math.ceil(total_groups / float(max(1, limits[0] * limits[1])))),
+    )
+    for groups_z in range(minimum_z, min(limits[2], total_groups) + 1):
+        if total_groups % groups_z:
+            continue
+        remaining_groups = total_groups // groups_z
+        minimum_y = max(1, int(math.ceil(remaining_groups / float(limits[0]))))
+        for groups_y in range(minimum_y, min(limits[1], remaining_groups) + 1):
+            if remaining_groups % groups_y:
+                continue
+            groups_x = remaining_groups // groups_y
+            if groups_x <= limits[0]:
+                return groups_x, groups_y, groups_z, total_groups * local_size
+    raise RuntimeError(
+        "Vulkan compute dispatch cannot be represented exactly within supported "
+        "workgroup counts without an out-of-range invocation: "
+        f"required_groups={total_groups} limits={limits}"
+    )
+
+
+def next_submission_batch_iterations(
+    current: int,
+    observed_seconds: float,
+    *,
+    full_load: bool,
+    maximum: int = 8,
+    target_seconds: float = 0.05,
+) -> int:
+    current_value = max(1, min(int(maximum), int(current or 1)))
+    if not full_load or observed_seconds <= 0:
+        return 1
+    if observed_seconds < target_seconds * 0.5 and current_value < maximum:
+        return min(maximum, current_value * 2)
+    if observed_seconds > target_seconds * 2.0 and current_value > 1:
+        return max(1, current_value // 2)
+    return current_value
+
+
+def timed_action_due(
+    last_monotonic: float,
+    now_monotonic: float,
+    interval_seconds: float,
+    *,
+    required: bool = False,
+) -> bool:
+    return bool(
+        required
+        or last_monotonic <= 0
+        or now_monotonic - last_monotonic >= max(0.0, interval_seconds)
+    )
+
+
+def compute_shader_spirv(
+    compute_rounds: int,
+    kernel_variant: str = "hash",
+    local_size_x: int = 256,
+) -> bytes:
     # Hand-built SPIR-V for:
-    # layout(local_size_x=256) in;
+    # layout(local_size_x=<selected legal size>) in;
     # layout(std430, binding=0) buffer Data { uint data[]; };
     # void main() {
-    #   uint v = gl_GlobalInvocationID.x;              // hash / stress_hash
-    #   uint v = data[gl_GlobalInvocationID.x] ^ gid;  // stateful_memory
+    #   uint gid = linearized gl_GlobalInvocationID across x/y/z;
+    #   uint v = gid;                                  // hash / stress_hash
+    #   uint v = data[gid] ^ gid;                      // stateful_memory
     #   repeat compute_rounds times:
     #     v ^= v >> 16; v *= 0x7FEB352Du;
     #     v ^= v >> 15; v *= 0x846CA68Bu;
@@ -159,9 +303,10 @@ def compute_shader_spirv(compute_rounds: int, kernel_variant: str = "hash") -> b
     words: list[int] = [0x07230203, 0x00010000, 0, 64, 0]
     words += _inst(17, [1])  # OpCapability Shader
     words += _inst(14, [0, 1])  # OpMemoryModel Logical GLSL450
-    words += [((3 + len(_words_for_string("main")) + 1) << 16) | 15, 5, 13, *_words_for_string("main"), 11]
-    words += _inst(16, [13, 17, 256, 1, 1])  # OpExecutionMode LocalSize
+    words += [((3 + len(_words_for_string("main")) + 2) << 16) | 15, 5, 13, *_words_for_string("main"), 11, 21]
+    words += _inst(16, [13, 17, max(1, int(local_size_x)), 1, 1])  # OpExecutionMode LocalSize
     words += _inst(71, [11, 11, 28])  # BuiltIn GlobalInvocationId
+    words += _inst(71, [21, 11, 24])  # BuiltIn NumWorkgroups
     words += _inst(71, [6, 6, 4])  # ArrayStride 4
     words += _inst(72, [7, 0, 35, 0])  # member offset
     words += _inst(71, [7, 3])  # BufferBlock
@@ -178,29 +323,44 @@ def compute_shader_spirv(compute_rounds: int, kernel_variant: str = "hash") -> b
     words += _inst(59, [8, 9, 2])  # data variable Uniform
     words += _inst(32, [10, 1, 4])  # ptr Input v3uint
     words += _inst(59, [10, 11, 1])  # global invocation id
+    words += _inst(59, [10, 21, 1])  # number of workgroups
     words += _inst(32, [12, 2, 3])  # ptr Uniform uint
     words += _inst(43, [3, 17, 16])  # shift 16
     words += _inst(43, [3, 18, 15])  # shift 15
     words += _inst(43, [3, 19, 0x7FEB352D])  # hash multiplier A
     words += _inst(43, [3, 20, 0x846CA68B])  # hash multiplier B
+    words += _inst(43, [3, 25, max(1, int(local_size_x))])  # selected local size
     words += _inst(54, [1, 13, 0, 2])  # function
     words += _inst(248, [14])  # label
     words += _inst(61, [4, 15, 11])  # load gid vector
-    words += _inst(81, [3, 16, 15, 0])  # extract x
+    words += _inst(81, [3, 16, 15, 0])  # extract global x
+    words += _inst(61, [4, 22, 21])  # load NumWorkgroups
+    words += _inst(81, [3, 23, 22, 0])  # extract workgroup count x
+    words += _inst(81, [3, 24, 15, 1])  # extract global y
+    words += _inst(132, [3, 26, 23, 25])  # row width in invocations
+    words += _inst(132, [3, 27, 24, 26])  # y row offset
+    words += _inst(81, [3, 28, 15, 2])  # extract global z
+    words += _inst(81, [3, 29, 22, 1])  # extract workgroup count y
+    words += _inst(132, [3, 30, 23, 29])  # workgroups per x/y plane
+    words += _inst(132, [3, 31, 30, 25])  # invocations per x/y plane
+    words += _inst(132, [3, 32, 28, 31])  # z plane offset
+    words += _inst(128, [3, 33, 16, 27])  # linear x/y invocation index
+    words += _inst(128, [3, 34, 33, 32])  # linear x/y/z invocation index
+    original_id = 34
     variant = normalize_kernel_variant(kernel_variant)
     ptr_id = 0
     if variant == "stateful_memory":
-        ptr_id = 21
-        loaded_id = 22
-        seed_id = 23
-        words += _inst(65, [12, ptr_id, 9, 5, 16])  # access data[gid.x]
+        ptr_id = 35
+        loaded_id = 36
+        seed_id = 37
+        words += _inst(65, [12, ptr_id, 9, 5, original_id])  # access data[linear gid]
         words += _inst(61, [3, loaded_id, ptr_id])  # load previous data[gid.x]
-        words += _inst(198, [3, seed_id, loaded_id, 16])  # previous ^ gid
+        words += _inst(198, [3, seed_id, loaded_id, original_id])  # previous ^ gid
         previous = seed_id
-        next_id = 24
+        next_id = 38
     else:
-        previous = 16
-        next_id = 21
+        previous = original_id
+        next_id = 35
     for _ in range(max(1, min(kernel_round_limit(variant), int(compute_rounds)))):
         shift1_id = next_id
         xor1_id = next_id + 1
@@ -219,18 +379,19 @@ def compute_shader_spirv(compute_rounds: int, kernel_variant: str = "hash") -> b
         words += _inst(132, [3, mul2_id, xor2_id, 20])  # IMul
         words += _inst(194, [3, shift3_id, mul2_id, 17])  # ShiftRightLogical
         words += _inst(198, [3, xor3_id, mul2_id, shift3_id])  # BitwiseXor
-        words += _inst(128, [3, add_id, xor3_id, 16])  # IAdd original gid
+        words += _inst(128, [3, add_id, xor3_id, original_id])  # IAdd original gid
         previous = add_id
         next_id += 9
     bound_id = next_id + 1
     if not ptr_id:
         ptr_id = next_id
-        words += _inst(65, [12, ptr_id, 9, 5, 16])  # access data[gid.x]
+        words += _inst(65, [12, ptr_id, 9, 5, original_id])  # access data[linear gid]
         bound_id = ptr_id + 1
     words += _inst(62, [ptr_id, previous])  # store
     words += _inst(253, [])  # return
     words += _inst(56, [])  # function end
     words[3] = max(bound_id, ptr_id + 1)
+    validate_generated_compute_spirv_structure(words)
     return b"".join(struct.pack("<I", word) for word in words)
 
 
@@ -266,7 +427,7 @@ def stress_hash_buffer_cap(target_vram_total: int, device_local_heap_bytes: int,
     return 128 * 1024 * 1024
 
 
-def choose_compute_queue_family(vk: ctypes.CDLL, physical_device: ctypes.c_void_p) -> int:
+def compute_queue_family_details(vk: ctypes.CDLL, physical_device: ctypes.c_void_p) -> tuple[int, dict]:
     count = ctypes.c_uint32()
     vk.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, ctypes.byref(count), None)
     if count.value <= 0:
@@ -291,10 +452,44 @@ def choose_compute_queue_family(vk: ctypes.CDLL, physical_device: ctypes.c_void_
             best_index = index
     if best_index < 0:
         raise RuntimeError("selected Vulkan device has no compute-capable queue")
-    return best_index
+    selected = props[best_index]
+    return best_index, {
+        "queue_flags": int(selected.queueFlags),
+        "queue_count": int(selected.queueCount),
+        "timestamp_valid_bits": int(selected.timestampValidBits),
+    }
 
 
-def extend_vulkan_prototypes(vk: ctypes.CDLL) -> None:
+def choose_compute_queue_family(vk: ctypes.CDLL, physical_device: ctypes.c_void_p) -> int:
+    return compute_queue_family_details(vk, physical_device)[0]
+
+
+def configure_optional_timestamp_query_prototypes(vk: ctypes.CDLL) -> bool:
+    names = (
+        "vkCreateQueryPool",
+        "vkDestroyQueryPool",
+        "vkCmdResetQueryPool",
+        "vkCmdWriteTimestamp",
+        "vkGetQueryPoolResults",
+    )
+    try:
+        functions = {name: getattr(vk, name) for name in names}
+    except (AttributeError, OSError):
+        return False
+    functions["vkCreateQueryPool"].argtypes = [ctypes.c_void_p, ctypes.POINTER(VkQueryPoolCreateInfo), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    functions["vkCreateQueryPool"].restype = ctypes.c_int32
+    functions["vkDestroyQueryPool"].argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    functions["vkDestroyQueryPool"].restype = None
+    functions["vkCmdResetQueryPool"].argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+    functions["vkCmdResetQueryPool"].restype = None
+    functions["vkCmdWriteTimestamp"].argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
+    functions["vkCmdWriteTimestamp"].restype = None
+    functions["vkGetQueryPoolResults"].argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint32]
+    functions["vkGetQueryPoolResults"].restype = ctypes.c_int32
+    return True
+
+
+def extend_vulkan_prototypes(vk: ctypes.CDLL) -> dict[str, bool]:
     vk.vkCreateShaderModule.argtypes = [ctypes.c_void_p, ctypes.POINTER(VkShaderModuleCreateInfo), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
     vk.vkCreateShaderModule.restype = ctypes.c_int32
     vk.vkDestroyShaderModule.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
@@ -329,6 +524,9 @@ def extend_vulkan_prototypes(vk: ctypes.CDLL) -> None:
     vk.vkCmdFillBuffer.restype = None
     vk.vkCmdCopyBuffer.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(VkBufferCopy)]
     vk.vkCmdCopyBuffer.restype = None
+    return {
+        "timestamp_query_functions": configure_optional_timestamp_query_prototypes(vk),
+    }
 
 
 def main() -> int:
@@ -365,21 +563,30 @@ def main() -> int:
         "kind": "gpu",
         "mode": "gpu_3d",
         "backend": "python_vulkan_compute",
-        "worker_version": "vulkan_compute_stateful_memory_v19"
+        "worker_version": "vulkan_compute_stateful_memory_v20"
         if resolved_kernel_variant == "stateful_memory"
         else (
-            "vulkan_compute_stress_hash_v7"
+            "vulkan_compute_stress_hash_v8"
             if resolved_kernel_variant == "stress_hash"
-            else "vulkan_compute_hash_v7"
+            else "vulkan_compute_hash_v8"
         ),
         "kernel_variant": resolved_kernel_variant,
         "backend_api_family": "Vulkan",
         "suite_scaling_mode": "parametric",
         "suite_verification": "compute_readback",
         "diagnostic_backend": False,
-        "saturation_result": True,
-        "power_saturation_expected": True,
-        "status": "ok",
+        "workload_purpose": (
+            "compute_stress_candidate"
+            if resolved_kernel_variant == "stress_hash"
+            else "memory_path_validation"
+            if resolved_kernel_variant == "stateful_memory"
+            else "compute_correctness"
+        ),
+        # Compatibility fields remain boolean, but execution alone is not
+        # evidence that physical saturation or power saturation was reached.
+        "saturation_result": False,
+        "power_saturation_expected": False,
+        "status": "initializing",
         "error_count": 0,
         "verification_passes": 0,
         "compute_mismatch_count": 0,
@@ -434,7 +641,58 @@ def main() -> int:
         "buffer_dispatch_max": 0,
         "buffer_dispatch_avg": 0.0,
         "compute_rounds": resolved_compute_rounds,
-        "effective_compute_rounds": resolved_compute_rounds * resolved_dispatch_repeats,
+        "effective_compute_rounds": resolved_compute_rounds,
+        "dependent_compute_rounds": resolved_compute_rounds,
+        "aggregate_round_work_per_cycle": resolved_compute_rounds * resolved_dispatch_repeats,
+        "independent_dispatch_repetitions": resolved_dispatch_repeats,
+        "queue_submission_count": 0,
+        "compute_dispatch_count": 0,
+        "timing_instrumentation_scope": "execution_cycles_after_device_and_buffer_setup",
+        "fence_wait_semantics": "host_elapsed_wait_for_submitted_batch_completion_not_gpu_execution_time",
+        "command_buffer_record_count": 0,
+        "command_buffer_reuse_count": 0,
+        "submission_batch_iterations": 1,
+        "submission_batch_iterations_max": 1,
+        "adaptive_batching_enabled": resolved_kernel_variant == "stress_hash",
+        "adaptive_batch_target_seconds": 0.05,
+        "command_record_elapsed_seconds": 0.0,
+        "queue_submit_elapsed_seconds": 0.0,
+        "fence_wait_elapsed_seconds": 0.0,
+        "verification_readback_count": 0,
+        "verification_readback_elapsed_seconds": 0.0,
+        "verification_interval_target_seconds": 0.75,
+        "verification_intervals_seconds": [],
+        "initial_verification_completed": False,
+        "final_verification_completed": False,
+        "result_write_count": 0,
+        "result_write_elapsed_seconds": 0.0,
+        "result_write_interval_target_seconds": 1.0,
+        "sleep_yield_count": 0,
+        "sleep_yield_elapsed_seconds": 0.0,
+        "cycle_count": 0,
+        "cycle_elapsed_seconds": 0.0,
+        "cycle_latency_last_seconds": 0.0,
+        "cycle_latency_min_seconds": None,
+        "cycle_latency_max_seconds": 0.0,
+        "batch_latency_last_seconds": 0.0,
+        "worker_cpu_seconds": 0.0,
+        "workgroup_local_size": [0, 1, 1],
+        "dispatch_group_count": [0, 1, 1],
+        "max_compute_work_group_invocations": 0,
+        "max_compute_work_group_size": [0, 0, 0],
+        "max_compute_work_group_count": [0, 0, 0],
+        "gpu_timestamp_status": "not_assessed",
+        "gpu_timestamp_reason": "",
+        "gpu_timestamp_semantics": "device_timestamps_between_compute_stage_markers_when_supported",
+        "gpu_timestamp_batch_count": 0,
+        "gpu_timestamp_elapsed_seconds": 0.0,
+        "gpu_timestamp_last_seconds": None,
+        "gpu_timestamp_min_seconds": None,
+        "gpu_timestamp_max_seconds": None,
+        "startup_checkpoint": "worker_process_started",
+        "startup_checkpoints": [],
+        "startup_complete": False,
+        "fault_diagnostics_enabled": False,
         "elapsed_seconds": 0.0,
         "estimated_device_memory_bytes": 0,
         "estimated_device_memory_gb": 0.0,
@@ -469,21 +727,62 @@ def main() -> int:
         "failure_reason": "",
     }
     running = True
+    worker_cpu_started = time.process_time()
+    last_result_write_monotonic = 0.0
 
     def record_error(message):
         state["status"] = "error"
         state["error_count"] += 1
         state["last_error"] = str(message)
         state["failure_reason"] = vulkan_failure_reason(message)
+        write_result("error", force=True)
 
-    def write_result():
+    def write_result(reason="periodic", *, force=False):
+        nonlocal last_result_write_monotonic
         if not args.result_file:
             return
+        now = time.monotonic()
+        if not timed_action_due(
+            last_result_write_monotonic,
+            now,
+            float(state["result_write_interval_target_seconds"]),
+            required=force,
+        ):
+            return
+        started_write = time.perf_counter()
+        state["result_write_count"] += 1
+        state["last_result_write_reason"] = str(reason)
+        state["worker_cpu_seconds"] = round(max(0.0, time.process_time() - worker_cpu_started), 6)
         try:
-            with open(args.result_file, "w", encoding="utf-8") as handle:
+            temp_path = args.result_file + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as handle:
                 json.dump(state, handle, indent=2)
+                handle.flush()
+                if force:
+                    os.fsync(handle.fileno())
+            os.replace(temp_path, args.result_file)
+            last_result_write_monotonic = now
+            return True
         except Exception:
-            pass
+            return False
+        finally:
+            state["result_write_elapsed_seconds"] = round(
+                float(state["result_write_elapsed_seconds"]) + max(0.0, time.perf_counter() - started_write),
+                6,
+            )
+
+    def record_startup_checkpoint(name: str, **evidence) -> None:
+        entry = {
+            "name": str(name),
+            "elapsed_seconds": round(max(0.0, time.monotonic() - worker_started_monotonic), 6),
+        }
+        if evidence:
+            entry["evidence"] = evidence
+        checkpoints = list(state.get("startup_checkpoints") or [])
+        checkpoints.append(entry)
+        state["startup_checkpoints"] = checkpoints[-16:]
+        state["startup_checkpoint"] = str(name)
+        write_result(f"startup:{name}", force=True)
 
     def stop(*_):
         nonlocal running
@@ -491,7 +790,15 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    atexit.register(write_result)
+    atexit.register(lambda: write_result("atexit"))
+
+    worker_started_monotonic = time.monotonic()
+    try:
+        faulthandler.enable(all_threads=True)
+        state["fault_diagnostics_enabled"] = True
+    except (RuntimeError, OSError, ValueError):
+        state["fault_diagnostics_enabled"] = False
+    record_startup_checkpoint("worker_process_started")
 
     handles = {}
     vk = None
@@ -500,10 +807,18 @@ def main() -> int:
         if not library:
             raise RuntimeError("Vulkan loader library not found")
         vk = load_vulkan(library)
-        extend_vulkan_prototypes(vk)
+        prototype_support = extend_vulkan_prototypes(vk)
+        record_startup_checkpoint(
+            "vulkan_loader_ready",
+            timestamp_query_functions=bool(prototype_support.get("timestamp_query_functions")),
+        )
         instance = make_instance(vk)
         handles["instance"] = instance
         physical_devices = enumerate_devices(vk, instance)
+        record_startup_checkpoint(
+            "vulkan_instance_initialized",
+            physical_device_count=len(physical_devices),
+        )
         infos = [(parse_properties(vk, physical_device, index), physical_device) for index, physical_device in enumerate(physical_devices)]
         ranked = sorted(((score_device(info, args), info, physical_device) for info, physical_device in infos), key=lambda item: item[0], reverse=True)
         score, selected_info, physical_device = ranked[0]
@@ -533,10 +848,42 @@ def main() -> int:
         )
         max_storage_buffer_range = max(0, int(selected_info.get("max_storage_buffer_range_bytes") or 0))
         max_memory_allocation_count = max(0, int(selected_info.get("max_memory_allocation_count") or 0))
+        max_compute_work_group_invocations = max(
+            1, int(selected_info.get("max_compute_work_group_invocations") or 1)
+        )
+        max_compute_work_group_size = [
+            max(1, int(value or 1))
+            for value in list(selected_info.get("max_compute_work_group_size") or [1, 1, 1])[:3]
+        ]
+        max_compute_work_group_count = [
+            max(1, int(value or 1))
+            for value in list(selected_info.get("max_compute_work_group_count") or [65535, 65535, 65535])[:3]
+        ]
+        while len(max_compute_work_group_size) < 3:
+            max_compute_work_group_size.append(1)
+        while len(max_compute_work_group_count) < 3:
+            max_compute_work_group_count.append(65535)
+        local_size_x = select_compute_local_size(
+            max_compute_work_group_invocations,
+            max_compute_work_group_size,
+        )
         state["max_buffer_or_object_bytes"] = max_storage_buffer_range
         state["max_memory_allocation_count"] = max_memory_allocation_count
-        queue_family = choose_compute_queue_family(vk, physical_device)
+        state["max_compute_work_group_invocations"] = max_compute_work_group_invocations
+        state["max_compute_work_group_size"] = max_compute_work_group_size
+        state["max_compute_work_group_count"] = max_compute_work_group_count
+        state["workgroup_local_size"] = [local_size_x, 1, 1]
+        queue_family, queue_family_evidence = compute_queue_family_details(vk, physical_device)
         state["queue_family_index"] = queue_family
+        state["queue_family_evidence"] = queue_family_evidence
+        record_startup_checkpoint(
+            "physical_device_limits_discovered",
+            selected_vulkan_index=int(selected_info["index"]),
+            local_size_x=local_size_x,
+            max_compute_work_group_invocations=max_compute_work_group_invocations,
+            max_compute_work_group_size=max_compute_work_group_size,
+            max_compute_work_group_count=max_compute_work_group_count,
+        )
         priority = ctypes.c_float(1.0)
         queue_info = VkDeviceQueueCreateInfo(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_NULL_HANDLE, 0, queue_family, 1, ctypes.pointer(priority))
         device_info = VkDeviceCreateInfo(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_NULL_HANDLE, 0, 1, ctypes.pointer(queue_info), 0, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE)
@@ -545,6 +892,7 @@ def main() -> int:
         handles["device"] = device
         queue = ctypes.c_void_p()
         vk.vkGetDeviceQueue(device, queue_family, 0, ctypes.byref(queue))
+        record_startup_checkpoint("logical_device_initialized", queue_family_index=queue_family)
 
         from vulkan_transfer_worker import VkPhysicalDeviceMemoryProperties
 
@@ -753,12 +1101,20 @@ def main() -> int:
             state["buffer_memory_heap_index"] = int(memory_type.heapIndex)
         if device_local_heap_bytes:
             state["buffer_device_local_heap_percent"] = round((int(total_allocation_bytes) / float(device_local_heap_bytes)) * 100.0, 4)
+        record_startup_checkpoint(
+            "buffers_allocated",
+            buffer_count=len(buffer_records),
+            buffer_bytes=int(total_buffer_bytes),
+            staging_allocation_bytes=int(staging_allocation_bytes),
+        )
 
         compute_rounds = resolved_compute_rounds
         dispatch_repeats = resolved_dispatch_repeats
         state["dispatch_repeats"] = dispatch_repeats
-        state["effective_compute_rounds"] = compute_rounds * dispatch_repeats
-        spirv = compute_shader_spirv(compute_rounds, kernel_variant)
+        state["effective_compute_rounds"] = compute_rounds
+        state["dependent_compute_rounds"] = compute_rounds
+        state["aggregate_round_work_per_cycle"] = compute_rounds * dispatch_repeats
+        spirv = compute_shader_spirv(compute_rounds, kernel_variant, local_size_x)
         spirv_words = (ctypes.c_uint32 * (len(spirv) // 4)).from_buffer_copy(spirv)
         shader_info = VkShaderModuleCreateInfo(VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, VK_NULL_HANDLE, 0, len(spirv), ctypes.cast(spirv_words, ctypes.POINTER(ctypes.c_uint32)))
         shader = ctypes.c_void_p()
@@ -781,6 +1137,12 @@ def main() -> int:
         pipeline = ctypes.c_void_p()
         check(vk.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, ctypes.byref(pipeline_info), None, ctypes.byref(pipeline)), "vkCreateComputePipelines")
         handles["pipeline"] = pipeline
+        record_startup_checkpoint(
+            "pipeline_created",
+            shader_bytes=len(spirv),
+            kernel_variant=kernel_variant,
+            compute_rounds=compute_rounds,
+        )
 
         descriptor_count = max(1, len(buffer_records))
         pool_size = VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count)
@@ -811,6 +1173,47 @@ def main() -> int:
         fence = ctypes.c_void_p()
         check(vk.vkCreateFence(device, ctypes.byref(fence_info), None, ctypes.byref(fence)), "vkCreateFence")
         handles["fence"] = fence
+        timestamp_valid_bits = int(queue_family_evidence.get("timestamp_valid_bits") or 0)
+        timestamp_period_ns = float(selected_info.get("timestamp_period_nanoseconds") or 0.0)
+        query_pool = ctypes.c_void_p()
+        timestamp_compute_supported = bool(selected_info.get("timestamp_compute_and_graphics"))
+        timestamp_functions_available = bool(prototype_support.get("timestamp_query_functions"))
+        if timestamp_valid_bits > 0 and timestamp_period_ns > 0 and timestamp_compute_supported and timestamp_functions_available:
+            query_info = VkQueryPoolCreateInfo(
+                VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                VK_NULL_HANDLE,
+                0,
+                VK_QUERY_TYPE_TIMESTAMP,
+                2,
+                0,
+            )
+            query_code = int(vk.vkCreateQueryPool(device, ctypes.byref(query_info), None, ctypes.byref(query_pool)))
+            if query_code == 0 and query_pool:
+                handles["query_pool"] = query_pool
+                state["gpu_timestamp_status"] = "measured"
+                state["gpu_timestamp_reason"] = "queue_timestamp_queries_supported"
+                state["gpu_timestamp_period_nanoseconds"] = timestamp_period_ns
+                state["gpu_timestamp_valid_bits"] = timestamp_valid_bits
+            else:
+                query_pool = ctypes.c_void_p()
+                state["gpu_timestamp_status"] = "unavailable"
+                state["gpu_timestamp_reason"] = f"vkCreateQueryPool_failed:{query_code}"
+        else:
+            state["gpu_timestamp_status"] = "unavailable"
+            state["gpu_timestamp_reason"] = (
+                "queue_timestamp_valid_bits_zero"
+                if timestamp_valid_bits <= 0
+                else "timestamp_period_unavailable"
+                if timestamp_period_ns <= 0
+                else "timestamp_query_functions_unavailable"
+                if not timestamp_functions_available
+                else "compute_timestamp_commands_unsupported"
+            )
+        record_startup_checkpoint(
+            "descriptors_sync_and_timestamp_initialized",
+            timestamp_status=str(state["gpu_timestamp_status"]),
+            timestamp_reason=str(state["gpu_timestamp_reason"]),
+        )
         fence_array = (ctypes.c_void_p * 1)(fence)
         command_array = (ctypes.c_void_p * 1)(command_buffer)
         if kernel_variant == "stateful_memory":
@@ -844,111 +1247,237 @@ def main() -> int:
         buffer_dispatch_counts = [0 for _ in buffer_records]
         verified_buffer_indexes: set[int] = set()
         verification_cursor = 0
+        last_verification_monotonic = 0.0
         total_estimated_memory_bytes = 0
-        while running:
+        submission_batch_iterations = 1
+        cached_command_signature = None
+        final_cycle_completed = False
+        initial_command_checkpoint_recorded = False
+        first_submission_checkpoint_recorded = False
+        while running or not final_cycle_completed:
+            final_cycle = not running
             elapsed = time.monotonic() - started
             if args.ramp_step_seconds > 0:
                 progress = min(1.0, elapsed / max(0.001, args.ramp_step_seconds * 3.0))
                 load_fraction = min(1.0, max(0.15, args.start_load_fraction) + (1.0 - max(0.15, args.start_load_fraction)) * progress)
             else:
                 load_fraction = 1.0
+            full_load = load_fraction >= 0.999
+            if kernel_variant != "stress_hash" or not full_load:
+                submission_batch_iterations = 1
             active_infos = []
             for record in buffer_records:
                 active_buffer_size = int(record["size"])
                 active_size = max(1024 * 1024, int(active_buffer_size * load_fraction))
                 active_size -= active_size % 1024
-                active_words = max(256, active_size // 4)
-                groups = max(1, int(math.ceil(active_words / 256.0)))
-                active_words = groups * 256
-                active_size = min(active_buffer_size, active_words * 4)
-                active_infos.append((record, active_size, active_words, groups))
+                requested_words = max(local_size_x, active_size // 4)
+                groups_x, groups_y, groups_z, dispatched_words = compute_dispatch_dimensions(
+                    requested_words,
+                    local_size_x,
+                    max_compute_work_group_count,
+                )
+                active_words = min(active_buffer_size // 4, dispatched_words)
+                active_size = active_words * 4
+                active_infos.append(
+                    (record, active_size, active_words, (groups_x, groups_y, groups_z))
+                )
             active_total_size = sum(item[1] for item in active_infos)
             active_total_words = sum(item[2] for item in active_infos)
             max_dispatch_size = max((item[1] for item in active_infos), default=0)
+            now = time.monotonic()
+            verification_due = timed_action_due(
+                last_verification_monotonic,
+                now,
+                float(state["verification_interval_target_seconds"]),
+                required=state["verification_passes"] == 0 or final_cycle,
+            )
             verify_buffer_index = -1
-            if state["frames"] % 3 == 0 and buffer_records:
+            if verification_due and buffer_records:
                 verify_buffer_index = verification_cursor % len(buffer_records)
                 verification_cursor += 1
-            cycle_memory_bytes = 0
+            dispatches_per_buffer = dispatch_repeats * submission_batch_iterations
+            cycle_memory_bytes = sum(
+                active_size
+                * (dispatches_per_buffer if kernel_variant != "stateful_memory" else 2 * dispatches_per_buffer)
+                for _record, active_size, _active_words, _groups in active_infos
+            )
+            command_signature = (
+                tuple((item[1], item[3]) for item in active_infos),
+                dispatches_per_buffer,
+                verify_buffer_index,
+                bool(query_pool),
+            )
+            must_record = command_signature != cached_command_signature
+            cycle_started = time.perf_counter()
 
             check(vk.vkResetFences(device, 1, fence_array), "vkResetFences(cycle)")
-            check(vk.vkResetCommandBuffer(command_buffer, 0), "vkResetCommandBuffer(cycle)")
-            begin = VkCommandBufferBeginInfo(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_NULL_HANDLE, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, VK_NULL_HANDLE)
-            check(vk.vkBeginCommandBuffer(command_buffer, ctypes.byref(begin)), "vkBeginCommandBuffer(cycle)")
-            vk.vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline)
-            for active_buffer_index, (active_record, active_size, active_words, groups) in enumerate(active_infos):
-                active_buffer_handle = active_record["buffer"]
-                should_verify = active_buffer_index == verify_buffer_index
-                sample_bytes = min(active_size, sample_words * 4)
-                vk.vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, descriptor_sets_by_buffer[active_buffer_index], 0, VK_NULL_HANDLE)
-                for dispatch_index in range(dispatch_repeats):
-                    vk.vkCmdDispatch(command_buffer, groups, 1, 1)
-                    if dispatch_index < dispatch_repeats - 1:
-                        repeat_barrier = VkBufferMemoryBarrier(
+            if must_record:
+                record_started = time.perf_counter()
+                check(vk.vkResetCommandBuffer(command_buffer, 0), "vkResetCommandBuffer(cycle)")
+                begin = VkCommandBufferBeginInfo(
+                    VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    VK_NULL_HANDLE,
+                    0,
+                    VK_NULL_HANDLE,
+                )
+                check(vk.vkBeginCommandBuffer(command_buffer, ctypes.byref(begin)), "vkBeginCommandBuffer(cycle)")
+                if query_pool:
+                    vk.vkCmdResetQueryPool(command_buffer, query_pool, 0, 2)
+                    vk.vkCmdWriteTimestamp(
+                        command_buffer,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        query_pool,
+                        0,
+                    )
+                vk.vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline)
+                for active_buffer_index, (active_record, active_size, _active_words, groups) in enumerate(active_infos):
+                    active_buffer_handle = active_record["buffer"]
+                    should_verify = active_buffer_index == verify_buffer_index
+                    sample_bytes = min(active_size, sample_words * 4)
+                    vk.vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, descriptor_sets_by_buffer[active_buffer_index], 0, VK_NULL_HANDLE)
+                    for dispatch_index in range(dispatches_per_buffer):
+                        vk.vkCmdDispatch(command_buffer, groups[0], groups[1], groups[2])
+                        if dispatch_index < dispatches_per_buffer - 1:
+                            repeat_barrier = VkBufferMemoryBarrier(
+                                VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                VK_NULL_HANDLE,
+                                VK_ACCESS_SHADER_WRITE_BIT,
+                                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                VK_QUEUE_FAMILY_IGNORED,
+                                VK_QUEUE_FAMILY_IGNORED,
+                                active_buffer_handle,
+                                0,
+                                active_size,
+                            )
+                            vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(repeat_barrier), 0, VK_NULL_HANDLE)
+                    if should_verify:
+                        compute_to_copy_barrier = VkBufferMemoryBarrier(
                             VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
                             VK_NULL_HANDLE,
                             VK_ACCESS_SHADER_WRITE_BIT,
-                            VK_ACCESS_SHADER_WRITE_BIT,
+                            VK_ACCESS_TRANSFER_READ_BIT,
                             VK_QUEUE_FAMILY_IGNORED,
                             VK_QUEUE_FAMILY_IGNORED,
                             active_buffer_handle,
                             0,
-                            active_size,
+                            sample_bytes,
                         )
-                        vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(repeat_barrier), 0, VK_NULL_HANDLE)
-                if should_verify:
-                    compute_to_copy_barrier = VkBufferMemoryBarrier(
-                        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                        VK_NULL_HANDLE,
-                        VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_ACCESS_TRANSFER_READ_BIT,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        active_buffer_handle,
-                        0,
-                        sample_bytes,
+                        vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(compute_to_copy_barrier), 0, VK_NULL_HANDLE)
+                        region = VkBufferCopy(0, 0, sample_bytes)
+                        vk.vkCmdCopyBuffer(command_buffer, active_buffer_handle, staging_buffer, 1, ctypes.byref(region))
+                        copy_to_host_barrier = VkBufferMemoryBarrier(
+                            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                            VK_NULL_HANDLE,
+                            VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_ACCESS_HOST_READ_BIT,
+                            VK_QUEUE_FAMILY_IGNORED,
+                            VK_QUEUE_FAMILY_IGNORED,
+                            staging_buffer,
+                            0,
+                            sample_bytes,
+                        )
+                        vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(copy_to_host_barrier), 0, VK_NULL_HANDLE)
+                if query_pool:
+                    vk.vkCmdWriteTimestamp(
+                        command_buffer,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        query_pool,
+                        1,
                     )
-                    vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(compute_to_copy_barrier), 0, VK_NULL_HANDLE)
-                    region = VkBufferCopy(0, 0, sample_bytes)
-                    vk.vkCmdCopyBuffer(command_buffer, active_buffer_handle, staging_buffer, 1, ctypes.byref(region))
-                    copy_to_host_barrier = VkBufferMemoryBarrier(
-                        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                        VK_NULL_HANDLE,
-                        VK_ACCESS_TRANSFER_WRITE_BIT,
-                        VK_ACCESS_HOST_READ_BIT,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        staging_buffer,
-                        0,
-                        sample_bytes,
+                check(vk.vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer(cycle)")
+                if not initial_command_checkpoint_recorded:
+                    record_startup_checkpoint(
+                        "initial_command_recorded",
+                        dispatch_group_count=list(active_infos[0][3]) if active_infos else [0, 1, 1],
+                        dispatches_per_buffer=dispatches_per_buffer,
+                        verification_copy_recorded=verify_buffer_index >= 0,
                     )
-                    vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(copy_to_host_barrier), 0, VK_NULL_HANDLE)
-                else:
-                    compute_to_compute_barrier = VkBufferMemoryBarrier(
-                        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-                        VK_NULL_HANDLE,
-                        VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        VK_QUEUE_FAMILY_IGNORED,
-                        active_buffer_handle,
-                        0,
-                        active_size,
-                    )
-                    vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(compute_to_compute_barrier), 0, VK_NULL_HANDLE)
-                cycle_memory_bytes += active_size * (2 if kernel_variant == "stateful_memory" else dispatch_repeats)
+                    initial_command_checkpoint_recorded = True
+                cached_command_signature = command_signature
+                state["command_buffer_record_count"] += 1
+                state["command_record_elapsed_seconds"] = round(
+                    float(state["command_record_elapsed_seconds"])
+                    + max(0.0, time.perf_counter() - record_started),
+                    6,
+                )
+            else:
+                state["command_buffer_reuse_count"] += 1
 
-            check(vk.vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer(cycle)")
             submit = VkSubmitInfo(4, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, command_array, 0, VK_NULL_HANDLE)
+            submit_started = time.perf_counter()
             check(vk.vkQueueSubmit(queue, 1, ctypes.byref(submit), fence), "vkQueueSubmit(cycle)")
+            state["queue_submit_elapsed_seconds"] = round(
+                float(state["queue_submit_elapsed_seconds"])
+                + max(0.0, time.perf_counter() - submit_started),
+                6,
+            )
+            state["queue_submission_count"] += 1
+            wait_started = time.perf_counter()
             check(vk.vkWaitForFences(device, 1, fence_array, VK_TRUE, 10_000_000_000), "vkWaitForFences(cycle)")
+            fence_wait_seconds = max(0.0, time.perf_counter() - wait_started)
+            if not first_submission_checkpoint_recorded:
+                record_startup_checkpoint(
+                    "first_queue_submission_completed",
+                    fence_wait_seconds=round(fence_wait_seconds, 6),
+                )
+                first_submission_checkpoint_recorded = True
+            state["fence_wait_elapsed_seconds"] = round(
+                float(state["fence_wait_elapsed_seconds"]) + fence_wait_seconds,
+                6,
+            )
+            state["compute_dispatch_count"] += dispatches_per_buffer * len(active_infos)
+
+            measured_gpu_seconds = None
+            if query_pool:
+                timestamp_values = (ctypes.c_uint64 * 2)()
+                query_code = int(
+                    vk.vkGetQueryPoolResults(
+                        device,
+                        query_pool,
+                        0,
+                        2,
+                        ctypes.sizeof(timestamp_values),
+                        ctypes.byref(timestamp_values),
+                        ctypes.sizeof(ctypes.c_uint64),
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT,
+                    )
+                )
+                if query_code == 0:
+                    valid_mask = (
+                        (1 << timestamp_valid_bits) - 1
+                        if 0 < timestamp_valid_bits < 64
+                        else (1 << 64) - 1
+                    )
+                    tick_delta = (int(timestamp_values[1]) - int(timestamp_values[0])) & valid_mask
+                    measured_gpu_seconds = tick_delta * timestamp_period_ns / 1_000_000_000.0
+                    state["gpu_timestamp_batch_count"] += 1
+                    state["gpu_timestamp_last_seconds"] = round(measured_gpu_seconds, 9)
+                    state["gpu_timestamp_elapsed_seconds"] = round(
+                        float(state["gpu_timestamp_elapsed_seconds"]) + measured_gpu_seconds,
+                        9,
+                    )
+                    previous_min = state.get("gpu_timestamp_min_seconds")
+                    state["gpu_timestamp_min_seconds"] = round(
+                        measured_gpu_seconds
+                        if previous_min is None
+                        else min(float(previous_min), measured_gpu_seconds),
+                        9,
+                    )
+                    state["gpu_timestamp_max_seconds"] = round(
+                        max(float(state.get("gpu_timestamp_max_seconds") or 0.0), measured_gpu_seconds),
+                        9,
+                    )
+                else:
+                    state["gpu_timestamp_status"] = "query_error"
+                    state["gpu_timestamp_reason"] = f"vkGetQueryPoolResults_failed:{query_code}"
 
             for active_buffer_index, (_, active_size, _, _) in enumerate(active_infos):
                 should_verify = active_buffer_index == verify_buffer_index
                 sample_bytes = min(active_size, sample_words * 4)
                 if should_verify:
+                    verification_started = time.perf_counter()
                     if kernel_variant == "stateful_memory":
-                        target_dispatches = buffer_dispatch_counts[active_buffer_index] + 1
+                        target_dispatches = buffer_dispatch_counts[active_buffer_index] + dispatches_per_buffer
                         while expected_sample_dispatches[active_buffer_index] < target_dispatches:
                             for word_index in range(sample_words):
                                 expected_samples[active_buffer_index][word_index] = expected_word(
@@ -964,6 +1493,7 @@ def main() -> int:
                         raw = ctypes.string_at(mapped, sample_bytes)
                     finally:
                         vk.vkUnmapMemory(device, staging_memory)
+                    mismatch = None
                     for word_index in range(sample_bytes // 4):
                         actual = struct.unpack_from("<I", raw, word_index * 4)[0]
                         if kernel_variant == "stateful_memory":
@@ -971,13 +1501,64 @@ def main() -> int:
                         else:
                             expected = expected_word(word_index, compute_rounds, 0, kernel_variant)
                         if actual != expected:
-                            state["compute_mismatch_count"] += 1
-                            record_error(f"Vulkan compute mismatch at buffer {active_buffer_index} word {word_index}: expected={expected} actual={actual}")
+                            mismatch = (
+                                f"Vulkan compute mismatch at buffer {active_buffer_index} "
+                                f"word {word_index}: expected={expected} actual={actual}"
+                            )
                             break
+                    state["verification_readback_count"] += 1
+                    state["verification_readback_elapsed_seconds"] = round(
+                        float(state["verification_readback_elapsed_seconds"])
+                        + max(0.0, time.perf_counter() - verification_started),
+                        6,
+                    )
+                    if mismatch:
+                        state["compute_mismatch_count"] += 1
+                        raise RuntimeError(mismatch)
+                    verified_at = time.monotonic()
+                    if last_verification_monotonic > 0:
+                        intervals = list(state["verification_intervals_seconds"])
+                        intervals.append(round(verified_at - last_verification_monotonic, 6))
+                        state["verification_intervals_seconds"] = intervals[-64:]
+                    last_verification_monotonic = verified_at
                     state["verification_passes"] += 1
+                    if state["verification_passes"] == 1:
+                        state["initial_verification_completed"] = True
+                        state["startup_complete"] = True
+                        state["status"] = "running"
+                        record_startup_checkpoint(
+                            "initial_hardware_readback_completed",
+                            verified_buffer_index=active_buffer_index,
+                            verified_words=sample_bytes // 4,
+                        )
                     verified_buffer_indexes.add(active_buffer_index)
-                buffer_dispatch_counts[active_buffer_index] += dispatch_repeats
+                    if final_cycle:
+                        state["final_verification_completed"] = True
+                buffer_dispatch_counts[active_buffer_index] += dispatches_per_buffer
 
+            cycle_latency = max(0.0, time.perf_counter() - cycle_started)
+            state["cycle_count"] += 1
+            state["cycle_elapsed_seconds"] = round(
+                float(state["cycle_elapsed_seconds"]) + cycle_latency,
+                6,
+            )
+            state["cycle_latency_last_seconds"] = round(cycle_latency, 6)
+            previous_min = state.get("cycle_latency_min_seconds")
+            state["cycle_latency_min_seconds"] = round(
+                cycle_latency if previous_min is None else min(float(previous_min), cycle_latency),
+                6,
+            )
+            state["cycle_latency_max_seconds"] = round(
+                max(float(state["cycle_latency_max_seconds"]), cycle_latency),
+                6,
+            )
+            state["batch_latency_last_seconds"] = round(
+                measured_gpu_seconds if measured_gpu_seconds is not None else fence_wait_seconds,
+                6,
+            )
+            state["batch_latency_basis"] = (
+                "gpu_timestamp" if measured_gpu_seconds is not None else "host_fence_wait"
+            )
             state["active_load_fraction"] = round(load_fraction, 3)
             state["active_buffer_bytes"] = active_total_size
             state["active_dispatch_buffer_bytes"] = max_dispatch_size
@@ -986,7 +1567,16 @@ def main() -> int:
             state["active_work_items"] = active_total_words
             state["active_compute_rounds"] = compute_rounds
             state["active_dispatch_repeats"] = dispatch_repeats
-            state["effective_compute_rounds"] = compute_rounds * dispatch_repeats
+            state["effective_compute_rounds"] = compute_rounds
+            state["aggregate_round_work_per_cycle"] = (
+                compute_rounds * dispatches_per_buffer * len(active_infos)
+            )
+            state["independent_dispatch_repetitions"] = dispatches_per_buffer
+            state["submission_batch_iterations"] = submission_batch_iterations
+            state["submission_batch_iterations_max"] = max(
+                int(state["submission_batch_iterations_max"]), submission_batch_iterations
+            )
+            state["dispatch_group_count"] = list(active_infos[0][3]) if active_infos else [0, 1, 1]
             state["verified_buffer_indexes"] = sorted(verified_buffer_indexes)
             state["verified_buffer_count"] = len(verified_buffer_indexes)
             state["verified_buffer_coverage_percent"] = round(
@@ -1013,9 +1603,32 @@ def main() -> int:
                     float(state.get("peak_estimated_device_memory_gbps") or 0.0),
                     float(state["estimated_device_memory_gbps"]),
                 )
-            if state["frames"] % 10 == 0:
-                write_result()
-            time.sleep(0.0005)
+            if kernel_variant == "stress_hash" and full_load and not final_cycle:
+                timing_basis = measured_gpu_seconds if measured_gpu_seconds is not None else fence_wait_seconds
+                new_batch_iterations = next_submission_batch_iterations(
+                    submission_batch_iterations,
+                    timing_basis,
+                    full_load=True,
+                )
+                if new_batch_iterations != submission_batch_iterations:
+                    submission_batch_iterations = new_batch_iterations
+                    cached_command_signature = None
+            write_result("periodic")
+            if final_cycle:
+                final_cycle_completed = True
+            elif kernel_variant != "stress_hash" or not full_load:
+                sleep_started = time.perf_counter()
+                time.sleep(0.0005)
+                state["sleep_yield_count"] += 1
+                state["sleep_yield_elapsed_seconds"] = round(
+                    float(state["sleep_yield_elapsed_seconds"])
+                    + max(0.0, time.perf_counter() - sleep_started),
+                    6,
+                )
+        if state["verification_passes"] <= 0 or not state["final_verification_completed"]:
+            raise RuntimeError("Vulkan compute worker ended without required initial and final verification")
+        state["status"] = "ok"
+        write_result("completed", force=True)
         return 0
     except Exception as exc:
         if int(state.get("actual_allocated_bytes") or 0) > 0:
@@ -1034,6 +1647,7 @@ def main() -> int:
         if vk and handles.get("device"):
             device = handles["device"]
             destroy_pairs = [
+                ("query_pool", "vkDestroyQueryPool"),
                 ("fence", "vkDestroyFence"),
                 ("command_pool", "vkDestroyCommandPool"),
                 ("descriptor_pool", "vkDestroyDescriptorPool"),
@@ -1077,7 +1691,7 @@ def main() -> int:
                 vk.vkDestroyInstance(handles["instance"], None)
             except Exception:
                 pass
-        write_result()
+        write_result("finalize")
 
 
 if __name__ == "__main__":

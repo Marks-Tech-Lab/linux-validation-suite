@@ -360,11 +360,13 @@ class WorkloadGpuWorkerMixin:
         self,
         target: Optional[Dict[str, Any]],
         compute_variant: str = "hash",
+        params: Optional[Dict[str, Any]] = None,
     ) -> int:
         normalized_variant = self._normalize_vulkan_compute_variant(compute_variant)
         return vulkan_compute_dispatch_repeats_policy(
             target,
             normalized_variant=normalized_variant,
+            capability=dict((params or {}).get("capability") or {}),
         )
 
     def _build_python_vulkan_transfer_worker(

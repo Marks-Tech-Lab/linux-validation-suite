@@ -171,7 +171,11 @@ def build_python_vulkan_compute_worker(
             allocation_percent=allocation_percent,
         )
     compute_rounds = runner._vulkan_compute_rounds(target, params, profile_intensity, normalized_compute_variant)
-    dispatch_repeats = runner._vulkan_compute_dispatch_repeats(target, normalized_compute_variant)
+    dispatch_repeats = runner._vulkan_compute_dispatch_repeats(
+        target,
+        normalized_compute_variant,
+        params,
+    )
     target_env = runner._vulkan_target_env(target)
     command = runner._wrap_gpu_command(
         [

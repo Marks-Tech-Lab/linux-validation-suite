@@ -59,6 +59,7 @@ from smoke_tests.output_contract_checks import (
 )
 from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
+from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -6857,6 +6858,9 @@ def test_compatibility_export_gpu_section() -> None:
             {
                 "Name": "NVIDIA GeForce RTX 5090",
                 "DisplayName": "NVIDIA GeForce RTX 5090 #1",
+                "PhysicalGpuId": "pci:0000:01:00.0",
+                "PhysicalGpuIdentitySource": "pci_bdf",
+                "PhysicalGpuIdentityConfidence": "high",
                 "Chipset": "GB202",
                 "DriverVersion": "nvidia 575",
                 "Memory": "32 GB",
@@ -6866,7 +6870,24 @@ def test_compatibility_export_gpu_section() -> None:
                 "MemoryArchitectureSource": "device_class:discrete",
                 "DedicatedMemoryBytes": 32 * GIB,
                 "DedicatedMemoryStatus": "reported_independent_pool",
-            }
+            },
+            {
+                "Name": "Adreno X1-45",
+                "DisplayName": "Adreno X1-45",
+                "PhysicalGpuId": "platform:3d00000.gpu",
+                "PhysicalGpuIdentitySource": "platform_device_tree",
+                "PhysicalGpuIdentityConfidence": "high",
+                "PlatformDevicePath": "/sys/devices/platform/soc@0/3d00000.gpu",
+                "Chipset": "Adreno X1-45",
+                "DriverVersion": "adreno",
+                "Memory": "Shared / unified with system memory",
+                "DeviceClass": "integrated",
+                "DeviceClassSource": "vulkan_native_physical_device_type",
+                "MemoryArchitecture": "shared",
+                "MemoryArchitectureSource": "device_class:integrated",
+                "DedicatedMemoryBytes": None,
+                "DedicatedMemoryStatus": "not_separately_reported",
+            },
         ],
         segments=[segment],
         worker_metric_tests={
@@ -6885,7 +6906,17 @@ def test_compatibility_export_gpu_section() -> None:
         "GPU section display name",
     )
     assert_equal(gpu_section["devices"][0]["gpu_device_class"], "discrete", "GPU section physical class")
+    assert_equal(gpu_section["devices"][0]["gpu_physical_id"], "pci:0000:01:00.0", "GPU section physical identity")
+    assert_equal(gpu_section["devices"][0]["gpu_identity_source"], "pci_bdf", "GPU section identity provenance")
     assert_equal(gpu_section["devices"][0]["gpu_memory_architecture"], "dedicated", "GPU section memory architecture")
+    assert_equal(gpu_section["devices"][1]["gpu_name"], "Adreno X1-45", "platform GPU compatibility name")
+    assert_equal(gpu_section["devices"][1]["gpu_physical_id"], "platform:3d00000.gpu", "platform GPU compatibility identity")
+    assert_equal(
+        gpu_section["devices"][1]["gpu_platform_device_path"],
+        "/sys/devices/platform/soc@0/3d00000.gpu",
+        "platform GPU compatibility path provenance",
+    )
+    assert_equal(gpu_section["devices"][1]["gpu_memory_architecture"], "shared", "platform GPU compatibility memory architecture")
     expected_test_order = [
         "GPU Temperature (Temperature)",
         "GPU Hotspot Temperature (Temperature)",
@@ -7177,6 +7208,9 @@ def test_gpu_worker_validation_detail_builder() -> None:
     assert_equal(detail["DedicatedGpuMemoryBytes"], 32 * GIB, "worker detail dedicated capacity provenance")
     assert_equal(detail["AllocationPercent"], 25.0, "worker detail allocation percent")
     assert_equal(detail["VerifiedBufferIndexes"], [0, 2, 4], "worker detail verified buffers")
+    assert_equal(detail["BufferMemoryTypeIndex"], 3, "positive Vulkan memory type index")
+    assert_equal(detail["BufferMemoryHeapIndex"], 1, "positive Vulkan memory heap index")
+    assert_equal(detail["StagingMemoryTypeIndex"], 4, "positive Vulkan staging memory type index")
     assert_equal(detail["BufferDispatchAvg"], 14.5, "worker detail buffer dispatch avg")
     assert_true(detail["AllocationExhausted"], "worker detail allocation exhausted")
     assert_equal(detail["AllocationShortfallBytes"], 210, "worker detail shortfall")
@@ -7193,6 +7227,33 @@ def test_gpu_worker_validation_detail_builder() -> None:
     )
     assert_true(missing_index_detail["ExpectedGpuIndex"] is None, "worker detail invalid GPU index")
     assert_true(missing_index_detail["AllocationPercent"] is None, "worker detail missing allocation percent")
+    zero_memory_index_detail = build_gpu_worker_validation_detail(
+        stage_name="Vulkan Zero Index",
+        stage_type="GPU",
+        stage_verdict="pass",
+        payload={
+            "kind": "gpu",
+            "buffer_memory_type_index": 0,
+            "buffer_memory_heap_index": "0",
+            "staging_memory_type_index": 0,
+        },
+        backend_name="vulkan_compute",
+        device_name="Fixture GPU",
+    )
+    assert_equal(zero_memory_index_detail["BufferMemoryTypeIndex"], 0, "zero Vulkan memory type index is valid")
+    assert_equal(zero_memory_index_detail["BufferMemoryHeapIndex"], 0, "zero Vulkan heap index is valid")
+    assert_equal(zero_memory_index_detail["StagingMemoryTypeIndex"], 0, "zero Vulkan staging index is valid")
+    unavailable_memory_index_detail = build_gpu_worker_validation_detail(
+        stage_name="Vulkan Missing Index",
+        stage_type="GPU",
+        stage_verdict="fail",
+        payload={"kind": "gpu", "buffer_memory_type_index": None, "staging_memory_type_index": ""},
+        backend_name="vulkan_compute",
+        device_name="Fixture GPU",
+    )
+    assert_equal(unavailable_memory_index_detail["BufferMemoryTypeIndex"], -1, "null Vulkan memory index sentinel")
+    assert_equal(unavailable_memory_index_detail["BufferMemoryHeapIndex"], -1, "missing Vulkan heap index sentinel")
+    assert_equal(unavailable_memory_index_detail["StagingMemoryTypeIndex"], -1, "empty Vulkan staging index sentinel")
 
 
 def test_compatibility_export_run_context() -> None:
@@ -18313,6 +18374,96 @@ def test_system_info_gpu_pcie_attribution() -> None:
         "PCIe helper rejects neighboring GPU slot",
     )
 
+    import Modules.lvs_system_info as system_info_module
+    original_discover_gpu_cards = system_info_module.discover_gpu_cards
+    system_info_module.discover_gpu_cards = lambda **_kwargs: [{
+        "card": "card1", "slot": "", "vendor": "Qualcomm", "vendor_id": "", "device": "",
+        "name": "Adreno platform GPU", "driver": "adreno", "vram_total": 0,
+        "vram_total_source": "", "physical_gpu_id": "platform:3d00000.gpu",
+        "gpu_identity_source": "platform_device_tree", "identity_confidence": "high",
+        "gpu_device_role": "3d_gpu", "platform_gpu_driver": "adreno",
+        "platform_gpu_path": "/sys/devices/platform/soc@0/3d00000.gpu",
+        "platform_gpu_name": "3d00000.gpu", "platform_gpu_compatible": ["qcom,adreno"],
+    }]
+    try:
+        discovered_platform = SystemInfoCollector()._discover_drm_gpus()
+    finally:
+        system_info_module.discover_gpu_cards = original_discover_gpu_cards
+    assert_equal(len(discovered_platform), 1, "system inventory consumes shared platform GPU discovery")
+    assert_equal(discovered_platform[0]["physical_gpu_id"], "platform:3d00000.gpu", "system discovery retains platform identity")
+    assert_equal(discovered_platform[0]["memory_bytes"], 0, "system discovery does not invent platform dedicated memory")
+
+    class MixedPlatformSystemInfoCollector(SystemInfoCollector):
+        def _discover_drm_gpus(self):
+            return [
+                {
+                    "card": "card0", "name": "AMD Radeon RX Fixture", "marketing_name": "AMD Radeon RX Fixture",
+                    "pci_name": "AMD Radeon RX Fixture", "name_source": "fixture", "chipset": "AMD 73FF",
+                    "driver": "amdgpu", "pci_slot": "0000:03:00.0", "vendor_id": "1002", "device_id": "73ff",
+                    "device_class": "discrete", "device_class_source": "fixture", "device_class_confidence": "high",
+                    "memory": "8 GB", "memory_bytes": 8 * GIB, "provider_memory_source": "drm_mem_info_vram_total",
+                    "physical_gpu_id": "pci:0000:03:00.0", "gpu_identity_source": "pci_bdf",
+                    "identity_confidence": "high", "pcie_link": {},
+                },
+                {
+                    "card": "card1", "name": "Adreno platform GPU", "marketing_name": "Adreno platform GPU",
+                    "pci_name": "Adreno platform GPU", "name_source": "platform_device_tree", "chipset": "Adreno platform GPU",
+                    "driver": "adreno", "platform_gpu_driver": "adreno", "pci_slot": "", "vendor_id": "", "device_id": "",
+                    "device_class": "integrated", "device_class_source": "drm_driver_or_platform_topology",
+                    "device_class_confidence": "medium", "memory": "", "memory_bytes": 0, "provider_memory_source": "",
+                    "physical_gpu_id": "platform:3d00000.gpu", "gpu_identity_source": "platform_device_tree",
+                    "identity_confidence": "high", "gpu_device_role": "3d_gpu",
+                    "platform_gpu_path": "/sys/devices/platform/soc@0/3d00000.gpu",
+                    "platform_gpu_compatible": ["qcom,adreno-43050c01", "qcom,adreno"], "pcie_link": {},
+                },
+            ]
+
+        def _vulkan_gpu_classes_by_slot(self, _drm_gpus):
+            return {}
+
+        def _runtime_gpu_names_by_slot(self, _drm_gpus):
+            return {}
+
+        def _discover_nvidia_smi_gpus(self):
+            return []
+
+        def _native_vulkan_inventory(self):
+            return {
+                "available": True,
+                "devices": [
+                    {
+                        "index": 0, "deviceName": "AMD Radeon RX Fixture",
+                        "deviceType": "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU",
+                        "vendorID": "0x1002", "deviceID": "0x73ff", "pci_slot": "0000:03:00.0",
+                        "device_local_heap_bytes": 8 * GIB,
+                    },
+                    {
+                        "index": 1, "deviceName": "Adreno X1-45",
+                        "deviceType": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+                        "vendorID": "0x5143", "deviceID": "0x0001", "device_local_heap_bytes": 12 * GIB,
+                    },
+                    {
+                        "index": 2, "deviceName": "llvmpipe (LLVM fixture)",
+                        "deviceType": "VK_PHYSICAL_DEVICE_TYPE_CPU", "device_local_heap_bytes": 1 * GIB,
+                    },
+                ],
+            }
+
+        def _memory_total_bytes(self):
+            return 32 * GIB
+
+    mixed = MixedPlatformSystemInfoCollector()._gpu_info()
+    assert_equal(len(mixed), 2, "mixed PCI/platform inventory excludes software Vulkan devices")
+    platform_gpu = next(gpu for gpu in mixed if gpu["PhysicalGpuId"].startswith("platform:"))
+    assert_equal(platform_gpu["Name"], "Adreno X1-45", "platform inventory uses physical Vulkan device name")
+    assert_equal(platform_gpu["PhysicalGpuId"], "platform:3d00000.gpu", "platform inventory retains canonical identity")
+    assert_equal(platform_gpu["PhysicalGpuIdentitySource"], "platform_device_tree", "platform identity provenance")
+    assert_equal(platform_gpu["PlatformDevicePath"], "/sys/devices/platform/soc@0/3d00000.gpu", "platform path provenance")
+    assert_equal(platform_gpu["DeviceClass"], "integrated", "platform Vulkan type remains integrated")
+    assert_equal(platform_gpu["MemoryArchitecture"], "shared", "platform GPU remains shared-memory")
+    assert_equal(platform_gpu["DedicatedMemoryBytes"], None, "platform API heap is not fabricated dedicated VRAM")
+    assert_equal(platform_gpu["VulkanDeviceLocalHeapBytes"], 12 * GIB, "platform Vulkan API capacity retained")
+
 
 def test_system_identity_helpers() -> None:
     assert_equal(normalize_dmi_sysfs_value("To Be Filled By O.E.M."), "", "DMI sysfs placeholder")
@@ -28886,6 +29037,7 @@ def main() -> int:
     tests = [
         run_analysis_quality_checks,
         run_gpu_evaluation_policy_checks,
+        run_vulkan_workload_effectiveness_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,

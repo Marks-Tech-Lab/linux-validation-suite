@@ -269,10 +269,17 @@ def vulkan_compute_rounds(
     capability = dict(params.get("capability") or {})
     device_class = str(capability.get("device_class", "") or "")
     load_scale = float(capability.get("load_scale", 1.0) or 1.0)
+    compute_units = max(0, int(capability.get("compute_units", 0) or 0))
     if normalized_variant == "stateful_memory":
         base = 5 if device_class == "discrete" else 4
     elif normalized_variant == "stress_hash":
-        base = 128 if device_class == "discrete" else 72
+        base = (
+            128 if compute_units >= 32
+            else 104 if compute_units >= 16
+            else 80 if compute_units > 0
+            else 128 if device_class == "discrete"
+            else 72
+        )
     else:
         base = 18 if device_class == "discrete" else 10
     rounds = int(round(base * max(0.85, min(1.35, load_scale * profile_intensity_factor))))
@@ -280,7 +287,14 @@ def vulkan_compute_rounds(
         if normalized_variant == "stateful_memory":
             rounds = min(rounds, 9 if device_class == "discrete" else 6)
         elif normalized_variant == "stress_hash":
-            rounds = min(rounds, 160 if device_class == "discrete" else 96)
+            safe_cap = (
+                160 if compute_units >= 32
+                else 136 if compute_units >= 16
+                else 104 if compute_units > 0
+                else 160 if device_class == "discrete"
+                else 96
+            )
+            rounds = min(rounds, safe_cap)
         else:
             rounds = min(rounds, 28 if device_class == "discrete" else 16)
     if normalized_variant == "stateful_memory":
@@ -299,9 +313,21 @@ def vulkan_compute_dispatch_repeats(
     target: Optional[Dict[str, Any]],
     *,
     normalized_variant: str,
+    capability: Optional[Dict[str, Any]] = None,
 ) -> int:
     if normalized_variant != "stress_hash":
         return 1
+    capability = dict(capability or {})
+    compute_units = max(0, int(capability.get("compute_units", 0) or 0))
+    load_scale = float(capability.get("load_scale", 1.0) or 1.0)
+    if load_scale >= 3.0 or compute_units >= 96:
+        return 8
+    if load_scale >= 1.5 or compute_units >= 32:
+        return 6
+    if compute_units > 0:
+        return 3 if compute_units <= 12 else 4
+    # Compatibility fallback for callers/results that predate capability
+    # evidence. Normal worker construction always supplies capability data.
     vram_total = int(target.get("vram_total") or 0) if target else 0
     if vram_total >= 48 * 1024 ** 3:
         return 8
