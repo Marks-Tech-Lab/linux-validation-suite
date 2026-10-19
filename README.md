@@ -26,10 +26,12 @@ available on each host.
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current release is `v0.5.0-alpha`, a hardware-correctness and
-GPU-workload alpha focused on truthful cross-platform discovery, telemetry,
-evaluation, verification, and scalable Vulkan compute stress while retaining
-first-class x86_64 and AArch64 support.
+pre-releases. The current version is `v0.5.1-alpha`, a focused bugfix update for
+native RAM worker shutdown and validation reporting. It retains the
+cross-platform hardware correctness, verified Vulkan compute stress, and
+first-class x86_64 and AArch64 support introduced in `v0.5.0-alpha`.
+The maintainer creates and publishes GitHub prereleases manually after release
+code and annotated tags have been pushed.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
 baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
@@ -340,7 +342,7 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The runtime version is `0.5.0-alpha`, corresponding to the `v0.5.0-alpha`
+The runtime version is `0.5.1-alpha`, corresponding to the `v0.5.1-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -368,6 +370,40 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 `parsed_results_custom.json` and its compatibility aliases remain unchanged.
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
+
+## Release Notes — v0.5.1-alpha
+
+Linux Validation Suite v0.5.1-alpha is a focused bugfix update to v0.5.0-alpha.
+
+- Native RAM workers receive allocation-scaled shutdown grace: 10 seconds plus
+  0.25 seconds per allocated GiB, capped at 120 seconds. SIGTERM is sent
+  immediately; the bounded allowance permits large mappings to finish cleanup.
+- Native RAM results are checkpointed atomically before unmapping and finalized
+  after cleanup. Completed verification, cleanup state, and process exit remain
+  distinct evidence. Interrupted passes do not count as completed passes.
+- SIGKILL, nonzero exits, missing verification, incomplete cleanup, and shutdown
+  timeouts remain blocking failures. Historical results are not rewritten or
+  reclassified, and established output fields remain compatible.
+- Run summaries distinguish compute-stress purpose, backend-selection
+  confidence, and analysis evidence instead of implying demonstrated GPU
+  saturation. PL Validation's description now identifies its unchanged
+  35-minute schedule.
+
+### Validation and scope
+
+- All 262 smoke tests and all 23 active profiles pass validation. Native helper
+  compilation, shutdown/readback, safety, reports, imports, and output-contract
+  regressions pass.
+- Physical shutdown confirmation passed on Threadripper PRO 7965WX with a
+  181.83 GB allocation and 9.52-second shutdown, and on Threadripper PRO 9995WX
+  with a 242.55 GB allocation and 4.49-second shutdown. Both recorded completed
+  verification and cleanup, zero errors, and exit code zero.
+- The hardware-scalability contract, memory budgets, safety reserves, runtime
+  guards, immediate safety handling, and historical compatibility are preserved.
+  No new ISA implementation or numerical GPU saturation calibration is included.
+- This remains an alpha. The hardware-coverage and telemetry limitations listed
+  for v0.5.0-alpha still apply; the two confirmations do not establish universal
+  hardware coverage.
 
 ## Release Notes — v0.5.0-alpha
 

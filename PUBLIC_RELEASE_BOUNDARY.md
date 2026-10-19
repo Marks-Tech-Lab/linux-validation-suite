@@ -3,12 +3,16 @@
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
-included. Alpha releases are published as pre-releases; the current
-`v0.5.0-alpha` release advances cross-platform hardware correctness, evidence
-quality, GPU telemetry and memory semantics, and scalable verified Vulkan
-compute stress while preserving first-class AArch64 and x86_64 support and the
-established output-compatibility boundaries. It is validated with the full
-smoke suite and multi-system physical hardware acceptance.
+included. The current version is `v0.5.1-alpha`, a focused native RAM shutdown
+and validation-reporting bugfix update to `v0.5.0-alpha`. It preserves the
+hardware-scalability contract, first-class AArch64 and x86_64 support, safety,
+and established output-compatibility boundaries. Validation includes the full
+smoke suite and clean native RAM shutdown confirmation on two high-memory
+systems. Prior hardware-coverage limitations remain applicable.
+
+Release preparation commits and annotated Git tags are pushed to the public
+repository. The maintainer creates and publishes GitHub prereleases manually;
+preparing a version or pushing its tag does not itself publish a GitHub Release.
 
 Use this checklist when updating the public repository. Publish only generic
 Linux Validation Suite (LVS) code, examples, documentation, and empty runtime
