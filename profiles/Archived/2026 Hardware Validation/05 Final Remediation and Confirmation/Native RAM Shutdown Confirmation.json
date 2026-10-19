@@ -1,0 +1,68 @@
+{
+  "profile_name": "Native RAM Shutdown Confirmation",
+  "profile_type": "validation_schedule",
+  "menu_group": "advanced",
+  "menu_description": "Short functional confirmation of native RAM verification, checkpointing, cleanup, and clean worker exit",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30,
+    "strict_threshold_recommendation_warnings": null
+  },
+  "stages": [
+    {
+      "id": "native_ram_shutdown_confirmation",
+      "name": "Combined",
+      "duration_seconds": 90,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "native",
+          "mode": "extreme",
+          "load": "steady",
+          "instruction_set": "auto",
+          "instruction_intent": "highest_verified_vector",
+          "threads": "all",
+          "priority": "high",
+          "dataset": "large"
+        },
+        "memory": {
+          "enabled": true,
+          "backend_preference": "native",
+          "allocation_percent": 90,
+          "instruction_set": "auto",
+          "priority": "normal",
+          "threads": "all"
+        },
+        "gpu_3d": {
+          "enabled": false,
+          "mode": "steady",
+          "intensity": "extreme",
+          "gpus": "all",
+          "allocation_percent": 0,
+          "priority": "normal",
+          "backend_preference": "auto",
+          "compute_variant": "stress_hash"
+        },
+        "vram": {
+          "enabled": false,
+          "allocation_percent": 80,
+          "gpus": "all",
+          "priority": "normal",
+          "backend_preference": "auto"
+        }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "analysis": {
+        "intent": "functional"
+      },
+      "strict_threshold_recommendation_warnings": null,
+      "display_label": "Native RAM Shutdown Confirmation"
+    }
+  ]
+}

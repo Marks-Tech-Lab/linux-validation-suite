@@ -16,6 +16,7 @@ static volatile sig_atomic_t g_running = 1;
 static volatile uint64_t g_sink = 0;
 static volatile uint64_t g_error_count = 0;
 static volatile uint64_t g_verify_passes = 0;
+static volatile sig_atomic_t g_stop_signal = 0;
 static const char *g_result_file = NULL;
 
 enum pattern_kind {
@@ -46,7 +47,7 @@ struct worker_args {
 };
 
 static void stop_handler(int signo) {
-    (void)signo;
+    g_stop_signal = signo;
     g_running = 0;
 }
 
@@ -120,7 +121,12 @@ static void *worker_main(void *opaque) {
     while (g_running) {
         int verify_pattern = (int)((pass_index + (uint64_t)PATTERN_COUNT - 1ULL) % (uint64_t)PATTERN_COUNT);
         int write_pattern = (int)(pass_index % (uint64_t)PATTERN_COUNT);
-        for (size_t offset = 0; g_running && offset + stride <= length; offset += stride) {
+        int pass_completed = 1;
+        for (size_t offset = 0; offset + stride <= length; offset += stride) {
+            if (!g_running) {
+                pass_completed = 0;
+                break;
+            }
             uint64_t *lane = (uint64_t *)(ptr + offset);
             if (pass_index > 0) {
                 for (int lane_index = 0; lane_index < 8; ++lane_index) {
@@ -144,6 +150,9 @@ static void *worker_main(void *opaque) {
             for (int lane_index = 0; lane_index < 8; ++lane_index) {
                 lane[lane_index] = expected_value_for_pattern(write_pattern, pass_index, args->thread_index, offset, lane_index);
             }
+        }
+        if (!pass_completed || !g_running) {
+            break;
         }
         __atomic_fetch_add(&g_verify_passes, 1, __ATOMIC_RELAXED);
         if (stats != NULL) {
@@ -171,13 +180,36 @@ static uint64_t parse_u64(const char *text, const char *flag_name) {
     return (uint64_t)value;
 }
 
-static void write_result_file(uint64_t bytes, int threads, const struct worker_stats *worker_stats) {
-    if (g_result_file == NULL || *g_result_file == '\0') {
-        return;
+static int verification_complete(int threads, const struct worker_stats *worker_stats) {
+    for (int index = 0; index < threads; ++index) {
+        /* The first pass initializes the pattern; a later pass reads it back. */
+        if (worker_stats[index].verify_passes < 2) {
+            return 0;
+        }
     }
-    FILE *handle = fopen(g_result_file, "w");
+    return 1;
+}
+
+static int write_result_file(
+    uint64_t bytes,
+    int threads,
+    const struct worker_stats *worker_stats,
+    int cleanup_complete,
+    const char *lifecycle_phase
+) {
+    if (g_result_file == NULL || *g_result_file == '\0') {
+        return 0;
+    }
+    size_t temporary_length = strlen(g_result_file) + 5U;
+    char *temporary_path = malloc(temporary_length);
+    if (temporary_path == NULL) {
+        return -1;
+    }
+    snprintf(temporary_path, temporary_length, "%s.tmp", g_result_file);
+    FILE *handle = fopen(temporary_path, "w");
     if (handle == NULL) {
-        return;
+        free(temporary_path);
+        return -1;
     }
     fprintf(
         handle,
@@ -188,13 +220,21 @@ static void write_result_file(uint64_t bytes, int threads, const struct worker_s
         "  \"threads\": %d,\n"
         "  \"verify_passes\": %" PRIu64 ",\n"
         "  \"error_count\": %" PRIu64 ",\n"
+        "  \"verification_complete\": %s,\n"
+        "  \"cleanup_complete\": %s,\n"
+        "  \"lifecycle_phase\": \"%s\",\n"
+        "  \"termination_signal\": %d,\n"
         "  \"patterns\": [\"mix64\", \"inverted_mix64\", \"walking_bit\", \"address_xor\"],\n"
         "  \"threads_detail\": [\n",
         g_error_count == 0 ? "ok" : "error",
         bytes,
         threads,
         g_verify_passes,
-        g_error_count
+        g_error_count,
+        verification_complete(threads, worker_stats) ? "true" : "false",
+        cleanup_complete ? "true" : "false",
+        lifecycle_phase,
+        (int)g_stop_signal
     );
     for (int index = 0; index < threads; ++index) {
         const struct worker_stats *stats = &worker_stats[index];
@@ -242,7 +282,25 @@ static void write_result_file(uint64_t bytes, int threads, const struct worker_s
         }
     }
     fprintf(handle, "  ]\n}\n");
-    fclose(handle);
+    int write_failed = fflush(handle) != 0;
+    if (!write_failed && fsync(fileno(handle)) != 0) {
+        write_failed = 1;
+    }
+    if (fclose(handle) != 0) {
+        write_failed = 1;
+    }
+    if (write_failed) {
+        (void)remove(temporary_path);
+        free(temporary_path);
+        return -1;
+    }
+    if (rename(temporary_path, g_result_file) != 0) {
+        (void)remove(temporary_path);
+        free(temporary_path);
+        return -1;
+    }
+    free(temporary_path);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -327,8 +385,28 @@ int main(int argc, char **argv) {
         pthread_join(thread_ids[index], NULL);
     }
 
-    write_result_file(aligned_bytes, threads, worker_stats);
-    munmap(buffer, (size_t)aligned_bytes);
+    if (!verification_complete(threads, worker_stats)) {
+        __atomic_fetch_add(&g_error_count, 1, __ATOMIC_RELAXED);
+    }
+
+    (void)write_result_file(
+        aligned_bytes,
+        threads,
+        worker_stats,
+        0,
+        "verification_complete_cleanup_pending"
+    );
+    int cleanup_result = munmap(buffer, (size_t)aligned_bytes);
+    if (cleanup_result != 0) {
+        __atomic_fetch_add(&g_error_count, 1, __ATOMIC_RELAXED);
+    }
+    (void)write_result_file(
+        aligned_bytes,
+        threads,
+        worker_stats,
+        cleanup_result == 0,
+        cleanup_result == 0 ? "completed_cleanly" : "cleanup_failed"
+    );
     free(thread_ids);
     free(worker_args);
     free(worker_stats);

@@ -13,6 +13,9 @@ from Modules.lvs_stage_launch_plan import StageLaunchCommand
 
 
 PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+NATIVE_MEMORY_SHUTDOWN_BASE_SECONDS = 10.0
+NATIVE_MEMORY_SHUTDOWN_SECONDS_PER_GIB = 0.25
+NATIVE_MEMORY_SHUTDOWN_MAX_SECONDS = 120.0
 
 
 @dataclass
@@ -32,7 +35,45 @@ class StageProcess:
     ended_iso: str = ""
     ended_monotonic: Optional[float] = None
     expected_termination: bool = False
+    termination_requested_iso: str = ""
+    shutdown_timeout_seconds: Optional[float] = None
+    shutdown_timed_out: bool = False
+    forced_kill: bool = False
+    shutdown_error: str = ""
     system_memory_plan: Optional[Dict[str, Any]] = None
+
+
+def _command_option_int(command: List[str], option: str) -> int:
+    try:
+        index = command.index(option)
+        return max(0, int(command[index + 1]))
+    except (ValueError, IndexError, TypeError):
+        return 0
+
+
+def is_native_memory_worker(entry: StageProcess) -> bool:
+    command = list(getattr(entry, "command", []) or [])
+    executable = Path(str(command[0])).name if command else ""
+    return getattr(entry, "kind", "") == "memory" and executable.startswith("memory_stress_helper")
+
+
+def native_memory_shutdown_timeout_seconds(entry: StageProcess, default_seconds: float = 5.0) -> float:
+    """Return a bounded cleanup grace scaled to the native mapping size."""
+    command = list(getattr(entry, "command", []) or [])
+    allocation_bytes = _command_option_int(command, "--bytes")
+    plan = getattr(entry, "system_memory_plan", None)
+    if isinstance(plan, dict):
+        for key in ("assigned_target_bytes", "target_bytes", "requested_bytes"):
+            try:
+                allocation_bytes = max(allocation_bytes, int(plan.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+    allocation_gib = allocation_bytes / float(1024 ** 3)
+    scaled = NATIVE_MEMORY_SHUTDOWN_BASE_SECONDS + allocation_gib * NATIVE_MEMORY_SHUTDOWN_SECONDS_PER_GIB
+    return min(
+        NATIVE_MEMORY_SHUTDOWN_MAX_SECONDS,
+        max(float(default_seconds), scaled),
+    )
 
 
 def launch_stage_processes_from_plan(
@@ -139,6 +180,7 @@ def stop_stage_processes(
             poll = getattr(entry.process, "poll", None)
             if not callable(poll) or poll() is None:
                 entry.expected_termination = True
+                entry.termination_requested_iso = now_iso()
                 entry.process.terminate()
         except Exception:
             pass
@@ -159,6 +201,12 @@ def stop_stage_processes(
             # and print their final --metrics-brief verification record.
             if is_stress_ng_memory:
                 wait_timeout = max(float(timeout_seconds), 30.0)
+            elif is_native_memory_worker(entry):
+                # Releasing a multi-hundred-GiB mapping can take materially
+                # longer than stopping its verification threads. Scale the
+                # grace period with the actual allocation, but keep a firm cap
+                # so orchestration remains responsive on a wedged worker.
+                wait_timeout = native_memory_shutdown_timeout_seconds(entry, timeout_seconds)
             elif is_python_cpu_fallback:
                 # The supervisor must stop its multiprocessing children, drain
                 # their evidence, and persist the required result before exit.
@@ -168,10 +216,14 @@ def stop_stage_processes(
                 )
             else:
                 wait_timeout = timeout_seconds
+            entry.shutdown_timeout_seconds = float(wait_timeout)
             entry.process.wait(timeout=wait_timeout)
-        except Exception:
+        except Exception as exc:
+            entry.shutdown_timed_out = True
+            entry.shutdown_error = str(exc)
             try:
                 entry.process.kill()
+                entry.forced_kill = True
                 # Reap the child so evidence ingestion sees a durable status.
                 entry.process.wait(timeout=max(1.0, float(timeout_seconds)))
             except Exception:

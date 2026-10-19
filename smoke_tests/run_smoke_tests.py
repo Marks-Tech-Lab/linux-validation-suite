@@ -342,8 +342,11 @@ from Modules.lvs_stage_launch_plan import StageLaunchCommand, build_stage_launch
 from Modules.lvs_stage_completion import build_stage_check_window, complete_stage_record, serialize_final_gpu_workers, stage_issue_count
 from Modules.lvs_stage_evaluation import evaluate_completed_stage
 from Modules.lvs_stage_process_control import (
+    NATIVE_MEMORY_SHUTDOWN_BASE_SECONDS,
+    NATIVE_MEMORY_SHUTDOWN_MAX_SECONDS,
     PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS,
     StageProcess,
+    native_memory_shutdown_timeout_seconds,
     launch_stage_processes_from_plan,
     stop_processes,
     stop_stage_processes,
@@ -1026,6 +1029,7 @@ from Modules.lvs_worker_evidence import (
     read_log_tail,
     worker_result_events_from_payload,
 )
+from Modules.lvs_worker_integrity import worker_result_successful
 
 
 def assert_equal(actual, expected, message: str) -> None:
@@ -8567,6 +8571,12 @@ def test_run_summary_text_fixture() -> None:
                         "OutcomeClass": "worker_verified_telemetry_limited",
                         "PrimaryPurpose": "gpu_plus_vram_saturation",
                         "BackendConfidence": "worker_verified",
+                        "AnalysisEvidence": {
+                            "intent": "legacy_unspecified",
+                            "quality": "not_assessed",
+                            "usable_duration_seconds": 30.0,
+                            "usable_sample_count": 15,
+                        },
                         "TargetedGpuCount": 2,
                         "WarningCategoryCounts": {"gpu_vram_telemetry_discrepancy": 1},
                         "CoverageNotes": ["Separate concurrent VRAM worker omitted for GPU 1."],
@@ -8598,6 +8608,13 @@ def test_run_summary_text_fixture() -> None:
     assert_true("OS VRAM telemetry under-report: 1" in text, "summary warning category")
     assert_true("Report-only threshold caveats: 2" in text, "summary threshold caveats")
     assert_true("Coverage note: Separate concurrent VRAM worker omitted for GPU 1." in text, "summary coverage note")
+    assert_true("Purpose: GPU compute + VRAM stress candidate" in text, "summary purpose avoids a saturation claim")
+    assert_true("Backend selection confidence: worker verified" in text, "summary labels backend confidence narrowly")
+    assert_true(
+        "Analysis: legacy_unspecified / not_assessed; usable: 30.00s; samples: 15" in text,
+        "summary distinguishes unassessed evidence quality",
+    )
+    assert_true("GPU + VRAM saturation/stress" not in text, "summary does not imply demonstrated saturation")
     assert_true(
         "NVIDIA GeForce RTX 5090 #1: busy avg 94.00% / max 99.00%; power avg 500.00W / max 580.00W"
         in text,
@@ -23092,6 +23109,10 @@ def test_cpu_instruction_intent_resolution_and_profile_conversion() -> None:
         labels = loader.load_segment_labels(Path("profiles") / filename, profile)
         assert_true(not any("SSE" in label or "AVX" in label for label in labels), f"{filename} labels are architecture-neutral")
         assert_equal(validator.validate(profile, labels)["errors"], [], f"{filename} validates after conversion")
+        if filename == "PL Validation.json":
+            assert_equal(sum(stage.duration_seconds for stage in profile.stages), 2100, "PL Validation authored duration remains 35 minutes")
+            assert_true("35-minute" in profile.menu_description, "PL Validation description matches its authored duration")
+            assert_true("hour" not in profile.menu_description.lower(), "PL Validation does not claim a one-hour workload")
 
     confirmation_path = Path(
         "profiles/Archived/2026 Hardware Validation/06 Power Auto and Instruction Intent Confirmation/"
@@ -24445,6 +24466,48 @@ def test_memory_execution_helpers_build_commands_and_targets() -> None:
     assert_true("immintrin.h" not in source_text and "arm_neon.h" not in source_text, "native memory helper has no ISA intrinsic dependency")
     assert_true("pthread_setaffinity_np" in source_text, "native memory helper retains shared best-effort CPU affinity")
     assert_true("mix64" in source_text and "walking_bit" in source_text and "address_xor" in source_text, "native memory helper retains integrity patterns")
+    assert_true("cleanup_complete" in source_text, "native memory helper persists cleanup completion")
+    assert_true("verification_complete" in source_text, "native memory helper persists authoritative verification completion")
+    assert_true("verification_complete_cleanup_pending" in source_text, "native memory helper checkpoints before unmapping")
+    assert_true("rename(temporary_path, g_result_file)" in source_text, "native memory helper atomically replaces lifecycle evidence")
+    compiler = shutil.which("gcc") or shutil.which("cc")
+    if compiler:
+        with TemporaryDirectory(dir="/tmp") as helper_tmp:
+            helper_root = Path(helper_tmp)
+            helper_binary = helper_root / "memory_stress_helper"
+            helper_result = helper_root / "memory-result.json"
+            subprocess.run(
+                [compiler, "-O3", "-std=c11", "-pthread", "native/memory_stress_helper.c", "-o", str(helper_binary)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            helper_process = subprocess.Popen(
+                [
+                    str(helper_binary),
+                    "--bytes",
+                    str(4 * 1024 * 1024),
+                    "--threads",
+                    "1",
+                    "--result-file",
+                    str(helper_result),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(0.25)
+            helper_process.terminate()
+            _helper_stdout, helper_stderr = helper_process.communicate(timeout=5.0)
+            assert_equal(helper_process.returncode, 0, f"tiny native memory helper clean exit ({helper_stderr.strip()})")
+            helper_payload = json.loads(helper_result.read_text(encoding="utf-8"))
+            assert_equal(helper_payload["status"], "ok", "native memory helper clean status")
+            assert_true(helper_payload["verification_complete"], "native memory helper performs actual readback before success")
+            assert_true(helper_payload["cleanup_complete"], "native memory helper records completed unmapping")
+            assert_equal(helper_payload["lifecycle_phase"], "completed_cleanly", "native memory helper final lifecycle phase")
+            assert_equal(helper_payload["termination_signal"], signal.SIGTERM, "native memory helper records requested stop signal")
+            assert_true(not Path(f"{helper_result}.tmp").exists(), "native memory helper leaves no partial checkpoint file")
 
     runner = WorkloadRunner()
     runner._cpu_machine = lambda: "arm64"
@@ -28418,6 +28481,59 @@ def test_stage_process_control_helpers() -> None:
     )
     assert_true(not python_process.killed, "clean Python CPU supervisor shutdown is not escalated to SIGKILL")
 
+    small_native_process = FakeProcess(["build/memory_stress_helper"])
+    small_native_entry = StageProcess(
+        "memory",
+        ["build/memory_stress_helper", "--bytes", str(1 * GIB), "--threads", "2"],
+        small_native_process,
+    )
+    small_timeout = native_memory_shutdown_timeout_seconds(small_native_entry, 0.01)
+    assert_true(
+        NATIVE_MEMORY_SHUTDOWN_BASE_SECONDS < small_timeout < 11.0,
+        "small native mapping receives a bounded cleanup grace without a workstation-sized delay",
+    )
+    stop_stage_processes([small_native_entry], timeout_seconds=0.01)
+    assert_equal(small_native_process.wait_timeouts[0], small_timeout, "small native worker uses allocation-scaled grace")
+    assert_true(not small_native_process.killed, "clean native-memory shutdown is not force-killed")
+    assert_true(small_native_entry.expected_termination, "native-memory stage boundary records expected termination")
+
+    workstation_bytes = 121_035_681_792
+    large_native_process = FakeProcess(["build/memory_stress_helper"])
+    large_native_entry = StageProcess(
+        "memory",
+        ["build/memory_stress_helper", "--bytes", str(workstation_bytes), "--threads", "48"],
+        large_native_process,
+    )
+    stop_stage_processes([large_native_entry], timeout_seconds=5.0)
+    assert_true(
+        30.0 < large_native_process.wait_timeouts[0] < NATIVE_MEMORY_SHUTDOWN_MAX_SECONDS,
+        "121 GB native mapping receives materially more than the obsolete five-second grace",
+    )
+    assert_true(not large_native_entry.shutdown_timed_out, "slow successful cleanup remains a clean lifecycle")
+
+    capped_native_entry = StageProcess(
+        "memory",
+        ["build/memory_stress_helper", "--bytes", str(2 * 1024 * GIB)],
+        FakeProcess(["build/memory_stress_helper"]),
+    )
+    assert_equal(
+        native_memory_shutdown_timeout_seconds(capped_native_entry),
+        NATIVE_MEMORY_SHUTDOWN_MAX_SECONDS,
+        "native-memory cleanup grace remains firmly bounded",
+    )
+
+    timed_out_native_process = FakeProcess(["build/memory_stress_helper"])
+    timed_out_native_process.fail_wait = True
+    timed_out_native_entry = StageProcess(
+        "memory",
+        ["build/memory_stress_helper", "--bytes", str(1 * GIB)],
+        timed_out_native_process,
+    )
+    stop_stage_processes([timed_out_native_entry], timeout_seconds=0.01)
+    assert_true(timed_out_native_process.killed, "unresponsive native-memory worker is still force-killed")
+    assert_true(timed_out_native_entry.shutdown_timed_out, "bounded shutdown timeout is retained as evidence")
+    assert_true(timed_out_native_entry.forced_kill, "forced native-memory termination is retained as evidence")
+
 
 def test_stage_worker_evidence_helpers() -> None:
     class FakeProcess:
@@ -28539,6 +28655,149 @@ def test_stage_worker_evidence_helpers() -> None:
         assert_true(
             any(event["severity"] == "error" for event in failed_events),
             "explicit child failure produces stage error",
+        )
+
+        native_result_path = tmp_path / "native-memory.json"
+        native_result_path.write_text(
+            json.dumps(
+                {
+                    "kind": "memory",
+                    "status": "ok",
+                    "bytes": 121_035_681_792,
+                    "threads": 48,
+                    "verify_passes": 3579,
+                    "error_count": 0,
+                    "verification_complete": True,
+                    "cleanup_complete": True,
+                    "lifecycle_phase": "completed_cleanly",
+                    "termination_signal": signal.SIGTERM,
+                }
+            ),
+            encoding="utf-8",
+        )
+        clean_native_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", "121035681792", "--threads", "48"],
+            process=FakeProcess(0),
+            result_path=str(native_result_path),
+            expected_termination=True,
+            shutdown_timeout_seconds=38.18,
+        )
+        clean_native = read_worker_result(clean_native_entry)
+        assert_true(clean_native["verification_required"], "native RAM worker verification is mandatory")
+        assert_true(clean_native["verification_satisfied"], "native verify_passes satisfies the established result contract")
+        assert_true(worker_result_successful(clean_native), "verified and cleaned native RAM worker is successful")
+        assert_equal(
+            worker_result_events_from_payload(clean_native, "RAM", entry_kind="memory"),
+            [],
+            "clean native-memory lifecycle produces no failure event",
+        )
+
+        pending_result_path = tmp_path / "native-memory-pending.json"
+        pending_result_path.write_text(
+            json.dumps(
+                {
+                    "kind": "memory",
+                    "status": "ok",
+                    "verify_passes": 7190,
+                    "error_count": 0,
+                    "verification_complete": True,
+                    "cleanup_complete": False,
+                    "lifecycle_phase": "verification_complete_cleanup_pending",
+                }
+            ),
+            encoding="utf-8",
+        )
+        killed_native_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", "121035681792", "--threads", "48"],
+            process=FakeProcess(-signal.SIGKILL),
+            result_path=str(pending_result_path),
+            expected_termination=True,
+            shutdown_timeout_seconds=38.18,
+            shutdown_timed_out=True,
+            forced_kill=True,
+        )
+        killed_native = read_worker_result(killed_native_entry)
+        assert_equal(killed_native["status"], "crashed", "SIGKILL is never excused by earlier verification")
+        assert_true(not worker_result_successful(killed_native), "force-killed cleanup-pending worker fails integrity")
+        killed_events = worker_result_events_from_payload(killed_native, "RAM", entry_kind="memory")
+        assert_equal(killed_events[0]["category"], "worker_exit", "forced kill remains a worker-exit failure")
+        assert_true("force-killed" in killed_native["last_error"], "bounded-shutdown failure is explained accurately")
+
+        incomplete_cleanup_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", str(1 * GIB)],
+            process=FakeProcess(0),
+            result_path=str(pending_result_path),
+            expected_termination=True,
+        )
+        incomplete_cleanup = read_worker_result(incomplete_cleanup_entry)
+        incomplete_events = worker_result_events_from_payload(incomplete_cleanup, "RAM", entry_kind="memory")
+        assert_equal(
+            incomplete_events[0]["category"],
+            "worker_cleanup_incomplete",
+            "zero exit without cleanup-complete evidence fails closed",
+        )
+
+        incomplete_verification_path = tmp_path / "native-memory-unverified.json"
+        incomplete_verification_path.write_text(
+            json.dumps(
+                {
+                    "kind": "memory",
+                    "status": "ok",
+                    "verify_passes": 1,
+                    "error_count": 0,
+                    "verification_complete": False,
+                    "cleanup_complete": True,
+                    "lifecycle_phase": "completed_cleanly",
+                }
+            ),
+            encoding="utf-8",
+        )
+        incomplete_verification_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", str(1 * GIB)],
+            process=FakeProcess(0),
+            result_path=str(incomplete_verification_path),
+        )
+        incomplete_verification = read_worker_result(incomplete_verification_entry)
+        assert_true(
+            not incomplete_verification["verification_satisfied"],
+            "explicit incomplete native verification cannot pass on a nonzero counter alone",
+        )
+        assert_equal(
+            worker_result_events_from_payload(incomplete_verification, "RAM", entry_kind="memory")[0]["category"],
+            "worker_verification_missing",
+            "incomplete native readback produces a blocking verification event",
+        )
+
+        missing_native_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", str(1 * GIB)],
+            process=FakeProcess(0),
+            result_path=str(tmp_path / "missing-native-memory.json"),
+        )
+        missing_native = read_worker_result(missing_native_entry)
+        assert_true(not missing_native["verification_satisfied"], "missing native result does not synthesize verification")
+        assert_equal(
+            worker_result_events_from_payload(missing_native, "RAM", entry_kind="memory")[0]["category"],
+            "worker_verification_missing",
+            "missing native result remains a blocking integrity failure",
+        )
+
+        crashed_native_entry = StageProcess(
+            kind="memory",
+            command=["build/memory_stress_helper", "--bytes", str(1 * GIB)],
+            process=FakeProcess(-signal.SIGSEGV),
+            result_path=str(tmp_path / "crashed-native-memory.json"),
+        )
+        crashed_native = read_worker_result(crashed_native_entry)
+        assert_equal(crashed_native["status"], "crashed", "native crash before persistence remains a crash")
+        assert_equal(
+            worker_result_events_from_payload(crashed_native, "RAM", entry_kind="memory")[0]["category"],
+            "worker_exit",
+            "native crash remains a blocking worker-exit failure",
         )
 
 

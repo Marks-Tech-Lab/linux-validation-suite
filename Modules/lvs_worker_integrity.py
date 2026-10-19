@@ -24,6 +24,7 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
         return int(
             payload.get("verification_passes")
             or payload.get("VerificationPasses")
+            or payload.get("verify_passes")
             or 0
         )
     except Exception:
@@ -34,6 +35,8 @@ def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
     if not worker_verification_required(payload):
         return True
     if worker_verification_passes(payload) <= 0:
+        return False
+    if "verification_complete" in payload and not bool(payload.get("verification_complete")):
         return False
     # New workers that explicitly promise bounded initial/final verification
     # must complete both. Historical payloads do not carry these keys and keep
@@ -49,9 +52,17 @@ def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
     return True
 
 
+def worker_cleanup_satisfied(payload: Dict[str, Any]) -> bool:
+    """Historical workers pass; workers declaring cleanup state must finish it."""
+    for key in ("cleanup_complete", "CleanupComplete"):
+        if key in payload:
+            return bool(payload.get(key))
+    return True
+
+
 def worker_result_successful(payload: Dict[str, Any]) -> bool:
     status = str(payload.get("status") or payload.get("Status") or "").strip().lower()
-    return status in _SUCCESS_STATUSES and worker_verification_satisfied(payload)
+    return status in _SUCCESS_STATUSES and worker_verification_satisfied(payload) and worker_cleanup_satisfied(payload)
 
 
 def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
@@ -76,6 +87,8 @@ def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
         total += payload_error_count
         if status_failed:
             total += 1
-        elif payload_error_count <= 0 and not worker_verification_satisfied(payload):
+        elif payload_error_count <= 0 and (
+            not worker_verification_satisfied(payload) or not worker_cleanup_satisfied(payload)
+        ):
             total += 1
     return total

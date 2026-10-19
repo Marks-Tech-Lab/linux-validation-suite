@@ -167,13 +167,14 @@ class SummaryTextBuilder:
             lines.append(f"   Verdict: {stage.get('Verdict') or '-'}")
             lines.append(f"   Outcome: {stage.get('OutcomeClass') or '-'}")
             purpose = self._format_stage_purpose(stage.get("PrimaryPurpose"))
-            confidence = self._format_stage_purpose(stage.get("BackendConfidence"))
+            backend_confidence = self._format_stage_purpose(stage.get("BackendConfidence"))
             if purpose != "-":
-                confidence_suffix = f"; confidence: {confidence}" if confidence != "-" else ""
-                lines.append(f"   Purpose: {purpose}{confidence_suffix}")
+                lines.append(f"   Purpose: {purpose}")
+            if backend_confidence != "-":
+                lines.append(f"   Backend selection confidence: {backend_confidence}")
             analysis = stage.get("AnalysisEvidence") if isinstance(stage.get("AnalysisEvidence"), dict) else {}
             analysis_intent = str(analysis.get("intent") or "")
-            if analysis_intent and analysis_intent != "legacy_unspecified":
+            if analysis_intent:
                 analysis_quality = str(analysis.get("quality") or "not_assessed")
                 usable_seconds = analysis.get("usable_duration_seconds")
                 usable_samples = analysis.get("usable_sample_count")
@@ -268,8 +269,8 @@ class SummaryTextBuilder:
         if not text:
             return "-"
         labels = {
-            "gpu_saturation": "GPU saturation/stress",
-            "gpu_plus_vram_saturation": "GPU + VRAM saturation/stress",
+            "gpu_saturation": "GPU compute-stress candidate",
+            "gpu_plus_vram_saturation": "GPU compute + VRAM stress candidate",
             "vram_integrity_and_allocation": "VRAM allocation/integrity",
             "vulkan_memory_path_validation": "Vulkan memory-path validation",
             "vulkan_compute_correctness_baseline": "Vulkan compute correctness baseline",

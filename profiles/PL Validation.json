@@ -1,6 +1,7 @@
 {
   "profile_name": "PL Validation",
   "profile_type": "validation_schedule",
+  "menu_description": "35-minute four-stage CPU, RAM, Vulkan, and OpenCL validation schedule.",
   "menu_group": "standard",
   "defaults": {
     "telemetry_interval_seconds": 2,

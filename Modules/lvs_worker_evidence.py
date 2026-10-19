@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_cpu_targeting import parse_linux_cpu_list
 from Modules.lvs_worker_integrity import (
+    worker_cleanup_satisfied,
     worker_verification_required,
     worker_verification_satisfied,
 )
@@ -88,22 +89,37 @@ def apply_worker_entry_context(
         and bool(command)
         and Path(str(command[0])).name == "stress-ng"
     )
+    process = getattr(entry, "process", None)
+    process_pid = getattr(process, "pid", None)
+    if process_pid is not None:
+        payload.setdefault("process_pid", int(process_pid))
+    payload.setdefault("process_started_iso", str(getattr(entry, "started_iso", "") or ""))
+    payload.setdefault("process_ended_iso", str(getattr(entry, "ended_iso", "") or ""))
+    started_monotonic = getattr(entry, "started_monotonic", None)
+    ended_monotonic = getattr(entry, "ended_monotonic", None)
+    if started_monotonic is not None and ended_monotonic is not None:
+        payload.setdefault("process_elapsed_seconds", max(0.0, float(ended_monotonic) - float(started_monotonic)))
+    payload.setdefault("expected_termination", bool(getattr(entry, "expected_termination", False)))
+    payload.setdefault("termination_requested_iso", str(getattr(entry, "termination_requested_iso", "") or ""))
+    payload.setdefault("shutdown_timeout_seconds", getattr(entry, "shutdown_timeout_seconds", None))
+    payload.setdefault("shutdown_timed_out", bool(getattr(entry, "shutdown_timed_out", False)))
+    payload.setdefault("forced_kill", bool(getattr(entry, "forced_kill", False)))
+    shutdown_error = str(getattr(entry, "shutdown_error", "") or "")
+    if shutdown_error:
+        payload.setdefault("shutdown_error", shutdown_error)
+    is_native_memory = (
+        str(getattr(entry, "kind", "") or "") == "memory"
+        and bool(command)
+        and Path(str(command[0])).name.startswith("memory_stress_helper")
+    )
+    if is_native_memory:
+        payload.setdefault("verification_required", True)
     if is_stress_ng_cpu:
         payload.setdefault("backend", "stress_ng")
         payload.setdefault("executed_command", command)
         payload.setdefault("executable_requested", str(getattr(entry, "executable_requested", "") or command[0]))
         payload.setdefault("executable_resolved_path", str(getattr(entry, "executable_resolved_path", "") or ""))
         payload.setdefault("executable_version", str(getattr(entry, "executable_version", "") or ""))
-        process_pid = getattr(getattr(entry, "process", None), "pid", None)
-        if process_pid is not None:
-            payload.setdefault("process_pid", int(process_pid))
-        payload.setdefault("process_started_iso", str(getattr(entry, "started_iso", "") or ""))
-        payload.setdefault("process_ended_iso", str(getattr(entry, "ended_iso", "") or ""))
-        started_monotonic = getattr(entry, "started_monotonic", None)
-        ended_monotonic = getattr(entry, "ended_monotonic", None)
-        if started_monotonic is not None and ended_monotonic is not None:
-            payload.setdefault("process_elapsed_seconds", max(0.0, float(ended_monotonic) - float(started_monotonic)))
-        payload.setdefault("expected_termination", bool(getattr(entry, "expected_termination", False)))
         if "--taskset" in command:
             taskset_index = command.index("--taskset")
             target_text = command[taskset_index + 1] if taskset_index + 1 < len(command) else ""
@@ -123,7 +139,14 @@ def apply_worker_entry_context(
             payload["error_count"] = max(1, int(payload.get("error_count") or 0))
             if not str(payload.get("last_error") or "").strip():
                 kind = str(getattr(entry, "kind", payload.get("kind", "worker")) or "worker")
-                payload["last_error"] = f"{kind} worker exited early with code {return_code}"
+                if payload.get("forced_kill") and payload.get("shutdown_timed_out"):
+                    grace = payload.get("shutdown_timeout_seconds")
+                    grace_text = f" after {float(grace):.2f}s" if isinstance(grace, (int, float)) else ""
+                    payload["last_error"] = (
+                        f"{kind} worker did not complete bounded shutdown{grace_text} and was force-killed"
+                    )
+                else:
+                    payload["last_error"] = f"{kind} worker exited early with code {return_code}"
             if stdout_tail:
                 payload["stdout_tail"] = stdout_tail
             if stderr_tail:
@@ -188,6 +211,18 @@ def worker_result_events_from_payload(
                     if compatibility_backend
                     else f"{kind} worker exited early with code {observed_exit_code}"
                 ),
+                payload,
+            )
+        )
+        return events
+    if not worker_cleanup_satisfied(payload):
+        events.append(
+            create_stability_event(
+                "worker_cleanup_incomplete",
+                "error",
+                display_name,
+                kind,
+                f"{kind} worker exited without authoritative cleanup-complete evidence",
                 payload,
             )
         )
