@@ -717,6 +717,20 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
     gpu_evaluation = stage.get("gpu_evaluation_evidence") if isinstance(stage.get("gpu_evaluation_evidence"), dict) else {}
     gpu_counts = gpu_evaluation.get("status_counts") if isinstance(gpu_evaluation.get("status_counts"), dict) else {}
     gpu_evaluation_text = ""
+    cpu_progress_text = ""
+    for evidence in stage.get("cpu_verified_progress") or []:
+        rates = evidence.get("aggregate_interval_rate") or {}
+        rate_text = (
+            f' Observed aggregate rate {_number(evidence.get("aggregate_blocks_per_second"))} verified blocks/s; '
+            f'interval min/max {_number(rates.get("minimum"))}/{_number(rates.get("maximum"))}.'
+            if evidence.get("aggregate_blocks_per_second") is not None else ""
+        )
+        reasons = "; ".join(str(reason) for reason in evidence.get("reasons") or [])
+        cpu_progress_text += (
+            '<p class="muted compact">Verified CPU work evidence: '
+            f'{_escape(evidence.get("quality", "not_assessed"))}.{rate_text} '
+            f'{_escape(reasons)} Not a CPU saturation verdict.</p>'
+        )
     if gpu_counts:
         summary = ", ".join(
             f"{str(status).replace('_', ' ')}: {count}"
@@ -727,6 +741,7 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
       <div class="stage-heading"><div><span class="eyebrow">Stage {_escape(stage.get("index", 0) + 1)}</span><h3>{_escape(title)}</h3>{f'<p class="stage-description">{_escape(description)}</p>' if description else ''}</div></div>
       <div class="stage-meta"><span class="badge {status}">{_escape(str(native).replace("_", " ").upper())}</span><span>Duration {_escape(_duration(stage.get("duration_seconds")))}</span>{analysis_text}{gpu_evaluation_text}</div>
       {metrics}
+      {cpu_progress_text}
       <button type="button" class="stage-detail-toggle" data-stage-detail="stage-detail-{_escape(stage.get("index", 0))}" aria-expanded="false">Show full min/avg/max metrics</button>
     </article>'''
 

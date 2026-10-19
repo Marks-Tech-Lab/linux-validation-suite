@@ -535,6 +535,11 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "minimum_samples": None,
         "reasons": [],
     }
+    cpu_progress = [
+        dict(worker["verified_progress_analysis"])
+        for worker in (window.get("worker_results") or [])
+        if isinstance(worker, dict) and isinstance(worker.get("verified_progress_analysis"), dict)
+    ]
     return {
         "index": index,
         "stage_id": str(window.get("stage_id") or f"stage_{index + 1}"),
@@ -555,6 +560,7 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "analysis_window_valid": analysis_window_valid,
         "analysis_evidence": analysis_evidence,
         "gpu_evaluation_evidence": dict(window.get("gpu_evaluation_evidence") or {}),
+        **({"cpu_verified_progress": cpu_progress} if cpu_progress else {}),
         "normalization_sources": dict(window.get("normalization_sources") or {}),
         "native_outcome": _outcome(window.get("verdict")) or "unknown",
         "failures": [],
@@ -1038,6 +1044,7 @@ def _windows_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
             "system_faults": list(segment.get("SystemFaults") or []),
             "analysis_evidence": dict(segment.get("AnalysisEvidence") or {}),
             "gpu_evaluation_evidence": dict(segment.get("GpuEvaluationEvidence") or {}),
+            "worker_results": list(segment.get("WorkerResults") or []),
         })
     return windows
 
@@ -1369,6 +1376,8 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
                     "analysis_duration_seconds": stage["analysis_duration_seconds"],
                     "analysis_window_valid": stage["analysis_window_valid"],
                     "analysis_evidence": stage["analysis_evidence"],
+                    **({"cpu_verified_progress": stage["cpu_verified_progress"]}
+                       if stage.get("cpu_verified_progress") else {}),
                     "normalization_sources": stage["normalization_sources"],
                     "metric_summary_source": stage["metric_summary_source"],
                     "metric_window_semantics": stage["metric_window_semantics"],

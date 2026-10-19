@@ -84,6 +84,25 @@ def apply_worker_entry_context(
     if getattr(entry, "stderr_path", None):
         payload.setdefault("stderr_path", entry.stderr_path)
     command = list(getattr(entry, "command", []) or [])
+    if "--kernel-flavor" in command:
+        index = command.index("--kernel-flavor")
+        if command[index + 1:index + 2] == ["neon_fp32_fma"]:
+            # Command intent remains authoritative even if the worker crashes
+            # before writing results (or emits an incomplete payload).
+            payload["kernel_flavor"] = "neon_fp32_fma"
+            payload["verification_required"] = True
+            payload["verification_contract"] = "neon_fp32_fma_v1"
+            # Supplementary sidecar survives even when the final JSON is absent.
+            progress = payload.setdefault("verified_progress", {
+                "contract": "neon_fp32_fma_progress_v1",
+            })
+            if isinstance(progress, dict) and getattr(entry, "result_path", None):
+                progress["path"] = str(entry.result_path) + ".progress.jsonl"
+                if "--cpu-ids" in command:
+                    target_index = command.index("--cpu-ids")
+                    if command[target_index + 1:target_index + 2]:
+                        # Requested identities, never proof of thread startup.
+                        progress["target_cpu_ids"] = parse_linux_cpu_list(command[target_index + 1])
     is_stress_ng_cpu = (
         str(getattr(entry, "kind", "") or "") == "cpu"
         and bool(command)

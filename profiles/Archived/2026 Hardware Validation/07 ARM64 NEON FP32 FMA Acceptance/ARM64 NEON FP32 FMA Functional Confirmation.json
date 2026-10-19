@@ -1,0 +1,47 @@
+{
+  "profile_name": "ARM64 NEON FP32 FMA Functional Confirmation",
+  "profile_type": "validation_schedule",
+  "menu_group": "advanced",
+  "menu_description": "Functional native NEON FP32/FMA confirmation with exact per-thread arithmetic verification and clean shutdown; not sustained performance or power characterization",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 30,
+    "trim_end_seconds": 30,
+    "strict_threshold_recommendation_warnings": false
+  },
+  "stages": [
+    {
+      "id": "arm64_neon_fp32_fma_functional_confirmation",
+      "name": "CPU",
+      "display_label": "ARM64 NEON FP32/FMA Functional Confirmation",
+      "duration_seconds": 120,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "native",
+          "power_auto": false,
+          "instruction_set": "neon_fp32_fma",
+          "instruction_intent": "",
+          "mode": "extreme",
+          "load": "steady",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "small"
+        },
+        "memory": { "enabled": false },
+        "gpu_3d": { "enabled": false },
+        "vram": { "enabled": false },
+        "storage_benchmark": { "enabled": false }
+      },
+      "normalization": {
+        "trim_start_seconds": 30,
+        "trim_end_seconds": 30
+      },
+      "analysis": {
+        "intent": "functional"
+      }
+    }
+  ]
+}

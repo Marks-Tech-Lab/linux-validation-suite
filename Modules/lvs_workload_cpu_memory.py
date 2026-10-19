@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from Modules.lvs_worker_integrity import worker_verification_satisfied
+
 from Modules.lvs_cpu_architecture import (
     cpu_native_power_probe_kernel_order,
     cpu_instruction_set_policy,
@@ -356,7 +358,7 @@ class WorkloadCpuMemoryMixin:
         else:
             selected = select_common_kernel(
                 architecture=architecture,
-                requested_mode=requested,
+                requested_mode=("neon_fp32_fma" if cpu.instruction_set == "neon_fp32_fma" else requested),
                 common_flavors=intersection["common_kernel_flavors"],
             )
         reason = ""
@@ -455,7 +457,7 @@ class WorkloadCpuMemoryMixin:
 
     def _cpu_candidate_kernel_flavors(self, cpu: Any) -> List[str]:
         capability = self._cpu_capability_plan(cpu)
-        if self._cpu_instruction_intent(cpu):
+        if self._cpu_instruction_intent(cpu) or cpu.instruction_set == "neon_fp32_fma":
             selected = str(capability.get("selected_kernel_flavor") or "")
             return [selected] if selected else []
         common = set(capability.get("common_kernel_flavors") or [])
@@ -727,7 +729,8 @@ class WorkloadCpuMemoryMixin:
                         result_payload = loaded
                 except Exception:
                     pass
-            for path in (result_path, stdout_path, stderr_path):
+            for path in (result_path, stdout_path, stderr_path,
+                         result_path + ".progress.jsonl" if result_path else ""):
                 if path:
                     Path(path).unlink(missing_ok=True)
         error_count = int(result_payload.get("error_count") or result_payload.get("verification_error_count") or 0)
@@ -758,6 +761,10 @@ class WorkloadCpuMemoryMixin:
             and error_count == 0
             and affinity_failed_count == 0
             and worker_topology_valid
+            and worker_verification_satisfied(result_payload)
+            and (candidate.get("kernel_flavor") != "neon_fp32_fma"
+                 or (process is not None and process.returncode == 0
+                     and result_payload.get("kernel_flavor") == "neon_fp32_fma"))
         )
         failure_reason = str(result_payload.get("last_error") or "")
         if not failure_reason and not worker_topology_valid:

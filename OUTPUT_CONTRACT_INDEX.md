@@ -42,6 +42,34 @@ read-only, normalized health values and source/status notes; raw `smartctl` or
 
 ### Worker, sidecar, and debug artifacts
 
+Native CPU `neon_fp32_fma` additionally writes `<result-file>.progress.jsonl`
+(`neon_fp32_fma_progress_v1`, LVS-owned snake_case). Newline-terminated snapshots
+carry process/thread/CPU identities, paired Linux monotonic/realtime timestamps,
+and fully verified per-thread block counts. Unterminated records are incomplete,
+not usable evidence. Progress is supplementary, never a substitute for worker
+verification, clean exit, or safety outcomes. `WorkerResults` retain additive
+`verified_progress` metadata and `verified_progress_analysis` (same versioned
+progress contract), including trimmed per-thread rates, coverage, gaps, and
+insufficiency reasons. Report/chart stages expose `cpu_verified_progress`.
+Historical results without the contract are not retrospectively assessed.
+
+Native CPU `neon_fp32_fma` adds the `neon_fp32_fma_v1` verification contract:
+`operation_family`, `verification_method`, `verification_version`,
+`rounding_environment`, `execution_implementation`, `arithmetic_verified_blocks`,
+`lanes_per_block`, `fma_rounds_per_block`, and initial/periodic/final completion.
+`isa_capability_source` and `isa_hwcap` retain the common HWCAP provenance;
+test-only emulation declares an override and null HWCAP, not ARM capability.
+Each `threads_detail` entry preserves affinity, FPCR, verified/interrupted block
+counts, and first-mismatch lane/bit-pattern evidence. Every requested thread must
+verify; aggregate counters cannot establish this contract. Existing integer
+`neon`, scalar, and historical workers retain their established contracts.
+These fields travel unchanged in segment `worker_results` / compatibility
+`WorkerResults`; missing historical fields do not imply FP32/FMA execution.
+The compatibility filter preserves the complete CPU record when it declares
+`verification_contract: neon_fp32_fma_v1`, including failed/incomplete evidence.
+It does not synthesize missing fields or waive integrity checks. Older worker
+records keep their established legacy projection.
+
 | Artifact | Classification | Ownership and compatibility notes |
 | --- | --- | --- |
 | `worker_results/*_cpu.json`, `*_memory.json`, `*_gpu_3d_*.json`, `*_vram_*.json` | LVS-owned snake_case contract | Worker evidence consumed by stage postprocessing. Treat existing keys as semi-public implementation contracts. Vulkan compute workers add bounded startup checkpoints/fault-diagnostic state, timing, dispatch/submission, verification-cadence, device-limit, and optional GPU-timestamp evidence; absence of those additive fields preserves the historical contract. |

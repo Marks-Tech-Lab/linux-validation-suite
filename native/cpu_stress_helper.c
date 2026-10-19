@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 typedef enum {
     MODE_AUTO = 0,
@@ -42,7 +43,8 @@ typedef enum {
     KERNEL_AVX2_FMA = 7,
     KERNEL_AVX512_FMA = 8,
     KERNEL_AVX512_INT = 9,
-    KERNEL_NEON = 10
+    KERNEL_NEON = 10,
+    KERNEL_NEON_FP32_FMA = 11
 } kernel_flavor_t;
 
 typedef struct {
@@ -60,6 +62,17 @@ typedef struct {
     int observed_cpu;
     int first_error_recorded;
     char first_error_kind[32];
+    uint64_t arithmetic_verified_blocks;
+    uint64_t interrupted_arithmetic_blocks;
+    uint64_t fpcr;
+    int initial_verification_completed;
+    int periodic_verification_completed;
+    int final_verification_completed;
+    int first_error_lane;
+    int progress_index;
+    uint64_t progress_next_check;
+    unsigned int progress_check_stride;
+    double progress_check_time;
 } worker_stats_t;
 
 typedef struct {
@@ -73,6 +86,96 @@ typedef struct {
 static volatile sig_atomic_t keep_running = 1;
 static volatile uint64_t vector_sink_u64 = 0;
 static const char *result_file_path = NULL;
+
+/* One writer, O(threads) storage. Only verified block boundaries are published;
+ * no I/O, mutex, or clock read occurs in the vector arithmetic hot loop. */
+typedef struct {
+    worker_stats_t stats;
+    double monotonic;
+} progress_slot_t;
+static progress_slot_t *progress_slots;
+static progress_slot_t *progress_snapshot;
+static int progress_threads;
+static pthread_mutex_t progress_lock = PTHREAD_MUTEX_INITIALIZER;
+static FILE *progress_file;
+static char *progress_path;
+static unsigned long progress_sequence;
+static int progress_io_error;
+static double progress_write_seconds;
+
+static double clock_seconds(clockid_t clock_id) {
+    struct timespec value;
+    if (clock_gettime(clock_id, &value) != 0) return 0.0;
+    return (double)value.tv_sec + (double)value.tv_nsec / 1e9;
+}
+
+static void publish_verified_progress(worker_stats_t *stats, int force) {
+    if (!progress_slots) return;
+    int index = stats->progress_index;
+    /* Adapt clock-check spacing to block latency, without changing arithmetic.
+     * Fast cores avoid a clock read per block; slow cores publish promptly. */
+    if (!force && stats->arithmetic_verified_blocks < stats->progress_next_check) return;
+    double now = clock_seconds(CLOCK_MONOTONIC);
+    unsigned int stride = stats->progress_check_stride ? stats->progress_check_stride : 1;
+    double elapsed = now - stats->progress_check_time;
+    if (stats->progress_check_time > 0) {
+        if (elapsed > 0.1 && stride > 1) stride /= 2;
+        else if (elapsed < 0.025 && stride <= UINT32_MAX / 2) stride *= 2;
+    }
+    stats->progress_check_stride = stride;
+    stats->progress_check_time = now;
+    stats->progress_next_check = UINT64_MAX - stats->arithmetic_verified_blocks < stride
+        ? UINT64_MAX : stats->arithmetic_verified_blocks + stride;
+    if (!force && now - progress_slots[index].monotonic < 0.25) return;
+    pthread_mutex_lock(&progress_lock);
+    progress_slots[index].stats = *stats;
+    progress_slots[index].monotonic = now;
+    pthread_mutex_unlock(&progress_lock);
+}
+
+static void write_progress_snapshot(const char *state, const int *cpu_ids) {
+    if (!progress_file || progress_io_error) return;
+    double before = clock_seconds(CLOCK_MONOTONIC);
+    pthread_mutex_lock(&progress_lock);
+    memcpy(progress_snapshot, progress_slots, (size_t)progress_threads * sizeof(*progress_slots));
+    pthread_mutex_unlock(&progress_lock);
+    double pair_before = clock_seconds(CLOCK_MONOTONIC);
+    double realtime = clock_seconds(CLOCK_REALTIME);
+    double now = clock_seconds(CLOCK_MONOTONIC);
+    uint64_t total = 0;
+    fprintf(progress_file, "{\"contract\":\"neon_fp32_fma_progress_v1\","
+        "\"sequence\":%lu,\"pid\":%ld,\"kernel_flavor\":\"neon_fp32_fma\","
+        "\"operation_family\":\"fp32_fused_multiply_add\",\"state\":\"%s\","
+        "\"monotonic_seconds\":%.9f,\"realtime_seconds\":%.9f,"
+        "\"clock_pair_uncertainty_seconds\":%.9f,\"snapshot_interval_seconds\":2.0,\"threads\":[",
+        progress_sequence++, (long)getpid(), state, now, realtime, now - pair_before);
+    for (int i = 0; i < progress_threads; ++i) {
+        const progress_slot_t *slot = &progress_snapshot[i];
+        const worker_stats_t *s = &slot->stats;
+        /* Aggregate overflow is an evidence failure, never a wrapped count. */
+        if (UINT64_MAX - total < s->arithmetic_verified_blocks) progress_io_error = 1;
+        else total += s->arithmetic_verified_blocks;
+        fprintf(progress_file, "%s{\"thread_index\":%d,\"cpu_id\":%d,"
+            "\"published_monotonic_seconds\":%.9f,\"verified_blocks\":%" PRIu64 ","
+            "\"initial_verified\":%s,\"periodic_verified\":%s,\"final_verified\":%s,"
+            "\"error_count\":%" PRIu64 ",\"affinity_applied\":%s,\"observed_cpu\":%d,"
+            "\"interrupted_arithmetic_blocks\":%" PRIu64 ",\"first_error_kind\":\"%s\","
+            "\"first_error_lane\":%d,\"first_error_expected\":%" PRIu64 ",\"first_error_actual\":%" PRIu64 "}",
+            i ? "," : "", i, cpu_ids[i], slot->monotonic, s->arithmetic_verified_blocks,
+            s->initial_verification_completed ? "true" : "false",
+            s->periodic_verification_completed ? "true" : "false",
+            s->final_verification_completed ? "true" : "false", s->error_count,
+            s->affinity_applied ? "true" : "false", s->observed_cpu,
+            s->interrupted_arithmetic_blocks, s->first_error_kind,
+            s->first_error_lane, s->first_error_expected, s->first_error_actual);
+    }
+    fprintf(progress_file, "],\"aggregate_verified_blocks\":%" PRIu64 "}\n", total);
+    if (fflush(progress_file) != 0 || fsync(fileno(progress_file)) != 0 || ferror(progress_file)) {
+        progress_io_error = 1;
+        fprintf(stderr, "verified progress persistence failed: %s\n", strerror(errno));
+    }
+    progress_write_seconds += clock_seconds(CLOCK_MONOTONIC) - before;
+}
 
 static void handle_signal(int signum) {
     (void)signum;
@@ -197,6 +300,7 @@ static void record_worker_error(worker_stats_t *stats, const char *kind, uint64_
         stats->first_error_actual = actual;
         snprintf(stats->first_error_kind, sizeof(stats->first_error_kind), "%s", kind != NULL ? kind : "unknown");
     }
+    publish_verified_progress(stats, 1);
 }
 
 static uint64_t mul_add_mod_u64(uint64_t a, uint64_t b, uint64_t c) {
@@ -378,6 +482,8 @@ static const char *kernel_flavor_name(kernel_flavor_t flavor) {
             return "avx512_int";
         case KERNEL_NEON:
             return "neon";
+        case KERNEL_NEON_FP32_FMA:
+            return "neon_fp32_fma";
         case KERNEL_UNSPECIFIED:
             return "";
         case KERNEL_SCALAR:
@@ -746,6 +852,261 @@ static void run_neon_loop(uint32_t seed, worker_stats_t *stats) {
 }
 #endif
 
+#define FP32_FMA_CASES 4
+#define FP32_FMA_LANES 32
+#define FP32_FMA_ROUNDS 256
+
+#if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_FP32_REFERENCE)
+/* Exact integer binary32 fused reference for the bounded finite operand domain
+ * below. No host floating-point arithmetic, tolerance, or duplicated SIMD.
+ * Unsupported exponent alignments are rejected rather than approximated. */
+static int fp32_fma_reference(uint32_t a, uint32_t b, uint32_t c, uint32_t *output) {
+#if defined(__SIZEOF_INT128__)
+    unsigned ae = (a >> 23) & 255U, be = (b >> 23) & 255U, ce = (c >> 23) & 255U;
+    if (ae == 255U || be == 255U || ce == 255U) return 0;
+    uint64_t am = (a & 0x7fffffU) | (ae ? 0x800000U : 0U);
+    uint64_t bm = (b & 0x7fffffU) | (be ? 0x800000U : 0U);
+    uint64_t cm = (c & 0x7fffffU) | (ce ? 0x800000U : 0U);
+    uint64_t pm = am * bm;
+    int pe = (ae ? (int)ae - 150 : -149) + (be ? (int)be - 150 : -149);
+    int add_e = ce ? (int)ce - 150 : -149;
+    if (!pm) pe = add_e;
+    if (!cm) add_e = pe;
+    int common = pe < add_e ? pe : add_e;
+    int ps = pe - common, cs = add_e - common;
+    if (ps > 72 || cs > 96) return 0; /* <= 120 significant bits */
+    __uint128_t product = (__uint128_t)pm << ps, addend = (__uint128_t)cm << cs;
+    unsigned product_sign = (a ^ b) >> 31, add_sign = c >> 31;
+    unsigned sign = product_sign;
+    __uint128_t magnitude;
+    if (product_sign == add_sign) magnitude = product + addend;
+    else if (product >= addend) magnitude = product - addend;
+    else { magnitude = addend - product; sign = add_sign; }
+    if (!magnitude) { *output = product_sign == add_sign ? sign << 31 : 0U; return 1; }
+    int bits = 0;
+    for (__uint128_t v = magnitude; v; v >>= 1) ++bits;
+    int exponent = common + bits - 1;
+    int shift = bits - 24;
+    if (exponent < -126) shift = -149 - common;
+    __uint128_t rounded;
+    if (shift > 0) {
+        if (shift >= 128) return 0;
+        rounded = magnitude >> shift;
+        __uint128_t remainder = magnitude & (((__uint128_t)1 << shift) - 1);
+        __uint128_t half = (__uint128_t)1 << (shift - 1);
+        if (remainder > half || (remainder == half && (rounded & 1))) ++rounded;
+    } else rounded = magnitude << -shift;
+    if (exponent < -126) {
+        *output = (sign << 31) | (uint32_t)rounded;
+        return 1;
+    }
+    if (rounded >= 0x1000000U) { rounded >>= 1; ++exponent; }
+    *output = (sign << 31) | (exponent > 127 ? 0x7f800000U :
+        ((uint32_t)(exponent + 127) << 23) | ((uint32_t)rounded & 0x7fffffU));
+    return 1;
+#else
+    /* Unrelated legacy helpers still build on targets without uint128. The
+     * new kernel is only advertised on Linux AArch64, which supplies uint128. */
+    (void)a; (void)b; (void)c; (void)output;
+    return 0;
+#endif
+}
+
+typedef struct {
+    uint32_t initial[FP32_FMA_LANES];
+    uint32_t multiplier[FP32_FMA_LANES];
+    uint32_t addend[FP32_FMA_LANES];
+    uint32_t expected[FP32_FMA_LANES];
+} fp32_fma_case_t;
+
+static const uint32_t fp32_witness_a[4] = {0x3f800001U, 0x3f800800U, 0x3f800001U, 0xbf800001U};
+static const uint32_t fp32_witness_b[4] = {0x3f7ffffeU, 0x3f7ff000U, 0x3f000000U, 0x3f7ffffeU};
+static const uint32_t fp32_witness_c[4] = {0xbf800000U, 0xbf800000U, 0x3f800000U, 0x3f800000U};
+/* -2^-46, -2^-24, ties-to-even 1.5, +2^-46. */
+static const uint32_t fp32_witness_expected[4] = {0xa8800000U, 0xb3800000U, 0x3fc00000U, 0x28800000U};
+
+static int prepare_fp32_fma_cases(fp32_fma_case_t *cases, uint32_t seed) {
+    for (int k = 0; k < FP32_FMA_CASES; ++k) {
+        for (int lane = 0; lane < FP32_FMA_LANES; ++lane) {
+            uint32_t mix = (seed * 1664525U + (uint32_t)(lane * 1013904223U) + (uint32_t)k * 69069U);
+            cases[k].initial[lane] = 0x3f000000U | (mix & 0x3fffffU);
+            cases[k].multiplier[lane] = 0x3f7f0000U | ((mix >> 5) & 0xffffU);
+            cases[k].addend[lane] = 0x3a800000U | ((mix >> 9) & 0x3fffffU) | ((lane & 1) ? 0x80000000U : 0U);
+            uint32_t value = cases[k].initial[lane];
+            for (int i = 0; i < FP32_FMA_ROUNDS; ++i) {
+                if (!fp32_fma_reference(value, cases[k].multiplier[lane], cases[k].addend[lane], &value)) return 0;
+            }
+            cases[k].expected[lane] = value;
+        }
+    }
+    return 1;
+}
+
+static int verify_fp32_fma_lanes(worker_stats_t *stats, const uint32_t *actual,
+                                 const uint32_t *expected, int count, uint64_t block) {
+    for (int lane = 0; lane < count; ++lane) {
+        if (((actual[lane] >> 23) & 255U) == 255U || actual[lane] != expected[lane]) {
+            if (!stats->first_error_recorded) stats->first_error_lane = lane;
+            record_worker_error(stats, "fp32_fma_mismatch", block, expected[lane], actual[lane]);
+            keep_running = 0;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int fp32_environment_supported(uint64_t fpcr) {
+    /* RN ties-even, no FP32 flush-to-zero, and no enabled exception traps.
+     * Sticky exception flags (FPSR), including ordinary inexact, are allowed. */
+    return (fpcr & ((3ULL << 22) | (1ULL << 24) | (31ULL << 8) | (1ULL << 15))) == 0;
+}
+
+static int fp32_check_affinity(worker_stats_t *stats) {
+    int observed = sched_getcpu();
+    stats->observed_cpu = observed;
+    if (observed == stats->affinity_target_cpu && stats->affinity_applied) return 1;
+    record_worker_error(stats, "affinity_lost", stats->arithmetic_verified_blocks,
+                        stats->affinity_target_cpu, observed < 0 ? UINT64_MAX : (uint64_t)observed);
+    keep_running = 0;
+    return 0;
+}
+
+#if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+/* Test builds exercise lifecycle/verifier logic with an explicitly labelled
+ * integer emulation. They never establish ARM instruction execution. */
+__attribute__((noinline))
+static int execute_fp32_fma_block(const fp32_fma_case_t *input, uint32_t *output, int final) {
+#if defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+#if defined(LVS_CPU_HELPER_TEST_INTERRUPT_FP32_BLOCK)
+    static _Thread_local unsigned int test_calls;
+    if (!final && ++test_calls == 3) { keep_running = 0; return 0; }
+#endif
+    memcpy(output, input->initial, sizeof(input->initial));
+    for (int i = 0; i < FP32_FMA_ROUNDS; ++i) {
+        if (!final && !keep_running) return 0;
+        for (int lane = 0; lane < FP32_FMA_LANES; ++lane) {
+            if (!fp32_fma_reference(output[lane], input->multiplier[lane], input->addend[lane], &output[lane])) return -1;
+        }
+    }
+#else
+    float initial[32], multiplier[32], addend[32], result[32];
+    memcpy(initial, input->initial, sizeof(initial));
+    memcpy(multiplier, input->multiplier, sizeof(multiplier));
+    memcpy(addend, input->addend, sizeof(addend));
+#define LOAD_CHAIN(N) float32x4_t x##N = vld1q_f32(initial + 4*N); \
+    float32x4_t a##N = vld1q_f32(multiplier + 4*N); \
+    float32x4_t b##N = vld1q_f32(addend + 4*N)
+    LOAD_CHAIN(0); LOAD_CHAIN(1); LOAD_CHAIN(2); LOAD_CHAIN(3);
+    LOAD_CHAIN(4); LOAD_CHAIN(5); LOAD_CHAIN(6); LOAD_CHAIN(7);
+#undef LOAD_CHAIN
+    for (int i = 0; i < FP32_FMA_ROUNDS; ++i) {
+        if ((i & 31) == 0 && !final && !keep_running) return 0;
+        x0 = vfmaq_f32(b0, x0, a0); x1 = vfmaq_f32(b1, x1, a1);
+        x2 = vfmaq_f32(b2, x2, a2); x3 = vfmaq_f32(b3, x3, a3);
+        x4 = vfmaq_f32(b4, x4, a4); x5 = vfmaq_f32(b5, x5, a5);
+        x6 = vfmaq_f32(b6, x6, a6); x7 = vfmaq_f32(b7, x7, a7);
+        /* Compiler barrier only: retain every dependent arithmetic step. */
+        __asm__ volatile("" : "+w"(x0), "+w"(x1), "+w"(x2), "+w"(x3),
+                             "+w"(x4), "+w"(x5), "+w"(x6), "+w"(x7));
+    }
+#define STORE_CHAIN(N) vst1q_f32(result + 4*N, x##N)
+    STORE_CHAIN(0); STORE_CHAIN(1); STORE_CHAIN(2); STORE_CHAIN(3);
+    STORE_CHAIN(4); STORE_CHAIN(5); STORE_CHAIN(6); STORE_CHAIN(7);
+#undef STORE_CHAIN
+    memcpy(output, result, sizeof(result));
+#endif
+#if defined(LVS_CPU_HELPER_TEST_CORRUPT_FP32_LANE)
+    output[17] ^= 1U;
+#elif defined(LVS_CPU_HELPER_TEST_NONFINITE_FP32_LANE)
+    output[31] = 0x7f800000U;
+#endif
+    return 1;
+}
+
+static void run_neon_fp32_fma_loop(uint32_t seed, worker_stats_t *stats) {
+    fp32_fma_case_t cases[FP32_FMA_CASES];
+    uint32_t actual[FP32_FMA_LANES], witness[4];
+#if defined(__aarch64__) && !defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+    __asm__ volatile("mrs %0, fpcr" : "=r"(stats->fpcr));
+    if (!fp32_environment_supported(stats->fpcr)) {
+        record_worker_error(stats, "fp_environment", 0, 0, stats->fpcr);
+        keep_running = 0;
+        return;
+    }
+#endif
+    if (!prepare_fp32_fma_cases(cases, seed)) {
+        record_worker_error(stats, "fp32_reference_domain", 0, 0, 0);
+        keep_running = 0;
+        return;
+    }
+    int final = 0;
+    for (;;) {
+        if (!keep_running) {
+            if (stats->error_count || !stats->initial_verification_completed) break;
+            final = 1;
+        }
+        if (!fp32_check_affinity(stats)) break;
+        unsigned k = (unsigned)((stats->arithmetic_verified_blocks + seed) % FP32_FMA_CASES);
+        int completed = execute_fp32_fma_block(&cases[k], actual, final);
+        if (completed == 0) { ++stats->interrupted_arithmetic_blocks; continue; }
+        if (completed < 0) {
+            record_worker_error(stats, "fp32_reference_failed", stats->arithmetic_verified_blocks, 1, 0);
+            keep_running = 0;
+            break;
+        }
+        if (!verify_fp32_fma_lanes(stats, actual, cases[k].expected, FP32_FMA_LANES, stats->arithmetic_verified_blocks)) break;
+#if defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+        for (int lane = 0; lane < 4; ++lane) {
+            fp32_fma_reference(fp32_witness_a[lane], fp32_witness_b[lane], fp32_witness_c[lane], &witness[lane]);
+        }
+#if defined(LVS_CPU_HELPER_TEST_UNFUSED_FP32)
+        uint32_t product;
+        fp32_fma_reference(fp32_witness_a[0], fp32_witness_b[0], 0, &product);
+        fp32_fma_reference(product, 0x3f800000U, fp32_witness_c[0], &witness[0]);
+#endif
+#else
+        float wa[4], wb[4], wc[4], wr[4];
+        memcpy(wa, fp32_witness_a, sizeof(wa)); memcpy(wb, fp32_witness_b, sizeof(wb)); memcpy(wc, fp32_witness_c, sizeof(wc));
+        float32x4_t va = vld1q_f32(wa), vb = vld1q_f32(wb), vc = vld1q_f32(wc);
+        __asm__ volatile("" : "+w"(va), "+w"(vb), "+w"(vc));
+        vst1q_f32(wr, vfmaq_f32(vc, va, vb)); memcpy(witness, wr, sizeof(witness));
+#endif
+        if (!verify_fp32_fma_lanes(stats, witness, fp32_witness_expected, 4, stats->arithmetic_verified_blocks)) break;
+        if (!fp32_check_affinity(stats)) break;
+        if (stats->arithmetic_verified_blocks == UINT64_MAX) {
+            record_worker_error(stats, "fp32_counter_overflow", UINT64_MAX, 0, 0);
+            keep_running = 0;
+            break;
+        }
+        ++stats->arithmetic_verified_blocks;
+        ++stats->verify_passes;
+        if (final) {
+            stats->final_verification_completed = 1;
+            publish_verified_progress(stats, 1);
+            break;
+        }
+        int initial = !stats->initial_verification_completed;
+        if (initial) stats->initial_verification_completed = 1;
+        else stats->periodic_verification_completed = 1;
+        publish_verified_progress(stats, initial);
+    }
+}
+#endif
+#endif
+
+static int cpu_supports_neon_fp32_fma(void) {
+#if defined(LVS_CPU_HELPER_TEST_DISABLE_FP) || defined(LVS_CPU_HELPER_TEST_DISABLE_ASIMD)
+    return 0;
+#elif defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+    return 1;
+#elif defined(__aarch64__) && defined(__linux__)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    return (hwcap & (HWCAP_FP | HWCAP_ASIMD)) == (HWCAP_FP | HWCAP_ASIMD);
+#else
+    return 0;
+#endif
+}
+
 static int cpu_supports_neon(void) {
 #if defined(LVS_CPU_HELPER_TEST_DISABLE_ASIMD)
     return 0;
@@ -898,11 +1259,16 @@ static kernel_flavor_t parse_kernel_flavor(const char *raw) {
     if (strcmp(raw, "neon") == 0) {
         return KERNEL_NEON;
     }
+    if (strcmp(raw, "neon_fp32_fma") == 0) {
+        return KERNEL_NEON_FP32_FMA;
+    }
     return KERNEL_UNSPECIFIED;
 }
 
 static int kernel_flavor_supported(kernel_flavor_t flavor) {
     switch (flavor) {
+        case KERNEL_NEON_FP32_FMA:
+            return cpu_supports_neon_fp32_fma();
         case KERNEL_SCALAR:
             return 1;
         case KERNEL_SSE2:
@@ -970,6 +1336,7 @@ static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
         case KERNEL_AVX512_INT:
             return MODE_AVX512;
         case KERNEL_NEON:
+        case KERNEL_NEON_FP32_FMA:
             return MODE_NEON;
         case KERNEL_UNSPECIFIED:
         case KERNEL_SCALAR:
@@ -1013,6 +1380,14 @@ static void *worker_main(void *opaque) {
     if (flavor == KERNEL_UNSPECIFIED) {
         flavor = default_kernel_flavor(args->mode);
     }
+    if (flavor == KERNEL_NEON_FP32_FMA) {
+        args->stats->affinity_required = 1;
+        if (affinity_result != 0) {
+            record_worker_error(args->stats, "affinity_required", 0, 0, (uint64_t)affinity_result);
+            keep_running = 0;
+            return NULL;
+        }
+    }
 #if defined(__x86_64__) || defined(__i386__)
     args->stats->affinity_required = flavor != KERNEL_SCALAR;
     if (flavor != KERNEL_SCALAR && affinity_result != 0) {
@@ -1026,11 +1401,20 @@ static void *worker_main(void *opaque) {
         args->stats->error_count += 1ULL;
         args->stats->first_error_recorded = 1;
         snprintf(args->stats->first_error_kind, sizeof(args->stats->first_error_kind), "%s", "isa_not_supported");
+        if (flavor == KERNEL_NEON_FP32_FMA) keep_running = 0;
         return NULL;
     }
     uint32_t seed = (uint32_t)(args->worker_index + 1);
 
     switch (flavor) {
+        case KERNEL_NEON_FP32_FMA:
+#if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+            run_neon_fp32_fma_loop(seed, args->stats);
+#else
+            record_worker_error(args->stats, "isa_not_supported", 0, 1, 0);
+            keep_running = 0;
+#endif
+            break;
         case KERNEL_SSE2:
 #if defined(__x86_64__) || defined(__i386__)
             run_sse_loop(seed, args->stats);
@@ -1116,7 +1500,7 @@ static stress_mode_t parse_mode(const char *raw) {
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--result-file <path>]\n",
         argv0
     );
 }
@@ -1240,9 +1624,55 @@ static void write_result_file(
     for (int index = 0; index < threads; ++index) {
         fprintf(handle, "%s%d", index == 0 ? "" : ", ", target_cpu_ids[index]);
     }
+    fprintf(handle, "],\n");
+    if (kernel_flavor == KERNEL_NEON_FP32_FMA) {
+        fprintf(handle, "  \"verified_progress\": {\"contract\":\"neon_fp32_fma_progress_v1\","
+            "\"sidecar_suffix\":\".progress.jsonl\",\"snapshot_interval_seconds\":2.0,"
+            "\"publication_checks\":\"adaptive_block_boundary_clock_checks\",\"publication_minimum_seconds\":0.25,"
+            "\"persistence_error\":%s,\"snapshot_count\":%lu,\"snapshot_write_seconds\":%.9f},\n",
+            progress_io_error ? "true" : "false", progress_sequence, progress_write_seconds);
+        uint64_t blocks = 0;
+        int initial = threads == requested_threads && threads > 0;
+        int periodic = initial, final = initial;
+        for (int index = 0; index < threads; ++index) {
+            blocks += worker_stats[index].arithmetic_verified_blocks;
+            initial &= worker_stats[index].initial_verification_completed;
+            periodic &= worker_stats[index].periodic_verification_completed;
+            final &= worker_stats[index].final_verification_completed;
+        }
+#if defined(__aarch64__) && defined(__linux__) && !defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+        fprintf(handle, "  \"isa_capability_source\": \"linux_getauxval_at_hwcap_common_set\",\n"
+                        "  \"isa_hwcap\": %lu,\n", getauxval(AT_HWCAP));
+#else
+        fprintf(handle, "  \"isa_capability_source\": \"test_override\",\n"
+                        "  \"isa_hwcap\": null,\n");
+#endif
+        fprintf(handle,
+            "  \"operation_family\": \"fp32_fused_multiply_add\",\n"
+            "  \"verification_required\": true,\n"
+            "  \"verification_contract\": \"neon_fp32_fma_v1\",\n"
+            "  \"verification_method\": \"integer_binary32_fma_reference\",\n"
+            "  \"verification_version\": 1,\n"
+            "  \"rounding_environment\": \"nearest_ties_even_no_flush\",\n"
+            "  \"execution_implementation\": \"%s\",\n"
+            "  \"arithmetic_verified_blocks\": %" PRIu64 ",\n"
+            "  \"lanes_per_block\": %d,\n"
+            "  \"fma_rounds_per_block\": %d,\n"
+            "  \"initial_verification_completed\": %s,\n"
+            "  \"periodic_verification_completed\": %s,\n"
+            "  \"final_verification_completed\": %s,\n"
+            "  \"verification_complete\": %s,\n",
+#if defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+            "test_integer_emulation",
+#else
+            "aarch64_neon_intrinsics",
+#endif
+            blocks, FP32_FMA_LANES, FP32_FMA_ROUNDS,
+            initial ? "true" : "false", periodic ? "true" : "false", final ? "true" : "false",
+            initial && periodic && final && error_count == 0 ? "true" : "false");
+    }
     fprintf(
         handle,
-        "],\n"
         "  \"affinity_attempted_count\": %d,\n"
         "  \"affinity_applied_count\": %d,\n"
         "  \"affinity_failed_count\": %d,\n"
@@ -1276,6 +1706,23 @@ static void write_result_file(
             worker_stats[index].canary_passes,
             worker_stats[index].error_count
         );
+        if (kernel_flavor == KERNEL_NEON_FP32_FMA) {
+            fprintf(handle,
+                ",\n      \"arithmetic_verified_blocks\": %" PRIu64 ",\n"
+                "      \"interrupted_arithmetic_blocks\": %" PRIu64 ",\n"
+                "      \"fpcr\": %" PRIu64 ",\n"
+                "      \"initial_verification_completed\": %s,\n"
+                "      \"periodic_verification_completed\": %s,\n"
+                "      \"final_verification_completed\": %s,\n"
+                "      \"first_error_lane\": %d",
+                worker_stats[index].arithmetic_verified_blocks,
+                worker_stats[index].interrupted_arithmetic_blocks, worker_stats[index].fpcr,
+                worker_stats[index].initial_verification_completed ? "true" : "false",
+                worker_stats[index].periodic_verification_completed ? "true" : "false",
+                worker_stats[index].final_verification_completed ? "true" : "false",
+                strcmp(worker_stats[index].first_error_kind, "fp32_fma_mismatch") == 0
+                    ? worker_stats[index].first_error_lane : -1);
+        }
         if (worker_stats[index].first_error_recorded) {
             fprintf(
                 handle,
@@ -1473,7 +1920,7 @@ int main(int argc, char **argv) {
             KERNEL_AVX2_FMA, KERNEL_AVX2,
             KERNEL_AVX_FMA, KERNEL_AVX,
             KERNEL_SSE2, KERNEL_SSE2_INT,
-            KERNEL_NEON, KERNEL_SCALAR
+            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SCALAR
         };
         int printed = 0;
         size_t flavor_count = sizeof(flavors) / sizeof(flavors[0]);
@@ -1535,6 +1982,24 @@ int main(int argc, char **argv) {
     }
 
     const int requested_threads = threads;
+    if (kernel_flavor == KERNEL_NEON_FP32_FMA && result_file_path) {
+        progress_threads = threads;
+        progress_slots = calloc((size_t)threads, sizeof(*progress_slots));
+        progress_snapshot = calloc((size_t)threads, sizeof(*progress_snapshot));
+        progress_path = malloc(strlen(result_file_path) + sizeof(".progress.jsonl"));
+        if (!progress_slots || !progress_snapshot || !progress_path) {
+            fprintf(stderr, "verified progress allocation failed\n");
+            return 1;
+        }
+        sprintf(progress_path, "%s.progress.jsonl", result_file_path);
+        /* Never append another process's records to an old sidecar. */
+        progress_file = fopen(progress_path, "wx");
+        if (!progress_file) {
+            fprintf(stderr, "verified progress open failed: %s\n", strerror(errno));
+            return 1;
+        }
+        write_progress_snapshot("startup", target_cpu_ids);
+    }
     int worker_creation_failed = 0;
     for (int i = 0; i < threads; ++i) {
         worker_args[i].worker_index = i;
@@ -1542,8 +2007,15 @@ int main(int argc, char **argv) {
         worker_args[i].mode = mode;
         worker_args[i].kernel_flavor = kernel_flavor;
         worker_args[i].stats = &worker_stats[i];
-        if (pthread_create(&workers[i], NULL, worker_main, &worker_args[i]) != 0) {
-            fprintf(stderr, "pthread_create failed: %s\n", strerror(errno));
+        worker_stats[i].progress_index = i;
+        int create_result;
+#if defined(LVS_CPU_HELPER_TEST_FP32_FMA) && defined(LVS_CPU_HELPER_TEST_THREAD_START_FAILURE)
+        create_result = i == 1 ? EAGAIN : pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
+#else
+        create_result = pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
+#endif
+        if (create_result != 0) {
+            fprintf(stderr, "pthread_create failed: %s\n", strerror(create_result));
             keep_running = 0;
             worker_creation_failed = 1;
             threads = i;
@@ -1551,8 +2023,30 @@ int main(int argc, char **argv) {
         }
     }
 
-    while (keep_running) {
-        sleep(1);
+    if (progress_slots) {
+        double last_snapshot = clock_seconds(CLOCK_MONOTONIC);
+        int initial_snapshot = 0;
+        while (keep_running) {
+            struct timespec pause = {0, 100000000};
+            nanosleep(&pause, NULL);
+            int all_initial = initial_snapshot;
+            if (!initial_snapshot) {
+                all_initial = 1;
+                pthread_mutex_lock(&progress_lock);
+                for (int i = 0; i < requested_threads; ++i)
+                    all_initial &= progress_slots[i].stats.initial_verification_completed;
+                pthread_mutex_unlock(&progress_lock);
+            }
+            double now = clock_seconds(CLOCK_MONOTONIC);
+            if ((!initial_snapshot && all_initial) || now - last_snapshot >= 2.0) {
+                write_progress_snapshot(!initial_snapshot && all_initial ? "initial" : "ongoing", target_cpu_ids);
+                initial_snapshot |= all_initial;
+                last_snapshot = now;
+            }
+        }
+        write_progress_snapshot("interrupted", target_cpu_ids);
+    } else {
+        while (keep_running) sleep(1);
     }
 
     for (int i = 0; i < threads; ++i) {
@@ -1567,6 +2061,15 @@ int main(int argc, char **argv) {
         resolved_flavor = default_kernel_flavor(mode);
     }
     for (int i = 0; i < threads; ++i) {
+        if (resolved_flavor == KERNEL_NEON_FP32_FMA && worker_stats[i].error_count == 0 &&
+            (!worker_stats[i].initial_verification_completed ||
+             !worker_stats[i].periodic_verification_completed ||
+             !worker_stats[i].final_verification_completed ||
+             worker_stats[i].arithmetic_verified_blocks < 3 ||
+             !worker_stats[i].affinity_applied)) {
+            record_worker_error(&worker_stats[i], "fp32_verification_incomplete", 0, 3,
+                                worker_stats[i].arithmetic_verified_blocks);
+        }
         total_verify_passes += worker_stats[i].verify_passes;
         total_canary_passes += worker_stats[i].canary_passes;
         total_error_count += worker_stats[i].error_count;
@@ -1574,7 +2077,20 @@ int main(int argc, char **argv) {
     if (worker_creation_failed) {
         total_error_count += 1ULL;
     }
+    if (progress_slots) {
+        /* Keep successful workers' actual final block-boundary timestamps.
+         * Joining other threads must not move their counter observation time. */
+        for (int i = 0; i < threads; ++i)
+            if (!worker_stats[i].final_verification_completed || worker_stats[i].error_count)
+                publish_verified_progress(&worker_stats[i], 1);
+        write_progress_snapshot(total_error_count == 0 ? "final_complete" : "failed", target_cpu_ids);
+        if (fclose(progress_file) != 0) progress_io_error = 1;
+        progress_file = NULL;
+    }
     write_result_file(result_file_path, mode_for_kernel_flavor(resolved_flavor), resolved_flavor, requested_threads, threads, total_verify_passes, total_canary_passes, total_error_count, worker_stats, target_cpu_ids);
+    free(progress_slots);
+    free(progress_snapshot);
+    free(progress_path);
     free(workers);
     free(worker_args);
     free(worker_stats);

@@ -140,7 +140,7 @@ def power_cpu_candidate_inventory(
                 "cpu_native_helper",
                 "native_verified_kernel",
                 kernel_flavor=flavor,
-                resolved_mode="neon" if flavor == "neon" else "scalar" if flavor == "scalar" else "",
+                resolved_mode="neon" if flavor in {"neon", "neon_fp32_fma"} else "scalar" if flavor == "scalar" else "",
             ))
     else:
         unavailable.append({

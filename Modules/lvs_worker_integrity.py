@@ -8,6 +8,8 @@ _NON_REQUIRED_VERIFICATION_MODES = {"", "none", "not_applicable", "telemetry_onl
 
 
 def worker_verification_required(payload: Dict[str, Any]) -> bool:
+    if payload.get("kernel_flavor") == "neon_fp32_fma" or payload.get("verification_contract") == "neon_fp32_fma_v1":
+        return True
     for key in ("verification_required", "VerificationRequired"):
         if key in payload:
             return bool(payload.get(key))
@@ -32,6 +34,9 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
 
 
 def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
+    if payload.get("kernel_flavor") == "neon_fp32_fma" or payload.get("verification_contract") == "neon_fp32_fma_v1":
+        if not _neon_fp32_fma_verification_satisfied(payload):
+            return False
     if not worker_verification_required(payload):
         return True
     if worker_verification_passes(payload) <= 0:
@@ -50,6 +55,47 @@ def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
             if value is not None and not bool(value):
                 return False
     return True
+
+
+def _neon_fp32_fma_verification_satisfied(payload: Dict[str, Any]) -> bool:
+    """Versioned contract: aggregate counters cannot conceal an unverified core."""
+    try:
+        targets = payload["target_cpu_ids"]
+        details = payload["threads_detail"]
+        count = int(payload["requested_thread_count"])
+        if (count <= 0 or count != int(payload["actual_worker_count"])
+                or len(targets) != count or len(set(targets)) != count
+                or len(details) != count or payload.get("verification_complete") is not True
+                or payload.get("kernel_flavor") != "neon_fp32_fma"
+                or payload.get("verification_contract") != "neon_fp32_fma_v1"
+                or payload.get("verification_method") != "integer_binary32_fma_reference"
+                or payload.get("operation_family") != "fp32_fused_multiply_add"
+                or payload.get("rounding_environment") != "nearest_ties_even_no_flush"
+                or payload.get("verification_version") != 1
+                or any(payload.get(key) is not True for key in (
+                    "initial_verification_completed", "periodic_verification_completed",
+                    "final_verification_completed"))
+                or int(payload.get("error_count", 0)) != 0):
+            return False
+        seen = set()
+        blocks = 0
+        for row in details:
+            cpu = row["affinity_target_cpu"]
+            if (cpu not in targets or cpu in seen or row.get("observed_cpu") != cpu
+                    or row.get("affinity_applied") is not True
+                    or row.get("affinity_required") is not True
+                    or int(row.get("error_count", 0)) != 0
+                    or int(row.get("arithmetic_verified_blocks", 0)) < 3
+                    or int(row.get("verify_passes", 0)) != int(row.get("arithmetic_verified_blocks", 0))
+                    or any(row.get(key) is not True for key in (
+                        "initial_verification_completed", "periodic_verification_completed",
+                        "final_verification_completed"))):
+                return False
+            seen.add(cpu)
+            blocks += int(row["arithmetic_verified_blocks"])
+        return blocks == int(payload["arithmetic_verified_blocks"]) == worker_verification_passes(payload)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def worker_cleanup_satisfied(payload: Dict[str, Any]) -> bool:

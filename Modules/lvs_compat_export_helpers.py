@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from typing import Any, Iterable
 
@@ -159,7 +160,7 @@ _ADDITIVE_GPU_MEMORY_PLAN_FIELDS = {
 
 
 def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
-    """Remove additive worker/planning evidence from the legacy document only."""
+    """Freeze older legacy shapes while retaining explicit arithmetic contracts."""
     if isinstance(value, list):
         return [
             preserve_legacy_worker_evidence_contract(item)
@@ -172,6 +173,13 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         ]
     if not isinstance(value, dict):
         return value
+    if (str(value.get("kind") or "").lower() == "cpu"
+            and value.get("verification_contract") == "neon_fp32_fma_v1"):
+        # This versioned worker record is an indivisible evidence boundary.
+        # Filtering its children loses the per-thread CPU/affinity association.
+        # Preserve failed/incomplete records too; serialization must neither
+        # validate nor repair them. Unknown/older contracts keep legacy rules.
+        return deepcopy(value)
     is_stress_ng_evidence = (
         str(value.get("kind") or "").lower() == "cpu"
         and (

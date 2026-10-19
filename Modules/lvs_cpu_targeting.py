@@ -181,6 +181,7 @@ def select_common_kernel(
         "avx2": ("avx2_fma", "avx2"),
         "avx512": ("avx512_fma", "avx512_int"),
         "neon": ("neon",),
+        "neon_fp32_fma": ("neon_fp32_fma",),
     }
     # Explicit profile modes are family requests, not exact internal kernel
     # names; FMA is preferred only when it survived the all-target intersection.
@@ -204,4 +205,4 @@ def mode_for_common_kernel(flavor: str) -> str:
         return "avx"
     if value.startswith("sse2"):
         return "sse"
-    return "neon" if value == "neon" else "scalar" if value == "scalar" else ""
+    return "neon" if value in {"neon", "neon_fp32_fma"} else "scalar" if value == "scalar" else ""

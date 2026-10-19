@@ -60,6 +60,8 @@ from smoke_tests.output_contract_checks import (
 from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
 from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks
+from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
+from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -22367,7 +22369,7 @@ def test_cpu_execution_helpers_select_policy_candidates_and_best_result() -> Non
         ),
         "x86 max-power architecture policy order remains exact",
     )
-    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar"), "AArch64 max-power architecture policy order")
+    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar", "neon_fp32_fma"), "AArch64 native probe candidates preserve existing fallback order")
     arm_candidates = cpu_candidate_kernel_flavors(
         helper_available=True,
         policy="max_power",
@@ -29506,6 +29508,9 @@ def main() -> int:
         test_cpu_python_fallback_x86_contract_and_architecture_policy,
         test_native_cpu_scalar_architecture_policy_and_build_contract,
         test_native_cpu_neon_architecture_policy_and_profile,
+        run_neon_fp32_fma_checks,
+        run_neon_fp32_fma_export_checks,
+        run_neon_fp32_progress_checks,
         test_python_cpu_fallback_worker_supervision,
         test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
         test_cpu_backend_preference_policy_and_arm_lab_profiles,

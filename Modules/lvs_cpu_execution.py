@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_cpu_architecture import X86_NATIVE_POWER_PROBE_KERNEL_ORDER, cpu_native_power_probe_kernel_order
+from .lvs_worker_integrity import worker_verification_satisfied
 
 
 CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon")
@@ -21,6 +22,7 @@ CPU_KERNEL_MODE_MAP = {
     "avx512_fma": "avx512",
     "avx512_int": "avx512",
     "neon": "neon",
+    "neon_fp32_fma": "neon",
 }
 # Public ISA modes select a kernel family. Within AVX/AVX2, the established
 # deliberate preference is the FMA flavor when every target CPU proves FMA,
@@ -36,11 +38,13 @@ CPU_KERNEL_FAMILY_CANDIDATES = {
 CPU_NATIVE_POWER_PROBE_KERNEL_ORDER = list(X86_NATIVE_POWER_PROBE_KERNEL_ORDER)
 # Compatibility alias retained for existing callers and fixtures.
 CPU_KERNEL_MAX_POWER_ORDER = CPU_NATIVE_POWER_PROBE_KERNEL_ORDER
-CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon"]
+CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon", "neon_fp32_fma"]
 
 
 def normalize_cpu_helper_mode(requested_mode: str) -> str:
     mode = (requested_mode or "auto").strip().lower()
+    if mode == "neon_fp32_fma":
+        return "neon"
     if mode in CPU_MODE_OPTIONS:
         return mode
     return "auto"
@@ -277,7 +281,9 @@ def resolve_cpu_execution_policy(
     if not power_tuning_available():
         return execution
 
-    cache_key = (requested_mode, resolved_mode, worker_count(), tuning_policy)
+    # Distinct exact flavors can share an ISA family (integer NEON vs FP32/FMA).
+    # Never reuse a cached resolution that silently substitutes another kernel.
+    cache_key = (requested_mode, resolved_mode, worker_count(), tuning_policy, kernel_flavor, tuple(candidates))
     cached = tuning_cache.get(cache_key)
     if cached is not None:
         return dict(cached)
@@ -442,6 +448,9 @@ def build_cpu_benchmark_result(
     error_count = int(result_payload.get("error_count") or 0) if result_payload else 0
     status = str(result_payload.get("status") or "").strip().lower()
     valid = bool(result_payload) and return_code in (0, None) and status != "error" and error_count == 0
+    if kernel_flavor == "neon_fp32_fma":
+        valid = (valid and return_code == 0 and result_payload.get("kernel_flavor") == kernel_flavor
+                 and worker_verification_satisfied(result_payload))
     return {
         "kernel_flavor": kernel_flavor,
         "avg_cpu_power_w": round(statistics.mean(samples), 2) if samples else None,
@@ -507,6 +516,13 @@ def benchmark_cpu_kernel_candidate(
     finally:
         if proc is not None:
             stop_processes([proc])
+        # Probe artifacts are temporary, unlike retained stage sidecars. This
+        # does not apply stage progress-quality policy to Power Auto probes.
+        if result_path:
+            try:
+                Path(result_path + ".progress.jsonl").unlink(missing_ok=True)
+            except OSError:
+                pass
     return_code = proc.returncode if proc is not None else None
     result_payload: Dict[str, Any] = {}
     if result_path:

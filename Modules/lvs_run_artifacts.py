@@ -22,6 +22,7 @@ from Modules.lvs_telemetry_samples import (
     telemetry_metric_summaries,
 )
 from Modules.lvs_analysis_quality import evaluate_analysis_evidence
+from Modules.lvs_cpu_verified_progress import attach_verified_progress
 from Modules.lvs_gpu_evaluation_policy import evaluate_gpu_stage_policy
 from Modules.lvs_gpu_stage_targets import stage_target_gpu_details_from_worker_dicts
 
@@ -88,6 +89,7 @@ def write_final_run_artifacts(
                 getattr(getattr(profile, "defaults", None), "telemetry_interval_seconds", 0.0),
             ),
         )
+        attach_verified_progress(window)
         target_gpus = stage_target_gpu_details_from_worker_dicts(
             window.gpu_workers_final or window.gpu_workers_initial
         )
