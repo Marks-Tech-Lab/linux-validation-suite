@@ -3,6 +3,20 @@
 This roadmap is the project-status source for completed, deferred, and
 undecided work. Deferred or possible work is not committed release scope.
 
+## Prepared In v0.5.2-alpha
+
+- Physically accepted NEON FP32/FMA on Spark and Snapdragon, independent
+  arithmetic verification, all-thread integrity, and sustained verified progress.
+- Vulkan stall diagnostics (historical interruption cause still unresolved),
+  physically accepted fail-closed GPU targeting, and inventory UUID/memory fixes.
+- Automatic offline source provenance, normal reports/QA source comparisons,
+  and bounded local Git correlation, without manual stamps or deployment changes.
+- SVE FP32/FMA implementation is committed but experimental and physically
+  unverified. Release policy permits explicit functional testing only; no
+  implicit Auto, instruction-intent, or Power Auto promotion.
+
+See [v0.5.2-alpha release scope](docs/release_notes_v0.5.2-alpha.md).
+
 ## Completed Through v0.2.0-alpha
 
 - Established output-contract classification and the forward-only casing and
@@ -134,29 +148,34 @@ thermal-stress priorities.
 
 ### AArch64 general SIMD work
 
-The currently implemented AArch64 kernels are `scalar` and the existing
-integer-style NEON/ASIMD kernel. `MODE_SVE` is currently an unimplemented
-placeholder.
+Accepted AArch64 kernels are `scalar`, integer `neon`, and independently
+verified `neon_fp32_fma`. Spark and Snapdragon functional and sustained NEON
+acceptance is complete. `sve_fp32_fma` is implemented with scalable arithmetic,
+per-thread VL initialization, independent verification, and progress reporting,
+but actual ARM compilation, disassembly, and physical execution remain pending.
 
 The adopted general SIMD work is:
 
-1. Add a proper NEON FP32/FMA stress flavor while preserving the existing NEON
-   kernel and its compatibility behavior.
-2. Implement SVE as a real explicit and general SIMD tier.
-3. Implement SVE2 as a real explicit and general SIMD tier.
+1. Complete normal Spark SVE functional build/instruction/execution acceptance.
+2. Establish SVE sustained effectiveness and negative-capability portability.
+3. Consider general automatic SVE selection only after acceptance and review.
+4. Design and implement distinct SVE2-specific work; SVE FP32/FMA is not SVE2.
 
-Once SVE and SVE2 are implemented, generic ARM instruction intents should
+Once SVE/SVE2 are independently accepted, future generic ARM instruction intents may
 resolve as follows:
 
 - `baseline_vector` selects NEON.
 - `high_throughput_vector` selects the appropriate common SVE/SVE2 tier and
   falls back to NEON when that tier is unavailable.
-- `highest_verified_vector` selects the highest implemented general vector tier
+- `highest_verified_vector` selects the highest accepted general vector tier
   common to the complete target CPU set.
 - Explicit `neon`, `sve`, and `sve2` requests select that exact tier or fail
   closed.
 
 SVE and SVE2 must not be encoded as automatically hotter than scalar or NEON.
+For v0.5.2-alpha all generic ARM intents stay at accepted NEON tiers; ordinary
+Auto stays NEON/scalar and Power Auto excludes SVE. Explicit SVE remains a
+fail-closed experimental functional-testing request, not production acceptance.
 
 ### AArch64 specialized stress flavors
 
@@ -169,13 +188,15 @@ physical hardware exposing them is available.
 
 ### AArch64 evidence and portability boundary
 
-The physical NVIDIA DGX Spark system reports Cortex-X925 plus Cortex-A725 CPUs,
+Earlier Spark diagnostic notes report Cortex-X925 plus Cortex-A725 CPUs,
 GCC 13.3.0, a 16-byte/128-bit SVE vector length, and `asimd`, `fphp`, `asimdhp`,
 `asimddp`, `asimdfhm`, `sve`, `sve2`, `svei8mm`, `svebf16`, `i8mm`, and `bf16`
 CPU flags. Physical compiler probes passed for `-march=armv8-a+sve`,
 `-march=armv9-a+sve2`, `-march=armv9-a+sve2+i8mm`, and
 `-march=armv9-a+sve2+bf16`. This proves compiler capability only; it does not
-claim an implemented or runtime-validated LVS kernel.
+claim runtime validation of the implemented LVS SVE kernel. Its actual per-thread
+VL, deployed optional compiler path, optimized instructions, and execution must
+be established in the pending functional acceptance; model names authorize nothing.
 
 The baseline ARM64 helper must continue to build and run on the Snapdragon X1
 Plus with scalar and NEON only. Do not compile the complete helper globally with

@@ -22377,7 +22377,7 @@ def test_cpu_execution_helpers_select_policy_candidates_and_best_result() -> Non
         ),
         "x86 max-power architecture policy order remains exact",
     )
-    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar", "neon_fp32_fma", "sve_fp32_fma"), "AArch64 adds optional SVE after established probe candidates")
+    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar", "neon_fp32_fma"), "Experimental SVE is excluded from implicit power selection")
     arm_candidates = cpu_candidate_kernel_flavors(
         helper_available=True,
         policy="max_power",

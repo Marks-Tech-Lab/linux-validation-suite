@@ -241,7 +241,7 @@ def run_neon_fp32_fma_checks() -> None:
     assert not cpu_instruction_set_policy("x86_64", KERNEL)["allowed"]
     assert not python_cpu_fallback_policy("aarch64", KERNEL)["allowed"]
     assert KERNEL in parse_cpu_capability_probe(0, "scalar,neon," + KERNEL)
-    assert cpu_native_power_probe_kernel_order("aarch64") == ("neon", "scalar", KERNEL, "sve_fp32_fma")
+    assert cpu_native_power_probe_kernel_order("aarch64") == ("neon", "scalar", KERNEL)
     assert select_common_kernel(architecture="arm64", requested_mode=KERNEL, common_flavors=common) == KERNEL
     assert select_common_kernel(architecture="arm64", requested_mode=KERNEL, common_flavors=["scalar", "neon"]) == ""
     assert select_common_kernel(architecture="arm64", requested_mode="auto", common_flavors=common) == "neon"

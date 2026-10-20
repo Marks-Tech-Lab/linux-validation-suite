@@ -20,9 +20,9 @@ from Modules.lvs_profile_models import ModuleCpu
 from Modules.lvs_workload_cpu_memory import WorkloadCpuMemoryMixin
 from Modules.lvs_cpu_execution import (
     normalize_cpu_helper_mode, build_cpu_benchmark_result, parse_cpu_capability_probe,
-    resolve_cpu_execution_policy,
+    resolve_cpu_execution_policy, cpu_candidate_kernel_flavors,
 )
-from Modules.lvs_cpu_power_selection import power_cpu_fallback_order
+from Modules.lvs_cpu_power_selection import power_cpu_fallback_order, power_cpu_candidate_inventory
 from Modules.lvs_cpu_targeting import select_common_kernel
 from Modules.lvs_cpu_verified_progress import analyze_verified_progress
 from Modules.lvs_native_helpers import resolve_native_helper_status, native_helper_binary_ready
@@ -193,11 +193,23 @@ def run_sve_fp32_fma_checks() -> None:
     common = ["scalar", "neon", "neon_fp32_fma", KERNEL]
     assert resolve_cpu_instruction_intent("arm64", "baseline_vector", common)["resolved_kernel_flavor"] == "neon"
     assert resolve_cpu_instruction_intent("arm64", "high_throughput_vector", common)["resolved_kernel_flavor"] == "neon_fp32_fma"
-    assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector", common)["resolved_kernel_flavor"] == KERNEL
+    assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector", common)["resolved_kernel_flavor"] == "neon_fp32_fma"
+    assert not resolve_cpu_instruction_intent("arm64", "highest_verified_vector", [KERNEL])["resolved_kernel_flavor"]
+    for policy in ("max_power", "capabilities", "family_locked"):
+        implicit = cpu_candidate_kernel_flavors(helper_available=True, policy=policy, resolved_mode="neon",
+            supports_kernel_flavor=lambda flavor: flavor in common, architecture="arm64")
+        assert KERNEL not in implicit and "neon" in implicit
+    assert cpu_candidate_kernel_flavors(helper_available=True, policy="family_locked", resolved_mode="sve",
+        supports_kernel_flavor=lambda flavor: flavor in common, architecture="arm64") == [KERNEL]
+    viable, unavailable = power_cpu_candidate_inventory(architecture="arm64", availability={"cpu_native_helper": True},
+        native_kernel_flavors=common, selected_native_kernel=KERNEL)
+    assert all(candidate["kernel_flavor"] != KERNEL for candidate in viable)
+    assert any(candidate["candidate_id"] == "cpu_native_helper:" + KERNEL and "experimental" in candidate["reason"] for candidate in unavailable)
+    assert select_common_kernel(architecture="arm64", requested_mode="auto", common_flavors=common) == "neon"
     candidates = [dict(candidate_id=k, backend="cpu_native_helper", kernel_flavor=k) for k in common]
     order = power_cpu_fallback_order("arm64", candidates)
     assert order[-1]["kernel_flavor"] == KERNEL
-    assert cpu_native_power_probe_kernel_order("aarch64")[:-1] == ("neon", "scalar", "neon_fp32_fma")
+    assert cpu_native_power_probe_kernel_order("aarch64") == ("neon", "scalar", "neon_fp32_fma")
     class Runner(WorkloadCpuMemoryMixin):
         def _cpu_machine(self):
             return "arm64"

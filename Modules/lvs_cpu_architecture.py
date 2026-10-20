@@ -27,7 +27,8 @@ X86_NATIVE_POWER_PROBE_KERNEL_ORDER = (
 )
 # Candidate discovery is not a hottest-workload claim. Keep existing unmeasured
 # fallback precedence; FP32/FMA may win only through a valid measured probe.
-ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma", "sve_fp32_fma")
+EXPERIMENTAL_CPU_KERNELS = frozenset({"sve_fp32_fma"})
+ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma")
 # Compatibility aliases retained for existing callers and fixtures.
 X86_MAX_POWER_KERNEL_ORDER = X86_NATIVE_POWER_PROBE_KERNEL_ORDER
 ARM64_MAX_POWER_KERNEL_ORDER = ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER
@@ -58,6 +59,12 @@ def cpu_native_power_probe_kernel_order(machine: str) -> tuple[str, ...]:
     return cpu_max_power_kernel_order(machine)
 
 
+def cpu_native_capability_kernel_order(machine: str) -> tuple[str, ...]:
+    """Discovery includes explicit experimental kernels, not Auto approval."""
+    accepted = cpu_native_power_probe_kernel_order(machine)
+    return (*accepted, "sve_fp32_fma") if normalize_cpu_architecture(machine) == "arm64" else accepted
+
+
 def normalize_cpu_instruction_intent(value: str) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return normalized if normalized in CPU_INSTRUCTION_INTENTS else ""
@@ -79,9 +86,7 @@ def resolve_cpu_instruction_intent(
     if not intent or architecture not in {"x86_64", "arm64"}:
         candidates = ()
     elif architecture == "arm64":
-        candidates = (("neon",) if intent == "baseline_vector" else
-                      ("sve_fp32_fma", "neon_fp32_fma", "neon") if intent == "highest_verified_vector" else
-                      ("neon_fp32_fma", "neon"))
+        candidates = ("neon",) if intent == "baseline_vector" else ("neon_fp32_fma", "neon")
     elif intent == "baseline_vector":
         candidates = ("sse2", "sse2_int")
     elif intent == "high_throughput_vector":

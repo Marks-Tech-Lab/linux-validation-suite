@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from .lvs_cpu_architecture import X86_NATIVE_POWER_PROBE_KERNEL_ORDER, cpu_native_power_probe_kernel_order
+from .lvs_cpu_architecture import EXPERIMENTAL_CPU_KERNELS, X86_NATIVE_POWER_PROBE_KERNEL_ORDER, cpu_native_power_probe_kernel_order
 from .lvs_worker_integrity import worker_verification_satisfied
 
 
@@ -191,7 +191,7 @@ def cpu_candidate_kernel_flavors(
     if policy == "max_power":
         ordered = cpu_native_power_probe_kernel_order(architecture)
     elif policy == "capabilities":
-        ordered = CPU_KERNEL_CAPABILITY_ORDER
+        ordered = [flavor for flavor in CPU_KERNEL_CAPABILITY_ORDER if flavor not in EXPERIMENTAL_CPU_KERNELS]
     else:
         ordered = CPU_KERNEL_FAMILY_CANDIDATES.get((resolved_mode or "scalar").strip().lower(), ["scalar"])
     return [flavor for flavor in ordered if supports_kernel_flavor(flavor)]

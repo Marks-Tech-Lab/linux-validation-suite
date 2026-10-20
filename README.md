@@ -11,12 +11,14 @@ review.
 Linux Validation Suite supports x86_64 and AArch64 Linux. Support is
 architecture-specific: x86 vector execution covers the verified SSE/AVX
 families available across the complete targeted CPU set, while AArch64 native
-vector execution currently uses NEON. Explicit architecture-specific ISA
+vector execution includes integer NEON and verified NEON FP32/FMA. Explicit architecture-specific ISA
 requests fail closed when unavailable rather than silently substituting
 another ISA or backend.
 
-This is not a generic guarantee for every ARM architecture or platform. SVE,
-SVE2, and SME are not implemented, and unrelated architectures such as RISC-V
+This is not a generic guarantee for every ARM architecture or platform. SVE
+FP32/FMA is implemented but experimental and physically unverified: explicit
+`sve`/`sve_fp32_fma` requests only; ordinary Auto, generic vector intents, and
+Power Auto do not select it. SVE2 and SME are not implemented. Architectures such as RISC-V
 are outside the current support guarantee. Hardware and telemetry coverage
 still depends on the CPU, GPU, driver, kernel, firmware, and system tools
 available on each host.
@@ -26,10 +28,10 @@ available on each host.
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
 with `main` as the published branch. Alpha releases are published as
-pre-releases. The current version is `v0.5.1-alpha`, a focused bugfix update for
-native RAM worker shutdown and validation reporting. It retains the
-cross-platform hardware correctness, verified Vulkan compute stress, and
-first-class x86_64 and AArch64 support introduced in `v0.5.0-alpha`.
+pre-releases. The current version is `v0.5.2-alpha`, a reliability and correctness
+update adding physically accepted NEON FP32/FMA, fail-closed Vulkan physical-GPU
+identity, GPU inventory corrections, stall diagnostics, and automatic source
+provenance and comparisons. See the release notes below for acceptance boundaries.
 The maintainer creates and publishes GitHub prereleases manually after release
 code and annotated tags have been pushed.
 
@@ -350,7 +352,7 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The runtime version is `0.5.1-alpha`, corresponding to the `v0.5.1-alpha`
+The runtime version is `0.5.2-alpha`, corresponding to the planned `v0.5.2-alpha`
 pre-release tag. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -378,6 +380,33 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 `parsed_results_custom.json` and its compatibility aliases remain unchanged.
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
+
+## Release Notes — v0.5.2-alpha
+
+This corrective alpha consolidates the six development checkpoints since
+v0.5.1-alpha. Detailed commit scope, acceptance evidence, known limitations,
+and a manual GitHub prerelease draft are in
+[the v0.5.2-alpha release notes](docs/release_notes_v0.5.2-alpha.md).
+
+- Genuine independently verified ARM64 NEON FP32/FMA, per-thread integrity,
+  timestamped verified progress, and trimmed sustained-throughput analysis.
+- Strict FP32/FMA evidence checks and additive compatibility retention.
+- Bounded Vulkan slow-operation diagnostics; the historical GPU interruption's
+  cause remains unresolved, not claimed fixed.
+- Authoritative, fail-closed Vulkan UUID/PCI targeting, physically accepted on
+  the three-GPU Gigabyte system, including two identical-model cards.
+- Correct GPU inventory UUID association and evidence-backed memory classification.
+- Automatic source fingerprinting and normal result/QA comparisons, without
+  stamping, Git, network access, or a deployment-procedure change.
+- Implemented experimental SVE FP32/FMA remains available for explicit functional
+  testing only; ARM compilation, instruction emission, and physical execution
+  acceptance are pending. SVE2/SME remain unimplemented.
+
+No universal GPU/CPU saturation calibration, exhaustive VRAM coverage, or
+all-hardware guarantee is implied. Alpha status remains appropriate.
+
+The older release notes below describe support at each historical release, not
+the current SVE implementation status documented above.
 
 ## Release Notes — v0.5.1-alpha
 

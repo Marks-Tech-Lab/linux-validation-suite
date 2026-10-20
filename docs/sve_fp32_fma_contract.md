@@ -92,11 +92,13 @@ counts, not measured machine instructions or proof of maximum pipeline saturatio
 Reports expose quality, per-thread lengths, verified blocks/s, and derived lane work.
 Historical NEON records retain their fixed geometry and established interpretation.
 
-Baseline-vector and generic auto behavior remain unchanged. Highest-verified-vector
-may resolve SVE only after the common capability intersection proves availability.
-High-throughput-vector retains its established NEON preference. SVE can participate
-in strictly verified measured Power Auto evaluation; it is last among established
-unmeasured ARM fallbacks. Tuning involving SVE is not cached across invocations,
+For v0.5.2-alpha SVE remains experimental and explicit-only pending actual ARM
+build, instruction-emission, and physical acceptance. Generic auto, all generic
+vector intents (including highest-verified-vector), and Power Auto exclude SVE,
+even when hardware capability is present. Capability discovery still reports SVE
+and exact `sve`/`sve_fp32_fma` functional requests remain available without fallback.
+Baseline-vector and high-throughput-vector preserve their NEON policies.
+Tuning involving explicit SVE is not cached across invocations,
 because inherited per-thread VL is not a stable pre-execution cache key.
 
 ## Validation boundary and future physical acceptance

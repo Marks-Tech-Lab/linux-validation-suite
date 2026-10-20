@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
 
-from .lvs_cpu_architecture import normalize_cpu_architecture
+from .lvs_cpu_architecture import EXPERIMENTAL_CPU_KERNELS, normalize_cpu_architecture
 
 
 POWER_SELECTION_POWER_PROBE = "power_probe"
@@ -135,6 +135,10 @@ def power_cpu_candidate_inventory(
     native_flavors = list(dict.fromkeys(str(value or "").strip().lower() for value in native_kernel_flavors if value))
     if availability.get("cpu_native_helper") and native_flavors:
         for flavor in native_flavors:
+            if flavor in EXPERIMENTAL_CPU_KERNELS:
+                unavailable.append({"candidate_id": f"cpu_native_helper:{flavor}",
+                                    "reason": "experimental kernel requires explicit ISA selection; physical acceptance pending"})
+                continue
             viable.append(_candidate(
                 f"cpu_native_helper:{flavor}",
                 "cpu_native_helper",

@@ -3,12 +3,13 @@
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
-included. The current version is `v0.5.1-alpha`, a focused native RAM shutdown
-and validation-reporting bugfix update to `v0.5.0-alpha`. It preserves the
+included. The prepared version is `v0.5.2-alpha`, a corrective reliability
+milestone after `v0.5.1-alpha`. It preserves the
 hardware-scalability contract, first-class AArch64 and x86_64 support, safety,
 and established output-compatibility boundaries. Validation includes the full
-smoke suite and clean native RAM shutdown confirmation on two high-memory
-systems. Prior hardware-coverage limitations remain applicable.
+smoke suite, accepted ARM64 NEON FP32/FMA, and exact Vulkan execution on the
+three-GPU Gigabyte system. Prior hardware-coverage limitations remain applicable.
+See [release scope and limitations](docs/release_notes_v0.5.2-alpha.md).
 
 Release preparation commits and annotated Git tags are pushed to the public
 repository. The maintainer creates and publishes GitHub prereleases manually;
@@ -68,11 +69,14 @@ scaffolds.
 ## Supported Architecture Boundary
 
 - Supported Linux architectures are x86_64 and AArch64.
-- Current AArch64 native CPU implementations are scalar and NEON.
+- Accepted AArch64 native CPU implementations are scalar, integer NEON, and
+  verified NEON FP32/FMA. SVE FP32/FMA is implemented, experimental, and explicit-only.
 - Explicit architecture-specific ISA requests remain constrained to their
   architecture and fail closed when unavailable.
-- SVE, SVE2, and SME are future capability work and are not part of the current
-  AArch64 ISA guarantee.
+- SVE ARM build, instruction-emission, and physical execution acceptance remain
+  pending. Generic intents, Auto, and Power Auto exclude experimental SVE.
+  Its active functional-confirmation profile is a development test, not accepted
+  coverage. SVE2 and SME remain unimplemented and outside the ISA guarantee.
 - Do not generalize AArch64 support into a promise for every ARM architecture,
   version, device, or platform.
 - Unrelated architectures are not supported unless separately implemented and
@@ -104,7 +108,7 @@ scaffolds.
 - Confirm the README clearly describes hardware stress risk and telemetry caveats.
 - Confirm QA wrapper examples use generic result folder names and do not expose local filesystem paths.
 - Confirm the README identifies x86_64 and AArch64 as the supported
-  architectures without implying generic ARM, SVE/SVE2/SME, ARM GPU OpenCL, or
+  architectures without implying generic ARM, accepted SVE/SVE2/SME, ARM GPU OpenCL, or
   unrelated-architecture support.
 - Confirm passing smoke tests capture expected interactive screens while still
   exposing assertion diagnostics on failures.

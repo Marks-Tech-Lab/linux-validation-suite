@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from Modules.lvs_worker_integrity import worker_verification_satisfied
 
 from Modules.lvs_cpu_architecture import (
-    cpu_native_power_probe_kernel_order,
+    cpu_native_capability_kernel_order,
     cpu_instruction_set_policy,
     current_cpu_architecture,
     native_cpu_helper_binary_name,
@@ -318,7 +318,7 @@ class WorkloadCpuMemoryMixin:
         target = dict(target_plan or self._cpu_target_plan(cpu))
         target_ids = list(target.get("target_cpu_ids") or [])
         architecture = self._cpu_machine()
-        flavors = list(cpu_native_power_probe_kernel_order(architecture))
+        flavors = list(cpu_native_capability_kernel_order(architecture))
         per_cpu: Dict[int, List[str]] = {}
         if architecture == "arm64":
             # Linux AArch64 HWCAP is the process-safe common capability set;
