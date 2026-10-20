@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .lvs_core import APP_NAME
 from .lvs_report_helpers import clean_review_verdict_from_payload
 from .lvs_summary_text import SummaryTextBuilder
+from .lvs_source_review import provenance_from_payload, source_identity, source_identity_text
 
 
 def format_result_metric_number(value: Any) -> str:
@@ -103,7 +104,7 @@ def missing_result_stage_details_text(result_name: str) -> str:
     )
 
 
-def result_overview_text_from_payload(folder_name: str, parsed: Dict[str, Any]) -> str:
+def result_overview_text_from_payload(folder_name: str, parsed: Dict[str, Any], source_review: Optional[Dict[str, Any]] = None) -> str:
     metadata = parsed.get("Metadata") if isinstance(parsed.get("Metadata"), dict) else {}
     report = parsed.get("ReportSummary") if isinstance(parsed.get("ReportSummary"), dict) else {}
     department = report.get("DepartmentUseSummary") if isinstance(report.get("DepartmentUseSummary"), dict) else {}
@@ -135,6 +136,7 @@ def result_overview_text_from_payload(folder_name: str, parsed: Dict[str, Any]) 
         "Result Overview",
         "===============",
         f"Folder: {folder_name}",
+        source_identity_text(source_review if source_review is not None else source_identity(provenance_from_payload(parsed))),
         f"Result: {result}",
         f"Final verdict: {review_verdict.get('FinalVerdict') or 'None'}",
         f"Rule-based verdict: {review_verdict.get('RuleBasedVerdict') or 'None'}",
@@ -701,6 +703,9 @@ def result_comparison_text(payload: Dict[str, Any]) -> str:
         f"Result: {baseline_summary.get('result')} -> {comparison_summary.get('result')}",
         f"Outcome: {baseline_summary.get('outcome_class')} -> {comparison_summary.get('outcome_class')}",
         f"Elapsed: {baseline_summary.get('elapsed')} -> {comparison_summary.get('elapsed')}",
+        "Source comparison: " + str((payload.get("source_comparison") or {}).get("status", "unavailable")).replace("_", " "),
+        source_identity_text(baseline_summary.get("source_identity") or {}),
+        source_identity_text(comparison_summary.get("source_identity") or {}),
         "",
         "Category Deltas",
         "---------------",

@@ -20,6 +20,14 @@ Every single-result and batch QA payload must include both fields.
 
 ## Single Result Payload
 
+Optional additive `source_identity` and `source_identity_text` expose automatically
+recorded scoped-source evidence in the normal QA/CLI/TUI review. They distinguish
+missing/incomplete evidence, runtime Git association and separately verified local
+Git correlations. Comparison payloads add `source_comparison`; matching source
+fingerprints do not imply one unique Git commit, native-binary identity, equivalent
+hardware coverage, or hardware success. No setup command or stamp is required.
+Historical absence remains valid and is reported as not recorded.
+
 Required top-level fields:
 
 - `app_name`

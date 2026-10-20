@@ -1,4 +1,4 @@
-"""Offline, scoped source identity; optional pre-copy Git capture, not attestation."""
+"""Automatic offline source identity; optional legacy stamps, not attestation."""
 
 from __future__ import annotations
 
@@ -27,6 +27,20 @@ MAX_SOURCE_BYTES = 32 * 1024 * 1024
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def source_scope_digest(records: list[list[str]]) -> str:
+    """The v1 byte/path protocol, shared by deployed and committed sources."""
+    return hashlib.sha256(_canonical([SCOPE, sorted(records)])).hexdigest()
+
+
+def read_local_git(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    """Read local Git only: no index refresh, object replacement or lazy fetch."""
+    return subprocess.run(["git", "-C", str(root), "-c", "protocol.allow=never", *args],
+                          input=input_bytes, check=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=5,
+                          env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1",
+                               "GIT_NO_LAZY_FETCH": "1"}).stdout
 
 
 def _in_scope(name: str) -> bool:
@@ -103,7 +117,7 @@ def _source_snapshot(root: Path) -> tuple[dict[str, Any], dict[str, tuple[str, s
     errors += len(REQUIRED - content.keys())
     records = [[name, hashes[0]] for name, hashes in sorted(content.items())]
     return {"scope": SCOPE, "algorithm": "sha256", "file_count": len(records),
-            "digest": hashlib.sha256(_canonical([SCOPE, records])).hexdigest(),
+            "digest": source_scope_digest(records),
             "status": "complete" if not errors else "incomplete", "error_count": errors}, content
 
 
@@ -112,9 +126,7 @@ def _git_identity(root: Path, content: dict[str, tuple[str, str, str]]) -> dict[
     if not (root / ".git").exists():
         return {"status": "absent", "commit": "", "scoped_source_state": "unknown"}
     def git(*args: str) -> bytes:
-        return subprocess.run(["git", "-C", str(root), *args], check=True,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
-                              env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout
+        return read_local_git(root, *args)
     try:
         if Path(os.fsdecode(git("rev-parse", "--show-toplevel")).strip()).resolve() != root.resolve():
             return {"status": "unavailable", "commit": "", "scoped_source_state": "unknown"}
@@ -144,7 +156,8 @@ def _git_identity(root: Path, content: dict[str, tuple[str, str, str]]) -> dict[
         return {"status": "available", "commit": commit,
                 "tracked_worktree_state": tracked_state,
                 "scoped_source_state": "clean" if matches else "modified",
-                "scoped_commit_match": matches}
+                "scoped_commit_match": matches,
+                "association": "verified_scoped_content" if matches else "not_associated_modified_source"}
     except (OSError, subprocess.SubprocessError, ValueError, UnicodeError):
         return {"status": "unavailable", "commit": "", "scoped_source_state": "unknown"}
 
@@ -190,15 +203,17 @@ def collect_source_provenance(root: Path | None = None) -> dict[str, Any]:
         "runtime_version": APP_VERSION, "observed_at": datetime.now(timezone.utc).isoformat(),
         "identity_scope": "scoped_source_only", "native_binary_identity": "not_assessed",
         "external_dependencies": "not_assessed",
+        "collection_mode": "automatic",
     }
     try:
         source, content = _source_snapshot(root)
     except OSError:
         source, content = {"scope": SCOPE, "status": "unavailable", "digest": ""}, {}
     result["source"] = source
+    result["collection_confidence"] = "observed_scoped_bytes" if source.get("status") == "complete" else "insufficient"
     result["git"] = _git_identity(root, content)
     if source.get("status") != "complete" and result["git"]["status"] == "available":
-        result["git"].update(scoped_source_state="unknown", scoped_commit_match=False)
+        result["git"].update(scoped_source_state="unknown", scoped_commit_match=False, association="unknown")
     result["stamp_status"] = "missing"
     path = root / STAMP_NAME
     if path.exists() or path.is_symlink():
@@ -224,7 +239,7 @@ def collect_source_provenance(root: Path | None = None) -> dict[str, Any]:
                 "operator_label": stamp["operator_label"] if re.fullmatch(r"[A-Za-z0-9 ._-]{0,80}", stamp["operator_label"]) else "",
                 "association": "capture_claim_content_matches" if matches else "unverified_stale_capture_claim",
             }
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
             result["stamp_status"] = "invalid"
     return result
 
@@ -255,7 +270,7 @@ def write_build_stamp(root: Path | None = None, operator_label: str = "") -> dic
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("show", "stamp"))
-    parser.add_argument("--label", default="", help="optional operator label, not source identity")
+    parser.add_argument("--label", default="", help="advanced legacy stamp label; never needed for ordinary provenance")
     args = parser.parse_args()
     try:
         result = write_build_stamp(operator_label=args.label) if args.action == "stamp" else collect_source_provenance()

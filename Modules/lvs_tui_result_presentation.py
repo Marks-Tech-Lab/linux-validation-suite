@@ -252,6 +252,8 @@ def qa_result_review_presentation(
     ]
     if escalate.get("reasons"):
         lines.append(f"Escalation reasons: {', '.join(str(item) for item in escalate.get('reasons') or [])}")
+    if payload.get("source_identity_text"):
+        lines.extend(["", "Source Identity", "---------------", str(payload["source_identity_text"])])
     lines.extend(
         [
             "",

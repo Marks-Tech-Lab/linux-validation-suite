@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
+from .lvs_source_review import load_result_source_identity, compare_source_identities
 
 
 class ResultComparisonFacade:
@@ -19,6 +20,8 @@ class ResultComparisonFacade:
         comparison = self.load_custom_result(comparison_dir)
         baseline_summary = self.comparison_summary(baseline)
         comparison_summary = self.comparison_summary(comparison)
+        baseline_summary["source_identity"] = load_result_source_identity(baseline_dir, parsed=baseline)
+        comparison_summary["source_identity"] = load_result_source_identity(comparison_dir, parsed=comparison)
         payload: Dict[str, Any] = {
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
@@ -29,6 +32,7 @@ class ResultComparisonFacade:
             "baseline": baseline_summary,
             "comparison": comparison_summary,
             "deltas": {},
+            "source_comparison": compare_source_identities(baseline_summary["source_identity"], comparison_summary["source_identity"]),
         }
         payload["deltas"]["warning_categories"] = self.dict_numeric_delta(
             baseline_summary.get("warning_categories", {}),

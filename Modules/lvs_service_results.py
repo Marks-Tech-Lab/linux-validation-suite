@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
+from .lvs_source_review import load_result_source_identity, source_identity_text
 from .lvs_result_report_rendering import ResultReportRenderService
 from .lvs_result_report_text import (
     batch_pre_import_sanity_text,
@@ -247,12 +248,16 @@ class SuiteResultServiceMixin:
             action_summary=action_summary,
         )
 
+        source_review = load_result_source_identity(result_dir, parsed=parsed)
+
         return {
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
             "contract_id": QA_REVIEW_CONTRACT_ID,
             "contract_version": QA_REVIEW_CONTRACT_VERSION,
             "kind": "qa_result_review",
+            "source_identity": source_review,
+            "source_identity_text": source_identity_text(source_review),
             "started": started,
             "ended": now_local_iso(),
             "result_folder": str(result_dir),

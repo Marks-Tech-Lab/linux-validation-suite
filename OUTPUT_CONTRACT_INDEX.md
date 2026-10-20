@@ -61,7 +61,8 @@ timings or pass/fail criteria. See `docs/gpu_worker_stall_diagnostics.md`.
 Its checksum detects accidental stamp edits, not authenticity. The deterministic
 `lvs_execution_source_v1` fingerprint is scoped source identity, not native-binary
 or dependency attestation. A capture commit/label never replaces measured bytes.
-See [Source and manual-build provenance](docs/source_build_provenance.md).
+Collection is automatic: no stamp, Git, packaging or operator command is needed.
+See [Automatic source provenance](docs/source_build_provenance.md).
 
 Run manifests and extended output add `source_provenance`, final
 `source_provenance_end`, and `source_changed_during_run` (nullable when unknown).
@@ -69,6 +70,13 @@ Diagnostics/preflight add `source_provenance`. Initial evidence is also retained
 as `system_info.json` / compatibility `SystemInfo.SourceProvenance`, without
 renaming legacy fields. Report data exposes it under `run.source_provenance`;
 historical absence is `not_recorded`, never reconstructed from the renderer.
+Report/QA `source_identity` summaries validate recorded fingerprints and expose
+Git uncertainty and source changes as separate observations. Ordinary comparison
+payloads add `source_comparison` (`matching`, `different`, `insufficient_evidence`,
+or `unavailable`). Local Git correlation is separately labelled, bounded to HEAD
+and at most one recorded HEAD, offline, and based on identical v1 scoped bytes;
+multiple commits can match. Legacy results remain `not_recorded`, not relabelled
+with the reviewing checkout. Legacy stamps remain optional, untrusted claims.
 None of these observations changes worker integrity, safety, or verdict rules.
 
 ### Completed run artifacts

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .lvs_core import APP_NAME, APP_VERSION
+from .lvs_source_review import provenance_from_payload, review_source_records, source_identity_text
 from .lvs_output_contract_identity import (
     REPORT_DATA_CONTRACT_ID,
     REPORT_DATA_KIND,
@@ -1334,6 +1335,11 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "capability_status": source.get("capability_status", "unknown"),
             "reason": source.get("measurement_reason", ""),
         })
+    source_review = review_source_records(
+        [provenance_from_payload(item) for item in (manifest, extended, system_info, custom)],
+        end=manifest.get("source_provenance_end") or extended.get("source_provenance_end"),
+        changed=manifest.get("source_changed_during_run", extended.get("source_changed_during_run")),
+    )
     payload: Dict[str, Any] = {
         "generated_at": generated_at,
         "generator": {"name": APP_NAME, "version": APP_VERSION, "module": "Modules.lvs_report"},
@@ -1351,6 +1357,8 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "source_provenance": manifest.get("source_provenance") or extended.get("source_provenance")
             or system_info.get("SourceProvenance") or {"status": "not_recorded"},
             "source_changed_during_run": manifest.get("source_changed_during_run"),
+            "source_identity": source_review,
+            "source_identity_text": source_identity_text(source_review),
         },
         "review": {"failures": failures, "warnings": warnings, "information": information},
         "hardware": _hardware(system_info),

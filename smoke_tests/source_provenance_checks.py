@@ -36,7 +36,9 @@ def _git_fixture(root, algorithm="sha1"):
         assert command[:3] == ["git", "-C", str(root)]
         assert kwargs["timeout"] == 5
         assert kwargs["env"]["GIT_OPTIONAL_LOCKS"] == "0"
-        args = command[3:]
+        assert command[3:5] == ["-c", "protocol.allow=never"]
+        assert kwargs["env"]["GIT_NO_LAZY_FETCH"] == kwargs["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+        args = command[5:]
         if args == ["rev-parse", "--show-toplevel"]:
             value = str(root).encode() + b"\n"
         elif args == ["rev-parse", "--verify", "HEAD"]:
@@ -60,6 +62,7 @@ def run_source_provenance_checks():
             with patch.object(provenance.subprocess, "run", side_effect=run_git):
                 clean = provenance.collect_source_provenance(root)
                 assert clean["source"]["status"] == "complete"
+                assert clean["source"]["digest"] == "5baec3337bb07dfe1a3b3b1bce2c7d00013960c59d7a6871a45cb15cf7c6f265", "v1 scope/protocol must remain byte-identical"
                 assert clean["git"]["scoped_commit_match"] is True
                 assert clean["git"]["scoped_source_state"] == "clean"
                 stamp = provenance.write_build_stamp(root, "development-fixture")
@@ -105,6 +108,14 @@ def run_source_provenance_checks():
             assert copied["git"]["status"] == "absent"
             assert copied["capture"]["commit"] == clean["git"]["commit"]
             assert copied["stamp_status"] == "content_match"
+            legacy_stamp = deepcopy(stamp)
+            legacy_stamp["git"].pop("association", None)
+            legacy_stamp.pop("record_sha256")
+            legacy_stamp["record_sha256"] = hashlib.sha256(provenance._canonical(legacy_stamp)).hexdigest()
+            (root / provenance.STAMP_NAME).write_text(json.dumps(legacy_stamp), encoding="utf-8")
+            legacy = provenance.collect_source_provenance(root)
+            assert legacy["stamp_status"] == "content_match" and legacy["git"]["status"] == "absent"
+            assert legacy["source"] == clean["source"]
             assert "scoped_commit_match" not in copied["git"]
             assert copied["native_binary_identity"] == copied["external_dependencies"] == "not_assessed"
             text = json.dumps(copied)

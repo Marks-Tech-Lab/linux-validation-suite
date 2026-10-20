@@ -1,40 +1,49 @@
-# Source and manual-build provenance
+# Automatic source provenance
 
 LVS keeps the public runtime version (currently `0.5.1-alpha`) separate from
 source identity. A version string or operator label does not identify the exact
 development source. Git HEAD alone does not identify modified deployed files.
 
-## Normal manual capture
+## Ordinary copying and execution: no setup
 
-There is no automatic hook for a manual filesystem copy. After the final source
-edits and any intended commit, immediately before capturing the complete build,
-run this from the current LVS project directory:
+Copy/transfer the complete LVS project and run it normally. **No manual command,
+stamp, packaging, Git operation, metadata file, or special copying procedure is
+needed.** Normal execution, dry-run diagnostics, and blocked-preflight collection
+automatically record the deployed source fingerprint. Source files are never
+rewritten or packaged in the background. Native-helper compilation is unchanged.
 
-```bash
-.venv/bin/python -B -m Modules.lvs_source_provenance stamp --label development-checkpoint
-```
+A copy without Git has a usable source-content identity and **unknown Git
+association**, not an inferred release commit. Absence of a legacy stamp is
+normal and does not reduce the confidence of a complete source collection.
+The runtime version, observed fingerprint, source-collection status/confidence,
+Git evidence, and source changes during execution remain separate observations.
 
-The label is optional. Use only a generic build label, never personal or secret
-information. This atomically writes the **visible**, ignored root file
-`lvs_source_build.json`. Include that file in the normal complete build copy.
-Do not commit it, package physical evidence, or copy `.git` merely for provenance.
-No new deployment system, release package, GitHub download, or target-side Git
-installation is required. Normal native-helper compilation is unchanged.
+## Ordinary review and comparison
 
-This command is an explicit additional pre-copy action; LVS does **not** claim
-that manual copies are stamped automatically. It also supports modified source:
-the stamp retains the commit, marks its scoped source `modified`, and fingerprints
-the actual content. Repeat stamping after subsequent source changes or commits.
-To inspect the current deployment without writing anything:
+Run summary text, Results Overview, CLI/TUI QA Review, QA JSON, and standalone
+HTML expose source identity without inspecting raw JSON. Comparison reports show
+`matching`, `different`, `insufficient_evidence`, or `unavailable` (including
+unsupported/conflicting source evidence). Matching means the same initial
+observed **scope and bytes**, not the same hardware, binaries, whole execution,
+or unique Git commit. Source changes and conflicting endpoint evidence remain
+visible independently. Missing legacy evidence is `not_recorded`.
 
-```bash
-python -B -m Modules.lvs_source_provenance show
-```
+Review never fingerprints the current checkout and substitutes it for an old
+result. It can automatically correlate a complete recorded fingerprint with
+**local HEAD and at most one recorded HEAD candidate**. This reads the identical
+v1 source scope from committed Git objects, verifies object content, and computes
+the same SHA-256 protocol. It does not use working-tree contents for correlation,
+search history, fetch objects, contact GitHub, or infer a unique commit. Multiple
+commits may legitimately match the same source scope.
 
-Without a stamp, LVS still measures a deployed-source fingerprint. A no-Git,
-unstamped copy has **unknown Git/capture provenance**, not an inferred release
-commit. A stale stamp is retained as an explicitly unverified capture claim; its
-claimed source/commit is never substituted for the observed source identity.
+Reads are offline (lazy fetching/transports and replacement objects disabled),
+time-bounded, and limited to 16 MiB of scoped blob contents per candidate, with
+an eight-entry successful-result cache. Missing Git/objects or a byte-budget
+limit leaves correlation unavailable, not the observed fingerprint invalid.
+A no-match result applies only to checked candidates, not all Git history.
+An independently checked local commit match is distinct from runtime Git evidence
+and never retroactively proves historical executable identity. Conflicting
+recorded commit claims are explicitly reported rather than accepted.
 
 ## Deterministic scope: `lvs_execution_source_v1`
 
@@ -64,8 +73,8 @@ No text/newline normalization is performed. File hashes are streamed with a
 Unreadable, changing, symlinked, or over-32-MiB source files produce incomplete
 evidence, not silent exclusions from a purportedly complete identity. Four
 minimum source anchors are required: the CLI entrypoint, `Modules/lvs_core.py`,
-and the CPU and memory helper C sources. Full matching with a capture stamp also
-detects lost/added included files. No completeness claim is made for an unknown
+and the CPU and memory helper C sources. Comparisons with other results or local
+committed contents detect lost/added included files. No completeness claim is made for an unknown
 unstamped source-only subset beyond this declared scope and these anchors.
 
 ## Interpretation and trust boundaries
@@ -87,7 +96,16 @@ not just index/mtime caches or optimistic `git status`. It records:
 
 No repository means `git.status=absent`; a missing/failing Git executable means
 `unavailable`. Neither prevents content fingerprinting or workload execution.
-An enclosing unrelated repository is not used as the project's identity.
+An enclosing unrelated repository is not used as the project's identity. HEAD
+is associated with the observed source only on a complete byte match; otherwise
+it is only an observed, nonmatching HEAD and the exact Git association is unknown.
+
+## Legacy stamps: optional advanced diagnostics only
+
+The `stamp`/`show` module commands remain for advanced diagnostics and backward
+compatibility, **not** as a deployment/validation procedure. Normal users never
+need to invoke this module. No stamp is generated automatically. Existing valid,
+stale, and malformed stamps remain readable; their absence is not a deficiency.
 
 `stamp_status` is `missing`, `invalid`, `stale`, or `content_match`. Only the last
 means the complete deployed scope equals the captured fingerprint. Its Git

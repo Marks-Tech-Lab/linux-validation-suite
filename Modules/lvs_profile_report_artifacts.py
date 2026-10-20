@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
 from .lvs_source_provenance import collect_source_provenance
+from .lvs_source_review import source_identity, source_identity_text
 
 
 def safe_report_name(value: str) -> str:
@@ -73,7 +74,8 @@ class ProfileReportArtifactWriter:
         }
         JsonStore.write(report_dir / "dry_run_diagnostics.json", payload)
         self.write_profile_used(report_dir, profile, labels)
-        (report_dir / "dry_run_summary.txt").write_text(summary_text or str(report), encoding="utf-8")
+        source_text = source_identity_text(source_identity(payload["source_provenance"]))
+        (report_dir / "dry_run_summary.txt").write_text((summary_text or str(report)) + "\n\n" + source_text + "\n", encoding="utf-8")
         return report_dir
 
     def save_cli_diagnostics_report(
@@ -97,7 +99,8 @@ class ProfileReportArtifactWriter:
         payload["menu_group"] = getattr(profile, "menu_group", "")
         JsonStore.write(report_dir / "diagnostics.json", payload)
         self.write_profile_used(report_dir, profile, labels)
-        (report_dir / "diagnostics_summary.txt").write_text(summary_text or str(report), encoding="utf-8")
+        source_text = source_identity_text(source_identity(payload["source_provenance"]))
+        (report_dir / "diagnostics_summary.txt").write_text((summary_text or str(report)) + "\n\n" + source_text + "\n", encoding="utf-8")
         return report_dir
 
     def save_cli_preflight_report(
@@ -133,7 +136,8 @@ class ProfileReportArtifactWriter:
         }
         JsonStore.write(report_dir / "preflight_report.json", payload)
         self.write_profile_used(report_dir, profile, labels)
-        (report_dir / "preflight_summary.txt").write_text(summary_text or str(preflight), encoding="utf-8")
+        source_text = source_identity_text(source_identity(payload["source_provenance"]))
+        (report_dir / "preflight_summary.txt").write_text((summary_text or str(preflight)) + "\n\n" + source_text + "\n", encoding="utf-8")
         return report_dir
 
     @staticmethod

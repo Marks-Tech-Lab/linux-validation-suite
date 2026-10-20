@@ -44,8 +44,8 @@ scaffolds.
 - `.venv/`
 - `hardware_result_validation_state.json`
 - Python, test, editor, and build caches
-- Generated local `lvs_source_build.json` capture stamps (regenerate explicitly
-  for each manual deployment; do not publish operator-labelled local metadata)
+- Optional legacy `lvs_source_build.json` stamps (not required for copying or
+  validation; do not publish operator-labelled local metadata)
 - Google Drive credentials, shared-drive IDs, upload manifests, or tokens
 - Private migration bundles and restore-conflict staging contents
 - Organization-specific inventory options or profile lists

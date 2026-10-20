@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 from .lvs_result_report_adapters import result_summary_text
+from .lvs_source_review import load_result_source_identity
 from .lvs_result_report_text import (
     missing_result_overview_text,
     missing_result_stage_details_text,
@@ -30,7 +31,7 @@ class ResultOverviewReportBuilder:
         parsed = self.read_json(parsed_path) if parsed_path.exists() else {}
         if not parsed:
             return missing_result_overview_text(result_dir.name)
-        return result_overview_text_from_payload(result_dir.name, parsed)
+        return result_overview_text_from_payload(result_dir.name, parsed, load_result_source_identity(result_dir, parsed=parsed))
 
     def result_stage_details_text(self, result_dir: Path) -> str:
         parsed_path = result_dir / "parsed_results_custom.json"

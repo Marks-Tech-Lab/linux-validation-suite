@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from .lvs_source_review import provenance_from_payload, source_identity, source_identity_text
 
 
 class SummaryTextBuilder:
@@ -27,6 +28,9 @@ class SummaryTextBuilder:
         lines.append(f"Started: {result.get('Started') or result.get('started') or '-'}")
         lines.append(f"Ended: {result.get('Ended') or result.get('ended') or '-'}")
         lines.append(f"Elapsed: {report.get('Elapsed') or result.get('Elapsed') or result.get('elapsed') or '-'}")
+        provenance = provenance_from_payload(result)
+        if provenance:
+            lines.append(source_identity_text(source_identity(provenance)))
         lines.append("")
 
         self._append_department_use_summary(lines, report)
