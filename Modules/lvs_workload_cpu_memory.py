@@ -457,7 +457,7 @@ class WorkloadCpuMemoryMixin:
 
     def _cpu_candidate_kernel_flavors(self, cpu: Any) -> List[str]:
         capability = self._cpu_capability_plan(cpu)
-        if self._cpu_instruction_intent(cpu) or cpu.instruction_set == "neon_fp32_fma":
+        if self._cpu_instruction_intent(cpu) or cpu.instruction_set in {"neon_fp32_fma", "sve_fp32_fma", "sve"}:
             selected = str(capability.get("selected_kernel_flavor") or "")
             return [selected] if selected else []
         common = set(capability.get("common_kernel_flavors") or [])
@@ -579,7 +579,8 @@ class WorkloadCpuMemoryMixin:
             tuple(item.get("candidate_id") for item in viable),
             bool(telemetry_evidence["available"]),
         )
-        cached = self._cpu_tuning_cache.get(cache_key) if probe_candidates else None
+        cacheable = "sve_fp32_fma" not in native_flavors
+        cached = self._cpu_tuning_cache.get(cache_key) if probe_candidates and cacheable else None
         if cached is not None:
             return dict(cached)
         started = time.monotonic()
@@ -653,7 +654,7 @@ class WorkloadCpuMemoryMixin:
                 "capability_intersection_reason",
             )
         }
-        if probe_candidates:
+        if probe_candidates and cacheable:
             self._cpu_tuning_cache[cache_key] = dict(execution)
         return execution
 
@@ -762,9 +763,9 @@ class WorkloadCpuMemoryMixin:
             and affinity_failed_count == 0
             and worker_topology_valid
             and worker_verification_satisfied(result_payload)
-            and (candidate.get("kernel_flavor") != "neon_fp32_fma"
+            and (candidate.get("kernel_flavor") not in {"neon_fp32_fma", "sve_fp32_fma"}
                  or (process is not None and process.returncode == 0
-                     and result_payload.get("kernel_flavor") == "neon_fp32_fma"))
+                     and result_payload.get("kernel_flavor") == candidate.get("kernel_flavor")))
         )
         failure_reason = str(result_payload.get("last_error") or "")
         if not failure_reason and not worker_topology_valid:
@@ -796,6 +797,13 @@ class WorkloadCpuMemoryMixin:
             "worker_count": worker_count,
             "affinity_failed_count": affinity_failed_count,
             "failure_reason": failure_reason,
+            **({"verification_contract": result_payload.get("verification_contract"),
+                "thread_vector_lengths": [
+                    {"cpu_id": row.get("affinity_target_cpu"),
+                     "vector_length_bytes": row.get("vector_length_bytes"),
+                     "active_fp32_lanes": row.get("active_fp32_lanes")}
+                    for row in (result_payload.get("threads_detail") or []) if isinstance(row, dict)]}
+               if candidate.get("kernel_flavor") == "sve_fp32_fma" else {}),
         }
 
     def _benchmark_cpu_kernel(self, cpu: Any, kernel_flavor: str) -> Dict[str, Any]:

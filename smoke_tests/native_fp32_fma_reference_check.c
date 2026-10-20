@@ -26,6 +26,30 @@ int reference_case(uint32_t seed, int which, uint32_t *output) {
     return 1;
 }
 
+#ifdef LVS_CPU_HELPER_TEST_SVE
+int sve_reference_case(uint32_t seed, int which, int lanes, uint32_t *output) {
+    keep_running = 1;
+    if (lanes < 4 || lanes > 64 || lanes % 4 || which < 0 || which >= 4) return 0;
+    size_t count = (size_t)lanes * 8;
+    uint32_t *data = calloc(4 * count * 4, sizeof(*data));
+    if (!data) return 0;
+    int success = prepare_sve_fp32_cases(data, count, seed);
+    if (success) memcpy(output, data + which * count * 4 + count * 3, count * sizeof(*data));
+    free(data);
+    return success;
+}
+
+int scalable_lane_check(int lanes, int corrupt) {
+    keep_running = 1;
+    worker_stats_t stats = {0};
+    uint32_t actual[512], expected[512];
+    if (lanes < 4 || lanes > 64 || lanes % 4 || corrupt < 0 || corrupt >= lanes * 8) return -1;
+    for (int i = 0; i < lanes * 8; ++i) actual[i] = expected[i] = 0x3f000000U + i;
+    actual[corrupt] ^= 1U;
+    return verify_fp32_fma_lanes(&stats, actual, expected, lanes * 8, 0) ? -1 : stats.first_error_lane;
+}
+#endif
+
 int lane_check(int lane, uint32_t corrupt) {
     worker_stats_t stats = {0};
     uint32_t actual[FP32_FMA_LANES], expected[FP32_FMA_LANES];

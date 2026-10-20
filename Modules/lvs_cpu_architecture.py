@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 
 X86_CPU_INSTRUCTION_SETS = frozenset({"sse", "avx", "avx2", "avx512"})
-ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon", "neon_fp32_fma"})
+ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon", "neon_fp32_fma", "sve", "sve_fp32_fma"})
 CPU_INSTRUCTION_INTENTS = frozenset({
     "baseline_vector",
     "high_throughput_vector",
@@ -27,7 +27,7 @@ X86_NATIVE_POWER_PROBE_KERNEL_ORDER = (
 )
 # Candidate discovery is not a hottest-workload claim. Keep existing unmeasured
 # fallback precedence; FP32/FMA may win only through a valid measured probe.
-ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma")
+ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma", "sve_fp32_fma")
 # Compatibility aliases retained for existing callers and fixtures.
 X86_MAX_POWER_KERNEL_ORDER = X86_NATIVE_POWER_PROBE_KERNEL_ORDER
 ARM64_MAX_POWER_KERNEL_ORDER = ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER
@@ -79,7 +79,9 @@ def resolve_cpu_instruction_intent(
     if not intent or architecture not in {"x86_64", "arm64"}:
         candidates = ()
     elif architecture == "arm64":
-        candidates = ("neon",) if intent == "baseline_vector" else ("neon_fp32_fma", "neon")
+        candidates = (("neon",) if intent == "baseline_vector" else
+                      ("sve_fp32_fma", "neon_fp32_fma", "neon") if intent == "highest_verified_vector" else
+                      ("neon_fp32_fma", "neon"))
     elif intent == "baseline_vector":
         candidates = ("sse2", "sse2_int")
     elif intent == "high_throughput_vector":
@@ -92,7 +94,8 @@ def resolve_cpu_instruction_intent(
         candidates = ()
     selected = next((flavor for flavor in candidates if flavor in common), "")
     resolved_isa = (
-        "neon" if selected in {"neon", "neon_fp32_fma"}
+        "sve" if selected == "sve_fp32_fma"
+        else "neon" if selected in {"neon", "neon_fp32_fma"}
         else "sse" if selected.startswith("sse2")
         else "avx512" if selected.startswith("avx512")
         else "avx2" if selected.startswith("avx2")

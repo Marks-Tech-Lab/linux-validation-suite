@@ -75,7 +75,7 @@ class ProfileEditor:
     user input and when to persist through ProfileLoader.
     """
 
-    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "neon", "neon_fp32_fma"]
+    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "neon", "neon_fp32_fma", "sve_fp32_fma"]
     CPU_INSTRUCTION_INTENT_OPTIONS = ["", "baseline_vector", "high_throughput_vector", "highest_verified_vector"]
     CPU_BACKEND_OPTIONS = ["auto", "native", "stress_ng", "python_fallback"]
     CPU_MODE_OPTIONS = ["normal", "extreme"]

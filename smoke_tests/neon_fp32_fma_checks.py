@@ -241,7 +241,7 @@ def run_neon_fp32_fma_checks() -> None:
     assert not cpu_instruction_set_policy("x86_64", KERNEL)["allowed"]
     assert not python_cpu_fallback_policy("aarch64", KERNEL)["allowed"]
     assert KERNEL in parse_cpu_capability_probe(0, "scalar,neon," + KERNEL)
-    assert cpu_native_power_probe_kernel_order("aarch64") == ("neon", "scalar", KERNEL)
+    assert cpu_native_power_probe_kernel_order("aarch64") == ("neon", "scalar", KERNEL, "sve_fp32_fma")
     assert select_common_kernel(architecture="arm64", requested_mode=KERNEL, common_flavors=common) == KERNEL
     assert select_common_kernel(architecture="arm64", requested_mode=KERNEL, common_flavors=["scalar", "neon"]) == ""
     assert select_common_kernel(architecture="arm64", requested_mode="auto", common_flavors=common) == "neon"
@@ -332,9 +332,10 @@ def _export_worker_fixture() -> dict:
                 threads_detail=details, **phases)
 
 
-def _worker_export_round_trip(worker: dict, run_dir: Path) -> dict:
+def _worker_export_round_trip(worker: dict, run_dir: Path, *, legacy_projection: bool = False) -> dict:
     """Exercise real parser, exporter, and final artifact writer in a temp run."""
     from Modules.lvs_compat_exporter import CompatibilityExporter
+    from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
     from Modules.lvs_core import JsonStore
     from Modules.lvs_profile_models import ValidationProfile
     from Modules.lvs_run_artifacts import write_final_run_artifacts
@@ -352,8 +353,9 @@ def _worker_export_round_trip(worker: dict, run_dir: Path) -> dict:
         started_iso="2026-10-19T10:00:00+00:00", ended_iso="2026-10-19T10:02:00+00:00",
         started_monotonic=0.0, ended_monotonic=120.0, duration_seconds=120.0,
         trim_start_seconds=30, trim_end_seconds=30, analysis_intent="functional",
-        cpu_backend="cpu_native_helper", cpu_mode_requested="neon", cpu_mode_resolved="neon",
-        cpu_kernel_flavor=KERNEL, worker_results=[native], verdict="fail" if failed else "pass")
+        cpu_backend="cpu_native_helper", cpu_mode_requested="sve" if native.get("kernel_flavor") == "sve_fp32_fma" else "neon",
+        cpu_mode_resolved="sve" if native.get("kernel_flavor") == "sve_fp32_fma" else "neon",
+        cpu_kernel_flavor=native.get("kernel_flavor", KERNEL), worker_results=[native], verdict="fail" if failed else "pass")
     telemetry = SimpleNamespace(samples=[], interval_seconds=2.0, _gpu_sources=[],
                                 source_map=lambda: {"fields": {}})
     result = write_final_run_artifacts(
@@ -377,7 +379,8 @@ def _worker_export_round_trip(worker: dict, run_dir: Path) -> dict:
                      custom["SegmentDetails"]["segment_1"]["worker_results"][0],
                      extended["stage_windows"][0]["worker_results"][0],
                      extended["compatibility_export"]["Segments"][0]["WorkerResults"][0]):
-        assert evidence == native, "export must not filter, repair, or synthesize versioned evidence"
+        expected = preserve_legacy_worker_evidence_contract(native) if legacy_projection else native
+        assert evidence == native or (legacy_projection and evidence == expected), "export must not filter, repair, or synthesize versioned evidence"
         assert worker_verification_satisfied(evidence) == worker_verification_satisfied(native)
         assert worker_integrity_error_count([evidence]) == worker_integrity_error_count([native])
     assert (result.overall_verdict == "fail") == failed

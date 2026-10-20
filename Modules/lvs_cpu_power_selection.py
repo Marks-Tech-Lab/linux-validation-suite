@@ -140,7 +140,7 @@ def power_cpu_candidate_inventory(
                 "cpu_native_helper",
                 "native_verified_kernel",
                 kernel_flavor=flavor,
-                resolved_mode="neon" if flavor in {"neon", "neon_fp32_fma"} else "scalar" if flavor == "scalar" else "",
+                resolved_mode="sve" if flavor == "sve_fp32_fma" else "neon" if flavor in {"neon", "neon_fp32_fma"} else "scalar" if flavor == "scalar" else "",
             ))
     else:
         unavailable.append({
@@ -171,6 +171,8 @@ def power_cpu_fallback_order(architecture: str, candidates: Iterable[Dict[str, A
                 value = 1
             elif backend == "cpu_native_helper" and flavor == "scalar":
                 value = 2
+            elif backend == "cpu_native_helper" and flavor == "sve_fp32_fma":
+                value = 5
             elif preferred_native:
                 value = 3
             else:

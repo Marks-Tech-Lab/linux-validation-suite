@@ -8,6 +8,14 @@
 #include <arm_neon.h>
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
+#include <sys/prctl.h>
+#ifndef HWCAP_SVE
+#define HWCAP_SVE (1UL << 22)
+#endif
+#ifndef PR_SVE_GET_VL
+#define PR_SVE_GET_VL 51
+#define PR_SVE_VL_LEN_MASK 0xffff
+#endif
 #endif
 #include <inttypes.h>
 #include <math.h>
@@ -44,7 +52,8 @@ typedef enum {
     KERNEL_AVX512_FMA = 8,
     KERNEL_AVX512_INT = 9,
     KERNEL_NEON = 10,
-    KERNEL_NEON_FP32_FMA = 11
+    KERNEL_NEON_FP32_FMA = 11,
+    KERNEL_SVE_FP32_FMA = 12
 } kernel_flavor_t;
 
 typedef struct {
@@ -73,6 +82,10 @@ typedef struct {
     uint64_t progress_next_check;
     unsigned int progress_check_stride;
     double progress_check_time;
+    int sve_vl_bytes;
+    int sve_vl_flags;
+    int sve_vl_errno;
+    int sve_fp32_lanes;
 } worker_stats_t;
 
 typedef struct {
@@ -86,6 +99,11 @@ typedef struct {
 static volatile sig_atomic_t keep_running = 1;
 static volatile uint64_t vector_sink_u64 = 0;
 static const char *result_file_path = NULL;
+static int sve_progress;
+
+static int verified_fp32_kernel(kernel_flavor_t flavor) {
+    return flavor == KERNEL_NEON_FP32_FMA || flavor == KERNEL_SVE_FP32_FMA;
+}
 
 /* One writer, O(threads) storage. Only verified block boundaries are published;
  * no I/O, mutex, or clock read occurs in the vector arithmetic hot loop. */
@@ -143,12 +161,13 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
     double realtime = clock_seconds(CLOCK_REALTIME);
     double now = clock_seconds(CLOCK_MONOTONIC);
     uint64_t total = 0;
-    fprintf(progress_file, "{\"contract\":\"neon_fp32_fma_progress_v1\","
-        "\"sequence\":%lu,\"pid\":%ld,\"kernel_flavor\":\"neon_fp32_fma\","
+    fprintf(progress_file, "{\"contract\":\"%s_progress_v1\","
+        "\"sequence\":%lu,\"pid\":%ld,\"kernel_flavor\":\"%s\","
         "\"operation_family\":\"fp32_fused_multiply_add\",\"state\":\"%s\","
         "\"monotonic_seconds\":%.9f,\"realtime_seconds\":%.9f,"
         "\"clock_pair_uncertainty_seconds\":%.9f,\"snapshot_interval_seconds\":2.0,\"threads\":[",
-        progress_sequence++, (long)getpid(), state, now, realtime, now - pair_before);
+        sve_progress ? "sve_fp32_fma" : "neon_fp32_fma", progress_sequence++, (long)getpid(),
+        sve_progress ? "sve_fp32_fma" : "neon_fp32_fma", state, now, realtime, now - pair_before);
     for (int i = 0; i < progress_threads; ++i) {
         const progress_slot_t *slot = &progress_snapshot[i];
         const worker_stats_t *s = &slot->stats;
@@ -160,7 +179,7 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
             "\"initial_verified\":%s,\"periodic_verified\":%s,\"final_verified\":%s,"
             "\"error_count\":%" PRIu64 ",\"affinity_applied\":%s,\"observed_cpu\":%d,"
             "\"interrupted_arithmetic_blocks\":%" PRIu64 ",\"first_error_kind\":\"%s\","
-            "\"first_error_lane\":%d,\"first_error_expected\":%" PRIu64 ",\"first_error_actual\":%" PRIu64 "}",
+            "\"first_error_lane\":%d,\"first_error_expected\":%" PRIu64 ",\"first_error_actual\":%" PRIu64,
             i ? "," : "", i, cpu_ids[i], slot->monotonic, s->arithmetic_verified_blocks,
             s->initial_verification_completed ? "true" : "false",
             s->periodic_verification_completed ? "true" : "false",
@@ -168,6 +187,9 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
             s->affinity_applied ? "true" : "false", s->observed_cpu,
             s->interrupted_arithmetic_blocks, s->first_error_kind,
             s->first_error_lane, s->first_error_expected, s->first_error_actual);
+        if (sve_progress) fprintf(progress_file, ",\"vector_length_bytes\":%d,\"active_fp32_lanes\":%d",
+                                  s->sve_vl_bytes, s->sve_fp32_lanes);
+        fputc('}', progress_file);
     }
     fprintf(progress_file, "],\"aggregate_verified_blocks\":%" PRIu64 "}\n", total);
     if (fflush(progress_file) != 0 || fsync(fileno(progress_file)) != 0 || ferror(progress_file)) {
@@ -484,6 +506,8 @@ static const char *kernel_flavor_name(kernel_flavor_t flavor) {
             return "neon";
         case KERNEL_NEON_FP32_FMA:
             return "neon_fp32_fma";
+        case KERNEL_SVE_FP32_FMA:
+            return "sve_fp32_fma";
         case KERNEL_UNSPECIFIED:
             return "";
         case KERNEL_SCALAR:
@@ -856,7 +880,7 @@ static void run_neon_loop(uint32_t seed, worker_stats_t *stats) {
 #define FP32_FMA_LANES 32
 #define FP32_FMA_ROUNDS 256
 
-#if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_FP32_REFERENCE)
+#if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_FP32_REFERENCE) || defined(LVS_CPU_HELPER_TEST_SVE)
 /* Exact integer binary32 fused reference for the bounded finite operand domain
  * below. No host floating-point arithmetic, tolerance, or duplicated SIMD.
  * Unsupported exponent alignments are rejected rather than approximated. */
@@ -1094,6 +1118,177 @@ static void run_neon_fp32_fma_loop(uint32_t seed, worker_stats_t *stats) {
 #endif
 #endif
 
+static int cpu_supports_sve_fp32_fma(void) {
+#if defined(LVS_CPU_HELPER_TEST_DISABLE_FP) || defined(LVS_CPU_HELPER_TEST_DISABLE_SVE)
+    return 0;
+#elif defined(LVS_CPU_HELPER_TEST_SVE)
+    return 1;
+#elif defined(LVS_CPU_HELPER_ENABLE_SVE) && defined(__aarch64__) && defined(__linux__)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    return (hwcap & (HWCAP_FP | HWCAP_SVE)) == (HWCAP_FP | HWCAP_SVE);
+#else
+    return 0;
+#endif
+}
+
+static void print_isa_capabilities(void) {
+    printf("{\"source\":\"%s\",\"sve_compiled\":%s,",
+#if defined(__aarch64__) && defined(__linux__)
+           "linux_getauxval_common_set",
+#else
+           "unsupported_architecture",
+#endif
+#if defined(LVS_CPU_HELPER_ENABLE_SVE) && defined(__aarch64__) && defined(__linux__)
+           "true"
+#else
+           "false"
+#endif
+    );
+#if defined(__aarch64__) && defined(__linux__)
+    printf("\"hwcap\":%lu,", getauxval(AT_HWCAP));
+    errno = 0;
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    if (errno) printf("\"hwcap2\":null,\"hwcap2_errno\":%d,", errno);
+    else printf("\"hwcap2\":%lu,\"hwcap2_errno\":0,", hwcap2);
+    if ((getauxval(AT_HWCAP) & HWCAP_SVE) != 0) {
+        errno = 0;
+        int vl = prctl(PR_SVE_GET_VL, 0UL, 0UL, 0UL, 0UL);
+        if (vl < 0) printf("\"current_vector_length_bytes\":null,\"vector_length_errno\":%d", errno);
+        else printf("\"current_vector_length_bytes\":%d,\"vector_length_flags\":%d,\"vector_length_errno\":0", vl & PR_SVE_VL_LEN_MASK, vl & ~PR_SVE_VL_LEN_MASK);
+    } else printf("\"current_vector_length_bytes\":null,\"vector_length_status\":\"unsupported\"");
+#else
+    printf("\"hwcap\":null,\"hwcap2\":null,\"current_vector_length_bytes\":null,\"status\":\"unsupported_architecture\"");
+#endif
+    printf("}\n");
+}
+
+#if defined(LVS_CPU_HELPER_ENABLE_SVE) || defined(LVS_CPU_HELPER_TEST_SVE)
+#include "cpu_sve_kernel.h"
+
+static int prepare_sve_fp32_cases(uint32_t *data, size_t count, uint32_t seed) {
+    for (int k = 0; k < FP32_FMA_CASES; ++k) {
+        uint32_t *input = data + k * count * 4;
+        for (size_t lane = 0; lane < count; ++lane) {
+            uint32_t mix = seed * 1664525U + (uint32_t)lane * 1013904223U + (uint32_t)k * 69069U;
+            input[lane] = 0x3f000000U | (mix & 0x3fffffU);
+            input[count + lane] = 0x3f7f0000U | ((mix >> 5) & 0xffffU);
+            input[count * 2 + lane] = 0x3a800000U | ((mix >> 9) & 0x3fffffU) | ((lane & 1) ? 0x80000000U : 0U);
+            uint32_t value = input[lane];
+            for (int round = 0; round < FP32_FMA_ROUNDS; ++round) {
+                if (!keep_running || !fp32_fma_reference(value, input[count + lane], input[count * 2 + lane], &value)) return 0;
+            }
+            input[count * 3 + lane] = value;
+        }
+    }
+    return 1;
+}
+
+static void run_sve_fp32_fma_loop(uint32_t seed, worker_stats_t *stats) {
+#if defined(LVS_CPU_HELPER_TEST_SVE)
+    const char *configured = getenv("LVS_TEST_SVE_VL_BYTES");
+    int state = configured ? atoi(configured) : 16;
+#if defined(LVS_CPU_HELPER_TEST_SVE_DIFFERING_VL)
+    state = stats->progress_index & 1 ? 48 : 32;
+#endif
+    stats->sve_vl_errno = state < 0 ? EINVAL : 0;
+#if defined(LVS_CPU_HELPER_TEST_BAD_FPCR)
+    stats->fpcr = 1ULL << 24;
+#endif
+#else
+    errno = 0;
+    int state = prctl(PR_SVE_GET_VL, 0UL, 0UL, 0UL, 0UL);
+    stats->sve_vl_errno = state < 0 ? errno : 0;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(stats->fpcr));
+#endif
+    if (state < 0) {
+        record_worker_error(stats, "sve_vl_query", 0, 0, stats->sve_vl_errno);
+        keep_running = 0; return;
+    }
+    stats->sve_vl_bytes = state & 0xffff;
+    stats->sve_vl_flags = state & ~0xffff;
+    /* Architectural SVE VL is 16..256 bytes in 16-byte units, not powers of two. */
+    if (stats->sve_vl_bytes < 16 || stats->sve_vl_bytes > 256 || stats->sve_vl_bytes % 16) {
+        record_worker_error(stats, "sve_vl_invalid", 0, 16, stats->sve_vl_bytes);
+        keep_running = 0; return;
+    }
+    if (!fp32_environment_supported(stats->fpcr)) {
+        record_worker_error(stats, "fp_environment", 0, 0, stats->fpcr);
+        keep_running = 0; return;
+    }
+    int lanes = stats->sve_fp32_lanes = stats->sve_vl_bytes / 4;
+    size_t count = (size_t)lanes * 8;
+    /* Four cases x four arrays; actual outputs and predication witnesses.
+     * O(actual VL), allocated once; never proportional to system memory. */
+    uint32_t *data = calloc(FP32_FMA_CASES * count * 4 + count + (size_t)lanes * 6 + 2, sizeof(*data));
+    if (!data) {
+        record_worker_error(stats, "sve_allocation", 0, 1, 0);
+        keep_running = 0; return;
+    }
+    uint32_t *actual = data + FP32_FMA_CASES * count * 4;
+    uint32_t *wa = actual + count, *wb = wa + lanes, *wc = wb + lanes;
+    uint32_t *witness = wc + lanes, *expected_witness = witness + lanes, *masked = expected_witness + lanes;
+    if (!prepare_sve_fp32_cases(data, count, seed)) {
+        if (keep_running) record_worker_error(stats, "fp32_reference_domain", 0, 1, 0);
+        keep_running = 0; goto cleanup;
+    }
+    for (int lane = 0; lane < lanes; ++lane) {
+        wa[lane] = fp32_witness_a[lane % 4]; wb[lane] = fp32_witness_b[lane % 4];
+        wc[lane] = lane < 4 ? fp32_witness_c[lane] : 0x3f123456U;
+        expected_witness[lane] = lane < 4 ? fp32_witness_expected[lane] : wc[lane];
+    }
+    for (;;) {
+        int final = !keep_running;
+        if (final && (stats->error_count || !stats->initial_verification_completed)) break;
+        if (!fp32_check_affinity(stats)) break;
+#if defined(LVS_CPU_HELPER_TEST_MIGRATION)
+        record_worker_error(stats, "affinity_lost", 0, stats->affinity_target_cpu, UINT64_MAX);
+        keep_running = 0; break;
+#endif
+        uint32_t *input = data + ((stats->arithmetic_verified_blocks + seed) % FP32_FMA_CASES) * count * 4;
+        int completed = execute_sve_fp32_block(input, input + count, input + count * 2, actual, lanes, final);
+        if (!completed) { ++stats->interrupted_arithmetic_blocks; continue; }
+        if (completed < 0) {
+            record_worker_error(stats, "sve_execution_state", stats->arithmetic_verified_blocks, lanes, 0);
+            keep_running = 0; break;
+        }
+#if defined(LVS_CPU_HELPER_TEST_CORRUPT_FP32_LANE)
+        actual[count - 1] ^= 1U;
+#elif defined(LVS_CPU_HELPER_TEST_NONFINITE_FP32_LANE)
+        actual[count - 1] = 0x7f800000U;
+#endif
+        if (!verify_fp32_fma_lanes(stats, actual, input + count * 3, (int)count, stats->arithmetic_verified_blocks)) break;
+        memcpy(witness, wc, (size_t)lanes * sizeof(*wc));
+        for (int i = 0; i < lanes + 2; ++i) masked[i] = 0xdeadbeefU;
+        execute_sve_witness(wa, wb, wc, witness, masked);
+        if (!verify_fp32_fma_lanes(stats, witness, expected_witness, lanes, stats->arithmetic_verified_blocks)) break;
+        for (int i = 0; i < lanes + 2; ++i) {
+            uint32_t expected = i >= 1 && i <= 4 ? fp32_witness_expected[i - 1] : 0xdeadbeefU;
+            if (masked[i] != expected) {
+                stats->first_error_lane = i;
+                record_worker_error(stats, "sve_masked_store", stats->arithmetic_verified_blocks, expected, masked[i]);
+                keep_running = 0; goto cleanup;
+            }
+        }
+        if (!fp32_check_affinity(stats)) break;
+        if (stats->arithmetic_verified_blocks == UINT64_MAX) {
+            record_worker_error(stats, "fp32_counter_overflow", UINT64_MAX, 0, 0);
+            keep_running = 0; break;
+        }
+        ++stats->arithmetic_verified_blocks; ++stats->verify_passes;
+        if (final) {
+            stats->final_verification_completed = 1;
+            publish_verified_progress(stats, 1); break;
+        }
+        int initial = !stats->initial_verification_completed;
+        if (initial) stats->initial_verification_completed = 1;
+        else stats->periodic_verification_completed = 1;
+        publish_verified_progress(stats, initial);
+    }
+cleanup:
+    free(data);
+}
+#endif
+
 static int cpu_supports_neon_fp32_fma(void) {
 #if defined(LVS_CPU_HELPER_TEST_DISABLE_FP) || defined(LVS_CPU_HELPER_TEST_DISABLE_ASIMD)
     return 0;
@@ -1222,7 +1417,8 @@ static int requested_mode_supported(stress_mode_t requested) {
     return requested != MODE_NEON && requested != MODE_SVE;
 #elif defined(__aarch64__) && defined(__linux__)
     return requested == MODE_AUTO || requested == MODE_SCALAR ||
-        (requested == MODE_NEON && cpu_supports_neon());
+        (requested == MODE_NEON && cpu_supports_neon()) ||
+        (requested == MODE_SVE && cpu_supports_sve_fp32_fma());
 #else
     return requested == MODE_AUTO || requested == MODE_SCALAR;
 #endif
@@ -1262,11 +1458,14 @@ static kernel_flavor_t parse_kernel_flavor(const char *raw) {
     if (strcmp(raw, "neon_fp32_fma") == 0) {
         return KERNEL_NEON_FP32_FMA;
     }
+    if (strcmp(raw, "sve_fp32_fma") == 0) return KERNEL_SVE_FP32_FMA;
     return KERNEL_UNSPECIFIED;
 }
 
 static int kernel_flavor_supported(kernel_flavor_t flavor) {
     switch (flavor) {
+        case KERNEL_SVE_FP32_FMA:
+            return cpu_supports_sve_fp32_fma();
         case KERNEL_NEON_FP32_FMA:
             return cpu_supports_neon_fp32_fma();
         case KERNEL_SCALAR:
@@ -1321,8 +1520,16 @@ static int kernel_flavor_supported(kernel_flavor_t flavor) {
     }
 }
 
+static void report_unsupported_kernel(kernel_flavor_t flavor) {
+    if (flavor == KERNEL_SVE_FP32_FMA)
+        fprintf(stderr, "sve_fp32_fma requires optional compiled SVE support and Linux FP/SVE HWCAP; inspect --print-isa-capabilities\n");
+    else fprintf(stderr, "kernel flavor not supported on this CPU\n");
+}
+
 static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
     switch (flavor) {
+        case KERNEL_SVE_FP32_FMA:
+            return MODE_SVE;
         case KERNEL_SSE2:
         case KERNEL_SSE2_INT:
             return MODE_SSE;
@@ -1365,7 +1572,7 @@ static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
         case MODE_NEON:
             return KERNEL_NEON;
         case MODE_SVE:
-            return KERNEL_UNSPECIFIED;
+            return KERNEL_SVE_FP32_FMA;
         case MODE_AUTO:
         case MODE_SCALAR:
         default:
@@ -1380,7 +1587,7 @@ static void *worker_main(void *opaque) {
     if (flavor == KERNEL_UNSPECIFIED) {
         flavor = default_kernel_flavor(args->mode);
     }
-    if (flavor == KERNEL_NEON_FP32_FMA) {
+    if (verified_fp32_kernel(flavor)) {
         args->stats->affinity_required = 1;
         if (affinity_result != 0) {
             record_worker_error(args->stats, "affinity_required", 0, 0, (uint64_t)affinity_result);
@@ -1401,12 +1608,20 @@ static void *worker_main(void *opaque) {
         args->stats->error_count += 1ULL;
         args->stats->first_error_recorded = 1;
         snprintf(args->stats->first_error_kind, sizeof(args->stats->first_error_kind), "%s", "isa_not_supported");
-        if (flavor == KERNEL_NEON_FP32_FMA) keep_running = 0;
+        if (verified_fp32_kernel(flavor)) keep_running = 0;
         return NULL;
     }
     uint32_t seed = (uint32_t)(args->worker_index + 1);
 
     switch (flavor) {
+        case KERNEL_SVE_FP32_FMA:
+#if defined(LVS_CPU_HELPER_ENABLE_SVE) || defined(LVS_CPU_HELPER_TEST_SVE)
+            run_sve_fp32_fma_loop(seed, args->stats);
+#else
+            record_worker_error(args->stats, "sve_not_compiled", 0, 1, 0);
+            keep_running = 0;
+#endif
+            break;
         case KERNEL_NEON_FP32_FMA:
 #if (defined(__aarch64__) && defined(__linux__)) || defined(LVS_CPU_HELPER_TEST_FP32_FMA)
             run_neon_fp32_fma_loop(seed, args->stats);
@@ -1491,7 +1706,7 @@ static stress_mode_t parse_mode(const char *raw) {
     if (strcmp(raw, "neon") == 0) {
         return MODE_NEON;
     }
-    if (strcmp(raw, "sve") == 0) {
+    if (strcmp(raw, "sve") == 0 || strcmp(raw, "sve_fp32_fma") == 0) {
         return MODE_SVE;
     }
     return MODE_AUTO;
@@ -1500,7 +1715,7 @@ static stress_mode_t parse_mode(const char *raw) {
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon|sve] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma|sve_fp32_fma] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--print-isa-capabilities] [--result-file <path>]\n",
         argv0
     );
 }
@@ -1625,12 +1840,13 @@ static void write_result_file(
         fprintf(handle, "%s%d", index == 0 ? "" : ", ", target_cpu_ids[index]);
     }
     fprintf(handle, "],\n");
-    if (kernel_flavor == KERNEL_NEON_FP32_FMA) {
-        fprintf(handle, "  \"verified_progress\": {\"contract\":\"neon_fp32_fma_progress_v1\","
+    if (verified_fp32_kernel(kernel_flavor)) {
+        const char *contract_kernel = kernel_flavor_name(kernel_flavor);
+        fprintf(handle, "  \"verified_progress\": {\"contract\":\"%s_progress_v1\","
             "\"sidecar_suffix\":\".progress.jsonl\",\"snapshot_interval_seconds\":2.0,"
             "\"publication_checks\":\"adaptive_block_boundary_clock_checks\",\"publication_minimum_seconds\":0.25,"
             "\"persistence_error\":%s,\"snapshot_count\":%lu,\"snapshot_write_seconds\":%.9f},\n",
-            progress_io_error ? "true" : "false", progress_sequence, progress_write_seconds);
+            contract_kernel, progress_io_error ? "true" : "false", progress_sequence, progress_write_seconds);
         uint64_t blocks = 0;
         int initial = threads == requested_threads && threads > 0;
         int periodic = initial, final = initial;
@@ -1640,36 +1856,51 @@ static void write_result_file(
             periodic &= worker_stats[index].periodic_verification_completed;
             final &= worker_stats[index].final_verification_completed;
         }
-#if defined(__aarch64__) && defined(__linux__) && !defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+#if defined(__aarch64__) && defined(__linux__) && !defined(LVS_CPU_HELPER_TEST_FP32_FMA) && !defined(LVS_CPU_HELPER_TEST_SVE)
         fprintf(handle, "  \"isa_capability_source\": \"linux_getauxval_at_hwcap_common_set\",\n"
                         "  \"isa_hwcap\": %lu,\n", getauxval(AT_HWCAP));
+        errno = 0;
+        unsigned long hwcap2 = getauxval(AT_HWCAP2);
+        if (errno) fprintf(handle, "  \"isa_hwcap2\": null,\n  \"isa_hwcap2_status\": \"unavailable\",\n");
+        else fprintf(handle, "  \"isa_hwcap2\": %lu,\n  \"isa_hwcap2_status\": \"measured\",\n", hwcap2);
 #else
         fprintf(handle, "  \"isa_capability_source\": \"test_override\",\n"
-                        "  \"isa_hwcap\": null,\n");
+                        "  \"isa_hwcap\": null,\n  \"isa_hwcap2\": null,\n  \"isa_hwcap2_status\": \"not_collected\",\n");
 #endif
         fprintf(handle,
             "  \"operation_family\": \"fp32_fused_multiply_add\",\n"
             "  \"verification_required\": true,\n"
-            "  \"verification_contract\": \"neon_fp32_fma_v1\",\n"
+            "  \"verification_contract\": \"%s_v1\",\n"
             "  \"verification_method\": \"integer_binary32_fma_reference\",\n"
             "  \"verification_version\": 1,\n"
             "  \"rounding_environment\": \"nearest_ties_even_no_flush\",\n"
             "  \"execution_implementation\": \"%s\",\n"
             "  \"arithmetic_verified_blocks\": %" PRIu64 ",\n"
-            "  \"lanes_per_block\": %d,\n"
             "  \"fma_rounds_per_block\": %d,\n"
             "  \"initial_verification_completed\": %s,\n"
             "  \"periodic_verification_completed\": %s,\n"
             "  \"final_verification_completed\": %s,\n"
             "  \"verification_complete\": %s,\n",
-#if defined(LVS_CPU_HELPER_TEST_FP32_FMA)
+            contract_kernel,
+#if defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_SVE)
             "test_integer_emulation",
 #else
-            "aarch64_neon_intrinsics",
+            kernel_flavor == KERNEL_SVE_FP32_FMA ? "aarch64_sve_intrinsics" : "aarch64_neon_intrinsics",
 #endif
-            blocks, FP32_FMA_LANES, FP32_FMA_ROUNDS,
+            blocks, FP32_FMA_ROUNDS,
             initial ? "true" : "false", periodic ? "true" : "false", final ? "true" : "false",
             initial && periodic && final && error_count == 0 ? "true" : "false");
+        if (kernel_flavor == KERNEL_SVE_FP32_FMA) {
+            fprintf(handle, "  \"actual_isa\":\"%s\",\n  \"accumulator_chains\":8,\n"
+                            "  \"vector_length_source\":\"%s\",\n"
+                            "  \"predicate_verification\":\"four_active_witnesses_merge_and_guarded_masked_store\",\n",
+#if defined(LVS_CPU_HELPER_TEST_SVE)
+                            "test_integer_emulation", "test_override"
+#else
+                            "sve", "linux_prctl_pr_sve_get_vl_per_thread"
+#endif
+            );
+        } else fprintf(handle, "  \"lanes_per_block\": %d,\n", FP32_FMA_LANES);
     }
     fprintf(
         handle,
@@ -1706,7 +1937,7 @@ static void write_result_file(
             worker_stats[index].canary_passes,
             worker_stats[index].error_count
         );
-        if (kernel_flavor == KERNEL_NEON_FP32_FMA) {
+        if (verified_fp32_kernel(kernel_flavor)) {
             fprintf(handle,
                 ",\n      \"arithmetic_verified_blocks\": %" PRIu64 ",\n"
                 "      \"interrupted_arithmetic_blocks\": %" PRIu64 ",\n"
@@ -1720,8 +1951,18 @@ static void write_result_file(
                 worker_stats[index].initial_verification_completed ? "true" : "false",
                 worker_stats[index].periodic_verification_completed ? "true" : "false",
                 worker_stats[index].final_verification_completed ? "true" : "false",
-                strcmp(worker_stats[index].first_error_kind, "fp32_fma_mismatch") == 0
+                (strcmp(worker_stats[index].first_error_kind, "fp32_fma_mismatch") == 0 ||
+                 strcmp(worker_stats[index].first_error_kind, "sve_masked_store") == 0)
                     ? worker_stats[index].first_error_lane : -1);
+            if (kernel_flavor == KERNEL_SVE_FP32_FMA) {
+                const worker_stats_t *s = &worker_stats[index];
+                fprintf(handle, ",\n      \"vector_length_bytes\":%d,\n      \"vector_length_flags\":%d,"
+                    "\n      \"vector_length_errno\":%d,\n      \"active_fp32_lanes\":%d,"
+                    "\n      \"lanes_per_block\":%d,\n      \"stress_lane_fmas_per_block\":%d,"
+                    "\n      \"witness_lane_fmas_per_block\":4",
+                    s->sve_vl_bytes, s->sve_vl_flags, s->sve_vl_errno, s->sve_fp32_lanes,
+                    s->sve_fp32_lanes * 8, s->sve_fp32_lanes * 8 * FP32_FMA_ROUNDS);
+            }
         }
         if (worker_stats[index].first_error_recorded) {
             fprintf(
@@ -1756,6 +1997,7 @@ int main(int argc, char **argv) {
     int print_kernel_flavor = 0;
     int print_supported_kernels = 0;
     int print_core_type = 0;
+    int print_isa = 0;
     int probe_cpu = -1;
     const char *cpu_ids_raw = NULL;
     if (threads <= 0) {
@@ -1806,6 +2048,10 @@ int main(int argc, char **argv) {
             print_core_type = 1;
             continue;
         }
+        if (strcmp(argv[i], "--print-isa-capabilities") == 0) {
+            print_isa = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--result-file") == 0 && i + 1 < argc) {
             result_file_path = argv[++i];
             continue;
@@ -1822,6 +2068,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (print_isa) { print_isa_capabilities(); return 0; }
     if (print_core_type) {
 #if defined(__x86_64__) || defined(__i386__)
         unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
@@ -1890,7 +2137,7 @@ int main(int argc, char **argv) {
         if (mode == MODE_NEON) {
             fprintf(stderr, "requested CPU mode 'neon' requires Linux AArch64 ASIMD/NEON capability\n");
         } else if (mode == MODE_SVE) {
-            fprintf(stderr, "requested CPU mode 'sve' is not implemented\n");
+            fprintf(stderr, "requested CPU mode 'sve' requires Linux AArch64 FP/SVE and optional SVE compiler support\n");
         } else {
             fprintf(
                 stderr,
@@ -1904,7 +2151,7 @@ int main(int argc, char **argv) {
     if (print_resolved_mode) {
         if (kernel_flavor != KERNEL_UNSPECIFIED) {
             if (!kernel_flavor_supported(kernel_flavor)) {
-                fprintf(stderr, "kernel flavor not supported on this CPU\n");
+                report_unsupported_kernel(kernel_flavor);
                 return 3;
             }
             puts(mode_name(mode_for_kernel_flavor(kernel_flavor)));
@@ -1920,7 +2167,7 @@ int main(int argc, char **argv) {
             KERNEL_AVX2_FMA, KERNEL_AVX2,
             KERNEL_AVX_FMA, KERNEL_AVX,
             KERNEL_SSE2, KERNEL_SSE2_INT,
-            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SCALAR
+            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SVE_FP32_FMA, KERNEL_SCALAR
         };
         int printed = 0;
         size_t flavor_count = sizeof(flavors) / sizeof(flavors[0]);
@@ -1941,7 +2188,7 @@ int main(int argc, char **argv) {
             resolved_flavor = default_kernel_flavor(mode);
         }
         if (!kernel_flavor_supported(resolved_flavor)) {
-            fprintf(stderr, "kernel flavor not supported on this CPU\n");
+            report_unsupported_kernel(kernel_flavor);
             return 3;
         }
         puts(kernel_flavor_name(resolved_flavor));
@@ -1949,9 +2196,12 @@ int main(int argc, char **argv) {
     }
 
     if (kernel_flavor != KERNEL_UNSPECIFIED && cpu_ids_raw == NULL && !kernel_flavor_supported(kernel_flavor)) {
-        fprintf(stderr, "kernel flavor not supported on this CPU\n");
+        report_unsupported_kernel(kernel_flavor);
         return 3;
     }
+
+    if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_SVE)
+        kernel_flavor = KERNEL_SVE_FP32_FMA;
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
@@ -1982,7 +2232,8 @@ int main(int argc, char **argv) {
     }
 
     const int requested_threads = threads;
-    if (kernel_flavor == KERNEL_NEON_FP32_FMA && result_file_path) {
+    sve_progress = kernel_flavor == KERNEL_SVE_FP32_FMA;
+    if (verified_fp32_kernel(kernel_flavor) && result_file_path) {
         progress_threads = threads;
         progress_slots = calloc((size_t)threads, sizeof(*progress_slots));
         progress_snapshot = calloc((size_t)threads, sizeof(*progress_snapshot));
@@ -2009,7 +2260,7 @@ int main(int argc, char **argv) {
         worker_args[i].stats = &worker_stats[i];
         worker_stats[i].progress_index = i;
         int create_result;
-#if defined(LVS_CPU_HELPER_TEST_FP32_FMA) && defined(LVS_CPU_HELPER_TEST_THREAD_START_FAILURE)
+#if (defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_SVE)) && defined(LVS_CPU_HELPER_TEST_THREAD_START_FAILURE)
         create_result = i == 1 ? EAGAIN : pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
 #else
         create_result = pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
@@ -2061,7 +2312,7 @@ int main(int argc, char **argv) {
         resolved_flavor = default_kernel_flavor(mode);
     }
     for (int i = 0; i < threads; ++i) {
-        if (resolved_flavor == KERNEL_NEON_FP32_FMA && worker_stats[i].error_count == 0 &&
+        if (verified_fp32_kernel(resolved_flavor) && worker_stats[i].error_count == 0 &&
             (!worker_stats[i].initial_verification_completed ||
              !worker_stats[i].periodic_verification_completed ||
              !worker_stats[i].final_verification_completed ||

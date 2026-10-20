@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import statistics
+from copy import deepcopy
 from typing import Any, Callable
 
 from .lvs_compat_export_helpers import build_gpu_metric_test, build_gpu_temp_test
@@ -182,6 +183,9 @@ def build_gpu_worker_validation_detail(
         "FinalVerificationCompleted": payload.get("final_verification_completed"),
         "ResultWriteCount": int(payload.get("result_write_count") or 0),
         "ResultWriteElapsedSeconds": float(payload.get("result_write_elapsed_seconds") or 0.0),
+        "SlowOperationEvidence": deepcopy(payload.get("slow_operation_evidence")),
+        "ResultWriteErrorCount": payload.get("result_write_error_count"),
+        "LastResultWriteError": payload.get("last_result_write_error"),
         "SleepYieldElapsedSeconds": float(payload.get("sleep_yield_elapsed_seconds") or 0.0),
         "CycleCount": int(payload.get("cycle_count") or 0),
         "CycleElapsedSeconds": float(payload.get("cycle_elapsed_seconds") or 0.0),

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import ctypes
+from contextlib import contextmanager
 import faulthandler
 import json
 import math
@@ -98,6 +99,169 @@ from vulkan_transfer_worker import (
 )
 
 VK_ACCESS_SHADER_READ_BIT = 0x00000020
+
+
+class SlowOperationRecorder:
+    """Bounded host timings, not GPU execution or proof of a scheduler stall.
+
+    No event-time I/O. Ordinary results carry completed observations; one
+    terminal log record also retains timings of the last result write itself.
+    """
+
+    OPERATIONS = frozenset({
+        "result_persistence", "result_open", "result_serialization_and_write",
+        "result_flush", "result_fsync", "result_close", "result_replace",
+        "command_record", "queue_submit", "fence_wait", "gpu_timestamp_retrieval",
+        "verification_readback", "loop_prepare", "loop_state_updates",
+        "sleep_yield", "device_wait_idle", "unaccounted_loop_gap",
+    })
+
+    def __init__(self, state, *, clock=time.monotonic, wall_clock=time.time,
+                 cpu_clock=time.process_time, threshold_seconds=1.0, capacity=64):
+        if threshold_seconds <= 0 or capacity <= 0:
+            raise ValueError("slow-operation diagnostic bounds must be positive")
+        self.state = state
+        self.clock, self.wall_clock, self.cpu_clock = clock, wall_clock, cpu_clock
+        self.origin = clock()
+        self.wall_origin = wall_clock()
+        self.pending = []
+        self.last_finish = self.origin
+        self.track_gaps = False
+        self.evidence = state["slow_operation_evidence"] = {
+            "contract_id": "linux_validation_suite.gpu_worker_slow_operations",
+            "contract_version": 1,
+            "kind": "gpu_worker_slow_operations",
+            "status": "enabled",
+            "semantics": "host_elapsed_including_io_and_descheduling_not_gpu_execution_time",
+            "gap_semantics": "unscoped_host_interval_cause_unknown_not_proof_of_scheduler_interruption",
+            "wall_time_basis": "initial_unix_monotonic_correlation_plus_observed_event_end",
+            "clock_origin_monotonic_seconds": self.origin,
+            "clock_origin_unix_seconds": self.wall_origin,
+            "threshold_seconds": float(threshold_seconds),
+            "threshold_role": "diagnostic_only_not_a_performance_requirement",
+            "record_capacity": int(capacity),
+            "event_count": 0, "overwritten_record_count": 0,
+            "records": [], "operation_summary": {}, "slowest_by_operation": {},
+        }
+
+    def _record(self, operation, start, end, cpu_elapsed, outcome):
+        elapsed = max(0.0, end - start)
+        summary = self.evidence["operation_summary"].setdefault(operation, {
+            "count": 0, "total_elapsed_seconds": 0.0, "max_elapsed_seconds": 0.0,
+            "slow_count": 0, "exception_count": 0,
+        })
+        summary["count"] += 1
+        summary["total_elapsed_seconds"] += elapsed
+        summary["max_elapsed_seconds"] = max(summary["max_elapsed_seconds"], elapsed)
+        summary["exception_count"] += outcome != "completed"
+        if elapsed < self.evidence["threshold_seconds"] and outcome == "completed":
+            return
+        summary["slow_count"] += elapsed >= self.evidence["threshold_seconds"]
+        self.evidence["event_count"] += 1
+        record = {
+            "sequence": self.evidence["event_count"], "operation": operation,
+            "started_monotonic_seconds": start, "ended_monotonic_seconds": end,
+            "started_unix_seconds": self.wall_origin + start - self.origin,
+            "ended_unix_seconds": self.wall_origin + end - self.origin,
+            "observed_end_unix_seconds": self.wall_clock(),
+            "elapsed_seconds": elapsed, "process_cpu_seconds": cpu_elapsed,
+            "outcome": outcome, "worker_pid": os.getpid(),
+            "physical_gpu_id": self.state.get("physical_gpu_id", ""),
+            "target_id": self.state.get("target_id", ""),
+            "worker_result_file": self.state.get("worker_result_file", ""),
+            "telemetry_gpu_index": self.state.get("telemetry_gpu_index"),
+            "vulkan_device_index": self.state.get("vulkan_device_index"),
+            "kernel_variant": self.state.get("kernel_variant", ""),
+            "cycle_count": self.state.get("cycle_count", 0),
+            "queue_submission_count": self.state.get("queue_submission_count", 0),
+            "verification_passes": self.state.get("verification_passes", 0),
+            "submission_batch_iterations": self.state.get("submission_batch_iterations", 1),
+        }
+        records = self.evidence["records"]
+        records.append(record)
+        if len(records) > self.evidence["record_capacity"]:
+            records.pop(0)
+            self.evidence["overwritten_record_count"] += 1
+        previous = self.evidence["slowest_by_operation"].get(operation)
+        if previous is None or elapsed > previous["elapsed_seconds"]:
+            self.evidence["slowest_by_operation"][operation] = record
+
+    def begin(self, operation):
+        if operation not in self.OPERATIONS:
+            raise ValueError("unknown bounded slow-operation name")
+        now = self.clock()
+        if self.track_gaps and not self.pending and now - self.last_finish >= self.evidence["threshold_seconds"]:
+            self._record("unaccounted_loop_gap", self.last_finish, now, None, "completed")
+        token = (operation, now, self.cpu_clock())
+        self.pending.append(token)
+        return token
+
+    def finish(self, token, outcome="completed"):
+        end = self.clock()
+        self.pending.remove(token)
+        self._record(token[0], token[1], end, max(0.0, self.cpu_clock() - token[2]), outcome)
+        if not self.pending:
+            # Include time spent in diagnostic bookkeeping in the next
+            # unscoped interval; do not hide a deschedule inside the recorder.
+            self.last_finish = end
+
+    @contextmanager
+    def measure(self, operation):
+        token = self.begin(operation)
+        try:
+            yield
+        except BaseException as exc:
+            self.finish(token, f"exception:{type(exc).__name__}")
+            raise
+        else:
+            self.finish(token)
+
+    def call(self, operation, function, *args):
+        with self.measure(operation):
+            return function(*args)
+
+    def fail_pending(self):
+        for token in list(reversed(self.pending)):
+            self.finish(token, "exception")
+
+    def emit_terminal(self, stream):
+        # One bounded record after cleanup, never one log/write per event.
+        # This includes the final result write, which cannot describe its own
+        # completed duration in the JSON it was still writing.
+        stream.write(json.dumps({"event": "gpu_worker_slow_operation_diagnostics",
+                                 "evidence": self.evidence,
+                                 "result_write_error_count": self.state.get("result_write_error_count", 0),
+                                 "last_result_write_error": self.state.get("last_result_write_error")}) + "\n")
+        stream.flush()
+
+
+def persist_worker_result(path, state, recorder, *, force=False):
+    """Keep the existing atomic replacement and forced durability policy."""
+    with recorder.measure("result_persistence"):
+        handle = recorder.call("result_open", open, path + ".tmp", "w", -1, "utf-8")
+        try:
+            with recorder.measure("result_serialization_and_write"):
+                json.dump(state, handle, indent=2)
+            recorder.call("result_flush", handle.flush)
+            if force:
+                recorder.call("result_fsync", os.fsync, handle.fileno())
+        finally:
+            recorder.call("result_close", handle.close)
+        recorder.call("result_replace", os.replace, path + ".tmp", path)
+
+
+def register_worker_exit_diagnostics(recorder, write_result, *, register=atexit.register, stream=None):
+    def emit():
+        try:
+            recorder.emit_terminal(sys.stderr if stream is None else stream)
+        except Exception:
+            pass
+    # atexit runs in reverse registration order. Include even the existing
+    # fallback result write in the single final diagnostic log snapshot.
+    register(emit)
+    register(lambda: write_result("atexit"))
+
+
 VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO = 11
 VK_QUERY_TYPE_TIMESTAMP = 2
 VK_QUERY_RESULT_64_BIT = 0x00000001
@@ -729,6 +893,10 @@ def main() -> int:
     running = True
     worker_cpu_started = time.process_time()
     last_result_write_monotonic = 0.0
+    state["worker_result_file"] = args.result_file
+    state["result_write_error_count"] = 0
+    state["last_result_write_error"] = ""
+    stalls = SlowOperationRecorder(state)
 
     def record_error(message):
         state["status"] = "error"
@@ -754,16 +922,12 @@ def main() -> int:
         state["last_result_write_reason"] = str(reason)
         state["worker_cpu_seconds"] = round(max(0.0, time.process_time() - worker_cpu_started), 6)
         try:
-            temp_path = args.result_file + ".tmp"
-            with open(temp_path, "w", encoding="utf-8") as handle:
-                json.dump(state, handle, indent=2)
-                handle.flush()
-                if force:
-                    os.fsync(handle.fileno())
-            os.replace(temp_path, args.result_file)
+            persist_worker_result(args.result_file, state, stalls, force=force)
             last_result_write_monotonic = now
             return True
-        except Exception:
+        except Exception as exc:
+            state["result_write_error_count"] = int(state.get("result_write_error_count", 0)) + 1
+            state["last_result_write_error"] = type(exc).__name__
             return False
         finally:
             state["result_write_elapsed_seconds"] = round(
@@ -790,7 +954,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    atexit.register(lambda: write_result("atexit"))
+    register_worker_exit_diagnostics(stalls, write_result)
 
     worker_started_monotonic = time.monotonic()
     try:
@@ -1218,6 +1382,7 @@ def main() -> int:
         command_array = (ctypes.c_void_p * 1)(command_buffer)
         if kernel_variant == "stateful_memory":
             for record_index, record in enumerate(buffer_records):
+                init_record_token = stalls.begin("command_record")
                 check(vk.vkResetFences(device, 1, fence_array), f"vkResetFences(init {record_index})")
                 check(vk.vkResetCommandBuffer(command_buffer, 0), f"vkResetCommandBuffer(init {record_index})")
                 begin = VkCommandBufferBeginInfo(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_NULL_HANDLE, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, VK_NULL_HANDLE)
@@ -1236,9 +1401,10 @@ def main() -> int:
                 )
                 vk.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, VK_NULL_HANDLE, 1, ctypes.byref(init_barrier), 0, VK_NULL_HANDLE)
                 check(vk.vkEndCommandBuffer(command_buffer), f"vkEndCommandBuffer(init {record_index})")
+                stalls.finish(init_record_token)
                 submit = VkSubmitInfo(4, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, command_array, 0, VK_NULL_HANDLE)
-                check(vk.vkQueueSubmit(queue, 1, ctypes.byref(submit), fence), f"vkQueueSubmit(init {record_index})")
-                check(vk.vkWaitForFences(device, 1, fence_array, VK_TRUE, 10_000_000_000), f"vkWaitForFences(init {record_index})")
+                stalls.call("queue_submit", lambda: check(vk.vkQueueSubmit(queue, 1, ctypes.byref(submit), fence), f"vkQueueSubmit(init {record_index})"))
+                stalls.call("fence_wait", lambda: check(vk.vkWaitForFences(device, 1, fence_array, VK_TRUE, 10_000_000_000), f"vkWaitForFences(init {record_index})"))
 
         started = time.monotonic()
         sample_words = 256
@@ -1254,7 +1420,10 @@ def main() -> int:
         final_cycle_completed = False
         initial_command_checkpoint_recorded = False
         first_submission_checkpoint_recorded = False
+        stalls.track_gaps = True
+        stalls.last_finish = time.monotonic()
         while running or not final_cycle_completed:
+            prepare_token = stalls.begin("loop_prepare")
             final_cycle = not running
             elapsed = time.monotonic() - started
             if args.ramp_step_seconds > 0:
@@ -1311,7 +1480,9 @@ def main() -> int:
             cycle_started = time.perf_counter()
 
             check(vk.vkResetFences(device, 1, fence_array), "vkResetFences(cycle)")
+            stalls.finish(prepare_token)
             if must_record:
+                record_token = stalls.begin("command_record")
                 record_started = time.perf_counter()
                 check(vk.vkResetCommandBuffer(command_buffer, 0), "vkResetCommandBuffer(cycle)")
                 begin = VkCommandBufferBeginInfo(
@@ -1385,6 +1556,7 @@ def main() -> int:
                         1,
                     )
                 check(vk.vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer(cycle)")
+                stalls.finish(record_token)
                 if not initial_command_checkpoint_recorded:
                     record_startup_checkpoint(
                         "initial_command_recorded",
@@ -1405,7 +1577,8 @@ def main() -> int:
 
             submit = VkSubmitInfo(4, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, command_array, 0, VK_NULL_HANDLE)
             submit_started = time.perf_counter()
-            check(vk.vkQueueSubmit(queue, 1, ctypes.byref(submit), fence), "vkQueueSubmit(cycle)")
+            stalls.call("queue_submit", lambda: check(
+                vk.vkQueueSubmit(queue, 1, ctypes.byref(submit), fence), "vkQueueSubmit(cycle)"))
             state["queue_submit_elapsed_seconds"] = round(
                 float(state["queue_submit_elapsed_seconds"])
                 + max(0.0, time.perf_counter() - submit_started),
@@ -1413,7 +1586,8 @@ def main() -> int:
             )
             state["queue_submission_count"] += 1
             wait_started = time.perf_counter()
-            check(vk.vkWaitForFences(device, 1, fence_array, VK_TRUE, 10_000_000_000), "vkWaitForFences(cycle)")
+            stalls.call("fence_wait", lambda: check(
+                vk.vkWaitForFences(device, 1, fence_array, VK_TRUE, 10_000_000_000), "vkWaitForFences(cycle)"))
             fence_wait_seconds = max(0.0, time.perf_counter() - wait_started)
             if not first_submission_checkpoint_recorded:
                 record_startup_checkpoint(
@@ -1431,7 +1605,7 @@ def main() -> int:
             if query_pool:
                 timestamp_values = (ctypes.c_uint64 * 2)()
                 query_code = int(
-                    vk.vkGetQueryPoolResults(
+                    stalls.call("gpu_timestamp_retrieval", vk.vkGetQueryPoolResults,
                         device,
                         query_pool,
                         0,
@@ -1475,6 +1649,7 @@ def main() -> int:
                 should_verify = active_buffer_index == verify_buffer_index
                 sample_bytes = min(active_size, sample_words * 4)
                 if should_verify:
+                    verification_token = stalls.begin("verification_readback")
                     verification_started = time.perf_counter()
                     if kernel_variant == "stateful_memory":
                         target_dispatches = buffer_dispatch_counts[active_buffer_index] + dispatches_per_buffer
@@ -1515,6 +1690,7 @@ def main() -> int:
                     if mismatch:
                         state["compute_mismatch_count"] += 1
                         raise RuntimeError(mismatch)
+                    stalls.finish(verification_token)
                     verified_at = time.monotonic()
                     if last_verification_monotonic > 0:
                         intervals = list(state["verification_intervals_seconds"])
@@ -1536,6 +1712,7 @@ def main() -> int:
                         state["final_verification_completed"] = True
                 buffer_dispatch_counts[active_buffer_index] += dispatches_per_buffer
 
+            updates_token = stalls.begin("loop_state_updates")
             cycle_latency = max(0.0, time.perf_counter() - cycle_started)
             state["cycle_count"] += 1
             state["cycle_elapsed_seconds"] = round(
@@ -1613,12 +1790,13 @@ def main() -> int:
                 if new_batch_iterations != submission_batch_iterations:
                     submission_batch_iterations = new_batch_iterations
                     cached_command_signature = None
+            stalls.finish(updates_token)
             write_result("periodic")
             if final_cycle:
                 final_cycle_completed = True
             elif kernel_variant != "stress_hash" or not full_load:
                 sleep_started = time.perf_counter()
-                time.sleep(0.0005)
+                stalls.call("sleep_yield", time.sleep, 0.0005)
                 state["sleep_yield_count"] += 1
                 state["sleep_yield_elapsed_seconds"] = round(
                     float(state["sleep_yield_elapsed_seconds"])
@@ -1631,6 +1809,7 @@ def main() -> int:
         write_result("completed", force=True)
         return 0
     except Exception as exc:
+        stalls.fail_pending()
         if int(state.get("actual_allocated_bytes") or 0) > 0:
             state["allocation_outcome"] = "runtime_failure_after_partial_allocation"
         else:
@@ -1639,9 +1818,11 @@ def main() -> int:
         record_error(exc)
         return 12
     finally:
+        stalls.fail_pending()
+        stalls.track_gaps = False
         try:
             if vk and handles.get("device"):
-                vk.vkDeviceWaitIdle(handles["device"])
+                stalls.call("device_wait_idle", vk.vkDeviceWaitIdle, handles["device"])
         except Exception:
             pass
         if vk and handles.get("device"):

@@ -10,7 +10,7 @@ from .lvs_cpu_architecture import X86_NATIVE_POWER_PROBE_KERNEL_ORDER, cpu_nativ
 from .lvs_worker_integrity import worker_verification_satisfied
 
 
-CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon")
+CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon", "sve")
 CPU_KERNEL_MODE_MAP = {
     "scalar": "scalar",
     "sse2": "sse",
@@ -23,6 +23,7 @@ CPU_KERNEL_MODE_MAP = {
     "avx512_int": "avx512",
     "neon": "neon",
     "neon_fp32_fma": "neon",
+    "sve_fp32_fma": "sve",
 }
 # Public ISA modes select a kernel family. Within AVX/AVX2, the established
 # deliberate preference is the FMA flavor when every target CPU proves FMA,
@@ -34,17 +35,20 @@ CPU_KERNEL_FAMILY_CANDIDATES = {
     "avx2": ["avx2_fma", "avx2"],
     "avx512": ["avx512_fma", "avx512_int"],
     "neon": ["neon"],
+    "sve": ["sve_fp32_fma"],
 }
 CPU_NATIVE_POWER_PROBE_KERNEL_ORDER = list(X86_NATIVE_POWER_PROBE_KERNEL_ORDER)
 # Compatibility alias retained for existing callers and fixtures.
 CPU_KERNEL_MAX_POWER_ORDER = CPU_NATIVE_POWER_PROBE_KERNEL_ORDER
-CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon", "neon_fp32_fma"]
+CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon", "neon_fp32_fma", "sve_fp32_fma"]
 
 
 def normalize_cpu_helper_mode(requested_mode: str) -> str:
     mode = (requested_mode or "auto").strip().lower()
     if mode == "neon_fp32_fma":
         return "neon"
+    if mode == "sve_fp32_fma":
+        return "sve"
     if mode in CPU_MODE_OPTIONS:
         return mode
     return "auto"
@@ -284,13 +288,17 @@ def resolve_cpu_execution_policy(
     # Distinct exact flavors can share an ISA family (integer NEON vs FP32/FMA).
     # Never reuse a cached resolution that silently substitutes another kernel.
     cache_key = (requested_mode, resolved_mode, worker_count(), tuning_policy, kernel_flavor, tuple(candidates))
-    cached = tuning_cache.get(cache_key)
+    # Inherited VL is per thread and can change between invocations. Do not
+    # reuse an SVE tuning winner without remeasuring that execution context.
+    cacheable = "sve_fp32_fma" not in candidates
+    cached = tuning_cache.get(cache_key) if cacheable else None
     if cached is not None:
         return dict(cached)
 
     if len(candidates) == 1:
         single = apply_single_cpu_kernel_candidate(execution, candidates[0])
-        tuning_cache[cache_key] = dict(single)
+        if cacheable:
+            tuning_cache[cache_key] = dict(single)
         return single
 
     candidate_results = [benchmark_candidate(flavor) for flavor in candidates]
@@ -298,11 +306,13 @@ def resolve_cpu_execution_policy(
     if best is None:
         resolved = dict(execution)
         resolved["candidate_results"] = candidate_results
-        tuning_cache[cache_key] = dict(resolved)
+        if cacheable:
+            tuning_cache[cache_key] = dict(resolved)
         return resolved
 
     tuned = apply_tuned_cpu_kernel_candidate(execution, best, candidate_results)
-    tuning_cache[cache_key] = dict(tuned)
+    if cacheable:
+        tuning_cache[cache_key] = dict(tuned)
     return tuned
 
 
@@ -448,7 +458,7 @@ def build_cpu_benchmark_result(
     error_count = int(result_payload.get("error_count") or 0) if result_payload else 0
     status = str(result_payload.get("status") or "").strip().lower()
     valid = bool(result_payload) and return_code in (0, None) and status != "error" and error_count == 0
-    if kernel_flavor == "neon_fp32_fma":
+    if kernel_flavor in {"neon_fp32_fma", "sve_fp32_fma"}:
         valid = (valid and return_code == 0 and result_payload.get("kernel_flavor") == kernel_flavor
                  and worker_verification_satisfied(result_payload))
     return {
@@ -459,6 +469,8 @@ def build_cpu_benchmark_result(
         "return_code": return_code,
         "status": status,
         "error_count": error_count,
+        **({"vector_lengths_bytes": [r.get("vector_length_bytes") for r in (result_payload.get("threads_detail") or []) if isinstance(r, dict)]}
+           if kernel_flavor == "sve_fp32_fma" else {}),
     }
 
 

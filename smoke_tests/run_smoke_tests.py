@@ -60,8 +60,10 @@ from smoke_tests.output_contract_checks import (
 from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
 from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks
+from smoke_tests.gpu_slow_operation_checks import run_gpu_slow_operation_checks
 from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
 from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
+from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -22369,7 +22371,7 @@ def test_cpu_execution_helpers_select_policy_candidates_and_best_result() -> Non
         ),
         "x86 max-power architecture policy order remains exact",
     )
-    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar", "neon_fp32_fma"), "AArch64 native probe candidates preserve existing fallback order")
+    assert_equal(cpu_max_power_kernel_order("aarch64"), ("neon", "scalar", "neon_fp32_fma", "sve_fp32_fma"), "AArch64 adds optional SVE after established probe candidates")
     arm_candidates = cpu_candidate_kernel_flavors(
         helper_available=True,
         policy="max_power",
@@ -23560,7 +23562,7 @@ def test_native_cpu_neon_architecture_policy_and_profile() -> None:
     from Modules.lvs_stage_diagnostics import build_stage_diagnostics_payload
 
     assert_true("neon" in CPU_MODE_OPTIONS, "NEON is a native CPU mode")
-    assert_true("sve" not in CPU_MODE_OPTIONS, "SVE is not claimed as an executable mode")
+    assert_true("sve" in CPU_MODE_OPTIONS, "SVE is an optional capability-gated native mode")
     assert_equal(CPU_KERNEL_MODE_MAP["neon"], "neon", "NEON kernel maps truthfully")
     assert_equal(CPU_KERNEL_FAMILY_CANDIDATES["neon"], ["neon"], "NEON family stays architecture-specific")
     assert_equal(
@@ -29299,6 +29301,7 @@ def main() -> int:
         run_analysis_quality_checks,
         run_gpu_evaluation_policy_checks,
         run_vulkan_workload_effectiveness_checks,
+        run_gpu_slow_operation_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,
@@ -29511,6 +29514,9 @@ def main() -> int:
         run_neon_fp32_fma_checks,
         run_neon_fp32_fma_export_checks,
         run_neon_fp32_progress_checks,
+        run_sve_fp32_fma_checks,
+        run_fp32_error_evidence_checks,
+        run_sve_progress_export_checks,
         test_python_cpu_fallback_worker_supervision,
         test_cpu_python_fallback_arm_runner_selection_and_diagnostics,
         test_cpu_backend_preference_policy_and_arm_lab_profiles,

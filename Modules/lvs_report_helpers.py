@@ -1325,8 +1325,9 @@ def summarize_cpu_memory_worker_results(segments: List[Dict[str, Any]]) -> Dict[
             except Exception:
                 error_count = 1
             failed = (error_count > 0 or status in {"error", "fail", "failed"}
-                      or ((result.get("kernel_flavor") == "neon_fp32_fma"
-                           or result.get("verification_contract") == "neon_fp32_fma_v1")
+                      or ((result.get("kernel_flavor") in ("neon_fp32_fma", "sve_fp32_fma")
+                           or result.get("verification_contract") in ("neon_fp32_fma_v1", "sve_fp32_fma_v1")
+                           or result.get("requested_kernel_flavor") == "sve_fp32_fma")
                           and not worker_verification_satisfied(result)))
             if failed:
                 failure_count += 1

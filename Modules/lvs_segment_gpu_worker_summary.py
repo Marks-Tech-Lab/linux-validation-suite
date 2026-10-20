@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from copy import deepcopy
 from typing import Any, Dict, List
 
 from Modules.lvs_worker_integrity import worker_verification_required, worker_verification_satisfied
@@ -147,6 +148,9 @@ class GpuWorkerStateSummaryBuilder:
                     "InitialVerificationCompleted": payload.get("initial_verification_completed"),
                     "FinalVerificationCompleted": payload.get("final_verification_completed"),
                     "ResultWriteCount": int(payload.get("result_write_count") or 0),
+                    "SlowOperationEvidence": deepcopy(payload.get("slow_operation_evidence")),
+                    "ResultWriteErrorCount": payload.get("result_write_error_count"),
+                    "LastResultWriteError": payload.get("last_result_write_error"),
                     "WorkerCpuSeconds": float(payload.get("worker_cpu_seconds") or 0.0),
                     "SubmissionBatchIterations": int(payload.get("submission_batch_iterations") or 0),
                     "SubmissionBatchIterationsMax": int(payload.get("submission_batch_iterations_max") or 0),

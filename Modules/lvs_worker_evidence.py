@@ -86,15 +86,23 @@ def apply_worker_entry_context(
     command = list(getattr(entry, "command", []) or [])
     if "--kernel-flavor" in command:
         index = command.index("--kernel-flavor")
-        if command[index + 1:index + 2] == ["neon_fp32_fma"]:
+        if command[index + 1:index + 2] in (["neon_fp32_fma"], ["sve_fp32_fma"]):
+            kernel = command[index + 1]
             # Command intent remains authoritative even if the worker crashes
             # before writing results (or emits an incomplete payload).
-            payload["kernel_flavor"] = "neon_fp32_fma"
+            if kernel == "sve_fp32_fma":
+                # Retain contradictory native reports; intent must require
+                # verification, never rewrite another executed kernel as SVE.
+                payload["requested_kernel_flavor"] = kernel
+                payload.setdefault("kernel_flavor", kernel)
+                payload.setdefault("verification_contract", f"{kernel}_v1")
+            else:
+                payload["kernel_flavor"] = kernel
+                payload["verification_contract"] = f"{kernel}_v1"
             payload["verification_required"] = True
-            payload["verification_contract"] = "neon_fp32_fma_v1"
             # Supplementary sidecar survives even when the final JSON is absent.
             progress = payload.setdefault("verified_progress", {
-                "contract": "neon_fp32_fma_progress_v1",
+                "contract": f"{kernel}_progress_v1",
             })
             if isinstance(progress, dict) and getattr(entry, "result_path", None):
                 progress["path"] = str(entry.result_path) + ".progress.jsonl"

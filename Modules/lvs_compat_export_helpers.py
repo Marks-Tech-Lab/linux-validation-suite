@@ -173,8 +173,15 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         ]
     if not isinstance(value, dict):
         return value
+    if (value.get("contract_id") == "linux_validation_suite.gpu_worker_slow_operations"
+            and value.get("contract_version") == 1):
+        # A versioned diagnostic boundary includes physical GPU identities
+        # inside records; legacy recursive field suppression must not erase them.
+        return deepcopy(value)
     if (str(value.get("kind") or "").lower() == "cpu"
-            and value.get("verification_contract") == "neon_fp32_fma_v1"):
+            and (value.get("verification_contract") in ("neon_fp32_fma_v1", "sve_fp32_fma_v1")
+                 or value.get("kernel_flavor") == "sve_fp32_fma"
+                 or value.get("requested_kernel_flavor") == "sve_fp32_fma")):
         # This versioned worker record is an indivisible evidence boundary.
         # Filtering its children loses the per-thread CPU/affinity association.
         # Preserve failed/incomplete records too; serialization must neither

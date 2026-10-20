@@ -1,4 +1,4 @@
-"""Versioned, supplementary NEON verified-work evidence (never an exit verdict).
+"""Versioned, supplementary verified FP32 work evidence (never an exit verdict).
 
 Native CLOCK_MONOTONIC and Python time.monotonic share the Linux boot clock.
 Rates use publication timestamps, not configured cadence or snapshot row count.
@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from Modules.lvs_worker_integrity import worker_verification_satisfied
+from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, sve_thread_geometry_valid
 
 CONTRACT = "neon_fp32_fma_progress_v1"
 UINT64_MAX = (1 << 64) - 1
@@ -39,8 +39,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
     """Stream a sidecar in O(threads) memory; retain summaries, not growing history."""
     start = float(window.started_monotonic) + float(window.trim_start_seconds)
     end = float(window.ended_monotonic) - float(window.trim_end_seconds)
+    kernel = worker.get("kernel_flavor")
+    sve = (kernel == "sve_fp32_fma" or worker.get("verification_contract") == "sve_fp32_fma_v1"
+           or worker.get("requested_kernel_flavor") == "sve_fp32_fma")
+    contract = "sve_fp32_fma_progress_v1" if sve else CONTRACT
     result = {
-        "contract": CONTRACT, "quality": "insufficient", "reasons": [],
+        "contract": contract, "quality": "insufficient", "reasons": [],
         "window_start_monotonic_seconds": start, "window_end_monotonic_seconds": end,
         "throughput_unit": "fully_verified_arithmetic_blocks_per_second",
         "boundary_policy": "both_publication_endpoints_inside_trimmed_interval_no_interpolation",
@@ -62,7 +66,7 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             reasons.append(reason)
 
     metadata = worker.get("verified_progress")
-    if not isinstance(metadata, dict) or metadata.get("contract") != CONTRACT:
+    if not isinstance(metadata, dict) or metadata.get("contract") != contract:
         result["quality"] = "not_assessed"
         issue("no recognized progress contract; historical work is not retrospectively assessed")
         return result
@@ -90,6 +94,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
                    "last_publication_monotonic_seconds": None,
                    "first_half": {"blocks": 0, "seconds": 0.0},
                    "second_half": {"blocks": 0, "seconds": 0.0}} for cpu in targets}
+    details = worker.get("threads_detail")
+    geometries = {d["affinity_target_cpu"]: d for d in (details if isinstance(details, list) else [])
+                  if isinstance(d, dict) and type(d.get("affinity_target_cpu")) is int}
+    if sve and any(not sve_thread_geometry_valid(geometries.get(cpu, {})) for cpu in targets):
+        issue("invalid or missing authoritative SVE per-thread geometry")
+        return result
     previous = None
     first_offset = None
     last_state = None
@@ -106,7 +116,7 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
                     break
                 try:
                     row = json.loads(line)
-                    if row.get("contract") != CONTRACT or row.get("kernel_flavor") != "neon_fp32_fma" or row.get("operation_family") != "fp32_fused_multiply_add":
+                    if row.get("contract") != contract or row.get("kernel_flavor") != kernel or row.get("operation_family") != "fp32_fused_multiply_add":
                         raise ValueError("wrong kernel or progress contract")
                     seq = _counter(row.get("sequence"))
                     if type(row.get("pid")) is not int or row["pid"] <= 0:
@@ -149,6 +159,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
                             raise ValueError("unverified work or invalid affinity")
                         if thread.get("error_count"):
                             issue("worker reported arithmetic/affinity failure")
+                        if sve and count:
+                            geometry = geometries.get(cpu, {})
+                            if (thread.get("vector_length_bytes") != geometry.get("vector_length_bytes")
+                                    or thread.get("active_fp32_lanes") != geometry.get("active_fp32_lanes")
+                                    or not geometry.get("active_fp32_lanes")):
+                                raise ValueError("SVE vector length changed or differs from verified worker")
                         mapping[cpu] = thread
                     if sum(_counter(t["verified_blocks"]) for t in threads) != _counter(row.get("aggregate_verified_blocks")):
                         raise ValueError("aggregate counter differs from per-thread counters")
@@ -249,8 +265,13 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             summary = stats[half]
             summary["blocks_per_second"] = summary["blocks"] / summary["seconds"] if summary["seconds"] else None
         # These are derived lane arithmetic operations, NOT measured instructions.
-        stats["derived_stress_lane_fma_count"] = stats["verified_block_delta"] * 8192
+        lanes = geometries.get(cpu, {}).get("active_fp32_lanes", 0) if sve else 4
+        stats["derived_stress_lane_fma_count"] = stats["verified_block_delta"] * lanes * 8 * 256
         stats["derived_witness_lane_fma_count"] = stats["verified_block_delta"] * 4
+        if sve:
+            stats["active_fp32_lanes"] = lanes
+            stats["vector_length_bytes"] = geometries.get(cpu, {}).get("vector_length_bytes")
+            stats["derived_stress_lane_fmas_per_second"] = stats["blocks_per_second"] * lanes * 8 * 256 if seconds else None
         if stats["intervals"] < 2 or stats["coverage_fraction"] < 0.8:
             issue(f"insufficient post-trim progress coverage for CPU {cpu}")
         if stats["stalled_intervals"]:
@@ -258,6 +279,8 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
         result["threads"].append(stats)
     if all(s["blocks_per_second"] is not None for s in states.values()):
         result["aggregate_blocks_per_second"] = sum(s["blocks_per_second"] for s in states.values())
+        if sve:
+            result["derived_stress_lane_fmas_per_second"] = sum(s["derived_stress_lane_fmas_per_second"] for s in states.values())
     if interval_rates["count"]:
         result["aggregate_interval_rate"] = {
             "count": interval_rates["count"], "minimum": interval_rates["minimum"],
@@ -272,5 +295,5 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
 
 def attach_verified_progress(window: Any) -> None:
     for worker in getattr(window, "worker_results", []):
-        if worker.get("kernel_flavor") == "neon_fp32_fma" and "verified_progress" in worker:
+        if verified_fp32_worker(worker) and "verified_progress" in worker:
             worker["verified_progress_analysis"] = analyze_verified_progress(worker, window)

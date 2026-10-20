@@ -20,6 +20,17 @@ breaking change even when the producing module is internal.
 
 ## Generated Artifact Index
 
+### Optional Vulkan slow-operation evidence
+
+Native compute worker `slow_operation_evidence` is an additive versioned
+`linux_validation_suite.gpu_worker_slow_operations` v1 snake_case boundary.
+Raw WorkerResults retain it; parsed/compatibility worker details expose the same
+boundary as `SlowOperationEvidence`. Historical absence is null, not a claim of
+no stalls. The one terminal `gpu_worker_slow_operation_diagnostics` JSON record
+in the existing worker stderr log captures final-write timing too. Records and
+per-operation maxima are bounded and are host observations, not GPU instruction
+timings or pass/fail criteria. See `docs/gpu_worker_stall_diagnostics.md`.
+
 ### Completed run artifacts
 
 | Artifact | Classification | Ownership and compatibility notes |
@@ -41,6 +52,16 @@ read-only, normalized health values and source/status notes; raw `smartctl` or
 `nvme-cli` payloads are not embedded in `system_info.json`.
 
 ### Worker, sidecar, and debug artifacts
+
+Native CPU `sve_fp32_fma` adds separate `sve_fp32_fma_v1` verification and
+`sve_fp32_fma_progress_v1` sidecar contracts (LVS-owned snake_case). Raw capabilities,
+exact ISA/kernel, per-thread current vector length/flags/errno, active FP32 lanes,
+arithmetic geometry, verification phases, affinity, and failures are retained as
+an indivisible compatibility WorkerResults record. Progress uses actual monotonic
+counter deltas; per-thread derived lane-FMA counts use validated VL-dependent
+geometry, not NEON's fixed block size. Missing/failed evidence remains blocking;
+derived work is not measured instructions or a saturation verdict. See
+`docs/sve_fp32_fma_contract.md`. Existing NEON v1 contracts remain unchanged.
 
 Native CPU `neon_fp32_fma` additionally writes `<result-file>.progress.jsonl`
 (`neon_fp32_fma_progress_v1`, LVS-owned snake_case). Newline-terminated snapshots

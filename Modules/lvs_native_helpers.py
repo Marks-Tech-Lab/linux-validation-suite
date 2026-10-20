@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from pathlib import Path
 from shutil import which
@@ -45,7 +46,11 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 
 
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
-    return binary.exists() and binary.stat().st_mtime >= source.stat().st_mtime and os.access(binary, os.X_OK)
+    dependencies = [source]
+    if source.name == "cpu_stress_helper.c" and source.with_name("cpu_sve_kernel.h").exists():
+        dependencies.append(source.with_name("cpu_sve_kernel.h"))
+    return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
+            and os.access(binary, os.X_OK))
 
 
 def resolve_native_helper_status(
@@ -94,7 +99,22 @@ def resolve_native_helper_status(
     binary.parent.mkdir(parents=True, exist_ok=True)
     cmd = native_helper_build_command(compiler, source, binary)
     try:
-        completed = build_runner(cmd)
+        if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
+            # Optional per-function-targeted region only. Never pass a global
+            # -march/+sve flag; a compiler lacking SVE retains baseline kernels.
+            try:
+                completed = build_runner([*cmd[:1], "-DLVS_CPU_HELPER_ENABLE_SVE", *cmd[1:]])
+                status["sve_build"] = {
+                    "status": "compiled" if completed.returncode == 0 else "unavailable",
+                    "reason": "" if completed.returncode == 0 else str(completed.stderr or "optional SVE compilation failed")[-2000:],
+                }
+            except Exception as exc:
+                status["sve_build"] = {"status": "unavailable", "reason": str(exc)}
+                completed = None
+            if completed is None or completed.returncode != 0:
+                completed = build_runner(cmd)
+        else:
+            completed = build_runner(cmd)
     except Exception as exc:
         status["reason"] = f"native {reason_label} helper build failed: {exc}"
         return status
@@ -174,6 +194,17 @@ class NativeHelperRuntimeService:
             build_runner=run_build,
             readiness_probe=run_readiness_probe if readiness_command is not None else None,
         )
+        if cache_key == "cpu" and binary.name == "cpu_stress_helper_arm64" and status.get("available"):
+            try:
+                probe = self._run_command(
+                    [str(binary), "--print-isa-capabilities"], check=False,
+                    capture_output=True, text=True, timeout=10, env=self._command_env())
+                evidence = json.loads(probe.stdout) if probe.returncode == 0 else None
+                if not isinstance(evidence, dict):
+                    raise ValueError("native ISA discovery failed")
+                status["isa_capabilities"] = evidence
+            except Exception as exc:
+                status["isa_capabilities"] = {"status": "unavailable", "reason": str(exc)}
         self._status_cache[cache_key] = status
         return status
 

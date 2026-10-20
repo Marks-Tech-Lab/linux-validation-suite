@@ -726,6 +726,12 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
             if evidence.get("aggregate_blocks_per_second") is not None else ""
         )
         reasons = "; ".join(str(reason) for reason in evidence.get("reasons") or [])
+        if evidence.get("contract") == "sve_fp32_fma_progress_v1":
+            lengths = sorted({t.get("vector_length_bytes") for t in evidence.get("threads", [])
+                              if isinstance(t.get("vector_length_bytes"), int)})
+            rate_text += (f' SVE vector lengths {_escape(", ".join(map(str, lengths)))} bytes; '
+                          f'derived active-lane FMA/s {_number(evidence.get("derived_stress_lane_fmas_per_second"))}'
+                          ' (not measured instructions).')
         cpu_progress_text += (
             '<p class="muted compact">Verified CPU work evidence: '
             f'{_escape(evidence.get("quality", "not_assessed"))}.{rate_text} '
