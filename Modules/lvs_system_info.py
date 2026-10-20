@@ -43,13 +43,14 @@ from .lvs_gpu_identity import (
     pci_slot_sort_key,
     runtime_gpu_name_score,
     select_runtime_gpu_name,
-    slot_for_vulkan_device,
     slot_from_mesa_vulkan_uuid,
 )
 from .lvs_gpu_memory_model import classify_gpu_memory
 from .lvs_gpu_targets import discover_gpu_cards, gpu_card_class
 from .lvs_telemetry_nvidia import discover_nvidia_smi_gpus
 from .lvs_vulkan_runtime import collect_vulkan_native_physical_devices, resolve_vulkan_library
+from .lvs_vulkan_targeting import vulkan_device_for_target
+from .lvs_vulkan_identity import normalize_device_uuid
 from .lvs_inventory_helpers import (
     apply_inxi_memory_fields,
     build_memory_speed_summary,
@@ -413,6 +414,20 @@ class SystemInfoCollector:
     def _gpu_info(self) -> List[Dict[str, Any]]:
         devices: List[Dict[str, Any]] = []
         drm_gpus = self._discover_drm_gpus()
+        # Provider UUIDs must be available before associating Vulkan properties.
+        # They are physical identity evidence, not a device-class assumption.
+        nvidia_gpus = self._discover_nvidia_smi_gpus()
+        for gpu in drm_gpus:
+            slot = pci_physical_gpu_id(gpu.get("pci_slot"))
+            peers = [row for row in nvidia_gpus if slot and pci_physical_gpu_id(row.get("pci_slot")) == slot]
+            if len(peers) == 1:
+                provider_uuid = peers[0].get("nvidia_uuid", "")
+                if gpu.get("nvidia_uuid") and provider_uuid and normalize_device_uuid(gpu["nvidia_uuid"]) != normalize_device_uuid(provider_uuid):
+                    gpu["inventory_identity_error"] = "conflicting provider UUID identity"
+                elif provider_uuid:
+                    gpu["nvidia_uuid"] = provider_uuid
+            elif peers:
+                gpu["inventory_identity_error"] = "duplicate provider PCI identity"
         vulkan_classes = self._vulkan_gpu_classes_by_slot(drm_gpus)
         for gpu in drm_gpus:
             slot = str(gpu.get("pci_slot", "") or "").lower()
@@ -430,7 +445,6 @@ class SystemInfoCollector:
                     gpu.update(detail)
                     break
         runtime_names = self._runtime_gpu_names_by_slot(drm_gpus)
-        nvidia_gpus = self._discover_nvidia_smi_gpus()
         nvidia_by_slot = {
             gpu.get("pci_slot", "").lower(): gpu
             for gpu in nvidia_gpus
@@ -524,6 +538,7 @@ class SystemInfoCollector:
                     "DeviceClass": gpu.get("device_class", "unknown"),
                     "DeviceClassSource": gpu.get("device_class_source", ""),
                     "DeviceClassConfidence": gpu.get("device_class_confidence", "low"),
+                    "VulkanIdentitySource": gpu.get("vulkan_identity_source", ""),
                     "PhysicalGpuId": str(
                         gpu.get("physical_gpu_id")
                         or pci_physical_gpu_id(gpu.get("pci_slot", ""))
@@ -595,34 +610,42 @@ class SystemInfoCollector:
         if completed.stderr:
             text += "\n" + completed.stderr
         devices = self._parse_vulkan_summary_devices(text)
-        for device in devices:
-            slot = self._slot_for_vulkan_device(device, drm_gpus)
-            if not slot:
-                continue
+        for slot, device in self._vulkan_inventory_devices_by_slot(devices, drm_gpus).items():
             device_class = self._device_class_from_vulkan_type(str(device.get("deviceType", "") or ""))
             if device_class == "unknown":
                 continue
             detail = by_slot.setdefault(slot.lower(), {})
+            native_uuid = normalize_device_uuid(detail.get("vulkan_device_uuid"))
+            summary_uuid = normalize_device_uuid(device.get("deviceUUID"))
+            identity_conflict = bool(native_uuid and summary_uuid and native_uuid != summary_uuid)
+            if identity_conflict or detail.get("device_class") not in (None, "", device_class):
+                by_slot[slot.lower()] = {
+                    "device_class": "unknown",
+                    "device_class_source": "conflicting_vulkan_identity" if identity_conflict else "conflicting_vulkan_device_type",
+                    "device_class_confidence": "low",
+                }
+                continue
             if not str(detail.get("device_class") or "").strip():
                 detail.update({
                     "device_class": device_class,
                     "device_class_source": "vulkaninfo",
                     "device_class_confidence": "high",
+                    "vulkan_identity_source": device.get("identity_match_source", ""),
                 })
         return by_slot
 
     def _native_vulkan_gpu_details_by_slot(self, drm_gpus: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         inventory = self._native_vulkan_inventory()
         by_slot: Dict[str, Dict[str, Any]] = {}
-        for device in inventory.get("devices", []) if inventory.get("available") else []:
-            slot = self._slot_for_vulkan_device(device, drm_gpus)
-            if not slot:
-                continue
+        devices = inventory.get("devices", []) if inventory.get("available") else []
+        for slot, device in self._vulkan_inventory_devices_by_slot(devices, drm_gpus).items():
             device_class = self._device_class_from_vulkan_type(str(device.get("deviceType", "") or ""))
             detail: Dict[str, Any] = {
                 "vulkan_device_local_heap_bytes": int(device.get("device_local_heap_bytes") or 0),
                 "vulkan_inventory_source": "libvulkan",
                 "vulkan_device_name": str(device.get("deviceName") or ""),
+                "vulkan_device_uuid": normalize_device_uuid(device.get("deviceUUID")),
+                "vulkan_identity_source": device.get("identity_match_source", ""),
             }
             if device_class != "unknown":
                 detail.update(
@@ -660,6 +683,14 @@ class SystemInfoCollector:
             if "cpu" in device_type or self._is_unhelpful_runtime_gpu_name(raw_name):
                 continue
             if self._slot_for_vulkan_device(device, gpus):
+                continue
+            # An unidentified PCI candidate must not become the sole leftover
+            # "platform" candidate. Vendor/device similarity can exclude an
+            # unsafe association, but cannot establish a positive identity.
+            if any(gpu.get("pci_slot")
+                   and normalize_pci_id(gpu.get("vendor_id")) == normalize_pci_id(device.get("vendorID"))
+                   and normalize_pci_id(gpu.get("device_id")) == normalize_pci_id(device.get("deviceID"))
+                   for gpu in gpus):
                 continue
             devices.append(device)
 
@@ -865,12 +896,9 @@ class SystemInfoCollector:
         devices = self._parse_vulkan_summary_devices(text)
 
         by_slot: Dict[str, Dict[str, str]] = {}
-        for device in devices:
+        for slot, device in self._vulkan_inventory_devices_by_slot(devices, drm_gpus).items():
             raw_name = str(device.get("deviceName", "") or "")
             if self._is_unhelpful_runtime_gpu_name(raw_name):
-                continue
-            slot = self._slot_for_vulkan_device(device, drm_gpus)
-            if not slot:
                 continue
             name = self._clean_runtime_gpu_name(raw_name)
             if name:
@@ -884,7 +912,33 @@ class SystemInfoCollector:
         return device_class_from_vulkan_type(device_type)
 
     def _slot_for_vulkan_device(self, device: Dict[str, str], drm_gpus: List[Dict[str, str]]) -> str:
-        return slot_for_vulkan_device(device, drm_gpus)
+        matches = self._vulkan_inventory_devices_by_slot([device], drm_gpus)
+        return next(iter(matches)) if len(matches) == 1 else ""
+
+    def _vulkan_inventory_devices_by_slot(
+        self, devices: List[Dict[str, Any]], gpus: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Associate static properties only with uniquely proven physical devices.
+
+        Reuse the workload identity contract without changing workload selection.
+        A vendor/device match (even a unique one) and Mesa UUID bus inference
+        are not physical proof. Missing optional identity support stays unknown.
+        """
+        cards = [dict(gpu, slot=gpu.get("pci_slot", ""), device=gpu.get("device_id", ""))
+                 for gpu in gpus if gpu.get("pci_slot")]
+        if any(card.get("inventory_identity_error") or
+               (card.get("nvidia_uuid") and not normalize_device_uuid(card["nvidia_uuid"]))
+               for card in cards):
+            return {}
+        if any(device.get("deviceUUID") and not normalize_device_uuid(device["deviceUUID"])
+               for device in devices):
+            return {}
+        associated = {}
+        for card in cards:
+            match = vulkan_device_for_target(devices, card, gpu_cards=cards, likely_discrete_ids=set())
+            if match.get("available"):
+                associated[normalize_pci_slot(card["slot"]).lower()] = match["device"]
+        return associated
 
     def _slot_from_mesa_vulkan_uuid(self, uuid_text: str, drm_gpus: List[Dict[str, str]]) -> str:
         return slot_from_mesa_vulkan_uuid(uuid_text, drm_gpus)
@@ -1026,6 +1080,7 @@ print((renderer or b"").decode("utf-8", "ignore"))
                     "chipset": name,
                     "driver": str(device.get("driver") or ""),
                     "pci_slot": slot,
+                    "nvidia_uuid": str(device.get("uuid") or ""),
                     "device_class": "unknown",
                     "device_class_source": "insufficient_topology_evidence",
                     "device_class_confidence": "low",
