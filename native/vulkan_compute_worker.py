@@ -95,6 +95,9 @@ from vulkan_transfer_worker import (
     parse_properties,
     resolve_vulkan_library,
     score_device,
+    select_physical_device,
+    native_identity_evidence,
+    PhysicalIdentitySelectionError,
     vulkan_failure_reason,
 )
 
@@ -701,6 +704,7 @@ def main() -> int:
     parser.add_argument("--target-device-name", default="")
     parser.add_argument("--target-card", default="")
     parser.add_argument("--target-slot", default="")
+    parser.add_argument("--target-device-uuid", default="")
     parser.add_argument("--target-id", default="")
     parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
@@ -867,6 +871,8 @@ def main() -> int:
         "selected_device_id": "",
         "selected_device_type": "",
         "selected_device_pci_slot": "",
+        "selected_device_uuid": "",
+        "target_device_uuid": args.target_device_uuid,
         "selected_vulkan_index": -1,
         "hardware_device_verified": False,
         "device_match_score": 0.0,
@@ -984,13 +990,7 @@ def main() -> int:
             physical_device_count=len(physical_devices),
         )
         infos = [(parse_properties(vk, physical_device, index), physical_device) for index, physical_device in enumerate(physical_devices)]
-        ranked = sorted(((score_device(info, args), info, physical_device) for info, physical_device in infos), key=lambda item: item[0], reverse=True)
-        score, selected_info, physical_device = ranked[0]
-        if score < -1000:
-            raise RuntimeError("no non-CPU Vulkan GPU device matched target")
-        ambiguous = len(ranked) > 1 and abs(float(score) - float(ranked[1][0])) < 1.0
-        if ambiguous:
-            raise RuntimeError("ambiguous Vulkan physical-device match")
+        score, selected_info, physical_device = select_physical_device(infos, args)
         selected_name = str(selected_info.get("device_name") or "").lower()
         hardware_verified = selected_info.get("device_type") != "cpu" and not any(
             token in selected_name for token in ("llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")
@@ -1004,6 +1004,9 @@ def main() -> int:
                 "selected_device_id": selected_info["device_id"],
                 "selected_device_type": selected_info["device_type"],
                 "selected_device_pci_slot": selected_info.get("pci_slot", ""),
+                "selected_device_uuid": selected_info.get("device_uuid", ""),
+                "target_device_uuid": args.target_device_uuid,
+                "physical_identity_evidence": native_identity_evidence(selected_info, args),
                 "selected_vulkan_index": selected_info["index"],
                 "hardware_device_verified": True,
                 "device_match_score": float(score),
@@ -1815,6 +1818,8 @@ def main() -> int:
         else:
             state["allocation_outcome"] = "allocation_failed"
         state["allocation_valid"] = False
+        if isinstance(exc, PhysicalIdentitySelectionError):
+            state["physical_identity_evidence"] = exc.identity_evidence
         record_error(exc)
         return 12
     finally:

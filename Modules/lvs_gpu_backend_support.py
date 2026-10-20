@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .lvs_gpu_identity import normalize_pci_id, normalize_pci_slot
+from .lvs_vulkan_targeting import vulkan_target_identity_evidence
 from .lvs_opencl_targeting import gpu_vendor_matches_text
 
 GpuBackendSupportProvider = Callable[[], Dict[str, Any]]
@@ -134,7 +135,8 @@ def vulkan_backend_target_support(
 ) -> Dict[str, Any]:
     payload = base_gpu_backend_target_support(backend=backend, target=target, workload=workload)
     if not target:
-        payload["supported"] = True
+        payload["reason"] = "requested physical identity is unknown"
+        payload["physical_identity_status"] = "unknown_identity"
         return payload
     if nvidia_dropout_reason:
         payload["reason"] = nvidia_dropout_reason
@@ -142,13 +144,17 @@ def vulkan_backend_target_support(
 
     match = dict(vulkan_match or {})
     device = match.get("device") or {}
-    if match.get("available") and not match.get("ambiguous"):
+    proof = vulkan_target_identity_evidence(device, target, [target])
+    if match.get("available") and not match.get("ambiguous") and proof["status"] == "verified":
         payload["supported"] = True
         payload["resolved_device_name"] = str(device.get("deviceName", "") or "")
     elif match.get("ambiguous"):
-        payload["reason"] = "Vulkan devices match this target ambiguously; stable physical identity is required"
+        payload["reason"] = str(match.get("reason") or "Vulkan devices match this target ambiguously; stable physical identity is required")
     else:
-        payload["reason"] = "no matching Vulkan GPU device found for this target"
+        payload["reason"] = str(match.get("reason") or proof["reason"] or "no matching Vulkan GPU device found for this target")
+    rejected_statuses = {"unknown_identity", "missing_evidence", "ambiguous_identity", "conflicting_identity"}
+    reported_status = match.get("identity_status")
+    payload["physical_identity_status"] = str(reported_status if reported_status in rejected_statuses else proof["status"])
     return payload
 
 

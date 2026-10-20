@@ -10,6 +10,28 @@ breaking change even when the producing module is internal.
 
 ## Contract Classes
 
+Vulkan native workers accept an optional exact `--target-device-uuid` binding.
+`target_device_uuid` and `selected_device_uuid` are additive native/WorkerResults
+evidence (canonical UUID display/byte order, not pipeline-cache or driver UUIDs).
+Compatibility GPU validation details expose `TargetDeviceUuid` and
+`SelectedDeviceUuid` only when the new selected identity evidence is present;
+historical records are not backfilled. Physical PCI IDs and telemetry/provider
+indices retain their existing meanings. Planning, command construction, and both
+native workers require positive UUID or authoritative PCI proof; model names,
+candidate uniqueness, ordinals, and Mesa UUID bus heuristics are not proof.
+Known target identifiers are retained independently of optional candidate data.
+Available UUID/PCI contradictions override any other matching evidence. Missing
+runtime UUIDs permit execution only with an independently matching runtime PCI
+identity, not with inferred PCI addresses. The optional core 1.1 UUID query does
+not impose UUID availability on a positively identified PCI-only device.
+The additive `physical_identity_evidence` contract
+(`linux_validation_suite.vulkan_physical_identity`, version 1) preserves requested
+and selected identifiers, proof source, and `verified`, `unknown_identity`,
+`missing_evidence`, `ambiguous_identity`, or `conflicting_identity` status.
+Compatibility validation details retain it as `PhysicalIdentityEvidence`,
+including failed selections. Historical records are not reassessed. Auto backend
+selection remains whole-stage/target-set selection, not per-device fallback.
+
 | Class | Meaning | Naming rule |
 | --- | --- | --- |
 | LVS-owned snake_case contract | A structured LVS document intended for programmatic use. | Schema property names use `snake_case`. New external contracts include `contract_id`, `contract_version`, and `kind`. |

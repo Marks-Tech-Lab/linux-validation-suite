@@ -61,6 +61,7 @@ from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
 from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks
 from smoke_tests.gpu_slow_operation_checks import run_gpu_slow_operation_checks
+from smoke_tests.vulkan_physical_identity_checks import run_vulkan_physical_identity_checks, run_vulkan_fail_closed_checks
 from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
 from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
 from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks
@@ -16542,6 +16543,7 @@ def test_platform_gpu_identity_devfreq_and_thermal_telemetry() -> None:
                     "deviceID": "0x43030c00",
                     "deviceType": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
                     "deviceName": "Adreno X1-45",
+                    "deviceUUID": "11111111-2222-3333-4444-555555555555",
                 },
                 {
                     "index": 1,
@@ -16549,7 +16551,7 @@ def test_platform_gpu_identity_devfreq_and_thermal_telemetry() -> None:
                     "deviceName": "llvmpipe",
                 },
             ],
-            target,
+            {**target, "vulkan_device_uuid": "11111111-2222-3333-4444-555555555555"},
             gpu_cards=targets,
             likely_discrete_ids=set(),
         )
@@ -21555,7 +21557,7 @@ def test_gpu_backend_support_helpers() -> None:
         backend="python_vulkan_compute",
         target={"target_id": "0000:17:00.0", "vendor": "nvidia", "driver": "nvidia"},
         workload="gpu_3d",
-        vulkan_match={"available": True, "device": {"deviceName": "RTX 5090"}},
+        vulkan_match={"available": True, "device": {"deviceName": "RTX 5090", "pci_slot": "0000:17:00.0"}},
     )
     assert_true(vulkan_match["supported"], "Vulkan support matched target")
     assert_equal(vulkan_match["resolved_device_name"], "RTX 5090", "Vulkan support matched name")
@@ -21577,7 +21579,7 @@ def test_gpu_backend_support_helpers() -> None:
     )
     assert_equal(
         vulkan_missing["reason"],
-        "no matching Vulkan GPU device found for this target",
+        "runtime physical UUID/PCI evidence is missing or cannot establish the requested identity",
         "Vulkan support no match reason",
     )
 
@@ -21859,8 +21861,8 @@ def test_vulkan_targeting_helpers() -> None:
     )
     assert_equal(
         vulkan_device_pci_slot({"vendorID": "10de", "deviceID": "2b85", "deviceUUID": "00000000-0200-0000-0000-000000000000"}, gpu_cards),
-        "0000:02:00.0",
-        "Vulkan device PCI slot fallback",
+        "",
+        "Mesa UUID bus heuristic is not authoritative PCI evidence",
     )
     assert_true(
         vulkan_device_score_for_target(
@@ -21900,8 +21902,8 @@ def test_vulkan_targeting_helpers() -> None:
         gpu_cards=[],
         likely_discrete_ids=set(),
     )
-    assert_true(ambiguous["available"], "Vulkan ambiguous same-model match available")
-    assert_true(ambiguous["ambiguous"], "Vulkan ambiguous same-model match flagged")
+    assert_true(not ambiguous["available"], "model-only matches cannot authorize execution")
+    assert_equal(ambiguous["identity_status"], "unknown_identity", "model-only target identity is unknown")
 
     ordinal_only = vulkan_device_for_target(
         [
@@ -21912,7 +21914,8 @@ def test_vulkan_targeting_helpers() -> None:
         gpu_cards=[],
         likely_discrete_ids=set(),
     )
-    assert_true(ordinal_only["ambiguous"], "ordinal-only Vulkan tie remains ambiguous")
+    assert_true(not ordinal_only["available"], "ordinal-only Vulkan selection fails closed")
+    assert_equal(ordinal_only["identity_status"], "unknown_identity", "ordinal is not physical identity")
 
     reordered = vulkan_device_for_target(
         [
@@ -26738,6 +26741,7 @@ def test_vulkan_worker_resolved_device_binding() -> None:
     target = {
         "target_id": "card1",
         "physical_gpu_id": "platform:3d00000.gpu",
+        "vulkan_device_uuid": "11111111-2222-3333-4444-555555555555",
         "card": "card1",
         "slot": "",
         "gpu_index": 0,
@@ -26748,6 +26752,7 @@ def test_vulkan_worker_resolved_device_binding() -> None:
     }
     resolved = {
         "index": 3,
+        "deviceUUID": "11111111-2222-3333-4444-555555555555",
         "vendorID": "0x5143",
         "deviceID": "0x43030c00",
         "deviceName": "Adreno X1-45",
@@ -26798,6 +26803,7 @@ def test_vulkan_worker_resolved_device_binding() -> None:
         assert_equal(command[command.index("--target-vendor-id") + 1], "0x5143", "worker gets resolved Vulkan vendor")
         assert_equal(command[command.index("--target-device-id") + 1], "0x43030c00", "worker gets resolved Vulkan device")
         assert_equal(command[command.index("--target-device-name") + 1], "Adreno X1-45", "worker gets resolved Vulkan name")
+        assert_equal(command[command.index("--target-device-uuid") + 1], resolved["deviceUUID"], "worker revalidates exact UUID independently of API order")
         assert_equal(command[command.index("--target-gpu-index") + 1], "0", "worker retains telemetry target index")
         assert_equal(command[command.index("--vulkan-device-index") + 1], "3", "worker gets separate Vulkan runtime index")
         assert_equal(command[command.index("--physical-gpu-id") + 1], "platform:3d00000.gpu", "worker preserves physical platform identity")
@@ -26875,7 +26881,7 @@ def test_vulkan_worker_resolved_device_binding() -> None:
     compute_source = (ROOT / "native" / "vulkan_compute_worker.py").read_text(encoding="utf-8")
     for source in (transfer_source, compute_source):
         assert_true("hardware_device_verified" in source, "Vulkan worker records hardware identity evidence")
-        assert_true("ambiguous Vulkan physical-device match" in source, "Vulkan worker rejects ambiguous targeting")
+        assert_true("select_physical_device(infos, args)" in source, "both workers use the shared fail-closed physical selector")
         assert_true("selected Vulkan device is not a hardware GPU" in source, "Vulkan worker rejects software devices")
     assert_equal(vulkan_failure_reason("Vulkan transfer mismatch at byte 4"), "verification_mismatch", "Vulkan mismatch classification")
     assert_equal(vulkan_failure_reason("vkQueueSubmit failed with code -4"), "device_loss", "Vulkan device-loss classification")
@@ -29302,6 +29308,8 @@ def main() -> int:
         run_gpu_evaluation_policy_checks,
         run_vulkan_workload_effectiveness_checks,
         run_gpu_slow_operation_checks,
+        run_vulkan_physical_identity_checks,
+        run_vulkan_fail_closed_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,

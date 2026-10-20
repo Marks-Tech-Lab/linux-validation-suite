@@ -18,6 +18,8 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+from Modules.lvs_vulkan_identity import (identity_instance_api_version, read_device_uuid,
+    normalize_device_uuid, supports_pci_bus_info, requested_physical_identity, physical_identity_match)
 
 
 VK_SUCCESS = 0
@@ -534,6 +536,10 @@ def normalize_pci_slot(slot: str) -> str:
 
 
 def read_pci_slot(vk: ctypes.CDLL, physical_device: ctypes.c_void_p) -> str:
+    if getattr(vk, "_lvs_instance_api_version", 1 << 22) < ((1 << 22) | (1 << 12)):
+        return ""
+    if not supports_pci_bus_info(vk, physical_device):
+        return ""
     get_properties2 = getattr(vk, "vkGetPhysicalDeviceProperties2", None)
     if get_properties2 is None:
         return ""
@@ -615,20 +621,42 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
         "timestamp_compute_and_graphics": timestamp_compute_and_graphics,
         "timestamp_period_nanoseconds": float(timestamp_period) if timestamp_period > 0 else 0.0,
         "pci_slot": read_pci_slot(vk, physical_device),
+        "device_uuid": read_device_uuid(vk, physical_device, getattr(vk, "_lvs_instance_api_version", 1 << 22), api_version),
     }
 
 
+def native_identity_evidence(info: dict, args: argparse.Namespace) -> dict:
+    requested = requested_physical_identity({"target_device_uuid": getattr(args, "target_device_uuid", ""),
+        "slot": args.target_slot, "target_id": args.target_id,
+        "physical_gpu_id": getattr(args, "physical_gpu_id", "")})
+    proof = physical_identity_match(requested["uuid"], requested["pci_slot"],
+        info.get("device_uuid", ""), info.get("pci_slot", ""))
+    if requested["error"]:
+        proof.update(status="conflicting_identity", source="", reason=requested["error"])
+    for key, actual_key in (("target_vendor_id", "vendor_id"), ("target_device_id", "device_id")):
+        expected = str(getattr(args, key, "") or "").lower().removeprefix("0x")
+        actual = str(info.get(actual_key) or "").lower().removeprefix("0x")
+        if expected and actual and expected != actual:
+            proof.update(status="conflicting_identity", source="", reason="physical identity contradicts vendor/device evidence")
+    return proof
+
+
 def score_device(info: dict, args: argparse.Namespace) -> float:
-    score = 0.0
+    name = str(info.get("device_name", "")).lower()
+    if str(info.get("device_type")) == "cpu" or any(token in name for token in
+            ("llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")):
+        return -1000000.0
+    proof = native_identity_evidence(info, args)
+    if proof["status"] != "verified":
+        return -1000000.0
+    score = 5000.0 if proof["source"] == "device_uuid" else 2500.0
     target_vendor_id = (args.target_vendor_id or "").lower().removeprefix("0x")
     target_device_id = (args.target_device_id or "").lower().removeprefix("0x")
+    if ((target_vendor_id and target_vendor_id != info.get("vendor_id"))
+            or (target_device_id and target_device_id != info.get("device_id"))):
+        return -1000000.0
     target_vendor = (args.target_vendor or "").lower()
     target_device_name = (getattr(args, "target_device_name", "") or "").strip().lower()
-    target_index = int(args.vulkan_device_index)
-    if target_index < 0:
-        # Backward compatibility for older saved/direct commands where the
-        # single target index represented the Vulkan selector.
-        target_index = int(args.target_gpu_index)
     target_slot = normalize_pci_slot(args.target_slot or args.target_id or "")
     device_slot = normalize_pci_slot(info.get("pci_slot", ""))
     name = str(info.get("device_name", "")).lower()
@@ -650,14 +678,45 @@ def score_device(info: dict, args: argparse.Namespace) -> float:
         score += 50.0
     if str(args.device_class or "").lower() == str(info.get("device_type") or "").lower():
         score += 90.0
-    if int(info.get("index", -1)) == target_index:
-        score += 20.0
+    # A saved/API ordinal is descriptive only: it must never break a physical
+    # identity tie after driver enumeration or filtering changes.
     if str(info.get("device_type")) == "cpu" or "llvmpipe" in name:
         score -= 10000.0
     return score
 
 
+class PhysicalIdentitySelectionError(RuntimeError):
+    def __init__(self, evidence):
+        self.identity_evidence = evidence
+        super().__init__("Vulkan physical identity not verified: " + evidence["status"] + ": " + evidence["reason"])
+
+
+def select_physical_device(infos: list, args: argparse.Namespace):
+    """Both workers use this gate before any queue/device/work allocation."""
+    ranked = sorted(((score_device(info, args), info, handle) for info, handle in infos),
+                    key=lambda item: item[0], reverse=True)
+    identifiers = [normalize_device_uuid(info.get("device_uuid")) for info, _ in infos]
+    identifiers = [identifier for identifier in identifiers if identifier]
+    if len(identifiers) != len(set(identifiers)):
+        proof = native_identity_evidence({}, args)
+        proof.update(status="ambiguous_identity", source="", reason="duplicated runtime UUID")
+        raise PhysicalIdentitySelectionError(proof)
+    eligible = [item for item in ranked if item[0] > 0]
+    if not eligible:
+        proofs = [native_identity_evidence(info, args) for info, _ in infos] or [native_identity_evidence({}, args)]
+        proof = next((p for p in proofs if p["status"] in ("missing_evidence", "unknown_identity")), proofs[0])
+        if proof["status"] == "verified":
+            proof.update(status="conflicting_identity", source="", reason="candidate is not an eligible physical hardware GPU")
+        raise PhysicalIdentitySelectionError(proof)
+    if len(eligible) != 1:
+        proof = native_identity_evidence({}, args)
+        proof.update(status="ambiguous_identity", source="", reason="multiple positively matched runtime devices")
+        raise PhysicalIdentitySelectionError(proof)
+    return eligible[0]
+
+
 def make_instance(vk: ctypes.CDLL) -> ctypes.c_void_p:
+    api_version = identity_instance_api_version(vk)
     app_info = VkApplicationInfo(
         VK_STRUCTURE_TYPE_APPLICATION_INFO,
         VK_NULL_HANDLE,
@@ -665,7 +724,7 @@ def make_instance(vk: ctypes.CDLL) -> ctypes.c_void_p:
         1,
         b"linux-validation-suite",
         1,
-        (1 << 22),
+        api_version,
     )
     create_info = VkInstanceCreateInfo(
         VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -679,6 +738,7 @@ def make_instance(vk: ctypes.CDLL) -> ctypes.c_void_p:
     )
     instance = ctypes.c_void_p()
     check(vk.vkCreateInstance(ctypes.byref(create_info), None, ctypes.byref(instance)), "vkCreateInstance")
+    vk._lvs_instance_api_version = api_version
     return instance
 
 
@@ -832,6 +892,7 @@ def main() -> int:
     parser.add_argument("--target-device-name", default="")
     parser.add_argument("--target-card", default="")
     parser.add_argument("--target-slot", default="")
+    parser.add_argument("--target-device-uuid", default="")
     parser.add_argument("--target-id", default="")
     parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
@@ -912,6 +973,8 @@ def main() -> int:
         "selected_device_id": "",
         "selected_device_type": "",
         "selected_device_pci_slot": "",
+        "selected_device_uuid": "",
+        "target_device_uuid": args.target_device_uuid,
         "selected_vulkan_index": -1,
         "hardware_device_verified": False,
         "device_match_score": 0.0,
@@ -979,13 +1042,7 @@ def main() -> int:
         instance = make_instance(vk)
         physical_devices = enumerate_devices(vk, instance)
         infos = [(parse_properties(vk, physical_device, index), physical_device) for index, physical_device in enumerate(physical_devices)]
-        ranked = sorted(((score_device(info, args), info, physical_device) for info, physical_device in infos), key=lambda item: item[0], reverse=True)
-        score, selected_info, physical_device = ranked[0]
-        if score < -1000:
-            raise RuntimeError("no non-CPU Vulkan GPU device matched target")
-        ambiguous = len(ranked) > 1 and abs(float(score) - float(ranked[1][0])) < 1.0
-        if ambiguous:
-            raise RuntimeError("ambiguous Vulkan physical-device match")
+        score, selected_info, physical_device = select_physical_device(infos, args)
         selected_name = str(selected_info.get("device_name") or "").lower()
         hardware_verified = selected_info.get("device_type") != "cpu" and not any(
             token in selected_name for token in ("llvmpipe", "lavapipe", "softpipe", "swrast", "software rasterizer")
@@ -999,6 +1056,9 @@ def main() -> int:
                 "selected_device_id": selected_info["device_id"],
                 "selected_device_type": selected_info["device_type"],
                 "selected_device_pci_slot": selected_info.get("pci_slot", ""),
+                "selected_device_uuid": selected_info.get("device_uuid", ""),
+                "target_device_uuid": args.target_device_uuid,
+                "physical_identity_evidence": native_identity_evidence(selected_info, args),
                 "selected_vulkan_index": selected_info["index"],
                 "hardware_device_verified": True,
                 "device_match_score": float(score),
@@ -1312,6 +1372,8 @@ def main() -> int:
         else:
             state["allocation_outcome"] = "allocation_failed"
         state["allocation_valid"] = False
+        if isinstance(exc, PhysicalIdentitySelectionError):
+            state["physical_identity_evidence"] = exc.identity_evidence
         record_error(exc)
         return 12
     finally:

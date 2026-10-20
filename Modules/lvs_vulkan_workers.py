@@ -8,8 +8,22 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_vulkan_identity import requested_physical_identity, normalize_device_uuid
+from Modules.lvs_vulkan_targeting import vulkan_target_identity_evidence
 
 DEFAULT_NATIVE_DIR = Path("native")
+
+
+def worker_identity_binding(target, match):
+    """Independently validate construction; never erase a known target ID."""
+    resolved = dict(match.get("device") or {})
+    proof = vulkan_target_identity_evidence(resolved, target, [target] if target else [])
+    if not match.get("available") or match.get("ambiguous") or proof["status"] != "verified":
+        raise RuntimeError("Vulkan worker requires verified physical identity: " + proof["status"])
+    requested = requested_physical_identity(target)
+    # A newly bound runtime UUID is usable only after independent PCI proof.
+    # A known requested UUID is retained even when the runtime query is absent.
+    return requested["uuid"] or normalize_device_uuid(resolved.get("deviceUUID")), requested["pci_slot"]
 
 
 def build_python_vulkan_transfer_worker(
@@ -34,13 +48,14 @@ def build_python_vulkan_transfer_worker(
     ramp_params = runner._gpu_internal_ramp_params()
     capability = dict(params.get("capability") or {})
     vulkan_match = runner._vulkan_device_for_target(target)
+    target_uuid, requested_slot = worker_identity_binding(target, vulkan_match)
     resolved_vulkan = dict(vulkan_match.get("device") or {})
     target_vendor = str(target.get("vendor", "") if target else "")
-    target_vendor_id = str(resolved_vulkan.get("vendorID") or (target.get("vendor_id", "") if target else ""))
-    target_device_id = str(resolved_vulkan.get("deviceID") or (target.get("device", "") if target else ""))
+    target_vendor_id = str((target.get("vendor_id") if target else "") or resolved_vulkan.get("vendorID") or "")
+    target_device_id = str((target.get("device") if target else "") or resolved_vulkan.get("deviceID") or "")
     target_device_name = str(resolved_vulkan.get("deviceName") or "")
     target_card = str(target.get("card", "") if target else "")
-    target_slot = str(target.get("slot", "") if target else "")
+    target_slot = requested_slot
     target_id = str(target.get("target_id", "") if target else "")
     physical_gpu_id = str(target.get("physical_gpu_id", "") if target else "")
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
@@ -64,6 +79,8 @@ def build_python_vulkan_transfer_worker(
             target_card,
             "--target-slot",
             target_slot,
+            "--target-device-uuid",
+            target_uuid,
             "--target-id",
             target_id,
             "--physical-gpu-id",
@@ -149,13 +166,14 @@ def build_python_vulkan_compute_worker(
     ramp_params = runner._gpu_internal_ramp_params()
     capability = dict(params.get("capability") or {})
     vulkan_match = runner._vulkan_device_for_target(target)
+    target_uuid, requested_slot = worker_identity_binding(target, vulkan_match)
     resolved_vulkan = dict(vulkan_match.get("device") or {})
     target_vendor = str(target.get("vendor", "") if target else "")
-    target_vendor_id = str(resolved_vulkan.get("vendorID") or (target.get("vendor_id", "") if target else ""))
-    target_device_id = str(resolved_vulkan.get("deviceID") or (target.get("device", "") if target else ""))
+    target_vendor_id = str((target.get("vendor_id") if target else "") or resolved_vulkan.get("vendorID") or "")
+    target_device_id = str((target.get("device") if target else "") or resolved_vulkan.get("deviceID") or "")
     target_device_name = str(resolved_vulkan.get("deviceName") or "")
     target_card = str(target.get("card", "") if target else "")
-    target_slot = str(target.get("slot", "") if target else "")
+    target_slot = requested_slot
     target_id = str(target.get("target_id", "") if target else "")
     physical_gpu_id = str(target.get("physical_gpu_id", "") if target else "")
     target_gpu_index = int(target.get("gpu_index", 0)) if target else 0
@@ -193,6 +211,8 @@ def build_python_vulkan_compute_worker(
             target_card,
             "--target-slot",
             target_slot,
+            "--target-device-uuid",
+            target_uuid,
             "--target-id",
             target_id,
             "--physical-gpu-id",

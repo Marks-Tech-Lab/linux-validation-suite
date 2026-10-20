@@ -261,6 +261,11 @@ def build_gpu_worker_validation_detail(
         "AllocationExhausted": bool(payload.get("allocation_exhausted")),
         "AllocationShortfallBytes": int(payload.get("allocation_shortfall_bytes") or 0),
         "SelectedDeviceName": str(payload.get("selected_device_name") or ""),
+        **({"PhysicalIdentityEvidence": deepcopy(payload["physical_identity_evidence"])}
+           if "physical_identity_evidence" in payload else {}),
+        **({"SelectedDeviceUuid": str(payload.get("selected_device_uuid") or ""),
+            "TargetDeviceUuid": str(payload.get("target_device_uuid") or "")}
+           if "selected_device_uuid" in payload else {}),
         "PlatformName": str(payload.get("platform_name") or ""),
         "PlatformVendor": str(payload.get("platform_vendor") or ""),
         "Renderer": str(payload.get("renderer") or ""),

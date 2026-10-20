@@ -6,7 +6,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from .lvs_gpu_identity import normalize_pci_id, normalize_pci_slot
+from .lvs_gpu_identity import normalize_pci_id, normalize_pci_slot, pci_physical_gpu_id
+from .lvs_vulkan_identity import normalize_device_uuid, requested_physical_identity, physical_identity_match
 
 
 def vulkan_device_is_hardware_gpu(device: Dict[str, Any]) -> bool:
@@ -32,24 +33,66 @@ def slot_from_mesa_style_vulkan_uuid(uuid_text: Any, gpu_cards: Iterable[Dict[st
     return candidates[0] if len(candidates) == 1 else ""
 
 
-def vulkan_device_pci_slot(device: Dict[str, Any], gpu_cards: Iterable[Dict[str, Any]]) -> str:
-    explicit = normalize_pci_slot(str(device.get("pci_slot", "") or device.get("pciSlot", "") or ""))
-    if explicit:
-        return explicit
+def vulkan_physical_identity(device: Dict[str, Any], gpu_cards: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+    """Join exact NVIDIA device UUIDs to provider PCI evidence, never ordinals.
+
+    Do not infer an NVIDIA identity from another vendor's UUID or from a driver
+    UUID/pipeline-cache UUID. Conflicts must not fall through to model scoring.
+    """
     cards = list(gpu_cards)
-    uuid_slot = slot_from_mesa_style_vulkan_uuid(str(device.get("deviceUUID", "") or ""), cards)
-    if uuid_slot:
-        return uuid_slot
-    vendor = normalize_pci_id(str(device.get("vendorID", "") or ""))
-    device_id = normalize_pci_id(str(device.get("deviceID", "") or ""))
-    matches = [
-        normalize_pci_slot(str(card.get("slot", "") or ""))
-        for card in cards
-        if normalize_pci_id(str(card.get("vendor_id", "") or "")) == vendor
-        and normalize_pci_id(str(card.get("device", "") or "")) == device_id
-        and str(card.get("slot", "") or "")
-    ]
-    return matches[0] if len(matches) == 1 else ""
+    explicit = normalize_pci_slot(str(device.get("pci_slot", "") or device.get("pciSlot", "") or ""))
+    identifier = normalize_device_uuid(device.get("deviceUUID"))
+    vendor = normalize_pci_id(device.get("vendorID", ""))
+    part = normalize_pci_id(device.get("deviceID", ""))
+    matches = [card for card in cards if identifier and vendor == "10de"
+               and normalize_device_uuid(card.get("nvidia_uuid")) == identifier]
+    slots = {pci_physical_gpu_id(card.get("slot", "")).removeprefix("pci:") for card in matches}
+    conflict = len(slots) > 1 or bool(matches and (not all(slots) or any(
+        normalize_pci_id(card.get("vendor_id", "")) != vendor
+        or (part and normalize_pci_id(card.get("device", "")) != part)
+        for card in matches)))
+    peers_by_part = [card for card in cards if vendor == "10de"
+                     and normalize_pci_id(card.get("vendor_id", "")) == vendor
+                     and normalize_pci_id(card.get("device", "")) == part]
+    if identifier and peers_by_part and all(normalize_device_uuid(card.get("nvidia_uuid"))
+                                           for card in peers_by_part) and not matches:
+        conflict = True
+    joined = next(iter(slots)) if len(slots) == 1 else ""
+    if explicit and not pci_physical_gpu_id(explicit):
+        conflict = True
+    if explicit and joined and explicit.lower() != joined.lower():
+        conflict = True
+    if explicit and identifier and vendor == "10de":
+        peers = [card for card in cards if normalize_pci_slot(card.get("slot", "")).lower() == explicit.lower()]
+        if any(normalize_device_uuid(card.get("nvidia_uuid")) not in ("", identifier) for card in peers):
+            conflict = True
+    if conflict:
+        return {"slot": "", "source": "", "error": "conflicting Vulkan UUID/PCI/provider identity"}
+    if explicit or joined:
+        return {"slot": explicit or joined, "source": "vulkan_pci" if explicit else "nvidia_device_uuid", "error": ""}
+    return {"slot": "", "source": "", "error": ""}
+
+
+def vulkan_device_pci_slot(device: Dict[str, Any], gpu_cards: Iterable[Dict[str, Any]]) -> str:
+    identity = vulkan_physical_identity(device, gpu_cards)
+    return "" if identity["error"] else identity["slot"]
+
+
+def vulkan_target_identity_evidence(device, target, gpu_cards):
+    requested = requested_physical_identity(target)
+    identity = vulkan_physical_identity(device, gpu_cards)
+    evidence = physical_identity_match(requested["uuid"], requested["pci_slot"],
+        device.get("deviceUUID", ""), identity["slot"])
+    if requested["error"] or identity["error"]:
+        evidence.update(status="conflicting_identity", source="", reason=requested["error"] or identity["error"])
+    if evidence["status"] == "verified" and identity["source"] == "nvidia_device_uuid":
+        evidence["source"] = "nvidia_device_uuid"
+    for target_key, device_key in (("vendor_id", "vendorID"), ("device", "deviceID")):
+        expected = normalize_pci_id((target or {}).get(target_key, ""))
+        actual = normalize_pci_id(device.get(device_key, ""))
+        if expected and actual and expected != actual:
+            evidence.update(status="conflicting_identity", source="", reason="physical identity contradicts vendor/device evidence")
+    return evidence
 
 
 def vulkan_device_score_for_target(
@@ -61,7 +104,11 @@ def vulkan_device_score_for_target(
 ) -> float:
     if not target:
         return 0.0
-    score = 0.0
+    gpu_cards = list(gpu_cards)
+    proof = vulkan_target_identity_evidence(device, target, gpu_cards)
+    if proof["status"] != "verified":
+        return -1000000.0
+    score = 5000.0 if proof["source"] in ("device_uuid", "nvidia_device_uuid") else 2500.0
     target_vendor_id = str(target.get("vendor_id", "") or "").strip().lower().removeprefix("0x")
     target_device_id = str(target.get("device", "") or "").strip().lower().removeprefix("0x")
     device_vendor_id = str(device.get("vendorID", "") or "").strip().lower().removeprefix("0x")
@@ -112,6 +159,19 @@ def vulkan_device_for_target(
             "ambiguous": False,
             "score": 0.0,
         }
+    identities = [vulkan_physical_identity(device, card_list) for device in device_list]
+    if any(identity["error"] for identity in identities):
+        return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
+                "identity_status": "conflicting_identity", "reason": "conflicting Vulkan UUID/PCI/provider identity"}
+    identifiers = [normalize_device_uuid(device.get("deviceUUID")) for device in device_list]
+    identifiers = [identifier for identifier in identifiers if identifier]
+    if len(identifiers) != len(set(identifiers)):
+        return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
+                "identity_status": "ambiguous_identity", "reason": "duplicate Vulkan device UUID requires unique identity"}
+    proofs = [vulkan_target_identity_evidence(device, target, card_list) for device in device_list]
+    if sum(proof["status"] == "verified" for proof in proofs) > 1:
+        return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
+                "identity_status": "ambiguous_identity", "reason": "multiple runtime devices claim the requested physical identity"}
     ranked = sorted(
         (
             (
@@ -130,11 +190,14 @@ def vulkan_device_for_target(
     )
     best_score, best_device = ranked[0]
     if best_score <= 0:
+        proof = next((proof for proof in proofs if proof["status"] in ("missing_evidence", "unknown_identity")), proofs[0])
         return {
             "available": False,
             "device": None,
             "ambiguous": False,
             "score": best_score,
+            "identity_status": proof["status"],
+            "reason": proof["reason"],
         }
     ambiguous = False
     if len(ranked) > 1:
@@ -150,11 +213,14 @@ def vulkan_device_for_target(
     selected_slot = vulkan_device_pci_slot(selected_device, card_list)
     if selected_slot:
         selected_device["pci_slot"] = selected_slot
+    selected_device["identity_match_source"] = vulkan_physical_identity(best_device, card_list)["source"]
     return {
         "available": True,
         "device": selected_device,
         "ambiguous": ambiguous,
         "score": best_score,
+        "identity_status": "verified",
+        "physical_identity_evidence": vulkan_target_identity_evidence(best_device, target, card_list),
     }
 
 

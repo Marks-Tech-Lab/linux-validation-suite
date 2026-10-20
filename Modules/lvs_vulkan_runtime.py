@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from .lvs_backend_readiness import build_vulkan_native_backend_payload
+from .lvs_vulkan_identity import identity_instance_api_version, read_device_uuid, normalize_device_uuid
 
 
 def merge_vulkan_device_inventories(
@@ -36,6 +37,10 @@ def merge_vulkan_device_inventories(
                 str(native_device.get("deviceName", "") or "").lower(),
             ) == runtime_key
         ]
+        identifier = normalize_device_uuid(runtime_device.get("deviceUUID"))
+        if identifier:
+            candidates = [index for index in candidates
+                          if normalize_device_uuid(unused_native[index].get("deviceUUID")) == identifier]
         # Provider ordinals may differ. Merge by a unique physical fingerprint;
         # identical devices without stronger identity remain separate.
         match_index = candidates[0] if len(candidates) == 1 else None
@@ -272,7 +277,8 @@ def collect_vulkan_native_physical_devices(
         vk.vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
         vk.vkDestroyInstance.restype = None
 
-        app_info = VkApplicationInfo(0, None, b"Linux Validation Suite", 1, b"linux-validation-suite", 1, (1 << 22))
+        instance_api_version = identity_instance_api_version(vk)
+        app_info = VkApplicationInfo(0, None, b"Linux Validation Suite", 1, b"linux-validation-suite", 1, instance_api_version)
         create_info = VkInstanceCreateInfo(1, None, 0, ctypes.pointer(app_info), 0, None, 0, None)
         instance = VkInstance()
         code = int(vk.vkCreateInstance(ctypes.byref(create_info), None, ctypes.byref(instance)))
@@ -314,6 +320,7 @@ def collect_vulkan_native_physical_devices(
                 devices.append(
                     {
                         "index": index,
+                        "deviceUUID": read_device_uuid(vk, device, instance_api_version, api_version),
                         "apiVersion": f"{(api_version >> 22) & 0x3FF}.{(api_version >> 12) & 0x3FF}.{api_version & 0xFFF}",
                         "driverVersionRaw": int.from_bytes(raw[4:8], "little"),
                         "vendorID": f"0x{int.from_bytes(raw[8:12], 'little'):04x}",
