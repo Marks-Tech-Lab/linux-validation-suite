@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
+from .lvs_source_provenance import collect_source_provenance
 
 
 def safe_report_name(value: str) -> str:
@@ -62,6 +63,7 @@ class ProfileReportArtifactWriter:
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
             "kind": "dry_run_diagnostics",
+            "source_provenance": collect_source_provenance(),
             "started": now_local_iso(),
             "profile_name": getattr(profile, "profile_name", profile_path.stem),
             "profile_file": profile_path.name,
@@ -87,6 +89,7 @@ class ProfileReportArtifactWriter:
         report_dir = self.result_reports.new_report_dir(f"Diagnostics_{profile_name}")
         payload = dict(report)
         payload["kind"] = "dry_run_diagnostics"
+        payload["source_provenance"] = collect_source_provenance()
         payload["saved"] = now_local_iso()
         payload["profile_path"] = str(profile_path)
         payload["segment_labels"] = labels
@@ -121,6 +124,7 @@ class ProfileReportArtifactWriter:
             "segment_labels": labels,
             "started": now_local_iso(),
             "kind": "preflight_only",
+            "source_provenance": collect_source_provenance(),
             "runtime_environment": runtime_environment or {},
             "backends": backends or {},
             "backend_details": backend_details or {},

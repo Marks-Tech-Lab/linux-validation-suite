@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_advanced_debug import AdvancedDebugLogger
 from Modules.lvs_core import JsonStore
+from Modules.lvs_source_provenance import collect_source_provenance
 from Modules.lvs_output_contract_identity import (
     RUN_MANIFEST_CONTRACT_ID,
     RUN_MANIFEST_KIND,
@@ -184,12 +185,15 @@ def bootstrap_run_artifacts(
         metadata,
         privileged_helper_enabled,
     )
+    source_provenance = collect_source_provenance()
+    system_info["SourceProvenance"] = source_provenance
     JsonStore.write(run_dir / "system_info.json", system_info)
     JsonStore.write(run_dir / "run_metadata.json", asdict(metadata))
     JsonStore.write(run_dir / "profile_used.json", asdict(effective_profile))
     manifest_payload = stamp_contract_identity({
         "app_name": app_name,
         "app_version": app_version,
+        "source_provenance": source_provenance,
         "profile_name": profile.profile_name,
         "profile_file": profile_path.name,
         "menu_description": profile.menu_description,

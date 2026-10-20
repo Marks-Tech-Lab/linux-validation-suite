@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from Modules.lvs_core import JsonStore
+from Modules.lvs_source_provenance import collect_source_provenance
 from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
 from Modules.lvs_output_contract_identity import (
     RUN_MANIFEST_CONTRACT_ID,
@@ -110,6 +111,15 @@ def write_final_run_artifacts(
                 source_fields=source_fields,
             )
 
+    if isinstance(manifest_payload.get("source_provenance"), dict):
+        end_provenance = collect_source_provenance()
+        manifest_payload["source_provenance_end"] = end_provenance
+        initial_source = manifest_payload["source_provenance"].get("source", {})
+        end_source = end_provenance.get("source", {})
+        manifest_payload["source_changed_during_run"] = (
+            initial_source.get("digest") != end_source.get("digest")
+            if initial_source.get("status") == end_source.get("status") == "complete" else None
+        )
     manifest_payload["ended"] = ended_iso
     manifest_payload["elapsed_seconds"] = round(total_elapsed, 2)
     manifest_payload["executed_plan"] = executed_plan
@@ -173,6 +183,10 @@ def write_final_run_artifacts(
             {
                 "app_name": app_name,
                 "app_version": app_version,
+                **({"source_provenance": manifest_payload["source_provenance"],
+                    "source_provenance_end": manifest_payload.get("source_provenance_end"),
+                    "source_changed_during_run": manifest_payload.get("source_changed_during_run")}
+                   if "source_provenance" in manifest_payload else {}),
                 "profile": asdict(profile),
                 "run_metadata": asdict(metadata),
                 "stage_windows": [asdict(w) for w in stage_windows],

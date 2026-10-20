@@ -1348,6 +1348,9 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "report_outcome": report_outcome,
             "metadata": _portable_metadata(metadata),
             "lvs_version": str(manifest.get("app_version") or extended.get("app_version") or ""),
+            "source_provenance": manifest.get("source_provenance") or extended.get("source_provenance")
+            or system_info.get("SourceProvenance") or {"status": "not_recorded"},
+            "source_changed_during_run": manifest.get("source_changed_during_run"),
         },
         "review": {"failures": failures, "warnings": warnings, "information": information},
         "hardware": _hardware(system_info),

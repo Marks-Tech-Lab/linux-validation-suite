@@ -53,6 +53,24 @@ in the existing worker stderr log captures final-write timing too. Records and
 per-operation maxima are bounded and are host observations, not GPU instruction
 timings or pass/fail criteria. See `docs/gpu_worker_stall_diagnostics.md`.
 
+### Source/build provenance
+
+`linux_validation_suite.source_provenance` v1 uses snake_case properties and
+`kind: source_provenance` for observed source evidence; the optional ignored
+`lvs_source_build.json` uses the same contract with `kind: source_build_stamp`.
+Its checksum detects accidental stamp edits, not authenticity. The deterministic
+`lvs_execution_source_v1` fingerprint is scoped source identity, not native-binary
+or dependency attestation. A capture commit/label never replaces measured bytes.
+See [Source and manual-build provenance](docs/source_build_provenance.md).
+
+Run manifests and extended output add `source_provenance`, final
+`source_provenance_end`, and `source_changed_during_run` (nullable when unknown).
+Diagnostics/preflight add `source_provenance`. Initial evidence is also retained
+as `system_info.json` / compatibility `SystemInfo.SourceProvenance`, without
+renaming legacy fields. Report data exposes it under `run.source_provenance`;
+historical absence is `not_recorded`, never reconstructed from the renderer.
+None of these observations changes worker integrity, safety, or verdict rules.
+
 ### Completed run artifacts
 
 | Artifact | Classification | Ownership and compatibility notes |

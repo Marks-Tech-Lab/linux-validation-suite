@@ -55,6 +55,8 @@ TUI_QA_MANUAL_OPERATOR_CHECKLIST.md
 hardware_result_validation_state.json
 
 # Build output and native binaries
+lvs_source_build.json
+.lvs_source_build.json.*
 build/
 bin/
 obj/

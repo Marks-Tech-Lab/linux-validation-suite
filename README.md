@@ -94,6 +94,19 @@ source .venv/bin/activate
 
 ### Native helper build requirements
 
+For manually captured development builds, retain offline source/Git provenance
+with one explicit command immediately before the normal complete build copy:
+
+```bash
+.venv/bin/python -B -m Modules.lvs_source_provenance stamp --label development-checkpoint
+```
+
+Include the generated, ignored `lvs_source_build.json` in that copy. Runtime
+content checks work without Git or network access; stamping is not automatic.
+The source fingerprint does not attest generated native binaries or external
+dependencies. See [Source and manual-build provenance](docs/source_build_provenance.md)
+for scope, modified-source handling, stale-stamp detection, and result locations.
+
 A fresh clone needs `gcc` or a compatible `cc` when LVS must build its native
 CPU and memory helpers. Helpers are built for the architecture on which LVS is
 running. An AArch64 host therefore needs an AArch64-capable native compiler; it

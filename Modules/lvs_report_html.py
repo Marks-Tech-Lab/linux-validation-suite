@@ -1229,6 +1229,7 @@ stageSelect&&stageSelect.addEventListener('change',syncExplorerFromStageSelect);
 def render_report_html(report: Dict[str, Any], chart_data: Optional[Dict[str, Any]] = None) -> str:
     """Return safe, dependency-free HTML for one report-data payload."""
     run = report.get("run", {}) if isinstance(report.get("run"), dict) else {}
+    source_provenance = _escape(json.dumps(run.get("source_provenance") or {"status": "not_recorded"}, indent=2, sort_keys=True))
     review = report.get("review", {}) if isinstance(report.get("review"), dict) else {}
     hardware = report.get("hardware", {}) if isinstance(report.get("hardware"), dict) else {}
     components_list = report.get("components", []) if isinstance(report.get("components"), list) else []
@@ -1268,7 +1269,7 @@ html,body{max-width:100%;min-width:0}.shell{width:calc(100% - 48px);max-width:16
   <header class="topbar"><span class="eyebrow">Linux Validation Suite result</span><h1>{_escape(title)}</h1>{description}</header>
   <section class="summary-grid">
     <div class="result-tile {status}"><span class="eyebrow">Final result</span><div class="result-value">{_escape(report_outcome.replace("_", " "))}</div><p class="compact">Native outcome: <strong>{_escape(run.get("native_outcome") or "unknown")}</strong></p><div class="run-meta"><span>Duration {_escape(_duration(run.get("duration_seconds")))}</span><span>{_escape(len(stages))} stages</span><span>Run version: {_escape(run.get("lvs_version") or "unknown")}</span></div></div>
-    <section class="panel run-details"><h2>Run details</h2><dl class="identity"><dt>Started</dt><dd>{_escape(_timestamp(run.get("started_at")))}</dd><dt>Ended</dt><dd>{_escape(_timestamp(run.get("ended_at")))}</dd><dt>Profile file</dt><dd>{_escape(run.get("profile_file") or "—")}</dd></dl></section>
+    <section class="panel run-details"><h2>Run details</h2><dl class="identity"><dt>Started</dt><dd>{_escape(_timestamp(run.get("started_at")))}</dd><dt>Ended</dt><dd>{_escape(_timestamp(run.get("ended_at")))}</dd><dt>Profile file</dt><dd>{_escape(run.get("profile_file") or "—")}</dd><dt>Source changed during run</dt><dd>{_escape(run.get("source_changed_during_run") if run.get("source_changed_during_run") is not None else "unknown")}</dd></dl><details><summary>Recorded source provenance (not binary attestation)</summary><pre>{source_provenance}</pre></details></section>
   </section>
   <div class="section-heading"><h2>System identity</h2></div><section class="identity-grid">{_system_identity(hardware, components)}</section>
   <div class="section-heading"><h2>Review summary</h2></div>{_review_summary(review)}
