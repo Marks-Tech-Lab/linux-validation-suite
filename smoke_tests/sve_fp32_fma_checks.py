@@ -333,14 +333,15 @@ def run_fp32_error_evidence_checks() -> None:
     print(f"PASS FP32 error evidence: {cases} complete artifact round trips (SVE and NEON v1)")
 
 
-def run_sve_functional_profile_checks() -> None:
+def run_sve_functional_profile_checks(*, sustained: bool = False) -> None:
     from dataclasses import asdict
     from Modules.lvs_profile_loader import ProfileLoader
     from Modules.lvs_profile_validation import ProfileValidator
     from Modules.lvs_workload_runner import WorkloadRunner
 
     loader = ProfileLoader(ROOT / "profiles")
-    path = ROOT / "profiles/ARM64 SVE FP32 FMA Functional Confirmation.json"
+    suffix = "Sustained Effectiveness" if sustained else "Functional Confirmation"
+    path = ROOT / "profiles" / f"ARM64 SVE FP32 FMA {suffix}.json"
     profile = loader.load_profile(path)
     validator = ProfileValidator()
     labels = loader.load_segment_labels(path, profile)
@@ -348,11 +349,29 @@ def run_sve_functional_profile_checks() -> None:
     assert profile.require_all_stages_runnable and len(profile.stages) == 1
     stage = profile.stages[0]
     cpu = stage.modules.cpu
-    assert stage.duration_seconds == 120 and stage.analysis.intent == "functional"
-    assert stage.normalization.trim_start_seconds == stage.normalization.trim_end_seconds == 30
+    duration, trim, intent = (600, 60, "sustained") if sustained else (120, 30, "functional")
+    assert stage.duration_seconds == duration and stage.analysis.intent == intent
+    assert stage.normalization.trim_start_seconds == stage.normalization.trim_end_seconds == trim
+    assert profile.defaults.trim_start_seconds == profile.defaults.trim_end_seconds == trim
     assert profile.defaults.telemetry_interval_seconds == 2
+    assert path in loader.list_profiles()
+    assert loader.profile_menu_metadata(path)["menu_group"] == "advanced"
     assert cpu.enabled and cpu.backend_preference == "native" and cpu.instruction_set == KERNEL
     assert cpu.threads == "all" and cpu.power_auto is False
+    assert cpu.mode == "extreme" and cpu.load == "steady" and cpu.dataset == "small"
+    assert cpu.instruction_intent == "" and stage.enabled
+    if sustained:
+        assert stage.analysis.minimum_usable_seconds == duration - 2 * trim == 480
+        functional = loader.load_profile(ROOT / "profiles/ARM64 SVE FP32 FMA Functional Confirmation.json")
+        assert asdict(stage.modules) == asdict(functional.stages[0].modules)
+        reference = loader.load_profile(ROOT / "profiles/Archived/2026 Hardware Validation/07 ARM64 NEON FP32 FMA Acceptance/ARM64 NEON FP32 FMA Sustained Effectiveness.json")
+        assert asdict(stage.analysis) == asdict(reference.stages[0].analysis)
+        assert asdict(stage.normalization) == asdict(reference.stages[0].normalization)
+        # No authored numerical performance or thermal targets are introduced.
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["stages"][0]["analysis"] == {"intent": "sustained", "minimum_usable_seconds": 480}
+        assert set(raw["stages"][0]) == {"id", "name", "display_label", "duration_seconds",
+                                          "enabled", "modules", "normalization", "analysis"}
     assert not any(getattr(stage.modules, name).enabled for name in
                    ("memory", "gpu_3d", "vram", "storage_benchmark"))
     with TemporaryDirectory(prefix="lvs-sve-profile-") as temporary:
@@ -389,10 +408,53 @@ def run_sve_functional_profile_checks() -> None:
         unsupported = runner_for(machine, kernels)
         assert unsupported._cpu_backend_name(cpu) == "none"
         assert unsupported._cpu_command(cpu) is None
+    if sustained:
+        # Exercise the authored 600/60/60 window with ordinary two-second
+        # publications, mixed VLs, and a real rate reduction (not a threshold).
+        with TemporaryDirectory(prefix="lvs-sve-sustained-progress-") as temporary:
+            path = Path(temporary) / "progress.jsonl"
+            _, window, templates = _fixture(path)
+            worker = _sve_fixture()
+            worker.update(process_pid=73, observed_exit_code=0,
+                          verified_progress={"contract": KERNEL + "_progress_v1", "path": str(path)})
+            window.ended_monotonic = window.started_monotonic + stage.duration_seconds
+            window.trim_start_seconds = window.trim_end_seconds = trim
+            window.analysis_intent = stage.analysis.intent
+            window.analysis_minimum_usable_seconds = stage.analysis.minimum_usable_seconds
+            rows = []
+            for sequence, timestamp in enumerate([100.0, 100.1, *range(102, 701, 2)]):
+                final = timestamp == 700
+                row = copy.deepcopy(templates[0 if sequence == 0 else 1 if sequence == 1 else -1 if final else 2])
+                row.update(contract=KERNEL + "_progress_v1", kernel_flavor=KERNEL,
+                           sequence=sequence, monotonic_seconds=timestamp,
+                           realtime_seconds=timestamp + 1700000000)
+                for index, (thread, detail) in enumerate(zip(row["threads"], worker["threads_detail"])):
+                    blocks = min(timestamp - 100, 300) * 10 + max(timestamp - 400, 0) * 5
+                    thread.update(published_monotonic_seconds=timestamp if sequence else 0,
+                                  verified_blocks=0 if sequence == 0 else 1 if sequence == 1 else int(blocks * (index + 1)),
+                                  vector_length_bytes=detail["vector_length_bytes"],
+                                  active_fp32_lanes=detail["active_fp32_lanes"])
+                row["aggregate_verified_blocks"] = sum(t["verified_blocks"] for t in row["threads"])
+                rows.append(row)
+            for detail, thread in zip(worker["threads_detail"], rows[-1]["threads"]):
+                detail.update(arithmetic_verified_blocks=thread["verified_blocks"], verify_passes=thread["verified_blocks"])
+            worker.update(arithmetic_verified_blocks=rows[-1]["aggregate_verified_blocks"],
+                          verify_passes=rows[-1]["aggregate_verified_blocks"])
+            _write(path, rows)
+            result = analyze_verified_progress(worker, window)
+            assert result["quality"] == "sufficient", result
+            assert result["aggregate_blocks_per_second"] == 22.5
+            assert result["derived_stress_lane_fmas_per_second"] == 7.5 * 8192 + 15 * 24576
+            assert result["threads"][0]["first_half"]["blocks_per_second"] == 10
+            assert result["threads"][0]["second_half"]["blocks_per_second"] == 5
+            assert all(t["observed_seconds"] == 480 and t["coverage_fraction"] == 1 for t in result["threads"])
+            window.ended_monotonic -= 0.5
+            assert analyze_verified_progress(worker, window)["quality"] == "insufficient"
 
 
 def run_sve_progress_export_checks() -> None:
     run_sve_functional_profile_checks()
+    run_sve_functional_profile_checks(sustained=True)
     worker = _sve_fixture()
     assert worker_verification_satisfied(worker)
     mutations = [

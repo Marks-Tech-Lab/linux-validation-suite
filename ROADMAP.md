@@ -160,7 +160,14 @@ The adopted general SIMD work is:
 
 1. Spark SVE functional build/instruction/execution acceptance completed, with
    documented retrospective executable-association limits.
-2. Establish SVE sustained effectiveness and negative-capability portability.
+2. Current acceptance step: run the advanced `ARM64 SVE FP32 FMA Sustained
+   Effectiveness` profile (600 seconds, 60-second start/end trims, minimum
+   480 usable seconds) on Spark. Preserve explicit-only selection and assess
+   timestamped all-thread verified work, stability, telemetry and executable
+   provenance; no universal performance or saturation target applies.
+   Wider-vector-length physical validation and negative-capability portability
+   remain outstanding. See [the SVE contract](docs/sve_fp32_fma_contract.md)
+   for acceptance evidence and the October 19 NEON comparison methodology.
 3. Consider general automatic SVE selection only after acceptance and review.
 4. Design and implement distinct SVE2-specific work; SVE FP32/FMA is not SVE2.
 
@@ -197,9 +204,12 @@ GCC 13.3.0, a 16-byte/128-bit SVE vector length, and `asimd`, `fphp`, `asimdhp`,
 CPU flags. Physical compiler probes passed for `-march=armv8-a+sve`,
 `-march=armv9-a+sve2`, `-march=armv9-a+sve2+i8mm`, and
 `-march=armv9-a+sve2+bf16`. This proves compiler capability only; it does not
-claim runtime validation of the implemented LVS SVE kernel. Its actual per-thread
-VL, deployed optional compiler path, optimized instructions, and execution must
-be established in the pending functional acceptance; model names authorize nothing.
+establish runtime acceptance of SVE2 or specialized kernels. Separately, Spark's
+October 20 SVE functional execution established all-thread VL 16 bytes, successful
+native compilation and verified execution; inspection of the preserved helper
+confirmed optimized scalable FP32 FMA instructions. Exact historical launch-hash
+association was not recorded. Sustained SVE effectiveness and wider VLs remain
+unvalidated; model names authorize nothing.
 
 The baseline ARM64 helper must continue to build and run on the Snapdragon X1
 Plus with scalar and NEON only. Do not compile the complete helper globally with

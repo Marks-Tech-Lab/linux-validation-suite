@@ -1,0 +1,48 @@
+{
+  "profile_name": "ARM64 SVE FP32 FMA Sustained Effectiveness",
+  "profile_type": "validation_schedule",
+  "menu_group": "advanced",
+  "menu_description": "600-second native SVE FP32/FMA execution with inherited vector lengths, timestamped all-thread verified work and 480 seconds of planned post-trim evidence; experimental explicit-only, with no numerical saturation or power target",
+  "require_all_stages_runnable": true,
+  "defaults": {
+    "telemetry_interval_seconds": 2.0,
+    "trim_start_seconds": 60,
+    "trim_end_seconds": 60,
+    "strict_threshold_recommendation_warnings": false
+  },
+  "stages": [
+    {
+      "id": "arm64_sve_fp32_fma_sustained_effectiveness",
+      "name": "CPU",
+      "display_label": "ARM64 SVE FP32/FMA Sustained Effectiveness",
+      "duration_seconds": 600,
+      "enabled": true,
+      "modules": {
+        "cpu": {
+          "enabled": true,
+          "backend_preference": "native",
+          "power_auto": false,
+          "instruction_set": "sve_fp32_fma",
+          "instruction_intent": "",
+          "mode": "extreme",
+          "load": "steady",
+          "threads": "all",
+          "priority": "normal",
+          "dataset": "small"
+        },
+        "memory": { "enabled": false },
+        "gpu_3d": { "enabled": false },
+        "vram": { "enabled": false },
+        "storage_benchmark": { "enabled": false }
+      },
+      "normalization": {
+        "trim_start_seconds": 60,
+        "trim_end_seconds": 60
+      },
+      "analysis": {
+        "intent": "sustained",
+        "minimum_usable_seconds": 480
+      }
+    }
+  ]
+}

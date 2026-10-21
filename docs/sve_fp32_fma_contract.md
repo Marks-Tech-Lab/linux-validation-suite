@@ -135,8 +135,10 @@ workflow, including `native/cpu_sve_kernel.h`. Let normal LVS diagnostics/runtim
 compile the helper; no separately compiled helper is required. On Spark, retain
 the native backend's actual helper path, optional SVE build attempt/result,
 compiler command/version, capability probe, and per-thread inherited VL evidence.
-Dry-run this profile and require the exact kernel with no fallback. Run the normal
-functional profile with Advanced Debug, then preserve the actual helper executable,
+For the next Spark acceptance step, dry-run the sustained profile described below
+and require the exact kernel with no fallback; the accepted functional profile
+does not need repeating. Run the sustained profile with Advanced Debug, then
+preserve the actual helper executable,
 its SHA-256 and source hashes alongside diagnostics and execution artifacts for
 optimized disassembly of `execute_sve_fp32_block` and relevant compiler clones.
 Keep the same executable associated with execution, not a later rebuild. Confirm
@@ -144,6 +146,73 @@ scalable FP32 fused instructions in the repeated stress recurrences, not only th
 witnesses. A failed optional compiler build must remain explicit unsupported-SVE
 evidence while baseline kernels stay usable. Snapdragon's captured non-SVE
 environment is a negative-capability target, not a positive execution target.
+
+## Current acceptance step: sustained effectiveness
+
+The advanced-menu profile
+`profiles/ARM64 SVE FP32 FMA Sustained Effectiveness.json` requests one
+600-second native CPU-only stage, exact `sve_fp32_fma`, Power Auto disabled,
+all online/process-allowed CPUs, extreme steady load and a small dataset.
+Telemetry is sampled every two seconds. The first and last 60 seconds are
+trimmed, leaving a planned 480 seconds; `analysis.intent` is `sustained` and
+`minimum_usable_seconds` is 480. All stages must be runnable. RAM, GPU, VRAM
+and storage workloads are disabled. Normal thermal monitoring and immediate
+safety termination remain authoritative. The functional profile is unchanged.
+
+Use the normal complete-build copy/transfer workflow, including the native SVE
+header; no stamp, separate helper build or new deployment step is required.
+Normal LVS readiness/runtime compilation selects the helper. Retain diagnostics,
+execution results, Advanced Debug artifacts and the selected helper for inspection.
+Automatic source and native executable provenance record observed source bytes,
+prelaunch executable identity, available `/proc/<pid>/exe` association and
+post-execution file state separately. Missing process evidence must remain
+unavailable, not a retrospectively verified executable association.
+
+Acceptance requires clean execution and initial/periodic/final arithmetic
+verification on every target CPU, matching affinity, valid per-thread inherited
+VL and active lanes, no mismatches, and sufficient `sve_fp32_fma_progress_v1`
+evidence. Reconcile final worker and progress counts. Assess actual stage and
+post-trim durations, each thread's verified blocks/s, first/second-half rates,
+interval variation, stalls, interruptions, publication gaps and coverage.
+The analyzer uses only counter deltas whose two publication endpoints fall
+inside the actual trimmed window; it neither interpolates at trim boundaries
+nor bridges missing/stale/corrupt records. Observed progress coverage may be
+slightly shorter than the 480-second analysis window. Existing quality checks
+remain in force; minimum usable duration is not a demand for samples exactly
+on both trim boundaries. Insufficient evidence is not successful sustained
+verification, and progress is supplementary to worker integrity and clean exit.
+
+Correlate monotonic progress timestamps with per-CPU utilization, available
+frequency telemetry, temperatures and safety events. Platform thermal zones
+are not CPU junction measurements. Missing power, clocks or throttling remain
+unavailable. Publication/verification overhead is not separately timed by the
+current worker: throughput includes those costs; neither their exact cost nor
+hardware pipeline occupancy can be inferred from utilization or block totals.
+No universal throughput, clock, power, temperature or saturation target applies.
+SVE remains experimental and explicit-only; this profile does not approve Auto
+or Power Auto promotion. Wider-VL physical acceptance remains outstanding.
+
+### Comparison with October 19 Spark NEON sustained evidence
+
+The accepted NEON run observed 20/20 verified threads and approximately
+15.205646 million aggregate verified blocks/s. Compare against its actual
+post-trim timestamp-based rates, not final totals divided by authored duration.
+Both workloads use eight chains and 256 rounds. At Spark's previously observed
+128-bit SVE length both have four active FP32 lanes and derive 8,192 stress
+lane-FMAs per verified block; four witness lane-FMAs are accounted separately.
+Always use the new run's observed per-thread VL, not an assumed 128-bit length.
+
+Compare target CPU sets and heterogeneous CPU groups, per-thread/aggregate
+verified rates, half-window stability, coverage/gaps, available frequency,
+utilization, thermal and safety evidence, and build/compiler/executable provenance.
+At other VLs compare derived active-lane work as well as blocks/s; these derived
+counts are not measured instructions. Equal recurrence geometry does not imply
+equal computation cost, scheduling, verification/predication overhead or generated
+code efficiency. Different builds, frequencies and environmental conditions are
+confounders, not evidence of an architectural efficiency advantage. Neither
+FMLA presence nor verified throughput proves maximum FP32 pipeline saturation.
+No additional NEON run is mandatory for SVE sustained functional correctness;
+a controlled performance claim would require separately controlled conditions.
 
 ## Completed Spark functional and instruction inspection
 
