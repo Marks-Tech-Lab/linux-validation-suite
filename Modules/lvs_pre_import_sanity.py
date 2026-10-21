@@ -36,7 +36,8 @@ class PreImportSanityFacade:
         }
         try:
             parsed = json.loads(parsed_path.read_text(encoding="utf-8"))
-            summary_path.write_text(self.summary_exporter.build(parsed), encoding="utf-8")
+            from .lvs_summary_text import summary_with_recorded_source
+            summary_path.write_text(self.summary_exporter.build(summary_with_recorded_source(parsed, result_dir)), encoding="utf-8")
             status["refreshed"] = True
         except Exception as exc:
             status["error"] = str(exc)

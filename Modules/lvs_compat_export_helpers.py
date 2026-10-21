@@ -173,6 +173,8 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         ]
     if not isinstance(value, dict):
         return value
+    if value.get("contract_id") == "linux_validation_suite.native_executable_provenance":
+        return deepcopy(value)
     if (value.get("contract_id") == "linux_validation_suite.gpu_worker_slow_operations"
             and value.get("contract_version") == 1):
         # A versioned diagnostic boundary includes physical GPU identities

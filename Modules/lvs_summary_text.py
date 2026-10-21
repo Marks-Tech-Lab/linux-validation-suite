@@ -4,7 +4,13 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from .lvs_source_review import provenance_from_payload, source_identity, source_identity_text
+from .lvs_source_review import provenance_from_payload, source_identity, source_identity_text, load_result_source_identity
+from .lvs_native_binary_provenance import native_binary_reviews, native_binary_text
+
+
+def summary_with_recorded_source(result: Dict[str, Any], result_dir: Any) -> Dict[str, Any]:
+    """Ephemeral rendering context; never collect the reviewing machine's source."""
+    return {**result, "_recorded_source_review": load_result_source_identity(result_dir, parsed=result, correlate=False)}
 
 
 class SummaryTextBuilder:
@@ -29,8 +35,13 @@ class SummaryTextBuilder:
         lines.append(f"Ended: {result.get('Ended') or result.get('ended') or '-'}")
         lines.append(f"Elapsed: {report.get('Elapsed') or result.get('Elapsed') or result.get('elapsed') or '-'}")
         provenance = provenance_from_payload(result)
-        if provenance:
-            lines.append(source_identity_text(source_identity(provenance)))
+        if provenance or (result.get("_recorded_source_review") or {}).get("status", "not_recorded") != "not_recorded":
+            identity = result.get("_recorded_source_review") or source_identity(
+                provenance, end=result.get("source_provenance_end"), changed=result.get("source_changed_during_run"))
+            lines.append(source_identity_text(identity))
+        binaries = native_binary_reviews(result)
+        if binaries:
+            lines.append(native_binary_text(binaries))
         lines.append("")
 
         self._append_department_use_summary(lines, report)

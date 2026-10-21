@@ -719,6 +719,8 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
     gpu_counts = gpu_evaluation.get("status_counts") if isinstance(gpu_evaluation.get("status_counts"), dict) else {}
     gpu_evaluation_text = ""
     cpu_progress_text = ""
+    if stage.get("native_executable_text"):
+        cpu_progress_text += '<p class="muted compact" style="overflow-wrap:anywhere">' + _escape(stage["native_executable_text"]).replace("\n", "<br>") + '</p>'
     for evidence in stage.get("cpu_verified_progress") or []:
         rates = evidence.get("aggregate_interval_rate") or {}
         rate_text = (

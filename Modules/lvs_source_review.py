@@ -79,8 +79,9 @@ def source_identity(record: Any, *, end: Any = None, changed: Any = None) -> dic
         result["change_status"] = "changed" if differs else "unchanged_endpoints"
         if type(changed) is bool and changed != differs:
             result["change_status"] = "conflicting_evidence"
-    elif changed is True:
-        result["change_status"] = "changed"
+        elif changed is not None and type(changed) is not bool:
+            result["change_status"] = "conflicting_evidence"
+    # Neither boolean alone establishes an endpoint comparison.
     return result
 
 
@@ -186,12 +187,22 @@ def load_result_source_identity(result_dir: Path, *, parsed: Any = None, correla
     payloads = [JsonStore.read(Path(result_dir) / name, {}) for name in
                 ("run_manifest.json", "system_info.json", "parsed_results_extended.json")]
     payloads.append(parsed if parsed is not None else JsonStore.read(Path(result_dir) / "parsed_results_custom.json", {}))
-    manifest, _, extended, _ = payloads
-    manifest = manifest if isinstance(manifest, dict) else {}
-    extended = extended if isinstance(extended, dict) else {}
-    return review_source_records([provenance_from_payload(payload) for payload in payloads],
-        end=manifest.get("source_provenance_end") or extended.get("source_provenance_end"),
-        changed=manifest.get("source_changed_during_run", extended.get("source_changed_during_run")), correlate=correlate)
+    return review_result_source_payloads(payloads, correlate=correlate)
+
+
+def review_result_source_payloads(payloads: list[Any], *, correlate: bool = True) -> dict[str, Any]:
+    records = [p for p in payloads if isinstance(p, dict)]
+    ends = [p["source_provenance_end"] for p in records if p.get("source_provenance_end") is not None]
+    flags = [p["source_changed_during_run"] for p in records if p.get("source_changed_during_run") is not None]
+    result = review_source_records([provenance_from_payload(p) for p in records],
+        end=ends[0] if ends else None, changed=flags[0] if flags else None, correlate=correlate)
+    endpoint_ids = [source_identity(end) for end in ends]
+    if (any(type(flag) is not bool for flag in flags) or any(flag != flags[0] for flag in flags)
+            or any((other["status"], other["scope"], other["fingerprint"]) !=
+                   (endpoint_ids[0]["status"], endpoint_ids[0]["scope"], endpoint_ids[0]["fingerprint"])
+                   for other in endpoint_ids[1:])):
+        result["change_status"] = "conflicting_evidence"
+    return result
 
 
 def compare_source_identities(baseline: dict[str, Any], comparison: dict[str, Any]) -> dict[str, Any]:

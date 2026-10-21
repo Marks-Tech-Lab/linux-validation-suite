@@ -81,6 +81,18 @@ None of these observations changes worker integrity, safety, or verdict rules.
 
 ### Completed run artifacts
 
+Native CPU/RAM workers add `native_executable_provenance`, contract
+`linux_validation_suite.native_executable_provenance` v1. Prelaunch, Linux
+process-executable and post-execution observations remain separate; SHA-256,
+size, ELF-header architecture and bounded timing/file-object metadata are not
+source/binary/instruction attestation. No paths or executable payloads are added.
+Compatibility retains this versioned evidence unchanged. Reports and QA expose
+`native_executable_review` / `native_executable_text`; missing historical evidence
+is not reconstructed. See [automatic executable provenance](docs/native_executable_provenance.md).
+Compatibility output also retains recorded `source_provenance_end` and nullable
+`source_changed_during_run` so normal summaries use actual endpoints. Conflicting
+endpoint evidence is explicit; this does not alter the v1 source fingerprint.
+
 | Artifact | Classification | Ownership and compatibility notes |
 | --- | --- | --- |
 | `parsed_results_custom.json` | OCCT/legacy compatibility contract | Frozen compatibility export. Its lowercase, PascalCase, snake_case, and human-readable test keys are intentional. |

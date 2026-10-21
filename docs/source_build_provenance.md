@@ -4,6 +4,10 @@ LVS keeps the public runtime version (currently `0.5.2-alpha`) separate from
 source identity. A version string or operator label does not identify the exact
 development source. Git HEAD alone does not identify modified deployed files.
 
+Automatic [native executable observations](native_executable_provenance.md) now
+record actual CPU/RAM process executable bytes separately. This does not change
+the source v1 scope, imply reproducible compilation, or attest dependencies.
+
 ## Ordinary copying and execution: no setup
 
 Copy/transfer the complete LVS project and run it normally. **No manual command,

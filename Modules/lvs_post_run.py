@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 from .lvs_core import JsonStore
 from .lvs_google_drive_uploader import GoogleDriveUploader
+from .lvs_summary_text import summary_with_recorded_source
 
 
 @dataclass
@@ -147,7 +148,7 @@ class PostRunManager:
             parsed["Metadata"] = metadata_block
             JsonStore.write(parsed_path, parsed)
             (result_dir / "run_summary.txt").write_text(
-                self.summary_exporter.build(parsed),
+                self.summary_exporter.build(summary_with_recorded_source(parsed, result_dir)),
                 encoding="utf-8",
             )
 

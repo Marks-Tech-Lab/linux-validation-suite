@@ -73,10 +73,13 @@ scaffolds.
   verified NEON FP32/FMA. SVE FP32/FMA is implemented, experimental, and explicit-only.
 - Explicit architecture-specific ISA requests remain constrained to their
   architecture and fail closed when unavailable.
-- SVE ARM build, instruction-emission, and physical execution acceptance remain
-  pending. Generic intents, Auto, and Power Auto exclude experimental SVE.
-  Its active functional-confirmation profile is a development test, not accepted
-  coverage. SVE2 and SME remain unimplemented and outside the ISA guarantee.
+- Spark SVE functional execution and preserved-binary instruction inspection
+  passed after the v0.5.2-alpha checkpoint; exact historical launch hashes were
+  not recorded. Sustained and wider-VL acceptance remain pending.
+  Generic intents, Auto, and Power Auto still exclude experimental SVE.
+  Its active functional-confirmation profile remains an explicit experimental
+  development test, not a general SVE support guarantee. SVE2 and SME remain
+  unimplemented and outside the ISA guarantee.
 - Do not generalize AArch64 support into a promise for every ARM architecture,
   version, device, or platform.
 - Unrelated architectures are not supported unless separately implemented and

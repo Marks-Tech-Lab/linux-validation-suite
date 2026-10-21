@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
 from .lvs_source_review import load_result_source_identity, source_identity_text
+from .lvs_native_binary_provenance import load_native_binary_reviews, native_binary_text
 from .lvs_result_report_rendering import ResultReportRenderService
 from .lvs_result_report_text import (
     batch_pre_import_sanity_text,
@@ -249,6 +250,7 @@ class SuiteResultServiceMixin:
         )
 
         source_review = load_result_source_identity(result_dir, parsed=parsed)
+        binary_review = load_native_binary_reviews(result_dir, parsed=parsed)
 
         return {
             "app_name": APP_NAME,
@@ -258,6 +260,8 @@ class SuiteResultServiceMixin:
             "kind": "qa_result_review",
             "source_identity": source_review,
             "source_identity_text": source_identity_text(source_review),
+            "native_executable_review": binary_review,
+            "native_executable_text": native_binary_text(binary_review),
             "started": started,
             "ended": now_local_iso(),
             "result_folder": str(result_dir),

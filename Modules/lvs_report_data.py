@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .lvs_core import APP_NAME, APP_VERSION
-from .lvs_source_review import provenance_from_payload, review_source_records, source_identity_text
+from .lvs_source_review import review_result_source_payloads, source_identity_text
+from .lvs_native_binary_provenance import native_binary_reviews, native_binary_text
 from .lvs_output_contract_identity import (
     REPORT_DATA_CONTRACT_ID,
     REPORT_DATA_KIND,
@@ -541,6 +542,7 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         for worker in (window.get("worker_results") or [])
         if isinstance(worker, dict) and isinstance(worker.get("verified_progress_analysis"), dict)
     ]
+    native_binaries = native_binary_reviews({"stage_windows": [window]})
     return {
         "index": index,
         "stage_id": str(window.get("stage_id") or f"stage_{index + 1}"),
@@ -562,6 +564,8 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "analysis_evidence": analysis_evidence,
         "gpu_evaluation_evidence": dict(window.get("gpu_evaluation_evidence") or {}),
         **({"cpu_verified_progress": cpu_progress} if cpu_progress else {}),
+        "native_executable_review": native_binaries,
+        "native_executable_text": native_binary_text(native_binaries),
         "normalization_sources": dict(window.get("normalization_sources") or {}),
         "native_outcome": _outcome(window.get("verdict")) or "unknown",
         "failures": [],
@@ -1335,11 +1339,7 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "capability_status": source.get("capability_status", "unknown"),
             "reason": source.get("measurement_reason", ""),
         })
-    source_review = review_source_records(
-        [provenance_from_payload(item) for item in (manifest, extended, system_info, custom)],
-        end=manifest.get("source_provenance_end") or extended.get("source_provenance_end"),
-        changed=manifest.get("source_changed_during_run", extended.get("source_changed_during_run")),
-    )
+    source_review = review_result_source_payloads([manifest, extended, system_info, custom])
     payload: Dict[str, Any] = {
         "generated_at": generated_at,
         "generator": {"name": APP_NAME, "version": APP_VERSION, "module": "Modules.lvs_report"},

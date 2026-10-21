@@ -65,6 +65,7 @@ from smoke_tests.vulkan_physical_identity_checks import run_vulkan_physical_iden
 from smoke_tests.gpu_inventory_identity_checks import run_gpu_inventory_identity_checks
 from smoke_tests.source_provenance_checks import run_source_provenance_checks, run_source_provenance_artifact_checks
 from smoke_tests.source_review_checks import run_automatic_source_workflow_checks, run_source_git_correlation_checks
+from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
 from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
 from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
 from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks
@@ -29319,6 +29320,9 @@ def main() -> int:
         run_source_provenance_artifact_checks,
         run_automatic_source_workflow_checks,
         run_source_git_correlation_checks,
+        run_native_binary_provenance_checks,
+        run_source_endpoint_summary_checks,
+        run_native_binary_rejection_checks,
         test_modules_compile_recursively,
         test_modules_have_no_static_internal_import_cycles,
         test_modules_cold_import_manifest,

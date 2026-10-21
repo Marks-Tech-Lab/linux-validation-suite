@@ -16,7 +16,8 @@ requests fail closed when unavailable rather than silently substituting
 another ISA or backend.
 
 This is not a generic guarantee for every ARM architecture or platform. SVE
-FP32/FMA is implemented but experimental and physically unverified: explicit
+FP32/FMA is experimental and explicit-only; Spark functional execution and
+preserved-binary instruction inspection passed (not sustained acceptance): explicit
 `sve`/`sve_fp32_fma` requests only; ordinary Auto, generic vector intents, and
 Power Auto do not select it. SVE2 and SME are not implemented. Architectures such as RISC-V
 are outside the current support guarantee. Hardware and telemetry coverage
@@ -103,6 +104,12 @@ Git-less test machines. Normal review/comparison tools display matching,
 different, incomplete, or unavailable source evidence and can verify bounded
 local Git correlations. Source identity does not attest native binaries or
 external dependencies. See [Automatic source provenance](docs/source_build_provenance.md).
+
+Native CPU/RAM executable identities are also collected automatically at launch
+and completion, including Linux process-executable observations where available.
+No extra capture step or binary attachment is required. See
+[native executable provenance](docs/native_executable_provenance.md) for the
+separate evidence and its limitations, including historical runs without hashes.
 
 A fresh clone needs `gcc` or a compatible `cc` when LVS must build its native
 CPU and memory helpers. Helpers are built for the architecture on which LVS is
@@ -382,6 +389,10 @@ New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
 
 ## Release Notes — v0.5.2-alpha
+
+These notes describe the release checkpoint. Subsequent Spark SVE functional
+and preserved-binary acceptance is documented in
+[the SVE contract](docs/sve_fp32_fma_contract.md); SVE remains explicit-only.
 
 This corrective alpha consolidates the six development checkpoints since
 v0.5.1-alpha. Detailed commit scope, acceptance evidence, known limitations,

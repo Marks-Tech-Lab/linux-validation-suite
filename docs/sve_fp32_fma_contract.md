@@ -92,8 +92,9 @@ counts, not measured machine instructions or proof of maximum pipeline saturatio
 Reports expose quality, per-thread lengths, verified blocks/s, and derived lane work.
 Historical NEON records retain their fixed geometry and established interpretation.
 
-For v0.5.2-alpha SVE remains experimental and explicit-only pending actual ARM
-build, instruction-emission, and physical acceptance. Generic auto, all generic
+SVE remains experimental and explicit-only. Spark functional build, instruction,
+and execution evidence is now accepted as described below; sustained and broader
+vector-length acceptance remain pending. Generic auto, all generic
 vector intents (including highest-verified-vector), and Power Auto exclude SVE,
 even when hardware capability is present. Capability discovery still reports SVE
 and exact `sve`/`sve_fp32_fma` functional requests remain available without fallback.
@@ -108,22 +109,25 @@ their actual-ISA field. They test reference, lane rejection, state/lifecycle,
 progress, and export contracts, never SVE instruction execution. Deterministic
 fixtures cover varying/non-power-of-two VLs and mixed per-thread configurations.
 
-Actual AArch64 compilation and optimized SVE disassembly remain required. Use the
+For future hardware acceptance, preserve AArch64 compilation and optimized SVE
+disassembly evidence. Use the
 normal updated LVS helper build, preserve its compiler/build provenance and SHA-256,
 and inspect the actual scalable hot loop (not only witnesses) for fused vector FP32
 instructions and retained independent recurrences. Confirm baseline paths remain
 free of SVE instructions. Associate that same executable with subsequent normal LVS
 execution; do not retrofit provenance onto historical NEON runs.
 
-Spark's captured HWCAP advertises SVE, but its current VL has not been captured.
+Spark's captured HWCAP advertises SVE; its functional run observed inherited VL
+16 bytes on every thread, not the maximum or the supported set of VLs.
 The captured Snapdragon environment lacks HWCAP_SVE and is a negative-capability
 target, not proof of SVE execution. Neither machine establishes SVE2 availability.
 The active `ARM64 SVE FP32 FMA Functional Confirmation` profile is a required,
 120-second native CPU-only functional stage with exact `sve_fp32_fma` selection,
 Power Auto disabled, all allowed/online CPUs, two-second telemetry, and 30-second
 start/end trims. Profile validity does not authorize execution on non-SVE hosts.
-There is no SVE physical acceptance yet.
-Future functional all-thread acceptance must precede sustained effectiveness work.
+The October 20 Spark functional run and subsequently preserved executable close
+the initial Spark functional acceptance, with the association limitation below.
+Other systems/vector lengths are not thereby accepted.
 No universal throughput, power, thermal, or saturation threshold is introduced.
 
 Prepare and transfer the complete updated LVS test build through the normal
@@ -140,3 +144,45 @@ scalable FP32 fused instructions in the repeated stress recurrences, not only th
 witnesses. A failed optional compiler build must remain explicit unsupported-SVE
 evidence while baseline kernels stay usable. Snapdragon's captured non-SVE
 environment is a negative-capability target, not a positive execution target.
+
+## Completed Spark functional and instruction inspection
+
+The immutable October 20, 2026 functional execution at
+`results/2026-10-20_17-15-24_ARM64 SVE FP32 FMA Functional Confirmation` and its
+`17-15-23` diagnostics passed on all 20 Spark CPUs. All initial, periodic and
+final verification and affinity checks completed, with zero arithmetic errors,
+FPCR zero, inherited VL 16 bytes/four FP32 lanes, and exit code zero. There were
+2,241,467,524 verified blocks; 12 interrupted blocks were excluded. The functional
+trimmed window was 61.102742 seconds, not a long sustained acceptance run.
+Observed aggregate verified throughput was 18,513,925.877 blocks/s, derived
+151,666,080,780.525 active-lane stress FMAs/s. This does not prove saturation.
+
+On October 21 the preserved `results/cpu_stress_helper_arm64` was inspected,
+without rebuilding it, using the installed LLVM 22.1 AArch64 disassembler API.
+It is a 74,024-byte AArch64 ELF64 little-endian PIE, GCC 13.3.0, build ID
+`f3b34af257e4a9e1284885d3d9000591cc7ac560`, SHA-256
+`5916457f945d7b28d19ad7c5aa998c8382b470209de67240646bed26c746d4fc`.
+Its preserved mtime is October 20 17:15:21 EDT, consistent with normal compilation
+immediately before the captured diagnostics/execution.
+
+`execute_sve_fp32_block` at 0x3444 uses `cntw`, scalable predicated loads/stores,
+eight independent `fmla z7.s` through `z0.s` recurrences, a 256-round bound and
+32-round cancellation checks. Example at 0x3560:
+`fmla z7.s, p0/m, z8.s, z24.s`; the eighth is at 0x35bc.
+`execute_sve_witness` at 0x3624 uses a four-lane predicate, merge FMLA and masked
+stores. Live worker calls target both functions. Scalable-vector instructions
+were confined to these isolated functions in the inspected .text; baseline auto
+dispatch retains its HWCAP-gated NEON/scalar path. No hot-loop accumulator spills
+or eliminated recurrences were found; one ABI d8 save/restore is outside the loop.
+Moves/movprfx are present; this is instruction correctness, not peak efficiency.
+
+The source contract, build metadata, timing and operator-preserved origin strongly
+associate this helper with Spark's run. That historical run did not record a
+launch-time executable hash: identical executed-binary identity is not
+cryptographically established, and original evidence has not been amended.
+No repeat functional test is justified by the available evidence. At VL 16 bytes
+the witness has no inactive vector tail; larger-VL tails remain fixture-tested.
+CPU-specific temperatures, power and throttling remain unavailable/platform-dependent.
+
+New builds automatically capture separate [native executable provenance](native_executable_provenance.md)
+at normal launch and completion. This does not retrospectively attest this run.

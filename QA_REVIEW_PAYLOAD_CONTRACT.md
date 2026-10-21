@@ -28,6 +28,11 @@ fingerprints do not imply one unique Git commit, native-binary identity, equival
 hardware coverage, or hardware success. No setup command or stamp is required.
 Historical absence remains valid and is reported as not recorded.
 
+Optional additive `native_executable_review` and `native_executable_text` show
+recorded native CPU/RAM executable observations, not the reviewing machine's
+binaries. Process observations, prelaunch-only evidence, mismatches, unavailable
+evidence and historical absence remain distinct. They do not override verdicts.
+
 Required top-level fields:
 
 - `app_name`

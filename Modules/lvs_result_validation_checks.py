@@ -121,7 +121,8 @@ def validate_support_files(
                     }
                 )
             else:
-                expected_summary_text = summary_exporter.build(parsed)
+                from .lvs_summary_text import summary_with_recorded_source
+                expected_summary_text = summary_exporter.build(summary_with_recorded_source(parsed, result_dir))
                 run_summary_check["current"] = run_summary_text == expected_summary_text
                 if not run_summary_check["current"]:
                     issues.append(

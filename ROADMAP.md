@@ -152,11 +152,14 @@ Accepted AArch64 kernels are `scalar`, integer `neon`, and independently
 verified `neon_fp32_fma`. Spark and Snapdragon functional and sustained NEON
 acceptance is complete. `sve_fp32_fma` is implemented with scalable arithmetic,
 per-thread VL initialization, independent verification, and progress reporting,
-but actual ARM compilation, disassembly, and physical execution remain pending.
+and Spark functional compilation, execution and preserved-binary disassembly
+have now passed. Exact historical launch-hash association was not recorded;
+sustained and wider-VL acceptance remain pending. Explicit-only gating is unchanged.
 
 The adopted general SIMD work is:
 
-1. Complete normal Spark SVE functional build/instruction/execution acceptance.
+1. Spark SVE functional build/instruction/execution acceptance completed, with
+   documented retrospective executable-association limits.
 2. Establish SVE sustained effectiveness and negative-capability portability.
 3. Consider general automatic SVE selection only after acceptance and review.
 4. Design and implement distinct SVE2-specific work; SVE FP32/FMA is not SVE2.

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+from copy import deepcopy
+from Modules.lvs_native_binary_provenance import executable_snapshot
 
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_cpu_targeting import parse_linux_cpu_list
@@ -36,6 +38,14 @@ def apply_worker_entry_context(
     stdout_tail: str = "",
     stderr_tail: str = "",
 ) -> Dict[str, Any]:
+    native = getattr(entry, "native_executable_provenance", None)
+    if isinstance(native, dict):
+        process = getattr(entry, "process", None)
+        poll = getattr(process, "poll", None)
+        if native.get("post_execution", {}).get("status") == "not_observed" and callable(poll) and poll() is not None:
+            native["post_execution"] = executable_snapshot(getattr(entry, "native_executable_path", ""))
+        # Orchestrator observations cannot be overridden by a worker's JSON claim.
+        payload["native_executable_provenance"] = deepcopy(native)
     if getattr(entry, "result_path", None) and "result_path" not in payload:
         payload["result_path"] = str(entry.result_path)
     if "kind" not in payload:

@@ -81,6 +81,16 @@ def write_final_run_artifacts(
     capture_run_end(ended_iso=ended_iso, since_iso=started_iso, verdict=overall_verdict)
 
     for window in stage_windows:
+        for worker in window.worker_results or []:
+            native = worker.get("native_executable_provenance")
+            if isinstance(native, dict):
+                family = native.get("helper_family")
+                readiness = manifest_payload.get("backend_details", {}).get(
+                    "cpu_native_helper" if family == "cpu" else "memory_native_helper", {})
+                native["readiness"] = {"available": readiness.get("available"), "built": readiness.get("built"),
+                    "compiler_name": Path(str(readiness.get("compiler") or "")).name,
+                    "sve_build_status": (readiness.get("sve_build") or {}).get("status"),
+                    "basis": "recorded_readiness_not_binary_source_attestation"}
         window.analysis_evidence = evaluate_analysis_evidence(
             window,
             telemetry.samples,
@@ -164,6 +174,11 @@ def write_final_run_artifacts(
         skipped_stages,
     )
     compat = preserve_legacy_worker_evidence_contract(compatibility_payload)
+    if "source_provenance" in manifest_payload:
+        # Preserve actual endpoints in compatibility output so every later
+        # summary writer can render them without consulting today's checkout.
+        compat["source_provenance_end"] = manifest_payload.get("source_provenance_end")
+        compat["source_changed_during_run"] = manifest_payload.get("source_changed_during_run")
 
     normalized_hardware_evidence: Dict[str, Any] = {}
     if export_extended_json:

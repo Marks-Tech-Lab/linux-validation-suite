@@ -15,6 +15,7 @@ class StageLaunchCommand:
     gpu_spec: Optional[GpuWorkerSpec] = None
     result_path: Optional[str] = None
     system_memory_plan: Optional[Dict[str, Any]] = None
+    native_helper_family: str = ""
 
 
 def build_stage_launch_commands(
@@ -60,7 +61,10 @@ def build_stage_launch_commands(
         else:
             cpu_cmd = runner._cpu_command(stage.modules.cpu, cpu_kernel_flavor, cpu_result_path)
         if cpu_cmd:
-            commands.append(StageLaunchCommand("cpu", cpu_cmd, None, cpu_result_path or None, stage_memory_plan))
+            backend = cpu_backend_override or (runner._cpu_backend_name(stage.modules.cpu)
+                                               if callable(getattr(runner, "_cpu_backend_name", None)) else "")
+            commands.append(StageLaunchCommand("cpu", cpu_cmd, None, cpu_result_path or None, stage_memory_plan,
+                                               "cpu" if backend == "cpu_native_helper" else ""))
     if stage.modules.memory.enabled:
         mem_result_path = str(worker_results_dir / f"{stage.id}_memory.json") if worker_results_dir else ""
         if legacy_runner_adapter:
@@ -72,7 +76,10 @@ def build_stage_launch_commands(
                 resolved_target_bytes=int(stage_memory_plan.get("ram_target_bytes") or 0),
             )
         if mem_cmd:
-            commands.append(StageLaunchCommand("memory", mem_cmd, None, mem_result_path or None, stage_memory_plan))
+            backend = (runner._memory_backend_name(stage.modules.memory)
+                       if callable(getattr(runner, "_memory_backend_name", None)) else "")
+            commands.append(StageLaunchCommand("memory", mem_cmd, None, mem_result_path or None, stage_memory_plan,
+                                               "memory" if backend == "memory_native_helper" else ""))
     for worker_index, worker in enumerate(gpu_workers, start=1):
         result_path = str(worker_results_dir / f"{stage.id}_{worker.workload}_{worker_index}.json") if worker_results_dir else None
         materialized = runner._materialize_gpu_worker(worker, result_path)

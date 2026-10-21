@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from .lvs_core import JsonStore
 from .lvs_service_models import FrontendActionSpec, ResultListEntry
+from .lvs_summary_text import summary_with_recorded_source
 
 
 RESULT_ACTIONS = {
@@ -114,7 +115,7 @@ def result_summary_text(result_dir: Path, summary_exporter: Any) -> str:
     parsed_path = result_dir / "parsed_results_custom.json"
     if parsed_path.exists():
         payload = read_result_json(parsed_path)
-        return summary_exporter.build(payload)
+        return summary_exporter.build(summary_with_recorded_source(payload, result_dir))
     return f"No run summary or parsed_results_custom.json found in {result_dir}"
 
 
@@ -126,7 +127,7 @@ def refresh_run_summary(result_dir: Path, summary_exporter: Any) -> Dict[str, An
         parsed = read_result_json(parsed_path)
         if not parsed:
             raise ValueError("parsed_results_custom.json is missing or empty")
-        summary_path.write_text(summary_exporter.build(parsed), encoding="utf-8")
+        summary_path.write_text(summary_exporter.build(summary_with_recorded_source(parsed, result_dir)), encoding="utf-8")
         status["refreshed"] = True
     except Exception as exc:
         status["error"] = str(exc)

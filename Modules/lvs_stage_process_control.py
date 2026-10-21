@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from Modules.lvs_external_process_evidence import executable_version, resolve_executable_path
 from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
 from Modules.lvs_stage_launch_plan import StageLaunchCommand
+from Modules.lvs_native_binary_provenance import begin_native_executable, observe_process_executable
 
 
 PYTHON_CPU_FALLBACK_SHUTDOWN_TIMEOUT_SECONDS = 10.0
@@ -41,6 +42,8 @@ class StageProcess:
     forced_kill: bool = False
     shutdown_error: str = ""
     system_memory_plan: Optional[Dict[str, Any]] = None
+    native_executable_provenance: Optional[Dict[str, Any]] = None
+    native_executable_path: str = ""
 
 
 def _command_option_int(command: List[str], option: str) -> int:
@@ -108,6 +111,12 @@ def launch_stage_processes_from_plan(
                 if is_stress_ng
                 else ""
             )
+            family = getattr(planned, "native_helper_family", "")
+            if not family and kind in {"cpu", "memory"} and Path(executable_requested).name.startswith(
+                    "cpu_stress_helper" if kind == "cpu" else "memory_stress_helper"):
+                family = kind
+            native_path, native_evidence = (begin_native_executable(cmd, family, command_env)
+                                             if family in {"cpu", "memory"} else ("", None))
             stdout_path = str(worker_logs_dir / f"{stage_id}_{kind}_{launch_index}.stdout.log") if worker_logs_dir else None
             stderr_path = str(worker_logs_dir / f"{stage_id}_{kind}_{launch_index}.stderr.log") if worker_logs_dir else None
             stdout_handle = open(stdout_path, "wb") if stdout_path else subprocess.DEVNULL
@@ -141,8 +150,17 @@ def launch_stage_processes_from_plan(
                     started_iso=started_iso,
                     started_monotonic=started_monotonic,
                     system_memory_plan=getattr(planned, "system_memory_plan", None),
+                    native_executable_provenance=native_evidence,
+                    native_executable_path=native_path,
                 )
             )
+            if native_evidence is not None:
+                observe_process_executable(native_evidence, process)
+        except (KeyboardInterrupt, SystemExit):
+            # The new optional observation must not enlarge an unowned-child
+            # window: register first, then preserve cancellation and cleanup.
+            stop_stage_processes(launches)
+            raise
         except FileNotFoundError:
             print(f"[warn] Missing tool for command: {' '.join(cmd)}")
         except Exception as exc:
