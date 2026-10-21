@@ -38,6 +38,7 @@ from smoke_tests.module_organization_checks import (
 )
 from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
+from smoke_tests.captured_profile_checks import run_captured_profile_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
 from smoke_tests.direct_hwmon_telemetry_checks import run_direct_hwmon_telemetry_checks
@@ -5607,6 +5608,9 @@ def test_run_bootstrap_artifact_helpers() -> None:
         )
         manifest = JsonStore.read(run_dir / "run_manifest.json", {})
         profile_used = JsonStore.read(run_dir / "profile_used.json", {})
+        replay = ProfileLoader(run_dir).load_profile(run_dir / "profile_used.json")
+        assert_equal([stage.enabled for stage in replay.stages], [True, False], "bootstrap capture replays effective enablement")
+        assert_equal([stage.display_label for stage in replay.stages], ["CPU", "GPU"], "bootstrap capture keeps labels across skip")
         system_info = JsonStore.read(run_dir / "system_info.json", {})
         debug_manifest = JsonStore.read(run_dir / "advanced_debug" / "advanced_debug_manifest.json", {})
         assert_equal(result.effective_labels, ["CPU"], "bootstrap result effective labels")
@@ -5815,6 +5819,7 @@ def test_final_run_artifact_writer_helpers() -> None:
         "message": "warm",
         "severity": "warning",
     }
+    artifact_profile = ValidationProfile(profile_name="Smoke", stages=[StageConfig(id="segment_1", name="CPU Stage", duration_seconds=60)])
     with TemporaryDirectory(dir="/tmp") as tmp:
         run_dir = Path(tmp)
         telemetry = FakeTelemetry()
@@ -5823,7 +5828,7 @@ def test_final_run_artifact_writer_helpers() -> None:
             manifest_payload={"profile_name": "Smoke"},
             app_name="LVS",
             app_version="0.0",
-            profile=ValidationProfile(profile_name="Smoke"),
+            profile=artifact_profile,
             metadata=ValidationProfile(profile_name="Smoke"),
             started_iso="2026-06-12T00:00:00",
             ended_iso="2026-06-12T00:01:00",
@@ -5848,6 +5853,11 @@ def test_final_run_artifact_writer_helpers() -> None:
         manifest = JsonStore.read(run_dir / "run_manifest.json", {})
         parsed = JsonStore.read(run_dir / "parsed_results_custom.json", {})
         extended = JsonStore.read(run_dir / "parsed_results_extended.json", {})
+        replay_path = run_dir / "extended_profile_fixture.json"
+        JsonStore.write(replay_path, extended["profile"])
+        extended_replay = ProfileLoader(run_dir).load_profile(replay_path)
+        assert_equal(extended_replay.profile_name, artifact_profile.profile_name, "extended profile replays through strict loader")
+        assert_equal(extended_replay.stages[0].enabled, artifact_profile.stages[0].enabled, "extended profile preserves enablement")
         source_map = JsonStore.read(run_dir / "telemetry_source_map.json", {})
         assert_equal(result.overall_verdict, "warning", "artifact writer final verdict")
         assert_contract_identity(
@@ -29309,6 +29319,7 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_captured_profile_checks,
         run_analysis_quality_checks,
         run_gpu_evaluation_policy_checks,
         run_vulkan_workload_effectiveness_checks,

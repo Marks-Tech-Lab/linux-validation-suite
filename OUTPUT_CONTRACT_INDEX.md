@@ -105,6 +105,18 @@ endpoint evidence is explicit; this does not alter the v1 source fingerprint.
 | `raw_telemetry.csv` | Text/CSV companion | Dense timestamped telemetry. Metric column names are a compatibility surface even though they currently use snake_case. |
 | `run_summary.txt` | Text/CSV companion | Human-readable rendering of the compatibility result. |
 
+Effective profiles in `profile_used.json` (execution and diagnostics) and the
+extended result's `profile` use `ProfileLoader.profile_payload`, sharing normal
+profile serialization rules. Absent stage `analysis`/`gpu_evaluation` objects
+are omitted, not emitted as null; configured objects and effective disabled/skipped
+stages remain intact. Capture serialization does not mutate the run configuration.
+Diagnostic captures retain additive `segment_labels` and all-stage runnable policy.
+`load_profile` stays strict, including for a file named `profile_used.json`.
+The explicit `load_captured_profile` compatibility reader treats only the two
+legacy optional-object null sentinels as absence, in memory. It does not repair
+malformed non-null objects or rewrite evidence. Existing raw report/QA readers
+remain compatible; legacy results are not rewritten or reinterpreted as new runs.
+
 `Hardware.Storage` retains every established compatibility key. Eligible
 internal-drive entries may additionally contain snake_case classification
 fields and a normalized `storage_health` object. This object contains only

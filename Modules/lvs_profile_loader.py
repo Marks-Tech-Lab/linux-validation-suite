@@ -106,6 +106,26 @@ class ProfileLoader:
 
     def load_profile(self, path: Path) -> ValidationProfile:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        return self._profile_from_payload(raw, path)
+
+    def load_captured_profile(self, path: Path) -> ValidationProfile:
+        """Read legacy LVS captures without relaxing authored-profile validation.
+
+        Old dataclass dumps emitted null for absent optional stage objects.
+        Only those two exact null sentinels are omitted, in memory; malformed
+        objects and all other values still pass through the strict parser.
+        The evidence file is never rewritten and filenames do not opt in.
+        """
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("stages"), list):
+            for stage in raw["stages"]:
+                if isinstance(stage, dict):
+                    for key in ("analysis", "gpu_evaluation"):
+                        if key in stage and stage[key] is None:
+                            del stage[key]
+        return self._profile_from_payload(raw, path)
+
+    def _profile_from_payload(self, raw: Dict[str, Any], path: Path) -> ValidationProfile:
         defaults = ProfileDefaults(**raw.get("defaults", {}))
         stages: List[StageConfig] = []
         for stage_raw in raw.get("stages", []):
@@ -201,18 +221,30 @@ class ProfileLoader:
             if not stage.display_label.strip():
                 stage.display_label = stage.name
         profile.segment_label_source = None
-        payload = {
-            "profile_name": profile.profile_name,
-            "profile_type": profile.profile_type,
-            "menu_group": self._normalize_menu_group(profile.menu_group),
-            "require_all_stages_runnable": bool(profile.require_all_stages_runnable),
-            "defaults": asdict(profile.defaults),
-            "stages": [self._stage_payload(stage) for stage in profile.stages],
-        }
-        menu_description = self._normalize_menu_description(profile.menu_description)
-        if menu_description:
-            payload["menu_description"] = menu_description
-        JsonStore.write(path, payload)
+        JsonStore.write(path, self.profile_payload(profile))
+
+    @classmethod
+    def profile_payload(cls, profile: ValidationProfile, labels: Optional[List[str]] = None) -> Dict[str, Any]:
+        """One schema-consistent serializer for editing, diagnostics and runs.
+
+        Unlike save_profile, this does not mutate the effective profile or
+        change enablement. Labels are indexed by ALL stages, including skips.
+        """
+        payload = asdict(profile)
+        payload["stages"] = [cls._stage_payload(stage) for stage in profile.stages]
+        if labels is not None:
+            for stage, label in zip(payload["stages"], labels):
+                if str(label or "").strip():
+                    stage["display_label"] = str(label).strip()
+        if profile.segment_label_source is None:
+            payload.pop("segment_label_source", None)
+        payload["menu_group"] = cls._normalize_menu_group(profile.menu_group)
+        description = cls._normalize_menu_description(profile.menu_description)
+        if description:
+            payload["menu_description"] = description
+        else:
+            payload.pop("menu_description", None)
+        return payload
 
     @staticmethod
     def _stage_payload(stage: StageConfig) -> Dict[str, Any]:

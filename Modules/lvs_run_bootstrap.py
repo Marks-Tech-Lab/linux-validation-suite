@@ -16,6 +16,7 @@ from Modules.lvs_output_contract_identity import (
     stamp_contract_identity,
 )
 from Modules.lvs_profile_models import StageConfig, ValidationProfile
+from Modules.lvs_profile_loader import ProfileLoader
 
 
 @dataclass(frozen=True)
@@ -189,7 +190,7 @@ def bootstrap_run_artifacts(
     system_info["SourceProvenance"] = source_provenance
     JsonStore.write(run_dir / "system_info.json", system_info)
     JsonStore.write(run_dir / "run_metadata.json", asdict(metadata))
-    JsonStore.write(run_dir / "profile_used.json", asdict(effective_profile))
+    JsonStore.write(run_dir / "profile_used.json", ProfileLoader.profile_payload(effective_profile, labels))
     manifest_payload = stamp_contract_identity({
         "app_name": app_name,
         "app_version": app_version,

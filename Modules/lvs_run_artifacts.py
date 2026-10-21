@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from Modules.lvs_core import JsonStore
+from Modules.lvs_profile_loader import ProfileLoader
 from Modules.lvs_source_provenance import collect_source_provenance
 from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
 from Modules.lvs_output_contract_identity import (
@@ -202,7 +203,7 @@ def write_final_run_artifacts(
                     "source_provenance_end": manifest_payload.get("source_provenance_end"),
                     "source_changed_during_run": manifest_payload.get("source_changed_during_run")}
                    if "source_provenance" in manifest_payload else {}),
-                "profile": asdict(profile),
+                "profile": ProfileLoader.profile_payload(profile),
                 "run_metadata": asdict(metadata),
                 "stage_windows": [asdict(w) for w in stage_windows],
                 "memory_allocation_plans": [

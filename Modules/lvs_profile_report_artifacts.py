@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
 from .lvs_source_provenance import collect_source_provenance
 from .lvs_source_review import source_identity, source_identity_text
+from .lvs_profile_loader import ProfileLoader
 
 
 def safe_report_name(value: str) -> str:
@@ -20,16 +20,7 @@ def safe_report_name(value: str) -> str:
 
 
 def profile_used_payload(profile: Any, labels: List[str]) -> Dict[str, Any]:
-    return {
-        "profile_name": getattr(profile, "profile_name", ""),
-        "profile_type": getattr(profile, "profile_type", ""),
-        "segment_label_source": getattr(profile, "segment_label_source", ""),
-        "menu_description": getattr(profile, "menu_description", ""),
-        "menu_group": getattr(profile, "menu_group", ""),
-        "segment_labels": labels,
-        "defaults": asdict(profile.defaults),
-        "stages": [asdict(stage) for stage in profile.stages],
-    }
+    return {**ProfileLoader.profile_payload(profile, labels), "segment_labels": list(labels)}
 
 
 class ProfileReportArtifactWriter:
