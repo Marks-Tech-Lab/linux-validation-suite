@@ -3,7 +3,45 @@
 This roadmap is the project-status source for completed, deferred, and
 undecided work. Deferred or possible work is not committed release scope.
 
+## Status And Current Priority Queue — 2026-10-23
+
+`[x]` marks only the named checkpoint in its stated scope. Proposal/design,
+implementation, software validation and physical acceptance are separate gates;
+source presence, smoke-test success or ISA selection does not prove physical
+acceptance. Existing historical sections retain their original release scope.
+
+1. [x] Implement and software-validate current CLI/TUI configuration parity,
+   immediate Copy/Save As persistence and temporary workload overrides. Latest
+   local checkpoint: 303/303 smoke tests and 81/81 profiles valid. This is not
+   hardware acceptance; the UX does not require physical stress to validate it.
+2. [x] Physically confirm corrected EGL readback/scheduling and geometry, and
+   Core Ultra OpenCL assigned-target attainment with sampled integrity, guards
+   and cleanup on the exercised configurations. This is not exhaustive memory
+   verification, physical-residency proof or acceptance of every backend.
+3. [ ] Complete corrected Vulkan allocation-path integration acceptance:
+   dedicated/shared device memory, separately protected host staging, alignment
+   accounting and cleanup. The changes and negative safety checks are
+   implemented/software-validated; earlier Vulkan identity acceptance does not
+   accept these newer paths. Keep unresolved I/O/persistence incidents separate
+   from workload correctness and do not declare their cause fixed.
+4. [ ] Complete current ARM64 `highest_verified_vector` physical integration
+   confirmation on Spark and Snapdragon. The policy is implemented and
+   software-validated; earlier SVE/NEON arithmetic acceptance remains scoped to
+   its actual campaigns, not the newly exposed selection workflow.
+5. [ ] Finish the already-adopted major x86_64/AArch64 ISA milestones below,
+   with independent verification and scoped hardware acceptance. Record any
+   hardware-unavailability deferrals explicitly rather than marking them done.
+6. [ ] Retain corrective release-readiness, safety, provenance and compatibility
+   review before publication. No future feature here assigns a release version.
+
+Only after these current prerequisites are closed or explicitly re-scoped may
+the dynamic-stress sequence below begin. This records future planning priority,
+not authorization to implement workers or change current test/verdict policy.
+
 ## Prepared In v0.5.2-alpha
+
+Historical release boundary at publication; subsequent development status is
+tracked above and in the ISA section, not retroactively added to this release.
 
 - Physically accepted NEON FP32/FMA on Spark and Snapdragon, independent
   arithmetic verification, all-thread integrity, and sustained verified progress.
@@ -142,6 +180,15 @@ stress family. These are not additional ordinary top-level SIMD tiers unless
 architecture semantics require one. AVX10.x remains future work until physical
 hardware is available.
 
+Outstanding adopted flavors (design/implementation, software validation and
+physical acceptance remain to be completed for each):
+
+- [ ] AVX-VNNI / 256-bit VNNI.
+- [ ] AVX-512 VNNI.
+- [ ] AVX-512 BF16.
+- [ ] AVX-512 FP16.
+- [ ] Separate Intel AMX INT8/BF16/FP16 matrix/tile family.
+
 SSE3/SSSE3/SSE4.x, AES/SHA/GFNI, BMI/ADX, IFMA/VBMI, and similar extensions are
 not adopted merely because they exist; they are not current general
 thermal-stress priorities.
@@ -152,40 +199,48 @@ Accepted AArch64 kernels are `scalar`, integer `neon`, and independently
 verified `neon_fp32_fma`. Spark and Snapdragon functional and sustained NEON
 acceptance is complete. `sve_fp32_fma` is implemented with scalable arithmetic,
 per-thread VL initialization, independent verification, and progress reporting,
-and Spark functional compilation, execution and preserved-binary disassembly
-have now passed. Exact historical launch-hash association was not recorded;
-sustained and wider-VL acceptance remain pending. Explicit-only gating is unchanged.
+and Spark functional compilation, execution, preserved-binary disassembly and
+600-second sustained acceptance have passed at 128-bit VL. Current-build
+Snapdragon non-SVE compilation, rejection and scalar/NEON execution have passed.
+The original functional run lacked a launch hash; the sustained run records a
+matching process executable hash. Wider-VL physical acceptance remains pending.
+SVE remains experimental but is deliberately eligible through the operator's
+ARM64 `highest_verified_vector` intent, separately from ordinary Auto/Power Auto.
 
 The adopted general SIMD work is:
 
-1. Spark SVE functional build/instruction/execution acceptance completed, with
+- [x] Spark SVE functional build/instruction/execution acceptance completed, with
    documented retrospective executable-association limits.
-2. Current acceptance step: run the advanced `ARM64 SVE FP32 FMA Sustained
-   Effectiveness` profile (600 seconds, 60-second start/end trims, minimum
-   480 usable seconds) on Spark. Preserve explicit-only selection and assess
-   timestamped all-thread verified work, stability, telemetry and executable
-   provenance; no universal performance or saturation target applies.
-   Wider-vector-length physical validation and negative-capability portability
-   remain outstanding. See [the SVE contract](docs/sve_fp32_fma_contract.md)
-   for acceptance evidence and the October 19 NEON comparison methodology.
-3. Consider general automatic SVE selection only after acceptance and review.
-4. Design and implement distinct SVE2-specific work; SVE FP32/FMA is not SVE2.
+- [x] Spark sustained effectiveness and current Snapdragon negative-capability
+   portability completed. Wider-vector-length physical validation remains
+   outstanding; see [the SVE contract](docs/sve_fp32_fma_contract.md).
+- [x] Implement and software-validate ARM64 `highest_verified_vector`, ranking
+   common-capable implementations with
+   established software-verification contracts: SVE FP32/FMA, NEON FP32/FMA,
+   then integer NEON. This is not a physical-coverage or performance ranking.
+   Baseline/high-throughput intents, ordinary Auto and Power Auto are unchanged.
+- [ ] Physically confirm the current highest-vector selection integration;
+  this is separate from the accepted arithmetic campaigns.
+- [ ] Physically validate wider SVE vector lengths and other implementations;
+  software scalable/mixed-VL fixtures do not close this gate.
+- [ ] Design, implement, independently verify and physically accept distinct
+  SVE2-specific work; SVE FP32/FMA is not SVE2.
 
-Once SVE/SVE2 are independently accepted, future generic ARM instruction intents may
-resolve as follows:
+Current ARM instruction intents resolve as follows:
 
 - `baseline_vector` selects NEON.
-- `high_throughput_vector` selects the appropriate common SVE/SVE2 tier and
-  falls back to NEON when that tier is unavailable.
-- `highest_verified_vector` selects the highest accepted general vector tier
-  common to the complete target CPU set.
-- Explicit `neon`, `sve`, and `sve2` requests select that exact tier or fail
-  closed.
+- `high_throughput_vector` prefers NEON FP32/FMA, then integer NEON.
+- `highest_verified_vector` prefers common SVE FP32/FMA, then NEON FP32/FMA,
+  then integer NEON. Actual per-thread VL and software verification are
+  established at execution; prior physical acceptance is separate evidence.
+- Explicit `neon`, `sve` and exact FP32/FMA requests retain their identities or
+  fail closed. SVE2 remains future work, not a selectable implemented kernel.
 
 SVE and SVE2 must not be encoded as automatically hotter than scalar or NEON.
-For v0.5.2-alpha all generic ARM intents stay at accepted NEON tiers; ordinary
-Auto stays NEON/scalar and Power Auto excludes SVE. Explicit SVE remains a
-fail-closed experimental functional-testing request, not production acceptance.
+The published v0.5.2-alpha policy excluded SVE from generic intents. This
+post-release development change affects only the deliberate highest-vector
+intent. Ordinary Auto stays NEON/scalar and Power Auto excludes SVE. A wider
+inherited VL is software-validated, never thereby declared physically accepted.
 
 ### AArch64 specialized stress flavors
 
@@ -195,6 +250,16 @@ BF16. AES/SHA/SM3/SM4/CRC and SVE crypto extensions, SVE bitperm, and FCMA/RDM
 or miscellaneous DSP extensions are outside current scope unless later evidence
 establishes unique validation value. SME and SME2 remain deferred until
 physical hardware exposing them is available.
+
+Outstanding adopted specialized families, each requiring its own design,
+implementation, independent software verification and physical acceptance:
+
+- [ ] NEON FP16/FHM (`asimdhp` / `asimdfhm`).
+- [ ] NEON DotProd (`asimddp`).
+- [ ] NEON I8MM.
+- [ ] NEON BF16.
+- [ ] SVE I8MM.
+- [ ] SVE BF16.
 
 ### AArch64 evidence and portability boundary
 
@@ -208,20 +273,147 @@ establish runtime acceptance of SVE2 or specialized kernels. Separately, Spark's
 October 20 SVE functional execution established all-thread VL 16 bytes, successful
 native compilation and verified execution; inspection of the preserved helper
 confirmed optimized scalable FP32 FMA instructions. Exact historical launch-hash
-association was not recorded. Sustained SVE effectiveness and wider VLs remain
-unvalidated; model names authorize nothing.
+association was not recorded for that functional run. The subsequent sustained
+run passed with matching prelaunch/process/post-execution hashes. Wider VLs
+remain physically unvalidated; model names authorize nothing.
 
 The baseline ARM64 helper must continue to build and run on the Snapdragon X1
 Plus with scalar and NEON only. Do not compile the complete helper globally with
 an SVE/SVE2-only `-march`. Future SVE, SVE2, and specialized implementations
 must use isolated feature compilation, targeted functions or objects, compiler
 capability probes, and appropriate runtime HWCAP/HWCAP2 checks. Snapdragon
-regression validation is mandatory after the Spark ISA work.
+current-build portability regression passed after the Spark ISA work; future
+native ISA changes must continue preserving this non-SVE path.
+
+## Proposed Dynamic Stress And Diagnostics Sequence
+
+Technical reference: [Dynamic Stress and Diagnostics planning draft, revised
+2026-10-23](docs/planning/LVS_Dynamic_Power_Stress_Roadmap_Revised_2026-10-23.md).
+ROADMAP.md remains authoritative. The reference is retained as a detailed draft;
+its "not yet applied" and Git-handoff wording records its drafting context,
+not current project status or permission to commit. This section replaces the
+earlier brief GPU transient-load/spike-hammer note.
+
+### Milestone Status And Dependencies
+
+The priority sequence is recorded; every new workload remains proposed, with
+design approval and implementation separately gated. No proposed preset below
+is an existing profile, command or menu entry.
+
+| Milestone | Dependency / purpose | Proposal recorded | Design approved | Implemented | Software-validated | Physically accepted |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1A — Calibrated sustained high-power GPU foundation | Close current priority queue first; establish repeatable verified high demand | [x] | [ ] | [ ] | [ ] | [ ] |
+| 1B — High-amplitude GPU power transitions | Accept 1A's high-demand foundation before transitioning into/out of it | [x] | [ ] | [ ] | [ ] | [ ] |
+| 1C — GPU OC/UV and workload-diversity stability | Build on accepted 1A/1B; stepped, seeded and mixed operating-region coverage | [x] | [ ] | [ ] | [ ] | [ ] |
+| 2 — CPU core-count / burst / hotspot hammer | After milestone 1; reuse proven native ISA/verification and authoritative topology | [x] | [ ] | [ ] | [ ] | [ ] |
+| 3 — Coordinated CPU/GPU platform transients | Accept individual milestone 1/2 paths, then synchronize and calibrate combined load | [x] | [ ] | [ ] | [ ] | [ ] |
+
+Later queue (unscoped proposals, not implementation commitments):
+
+- [ ] **4 — review substantial storage/network expansion** after usable
+  dynamic-stress acceptance.
+- [ ] **5 — extensive HTML/report diagnostics modernization** after workload/
+  interval contracts stabilize.
+
+Milestone 5 concerns retained results, readers and contract acceptance, not new physical
+stress tests solely to change presentation. Necessary evidence-schema groundwork
+belongs alongside each earlier workload, not only in milestone 5.
+
+### Milestone Scope And Acceptance Gates
+
+- **1A:** Compare complementary graphics/render, compute/shader and
+  memory/bandwidth candidates using authoritatively bound supported backends.
+  Calibration must be bounded, safe and device-local; retain a fixed,
+  repeatable candidate and measured envelope, not a perpetual wattage search.
+  Do not assume one API wins across vendors or change driver/firmware limits.
+  Provide the sustained high-demand mode independently of transient trials.
+  Preserve thermal shutoff where available, bounded duty/duration and
+  conservative handling of missing critical sensors.
+  Report power/thermal limiting and unobserved measurements rather than
+  silently treating them as achieved target power.
+- **1B:** Transition calibrated high demand to/from light/idle work, including
+  low-medium-high and asymmetric dwell sequences. Prefer initialized, retained
+  resources and real dispatch/work-mix changes; allocation churn is a separate
+  future decision. Record commanded and achieved phases, dispatch/completion,
+  settling, missed cycles and timestamp uncertainty. Measured pilots must set
+  feasible dwell ranges; seeded bursts, randomized cycles and cold/hot recovery
+  remain bounded design candidates, not promised timing capabilities.
+- **1C:** Use stepped/seeded intensity and diverse execution patterns, with
+  repeated return to high demand. Record operator-selected stock/OC/UV settings
+  and permitted tuning metadata; allow controlled A/B comparisons without
+  automatically changing voltage, power limits or firmware. A clean run covers
+  only its actual pattern, environment and duration.
+- **2:** Vary allowed physical-core counts before all allowed hardware threads;
+  clip safely on small systems. Use authoritative hybrid core classes, SMT
+  siblings, AMD CCD locality and AArch64 clusters where available, plus hot-core
+  rotation and bounded burst/duty modes. Preserve actual affinity and verified
+  progress through transitions. Calibrate maximum package power separately
+  from lightly threaded high-boost/hotspot behavior; the highest-watt kernel
+  need not cover the hottest-core condition or desktop-like boost behavior.
+- **3:** Share one phase timeline across verified workers for coincident ramps,
+  offset/anti-phase swings and alternating bursts. Include separate combined
+  sustained-power, abrupt-step and anti-phase modes. Calibrate achieved platform
+  demand rather than adding nominal percentages; contention or package limits
+  can reduce GPU power. Preserve the single host-memory pool/reserve on UMA.
+- **4:** Preserve existing Storage Health/Storage Benchmark baselines. New
+  dedicated storage stress and NIC/network scope require separate decisions,
+  non-destructive/system-drive safeguards and explicit peer prerequisites.
+- **5:** Add phase-aligned plots, event tables and comparisons only after the
+  evidence contracts stabilize. Preserve raw/extended/compatibility results,
+  segment associations and gap disclosures. Show thermal limits and base/boost
+  references only with trustworthy sensor/model/core-class provenance. Any
+  proposed deficit evaluation needs loaded, stable, phase-qualified windows,
+  trims, duration/margin and quality rules; idle, transitions, intentional caps,
+  absent sensors or a core-count change must not become automatic hardware FAIL.
+  Observation, reliable throttle diagnosis and arithmetic failure stay separate.
+
+Common gates for new stress milestones (all remain outstanding):
+
+- [ ] Preserve the [hardware-scalability contract](ARCHITECTURE_MAP.md#hardware-scalability-contract),
+  authoritative physical identity and safety limits across low-resource,
+  high-resource, heterogeneous and missing-capability configurations.
+- [ ] Approve backend coverage, concise operator presets and measured pilot
+  durations/dwell/duty/abort limits. Proposed presets are **GPU Maximum Power**,
+  **GPU Power Transitions**, **GPU OC/UV Stability**, **CPU Core-Count/Boost** and
+  later **Platform Power Transitions**; keep advanced tuning secondary.
+- [ ] Define versioned/additive phase, verification, telemetry and incident
+  evidence early. Keep functional integrity, achieved stress adequacy/coverage
+  and incident outcomes separate; a weak but error-free workload is not enough
+  to accept the high-power/transient feature. Missing evidence is not zero or
+  success; absent critical verification must block acceptance.
+- [ ] Prove bounded verification cadence, transition scheduling, host storage,
+  cancellation, emergency handling, cleanup and reserve/UMA accounting in
+  deterministic regressions, including failed and interrupted operations.
+- [ ] Physically compare achieved envelopes against demanding known-good and
+  relevant gaming loads on representative eligible AMD/NVIDIA/Intel paths,
+  dGPU/iGPU where feasible. Include controlled stock/OC/UV and platform A/B
+  coverage where justified; accept only the backend/device paths exercised.
+- [ ] Retain requested intensity, verified progress, telemetry and achieved
+  load as distinct facts. Neither 100% busy nor nominal TGP/TBP proves maximum
+  power, and no universal wattage/clock target is authorized. OCCT observations
+  motivate independent calibration; OCCT is not the acceptance performance bar.
+- [ ] Distinguish GPU board power, wall AC power and platform demand, disclosing
+  sensor/meter bandwidth. User-space switching is not laboratory-grade
+  100-microsecond excursion testing. PSU electrical/ATX compliance remains out
+  of scope without separately calibrated high-speed electrical instrumentation.
+- [ ] Design bounded last-confirmed-phase and run-state breadcrumbs, with
+  interrupted/unknown-cause handling where feasible after restart. Avoid
+  high-frequency synchronous persistence; disclose lost samples and timestamp
+  uncertainty. A shutdown/reset alone does not diagnose PSU or hardware failure.
+
+Design decisions still open: empirical backend/candidate choice; calibration
+confidence and sensor-poor fallback; verification cost versus phase fidelity;
+safe defaults; interrupted-run verdict presentation; and the acceptance matrix.
+Agree which current ISA gates must close and explicitly approve any unavailable-
+hardware deferrals before starting 1A; do not let this proposal silently waive
+SVE wider-VL, specialized ISA or existing release-readiness obligations.
+Existing deferred Phase 3/4 output migration remains separately gated; early
+evidence groundwork does not authorize changing the legacy compatibility format.
 
 ## Deferred Hardware Modules
 
 - Additional storage testing beyond the current Storage Health and Storage
-  Benchmark baseline is deferred pending actual planning.
+  Benchmark baseline is deferred pending milestone 4 planning above.
 - Before the first real AArch64 GPU OpenCL validation, add common AArch64
   multiarch loader paths through one shared resolver. Do not fork the OpenCL
   workers or claim ARM GPU OpenCL acceptance before hardware validation.
