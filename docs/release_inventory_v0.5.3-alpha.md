@@ -1,13 +1,19 @@
-# Proposed LVS v0.5.2 release inventory
+# LVS v0.5.3-alpha release inventory
 
-Prepared October 30, 2026. Profile archival is approved and complete; final
-staging remains subject to review. The index remains empty. No results,
-diagnostics, settings or runtime locks are relocated or deleted.
+Updated October 30, 2026. The approved development inventory was committed and
+pushed as `00772b2c9a233680827bc765cd368e23677d6d2b`, with an incorrect prepared
+v0.5.2 identity. No release tag or GitHub Release was created. The separate,
+uncommitted v0.5.3-alpha correction below changes only version metadata and
+current-release documentation. The index remains empty. No results, diagnostics,
+settings or runtime locks are relocated or deleted.
 
 ## Final inventory decisions
 
-Stage exactly the **116 Include** paths below after final approval. The single
-**Exclude** row is the unrelated runtime lock. There are no Pending paths.
+The approved development inventory contains **116 Include** paths. Its two
+release-document paths below reflect their final v0.5.3-alpha names. The single
+**Exclude** row remains the unrelated runtime lock. These rows describe the
+release contents, not the current correction's Git status or a request to stage
+all 116 paths again. The separate correction inventory follows the table.
 All five original GPU Correction JSON files were moved byte-for-byte to
 `profiles/Archived/2026 Hardware Validation/08 GPU Corrections October 22/`.
 There are no active duplicates. This follows the existing numbered historical
@@ -31,7 +37,7 @@ Opt-in diagnostics and their tests are intentional. In particular,
 even when diagnostics are off; it must ship. Do not discard diagnostic source as
 abandoned scaffolding or omit newly added production dependencies.
 
-## Every pending file
+## Approved development inventory (final release paths)
 
 ### Required release source (79)
 
@@ -149,8 +155,8 @@ abandoned scaffolding or omit newly added production dependencies.
 | `README.md` | modified | Include |
 | `ROADMAP.md` | modified | Include |
 | `docs/amd_vulkan_dispatch_timing_diagnostic.md` | new | Include |
-| `docs/release_inventory_v0.5.2.md` | new | Include |
-| `docs/release_notes_v0.5.2.md` | new | Include |
+| `docs/release_inventory_v0.5.3-alpha.md` | new | Include |
+| `docs/release_notes_v0.5.3-alpha.md` | new | Include |
 | `docs/source_build_provenance.md` | modified | Include |
 | `docs/sve_fp32_fma_contract.md` | modified | Include |
 | `docs/vulkan_shutdown_phase_diagnostic.md` | new | Include |
@@ -184,13 +190,35 @@ abandoned scaffolding or omit newly added production dependencies.
 
 None.
 
-This enumerates **117 pending paths**: 84 tracked modifications
-and 33 untracked files. The staging proposal has
-**116 Include**, **0 Pending**, **1 Exclude**.
+At development approval this enumerated **117 pending paths**: 84 tracked
+modifications and 33 untracked files, with **116 Include**, **0 Pending** and
+**1 Exclude**. The Git-state column records that approval-time state; those
+116 files are now committed. The two renamed release documents retain their
+classifications and the release-content count remains 116.
+
+## Separate release-identity correction inventory
+
+Only the following nine logical files change relative to `00772b2`:
+
+| Final path | Correction |
+|---|---|
+| `Modules/lvs_core.py` | Runtime APP_VERSION only: 0.5.3-alpha |
+| `README.md` | Current identity, links and alpha publication wording |
+| `PUBLIC_RELEASE_BOUNDARY.md` | Current identity, links and alpha boundary |
+| `ROADMAP.md` | Current release identity and already-committed inventory status |
+| `docs/source_build_provenance.md` | Current runtime version reference |
+| `docs/sve_fp32_fma_contract.md` | Current release heading and provenance link |
+| `docs/release_notes_v0.5.3-alpha.md` | Renamed from release_notes_v0.5.2.md; identity, draft and provenance |
+| `docs/release_inventory_v0.5.3-alpha.md` | Renamed from release_inventory_v0.5.2.md; final paths and correction inventory |
+| `physical-validation/gpu-corrections-20261022/OPERATOR-HANDOFF.md` | Current-release link only; historical instructions preserved |
+
+The two old documentation paths must be recorded as renames/deletions when the
+correction is later staged. No other source, test or profile changes belong in
+that commit. The excluded runtime lock stays untracked and untouched.
 
 ## New production dependencies
 
-All eight untracked Modules files are required distribution contents:
+All eight formerly untracked Modules files are committed, required distribution contents:
 
 | Module | Production reference examples |
 |---|---|
@@ -217,24 +245,30 @@ apart from the explicitly excluded runtime lock.
 
 ## Version and provenance
 
-Prepared runtime: **0.5.2**. Accepted physical source:
+Prepared runtime: **0.5.3-alpha**. Accepted physical source:
 `d14b5bb1450385929fdb08d6dcc6f3253356293b06055b503a05c44e7620be21`.
 Prepared source before archival:
 `ff48a7e08a9d6d5053dd13fa33ad250dfdf73814967d660280c4d9f3ea154b46`.
-Final prepared source after archival (363 files, complete):
+Earlier v0.5.2 prepared source after archival (363 files, complete):
 `7c42ed499e77a034d30771e224883c0145777e669cc0625265bc001d3b91b9a4`.
-The v1 algorithm/scope is unchanged. Versioning changes APP_VERSION bytes in
+Current v0.5.3-alpha prepared source (363 files, complete):
+`6683c863794c7f389265aa51541784cc880fd67a0baa9b865fb06d657c539140`.
+Only APP_VERSION differs within source scope from committed `00772b2`;
+restoring `0.5.2` reconstructs `7c42...` exactly. The documentation renames and
+Markdown edits are outside scope. The v1 algorithm/scope is unchanged.
+Versioning changes APP_VERSION bytes in
 `Modules/lvs_core.py`; moving the five root JSON paths outside discovery removes
 those five records from v1 scope. Markdown and smoke tests are outside scope.
-No workload code or test configuration bytes changed. Reintroducing the five
-archived root records reconstructs the pre-archive digest; also restoring the
-old version bytes reconstructs the accepted physical digest. No new fingerprint
+No workload code or test configuration bytes changed. Starting from the earlier
+`7c42...` preparation, reintroducing the five archived root records reconstructs
+the pre-archive digest; also restoring `0.5.2-alpha` version bytes reconstructs
+the accepted physical digest. No new fingerprint
 is claimed as an exact match to an earlier physical execution.
-See [release notes](release_notes_v0.5.2.md) for campaign provenance and limits.
+See [release notes](release_notes_v0.5.3-alpha.md) for campaign provenance and limits.
 
-## Final validation
+## Retained development validation
 
-- The unchanged executable/test implementation retains the prepared-tree
+- The unchanged workload/test implementation retains the prepared-tree
   **314/314 full smoke PASS** baseline. This archival changes discovery contents,
   not discovery logic, test expectations, backend selection rules or workload
   behavior; a complete-suite repeat is unnecessary.
@@ -246,11 +280,18 @@ See [release notes](release_notes_v0.5.2.md) for campaign provenance and limits.
   output-contract and compatibility regressions: **17/17 PASS**.
 - Compilation: **371 Python files PASS**; **six affected imports PASS**.
 - Documentation links/profile references and `git diff --check`: PASS.
-- The exact 117-row inventory matches working-tree status: **116 Include** and
-  only the unrelated runtime lock excluded. Live upstream main matches HEAD;
-  the alpha tag is unchanged and v0.5.2 remains absent locally/remotely.
-- No physical test is requested or performed. Runtime, historical results and
-  alpha release notes/tags remain preserved.
+- The approved 117-row development inventory had **116 Include** and only
+  the unrelated runtime lock excluded. All release contents are committed;
+  the separate identity correction is listed above. The historical alpha tag
+  remains unchanged. The new v0.5.3-alpha tag must be absent before tagging.
+- No physical test is requested or performed. Historical results and alpha
+  release notes/tags remain preserved. Only the prepared runtime identity changes.
+- Identity correction validation: **8/8** focused provenance/output-contract
+  regressions PASS; version-only source comparison and compilation PASS;
+  **five integration imports** and **26 local documentation links** PASS;
+  final inventory paths and `git diff --check` PASS. The 314/314 full smoke
+  baseline remains applicable to unchanged workload code; no new smoke test
+  or complete-suite repeat is needed for a version literal and Markdown.
 
 ### Byte-preserved archived profile contents
 
@@ -264,24 +305,21 @@ See [release notes](release_notes_v0.5.2.md) for campaign provenance and limits.
 
 ## Git release plan after approval
 
-- Current branch: `main`; HEAD and verified remote main:
-  `ba7a529ef4bd89f91d9014c6225ac696618b055e`. Upstream is `origin/main`;
-  no outgoing commit or divergence was present at inspection.
+- Branch: `main`; current pushed HEAD: `00772b2c9a233680827bc765cd368e23677d6d2b`.
+  That development commit is retained unchanged; the correction is a separate
+  commit. Recheck upstream alignment before committing/pushing.
 - Published annotated `v0.5.2-alpha` resolves to
-  `500a17e22a6d384b779ca785f1a9a45cda092e7d`; preserve it unchanged.
-- `v0.5.2` is absent locally and on the inspected remote. Recheck before tagging.
-- Profile archival is approved and complete. Review the 116 Include rows and
-  the resulting staged diff before committing; preserve the excluded runtime
-  lock and all historical evidence.
-- Stage the approved explicit paths from this table, including every new source
-  and test dependency and the final approved profile paths. Exclude the lock and
-  all runtime groups. Verify `git diff --cached --name-only` against the approved
-  list and review the complete staged diff before committing.
-- Proposed subject: `Prepare Linux Validation Suite v0.5.2 release`.
-- Recheck upstream divergence and push the reviewed commit normally to
-  `origin/main`, without force. Verify local HEAD, tracking main and remote main.
-- Only then create a new annotated `v0.5.2` at that verified commit; proposed
-  annotation: `Linux Validation Suite v0.5.2 corrective reliability and cross-hardware validation release`.
-- Push that new tag normally; verify its peeled remote target equals the release
-  commit. Never overwrite a pre-existing tag. GitHub publication remains a
-  separate maintainer action after commit/tag approval.
+  `500a17e22a6d384b779ca785f1a9a45cda092e7d`; preserve it and its historical
+  notes unchanged. The mistaken v0.5.2 preparation never became a release.
+- Confirm `v0.5.3-alpha` is absent locally and remotely before tagging.
+- After approval, stage only the nine logical correction files listed above,
+  including the two old document deletions and their renamed destinations.
+  Review the exact staged diff; exclude the runtime lock and generated files.
+- Proposed subject: `Correct prepared release identity to v0.5.3-alpha`.
+- Push that separate commit normally after checking divergence; never amend,
+  reset, rebase or force-push the already published preparation commit.
+- Only after further approval, create annotated `v0.5.3-alpha` at the verified
+  correction commit. Proposed annotation: `Linux Validation Suite v0.5.3-alpha corrective reliability and cross-hardware validation prerelease`.
+- Push only the new tag after approval, verifying its peeled target. Manual
+  GitHub publication must retain alpha/prerelease status. No tag, publication
+  or package is authorized by this preparation.

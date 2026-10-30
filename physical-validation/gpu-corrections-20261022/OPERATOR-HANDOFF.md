@@ -4,7 +4,7 @@ This retained handoff describes the October 22 correction campaign, originally
 prepared against post-v0.5.2-alpha development source. Its physical acceptance
 campaign is complete; it is not a request for new testing or a statement that
 ARM64 deployment remains paused. Current acceptance boundaries are documented
-in [the v0.5.2 release notes](../../docs/release_notes_v0.5.2.md).
+in [the v0.5.3-alpha release notes](../../docs/release_notes_v0.5.3-alpha.md).
 
 The five original profile JSON files are archived byte-for-byte in
 [08 GPU Corrections October 22](<../../profiles/Archived/2026 Hardware Validation/08 GPU Corrections October 22/>).

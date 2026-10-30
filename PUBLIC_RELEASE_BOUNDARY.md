@@ -3,18 +3,18 @@
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
-included. The prepared version is `v0.5.2`, a corrective reliability
+included. The prepared version is `v0.5.3-alpha`, an alpha-stage corrective reliability
 milestone following the published `v0.5.2-alpha` checkpoint. It preserves the
 hardware-scalability contract, first-class AArch64 and x86_64 support, safety,
 and established output-compatibility boundaries. Validation includes the full
 smoke suite and scoped x86-64/AArch64 physical campaigns, including Spark SVE at
 128-bit VL, mixed/identical GPU targeting, protected shared/dedicated GPU memory
 paths and final MSI Vulkan shutdown confirmation. Hardware coverage remains
-specific to tested configurations. See [release scope and limitations](docs/release_notes_v0.5.2.md)
-and [the proposed file inventory](docs/release_inventory_v0.5.2.md).
+specific to tested configurations. See [release scope and limitations](docs/release_notes_v0.5.3-alpha.md)
+and [the proposed file inventory](docs/release_inventory_v0.5.3-alpha.md).
 
 Release preparation commits and annotated Git tags are pushed to the public
-repository only after approval. The maintainer creates and publishes GitHub releases manually;
+repository only after approval. The maintainer creates and publishes GitHub prereleases manually;
 preparing a version or pushing its tag does not itself publish a GitHub Release.
 
 Use this checklist when updating the public repository. Publish only generic

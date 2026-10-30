@@ -1,12 +1,15 @@
-# Linux Validation Suite v0.5.2
+# Linux Validation Suite v0.5.3-alpha
 
-Prepared for final review on October 30, 2026. No release commit, new tag or
-GitHub Release is created by preparation. The published `v0.5.2-alpha` tag and
+Prepared for final review on October 30, 2026. LVS remains an alpha-stage
+project. Development commit `00772b2c9a233680827bc765cd368e23677d6d2b`
+was pushed with the mistaken prepared identity v0.5.2, without a release tag
+or GitHub Release. A separate metadata-only correction prepares v0.5.3-alpha;
+it does not amend or rewrite that commit. The published `v0.5.2-alpha` tag and
 [historical alpha notes](release_notes_v0.5.2-alpha.md) remain unchanged.
 
 ## Release scope
 
-This corrective reliability milestone consolidates the post-alpha development
+This alpha corrective reliability milestone consolidates the post-alpha development
 and accepted physical campaigns without adopting future stress workloads.
 
 - ARM64 SVE FP32/FMA has independently verified scalable arithmetic, all-thread
@@ -115,13 +118,23 @@ ff48a7e08a9d6d5053dd13fa33ad250dfdf73814967d660280c4d9f3ea154b46
 
 After moving the five byte-preserved correction profiles to
 `profiles/Archived/2026 Hardware Validation/08 GPU Corrections October 22/`,
-the final prepared fingerprint is complete across 363 scoped files:
+the earlier v0.5.2 preparation fingerprint was complete across 363 scoped files:
 
 ```text
 7c42ed499e77a034d30771e224883c0145777e669cc0625265bc001d3b91b9a4
 ```
 
-Neither prepared fingerprint exactly matches a physical run. Preparation changes
+Correcting only `APP_VERSION` from `0.5.2` to `0.5.3-alpha` gives the current
+complete prepared fingerprint across the same 363 scoped files:
+
+```text
+6683c863794c7f389265aa51541784cc880fd67a0baa9b865fb06d657c539140
+```
+
+The release-document renames and Markdown edits are outside v1 source scope.
+Restoring the version bytes to `0.5.2` reconstructs the preceding `7c42...`
+fingerprint exactly. No prepared fingerprint exactly matches a physical run.
+Preparation changes
 version, documentation and ordinary profile inventory, not executable workload
 behavior or profile configuration bytes. Markdown and smoke tests are
 outside v1 scope. Runtime version bytes inside `Modules/lvs_core.py` are inside
@@ -165,13 +178,15 @@ The optional legacy stamp mechanism is advanced compatibility evidence only.
 
 The pre-preparation baseline passed 314/314 smoke tests and 81/81 active/archived
 profiles, with five unchanged advisories. Final prepared-tree validation and the
-exact proposed file list are recorded in [the release inventory](release_inventory_v0.5.2.md).
+exact proposed file list are recorded in [the release inventory](release_inventory_v0.5.3-alpha.md).
 The approved correction-profile archive leaves 25 active and 56 archived profiles,
 81 total, with their exact workload settings preserved.
 
-## Draft manual GitHub Release
+## Draft manual GitHub prerelease
 
-Title: **Linux Validation Suite v0.5.2 — Reliability and Cross-Hardware Validation**
+Tag: **v0.5.3-alpha**. Publish as a GitHub **prerelease** after separate approval.
+
+Title: **Linux Validation Suite v0.5.3-alpha — Reliability and Cross-Hardware Validation**
 
 - Correct GPU readback, scalable allocation, physical targeting and bounded
   lifecycle behavior across the tested NVIDIA, AMD, Intel and Adreno paths.

@@ -312,7 +312,7 @@ No dedicated generic-intent physical execution was supplied in that batch;
 policy mapping is covered by software regressions against captured capabilities.
 Wider VLs and other SVE implementations still require distinct physical evidence.
 
-## Completed highest-vector integration for v0.5.2
+## Completed highest-vector integration for v0.5.3-alpha
 
 The October 29 Quick Test S3 executions on Spark
 (`2026-10-29_15-36-20_Quick Test`) and Snapdragon
@@ -330,5 +330,5 @@ Power Auto still exclude SVE. The historical functional run's missing launch
 hash remains a limitation; later evidence does not retrofit that observation.
 
 These campaign sources precede metadata-only final release preparation. See
-[v0.5.2 release provenance](release_notes_v0.5.2.md) for the accepted final
+[v0.5.3-alpha release provenance](release_notes_v0.5.3-alpha.md) for the accepted final
 physical-source fingerprint and the distinction from the release fingerprint.

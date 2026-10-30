@@ -1,6 +1,6 @@
 # Automatic source provenance
 
-LVS keeps the public runtime version (currently `0.5.2`) separate from
+LVS keeps the public runtime version (currently `0.5.3-alpha`) separate from
 source identity. A version string or operator label does not identify the exact
 development source. Git HEAD alone does not identify modified deployed files.
 

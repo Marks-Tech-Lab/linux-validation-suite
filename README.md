@@ -34,13 +34,13 @@ available on each host.
 
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
-with `main` as the published branch. Version `v0.5.2` is prepared for final
-review as a corrective reliability release: verified CPU execution, fail-closed
+with `main` as the published branch. Version `v0.5.3-alpha` is prepared for final
+review as an alpha-stage corrective reliability release: verified CPU execution, fail-closed
 physical GPU targeting, protected GPU allocations, sampled readback integrity,
 bounded worker shutdown, truthful completion/reporting, automatic provenance,
-and coherent CLI/TUI configuration. See [the v0.5.2 notes](docs/release_notes_v0.5.2.md)
+and coherent CLI/TUI configuration. See [the v0.5.3-alpha notes](docs/release_notes_v0.5.3-alpha.md)
 for the accepted hardware boundaries and limitations. Preparation does not
-create a tag or publish a GitHub Release; publication remains a maintainer action
+create a tag or publish a GitHub prerelease; publication remains a maintainer action
 after final commit and annotated-tag review.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
@@ -392,7 +392,7 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The prepared runtime version is `0.5.2`; its proposed new tag is `v0.5.2`.
+The prepared runtime version is `0.5.3-alpha`; its proposed new tag is `v0.5.3-alpha`.
 The published `v0.5.2-alpha` checkpoint remains unchanged. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
@@ -421,10 +421,10 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
 
-## Release Notes — v0.5.2
+## Release Notes — v0.5.3-alpha
 
-See [the complete release notes and manual publication draft](docs/release_notes_v0.5.2.md)
-and [the proposed release inventory](docs/release_inventory_v0.5.2.md).
+See [the complete release notes and manual publication draft](docs/release_notes_v0.5.3-alpha.md)
+and [the proposed release inventory](docs/release_inventory_v0.5.3-alpha.md).
 The accepted October 29 cross-hardware campaign and October 30 MSI S2/S4
 confirmation close the current functional physical gates. Specialized CPU ISA
 families, wider SVE lengths, SVE2/SME and dynamic/transient stress remain future

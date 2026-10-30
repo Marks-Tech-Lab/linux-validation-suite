@@ -33,7 +33,7 @@ acceptance. Existing historical sections retain their original release scope.
 5. [ ] Finish the already-adopted major x86_64/AArch64 ISA milestones below,
    with independent verification and scoped hardware acceptance. Record any
    hardware-unavailability deferrals explicitly rather than marking them done.
-6. [ ] Finalize the v0.5.2 release inventory, metadata, documentation, safety,
+6. [ ] Finalize the v0.5.3-alpha release inventory, metadata, documentation, safety,
    provenance and compatibility review before approved commit/tag/publication.
    Physical acceptance is closed; no future feature here assigns release scope.
 
@@ -41,7 +41,7 @@ Only after these current prerequisites are closed or explicitly re-scoped may
 the dynamic-stress sequence below begin. This records future planning priority,
 not authorization to implement workers or change current test/verdict policy.
 
-## Prepared In v0.5.2
+## Prepared In v0.5.3-alpha
 
 - [x] Close the eight-system October 29 hardware wave and October 30 MSI S2/S4
   shutdown confirmation within their recorded support boundaries.
@@ -54,10 +54,11 @@ not authorization to implement workers or change current test/verdict policy.
   overrides, immediate Save As/Copy persistence and captured-profile replay.
 - [x] Archive the five correction profiles byte-for-byte outside ordinary
   discovery, with retained historical operator instructions.
-- [ ] Approve the final release staging inventory. Commit, tag and publication
-  remain pending.
+- [x] Approve and commit the development inventory in `00772b2c9a233680827bc765cd368e23677d6d2b`.
+- [ ] Approve the separate v0.5.3-alpha identity correction, then commit, tag
+  and publish the alpha prerelease. No published history is rewritten.
 
-See [v0.5.2 scope, limitations and physical-source provenance](docs/release_notes_v0.5.2.md).
+See [v0.5.3-alpha scope, limitations and physical-source provenance](docs/release_notes_v0.5.3-alpha.md).
 
 ## Prepared In v0.5.2-alpha
 
