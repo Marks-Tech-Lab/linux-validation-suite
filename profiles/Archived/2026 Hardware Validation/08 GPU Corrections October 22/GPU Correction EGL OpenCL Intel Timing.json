@@ -1,0 +1,20 @@
+{
+  "profile_name": "GPU Correction EGL OpenCL Intel Timing",
+  "menu_group": "advanced",
+  "menu_description": "Core Ultra 7 concurrent EGL/OpenCL timing; not a full coverage guarantee",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 2.0, "trim_start_seconds": 5, "trim_end_seconds": 5},
+  "stages": [{
+    "id": "egl_opencl_timing", "name": "3D Adaptive", "display_label": "Concurrent EGL and OpenCL Allocation Timing",
+    "duration_seconds": 180, "enabled": true,
+    "modules": {
+      "cpu": {"enabled": false, "power_auto": false},
+      "memory": {"enabled": false},
+      "gpu_3d": {"enabled": true, "mode": "steady", "intensity": "extreme", "gpus": "slots:0000:00:02.0", "backend_preference": "egl", "compute_variant": "baseline", "priority": "normal"},
+      "vram": {"enabled": true, "allocation_percent": 80, "gpus": "slots:0000:00:02.0", "backend_preference": "opencl", "priority": "normal"},
+      "storage_benchmark": {"enabled": false}
+    },
+    "normalization": {"trim_start_seconds": 5, "trim_end_seconds": 5},
+    "analysis": {"intent": "functional"}
+  }]
+}

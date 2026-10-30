@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .lvs_core import now_local_iso
 from .lvs_profile_creation import (
     ProfileBuildResult,
     ProfileCreationRequest,
@@ -14,7 +13,8 @@ from .lvs_profile_creation import (
     ProfileStageInsertResult,
 )
 from .lvs_profile_models import StageConfig, StageModules, ValidationProfile
-from .lvs_profile_save import ProfileSavePreparation
+from .lvs_profile_save import ProfileSavePreparation, prepare_profile_copy_edit, unique_profile_path
+from .lvs_stage_configuration import stage_settings, apply_stage_setting, configuration_gpu_cards
 from .lvs_service_models import (
     FrontendActionSpec,
     ProfileCopySelectionState,
@@ -103,44 +103,40 @@ class SuiteProfileServiceMixin:
             selection.selected_stage_indices,
         )
 
+    def save_profile_copy_selection(self, selection: ProfileCopySelectionState, profile_name: str) -> ProfileEditState:
+        """Finish the user-facing Copy/Save As operation, not just its draft."""
+        edit = self.finish_profile_copy_selection(selection, profile_name)
+        self.save_profile_edit(edit)
+        return edit
+
     def _copied_profile_edit(
         self,
         source: ValidationProfile,
         profile_name: str,
         selected_stage_indices: List[int],
     ) -> ProfileEditState:
-        name = re.sub(r"\s+", " ", str(profile_name or "").strip())
-        if not name:
-            raise ValueError("New profile name is required.")
-        profile = self.profile_editor.copy_profile(source, name, list(selected_stage_indices))
-        path = self._unique_profile_path(name)
-        labels = self.profile_editor.normalize_labels(profile, [])
-        return ProfileEditState(
-            profile_path=path,
-            profile=profile,
-            labels=labels,
-            dirty=True,
-            is_new=True,
-        )
+        return prepare_profile_copy_edit(self.profile_editor, self.profile_loader, source, profile_name, selected_stage_indices)
 
     def _unique_profile_path(self, profile_name: str) -> Path:
-        stem = re.sub(r"[^A-Za-z0-9_. -]+", "_", str(profile_name or "New Profile")).strip(" ._")
-        stem = stem or "New Profile"
-        base = Path(self.settings.profiles_dir)
-        candidate = base / f"{stem}.json"
-        if not candidate.exists():
-            return candidate
-        for index in range(2, 1000):
-            candidate = base / f"{stem} {index}.json"
-            if not candidate.exists():
-                return candidate
-        return base / f"{stem} {now_local_iso().replace(':', '-')}.json"
+        return unique_profile_path(Path(self.settings.profiles_dir), profile_name)
 
     def profile_edit_summary_text(self, edit: ProfileEditState) -> str:
         return self.profile_edit_presenter.summary_text(edit)
 
     def profile_edit_items(self, edit: ProfileEditState) -> List[ProfileEditItem]:
         return self.profile_edit_presenter.items(edit)
+
+    def stage_configuration_settings(self, edit: ProfileEditState, index: int):
+        return stage_settings(edit.profile.stages[index], self.profile_editor, configuration_gpu_cards(self)
+                              if any(m.enabled for m in (edit.profile.stages[index].modules.gpu_3d, edit.profile.stages[index].modules.vram)) else ())
+
+    def apply_stage_configuration(self, edit: ProfileEditState, index: int, key: str, value: str):
+        return apply_stage_setting(edit, index, key, value, self.profile_edit_controller, self.profile_save.validator,
+                                   configuration_gpu_cards(self) if key in {"gpu_3d_target", "vram_target"} else ())
+
+    def run_setup_stage_edit(self, setup) -> ProfileEditState:
+        # An in-memory view only: never saved by the run override flow.
+        return ProfileEditState(setup.profile_path, setup.profile, list(setup.labels))
 
     def profile_edit_action_for_key(self, key: str) -> FrontendActionSpec:
         return self.profile_edit_presenter.profile_edit_action_for_key(key)
@@ -213,8 +209,15 @@ class SuiteProfileServiceMixin:
     def save_profile_edit(self, edit: ProfileEditState) -> str:
         preparation = self.profile_save.prepare(edit.profile, edit.labels)
         edit.labels = preparation.labels
-        self.profile_save.save(edit.profile_path, preparation)
+        if edit.is_new:
+            base = Path(self.settings.profiles_dir).resolve()
+            if edit.profile_path.resolve().parent != base:
+                raise ValueError("New profiles must be saved in the configured profiles directory.")
+            self.profile_save.save(edit.profile_path, preparation, exclusive=True)
+        else:
+            self.profile_save.save(edit.profile_path, preparation)
         edit.dirty = False
+        edit.is_new = False
         self.reload()
         return f"Profile saved: {edit.profile_path}"
 

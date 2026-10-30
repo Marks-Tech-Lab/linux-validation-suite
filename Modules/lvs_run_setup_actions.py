@@ -162,7 +162,7 @@ def setup_action_specs(
         )
     actions.extend(
         [
-            FrontendActionSpec("o", "stage_override_picker", label="Stage durations / trim / enabled", detail=detail_provider(setup, "stage_overrides")),
+            FrontendActionSpec("o", "stage_override_picker", label="Stage Overrides: workloads / duration / trim / enabled", detail=detail_provider(setup, "stage_overrides")),
             FrontendActionSpec("l", "segment_label_picker", label="Segment labels", detail=detail_provider(setup, "segment_labels")),
             FrontendActionSpec("h", "load_history", label="Load previous setup"),
             FrontendActionSpec("d", "toggle_debug_logging", label="Advanced debug logging", detail=detail_provider(setup, "advanced_debug_logging")),

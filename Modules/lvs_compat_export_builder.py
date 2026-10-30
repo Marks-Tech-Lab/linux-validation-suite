@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
+from .lvs_run_completion_evidence import execution_completion, with_completion
+
 from typing import Any, Dict, Optional
 
 from .lvs_compat_export_context import build_compatibility_run_context
@@ -82,7 +85,7 @@ def build_compatibility_export_document(
         ),
         **hardware_sections,
     }
-    return finalize_compatibility_export(
+    output = finalize_compatibility_export(
         base_output,
         metadata_block,
         export_contract,
@@ -94,3 +97,7 @@ def build_compatibility_export_document(
         gpu_power_details,
         gpu_validation_details,
     )
+
+    completion = execution_completion({"verdict": overall_result, "ended": ended_iso,
+        "stage_windows": [asdict(w) if is_dataclass(w) else vars(w) for w in windows]})
+    return with_completion(output, completion)

@@ -20,6 +20,9 @@ from .lvs_profile_edit_view import (
 )
 from .lvs_profile_editor import format_profile_duration, parse_profile_duration
 from .lvs_profile_models import ModuleStorageBenchmark, StageConfig, StageModules, ValidationProfile
+from .lvs_service_models import ProfileEditState
+from .lvs_stage_configuration import stage_settings, apply_stage_setting, effective_stage_text, configuration_gpu_cards
+from .lvs_cli_compat import BackRequested
 
 
 TEST_TYPE_CATALOG = {
@@ -107,6 +110,12 @@ class ProfileCliEditor:
         self.edit_profile_state(profile_path, result.profile, result.labels)
 
     def copy_profile(self) -> None:
+        try:
+            self._copy_profile()
+        except BackRequested:
+            print("Copy cancelled; the source is unchanged.")
+
+    def _copy_profile(self) -> None:
         source = self.choose_profile_path("Choose profile to copy")
         if source is None:
             return
@@ -115,19 +124,21 @@ class ProfileCliEditor:
         selected = self.select_stage_indices(profile, labels, require_one=True)
         if selected is None:
             return
-        name = self.host._input("New profile name: ").strip()
+        name = self.host._input("New profile name [Enter cancels]: ").strip()
         if not name:
-            print("Profile name required.")
+            print("Copy cancelled.")
             return
-        copied = self.host.profile_editor.copy_profile(profile, name, selected)
-        copied_labels = self.host.profile_editor.normalize_labels(copied, [])
-        copied.menu_group = self.host._choose_profile_menu_group(default=copied.menu_group)
-        path = self.destination_path(name)
-        if path.exists():
-            print(f"A profile already exists at {path}; choose another name.")
-            return
-        print("Independent unsaved copy opened. The source profile is unchanged.")
-        self.edit_profile_state(path, copied, copied_labels)
+        self.save_named_copy(profile, name, selected)
+
+    def save_named_copy(self, profile: ValidationProfile, name: str, selected: List[int]) -> bool:
+        try:
+            saved = self.host.profile_save.copy_and_save(profile, name, selected)
+        except (OSError, ValueError) as exc:
+            print(f"Profile copy/save failed: {exc}")
+            return False
+        print(f"Profile saved: {saved.profile.profile_name}\nDestination: {saved.profile_path}\n"
+              "Available in the normal profile list; the source is unchanged.")
+        return True
 
     def choose_profile_path(self, prompt: str) -> Path | None:
         profiles = self.host.profile_loader.list_profiles()
@@ -331,10 +342,12 @@ class ProfileCliEditor:
 
     def edit_profile_state(self, profile_path: Path, profile: ValidationProfile, labels: List[str]) -> None:
         host = self.host
+        new_draft = not profile_path.exists()
 
         while True:
             labels = self.normalize_profile_labels(profile, labels)
             print(f"\nEditing profile: {profile.profile_name}")
+            print("Unsaved new draft" if new_draft else "Editing existing profile; changes require Save")
             print(f"Menu label: {profile_path.name} ({host._profile_menu_group_label(profile.menu_group)})")
             print(f"Menu group: {host._profile_menu_group_label(profile.menu_group)}")
             print(
@@ -412,27 +425,31 @@ class ProfileCliEditor:
                     print("\nProfile validation warnings:")
                     for message in preparation.warnings:
                         print(f"  [warn] {message}")
-                host.profile_save.save(profile_path, preparation, allow_errors=allow_errors)
+                try:
+                    if new_draft:
+                        host.profile_save.save(profile_path, preparation, allow_errors=allow_errors, exclusive=True)
+                    else:
+                        host.profile_save.save(profile_path, preparation, allow_errors=allow_errors)
+                except (OSError, ValueError) as exc:
+                    print(f"Profile save failed: {exc}")
+                    continue
                 print(f"Saved profile: {profile_path}")
                 return
             if choice == "f":
                 print("Save As copies the current in-memory edits into an independent profile; the original is not overwritten.")
-                selected = self.select_stage_indices(profile, labels, require_one=True)
-                if selected is None:
+                try:
+                    selected = self.select_stage_indices(profile, labels, require_one=True)
+                    if selected is None:
+                        continue
+                    name = host._input("New profile name [Enter cancels]: ").strip()
+                except BackRequested:
+                    print("Save As cancelled; source edits remain in memory.")
                     continue
-                name = host._input("New profile name: ").strip()
                 if not name:
-                    print("Profile name required.")
+                    print("Save As cancelled.")
                     continue
-                destination = self.destination_path(name)
-                if destination.exists():
-                    print(f"A profile already exists at {destination}; Save As was not performed.")
-                    continue
-                profile = host.profile_editor.copy_profile(profile, name, selected)
-                labels = host.profile_editor.normalize_labels(profile, [])
-                profile.menu_group = host._choose_profile_menu_group(default=profile.menu_group)
-                profile_path = destination
-                print("Save As copy opened with current in-memory edits; the source remains untouched.")
+                if self.save_named_copy(profile, name, selected):
+                    return
                 continue
             if choice == "q":
                 print("Edit cancelled.")
@@ -629,6 +646,57 @@ class ProfileCliEditor:
             end="",
         )
 
+    def configure_stage_workloads(self, profile: ValidationProfile, stage_index: int,
+                                  labels: List[str], *, run_only: bool = False) -> None:
+        """CLI presentation of the same transactional settings used by the TUI."""
+        host = self.host
+        while True:
+            stage = profile.stages[stage_index]
+            fields = stage_settings(stage, host.profile_editor, configuration_gpu_cards(host)
+                                    if stage.modules.gpu_3d.enabled or stage.modules.vram.enabled else ())
+            print(f"\nStage {stage_index + 1} workload settings — "
+                  + ("this run only; profile file unchanged" if run_only else "unsaved profile edits"))
+            for index, field in enumerate(fields, 1):
+                print(f"{index}. {field.label}: {str(field.value) or '(none)'}")
+            print("\n".join(effective_stage_text(stage)))
+            try:
+                raw = host._input("Setting number [Enter/B back]: ").strip()
+            except BackRequested:
+                return
+            if not raw or raw.lower() in {"b", "q"}:
+                return
+            try:
+                index = int(raw) - 1
+                if not 0 <= index < len(fields):
+                    raise ValueError("Invalid setting number.")
+                field = fields[index]
+                if field.options:
+                    for option_index, value in enumerate(field.options, 1):
+                        print(f"{option_index}. {(field.option_labels or field.options)[option_index - 1] or '(none)'}")
+                raw = host._input(f"{field.label} [Enter keeps; B cancels]: ").strip()
+                if not raw or raw.lower() == "b":
+                    continue
+                if field.options:
+                    if raw.lower() == "none" and "" in field.options:
+                        raw = ""
+                    elif raw not in field.options:
+                        option = int(raw) - 1
+                        if not 0 <= option < len(field.options):
+                            raise ValueError("Invalid option number.")
+                        raw = field.options[option]
+                edit = ProfileEditState(Path("<in-memory>"), profile, list(labels))
+                changed = apply_stage_setting(edit, stage_index, field.key, raw,
+                                              host.profile_edit_controller, host.profile_save.validator,
+                                              configuration_gpu_cards(host) if field.key in {"gpu_3d_target", "vram_target"} else ())
+                # CLI callers retain this profile object through review/launch.
+                # Only validated workload settings are copied back, never saved.
+                stage.modules = edit.profile.stages[stage_index].modules
+                print(f"Updated {field.label}: {changed!r}")
+            except (ValueError, IndexError) as exc:
+                print(f"Setting unchanged: {exc}")
+            except BackRequested:
+                print("Setting cancelled; value unchanged.")
+
     def edit_stage(
         self,
         profile: ValidationProfile,
@@ -647,8 +715,13 @@ class ProfileCliEditor:
                 if action.key == "strict":
                     suffix = f" ({host._strict_threshold_override_text(stage.strict_threshold_recommendation_warnings)})"
                 print(f"{index}. {action.label}{suffix}")
+            print("W. Configure applicable workload settings")
+            raw_action = host._input("Select: ").strip()
+            if raw_action.lower() == "w":
+                self.configure_stage_workloads(profile, stage_index, labels)
+                continue
             action_spec = host.profile_edit_controller.stage_action(
-                host._input("Select: ").strip(),
+                raw_action,
                 available_actions,
             )
             if action_spec is None:
@@ -732,9 +805,12 @@ class ProfileCliEditor:
         if action == "gpu_intensity":
             return True, host._choose_gpu_3d_intensity(stage.modules.gpu_3d.intensity)
         if action == "gpu_compute_variant":
-            preference = host.workload_runner._normalize_gpu_3d_backend_preference(stage.modules.gpu_3d.backend_preference)
-            chooser = host._choose_vulkan_compute_variant if preference == "vulkan_compute" else host._choose_opencl_compute_variant
-            return True, chooser(stage.modules.gpu_3d.compute_variant)
+            setting = next((item for item in stage_settings(stage, host.profile_editor)
+                            if item.key == "gpu_compute_variant"), None)
+            if setting is None:
+                print("Compute variant is not applicable to the selected backend.")
+                return False, None
+            return True, self.choose_catalog_value(setting.label, list(setting.options), str(setting.value))
         if action == "gpu_allocation":
             return True, host._choose_allocation_percent(
                 "3D backend VRAM hint",
@@ -775,11 +851,19 @@ class ProfileCliEditor:
     def choose_catalog_value(self, label: str, values: List[str], current: str) -> str:
         print(label + ":")
         for index, value in enumerate(values, start=1):
-            print(f"{index}. {value.replace('_', ' ').title()}")
+            print(f"{index}. {value.replace('_', ' ').title() or '(none)'}")
         raw = self.host._input(f"Choose [{current}]: ").strip()
         if not raw:
             return current
+        if raw.lower() == "none" and "" in values:
+            return ""
+        if raw in values:
+            return raw
         try:
-            return values[int(raw) - 1]
+            index = int(raw) - 1
+            if not 0 <= index < len(values):
+                raise ValueError("selection out of range")
+            return values[index]
         except (ValueError, IndexError):
+            print("Invalid selection, keeping current.")
             return current

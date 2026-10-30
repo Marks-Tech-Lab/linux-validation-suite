@@ -355,6 +355,13 @@ class WorkloadCpuMemoryMixin:
                     f"CPU instruction intent '{instruction_intent}' requires the native CPU helper: "
                     + str(helper.get("reason") or "native CPU helper is unavailable")
                 )
+                if "selection_reason" in intent_evidence:
+                    intent_evidence.update(
+                        selection_reason=intent_evidence["fail_closed_reason"],
+                        software_verification_status="unavailable",
+                        experimental_kernel_selected=False,
+                        vector_length_policy="not_applicable",
+                    )
         else:
             selected = select_common_kernel(
                 architecture=architecture,

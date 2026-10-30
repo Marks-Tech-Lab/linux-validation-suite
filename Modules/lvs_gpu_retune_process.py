@@ -4,7 +4,7 @@ import subprocess
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from Modules.lvs_core import now_local_iso
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, gpu_allocation_environment
 from Modules.lvs_run_lifecycle import phase_line
 from Modules.lvs_stage_process_control import StageProcess
 
@@ -36,7 +36,7 @@ def replace_gpu_process_for_retune(
             new_spec.command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=command_env,
+            env=gpu_allocation_environment(command_env, new_spec),
         )
     except Exception as exc:
         print_func(

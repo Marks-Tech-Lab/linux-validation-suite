@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
 from Modules.lvs_opencl_compute_worker import opencl_compute_fixed_commitment_bytes
 
 
@@ -92,7 +92,7 @@ def build_python_opencl_compute_worker(
         target,
         selected_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="gpu_3d",
         backend="python_opencl_compute",
         gpu_index=target_gpu_index,
@@ -119,7 +119,7 @@ def build_python_opencl_compute_worker(
         profile_intensity=runner._normalize_gpu_3d_intensity(profile_intensity),
         compute_variant=normalized_compute_variant,
         system_memory_fixed_commitment_bytes=fixed_commitment,
-    )
+    ), capability)
 
 
 def build_python_opencl_vram_worker(
@@ -181,7 +181,7 @@ def build_python_opencl_vram_worker(
         target,
         selected_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="vram",
         backend="python_opencl",
         gpu_index=target_gpu_index,
@@ -204,4 +204,4 @@ def build_python_opencl_vram_worker(
         suite_scaling_mode="parametric",
         suite_verification="memory_readback",
         device_class=str(capability.get("device_class", "") or ""),
-    )
+    ), capability)

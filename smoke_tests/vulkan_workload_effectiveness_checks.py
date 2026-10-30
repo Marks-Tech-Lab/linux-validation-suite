@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ctypes
+import ast
 import struct
 import sys
 from pathlib import Path
@@ -78,6 +79,177 @@ def _worker_payload() -> dict:
     }
 
 
+def run_vulkan_padded_dispatch_checks() -> None:
+    """Interpret emitted shader control flow, indexing and memory operations.
+
+    This is a deliberately limited SPIR-V interpreter, not a driver/compiler
+    or a complete SPIR-V validator. Unknown function instructions fail tests.
+    """
+    import vulkan_compute_worker as worker
+
+    def decode(blob):
+        words = struct.unpack(f"<{len(blob)//4}I", blob)
+        result, offset = [], 5
+        while offset < len(words):
+            count, op = words[offset] >> 16, words[offset] & 65535
+            result.append((op, words[offset+1:offset+count]))
+            offset += count
+        return result
+
+    def execute(program, dims, invocation, logical_words, buffer_words, seed):
+        x, y, _z = dims
+        row = x * local
+        globals_ = (invocation % row, (invocation // row) % y, invocation // (row * y))
+        values, builtins, reads, writes = {}, {}, [], []
+        labels = {args[0]: i for i, (op, args) in enumerate(program) if op == 248}
+        function_start = 0
+        for i, (op, args) in enumerate(program):
+            if op == 71 and args[1] == 11: builtins[args[0]] = args[2]
+            if op == 43: values[args[1]] = args[2]
+            if op == 59:
+                values[args[1]] = ("input", builtins[args[1]]) if args[2] == 1 else ("buffer" if args[2] == 2 else "push",)
+            if op == 54:
+                function_start = i + 1
+                break
+        pc = function_start
+        while True:
+            op, a = program[pc]
+            pc += 1
+            if op in (248, 247): continue
+            if op == 253: return reads, writes
+            if op == 249: pc = labels[a[0]]; continue
+            if op == 250: pc = labels[a[1] if values[a[0]] else a[2]]; continue
+            if op == 61:
+                pointer = values[a[2]]
+                if pointer[0] == "input": value = globals_ if pointer[1] == 28 else dims
+                elif pointer[0] == "push": value = (logical_words, buffer_words)[pointer[1]]
+                else:
+                    index = pointer[1]
+                    assert 0 <= index < buffer_words
+                    reads.append(index); value = seed(index)
+                values[a[1]] = value
+            elif op == 81: values[a[1]] = values[a[2]][a[3]]
+            elif op == 65:
+                base = values[a[2]]
+                if base[0] == "buffer":
+                    assert values[a[3]] == 0
+                    index = values[a[4]]
+                    assert 0 <= index < buffer_words, "out-of-bounds pointer formed"
+                    values[a[1]] = ("buffer", index)
+                else:
+                    member = [values[index] for index in a[3:]]
+                    assert member in ([0], [1])
+                    values[a[1]] = ("push", member[0])
+            elif op == 68:
+                assert values[a[2]] == ("buffer",) and a[3] == 0
+                values[a[1]] = buffer_words
+            elif op in (128, 132, 194, 198, 176, 167):
+                left, right = values[a[2]], values[a[3]]
+                value = {128: lambda: left+right, 132: lambda: left*right,
+                         194: lambda: left >> right, 198: lambda: left ^ right,
+                         176: lambda: left < right, 167: lambda: left and right}[op]()
+                values[a[1]] = value if op in (176, 167) else value & 0xFFFFFFFF
+            elif op == 62:
+                pointer = values[a[0]]
+                assert pointer[0] == "buffer" and 0 <= pointer[1] < buffer_words
+                writes.append((pointer[1], values[a[1]]))
+            else: raise AssertionError(f"unhandled emitted function instruction {op}")
+
+    cases = [(17, 1, [8, 3, 1]), (7*4, 4, [2, 2, 2]), (17*4-1, 4, [4, 3, 2]),
+             (65535*256, 256, [65535]*3), (65536*256, 256, [65535]*3),
+             (71453*256, 256, [65535]*3), (25_165_824, 256, [65535]*3),
+             (805_306_368, 256, [2147483647, 65535, 65535]),
+             (0xFFFFFFFF, 1, [0xFFFFFFFF, 1, 1]), (0xFFFFFFFF, 256, [65535]*3)]
+    for count, local, limits in cases:
+        gx, gy, gz, credited = compute_dispatch_dimensions(count, local, limits)
+        assert credited == count
+        assert all(0 < n <= cap for n, cap in zip((gx, gy, gz), limits))
+        scheduled = gx*gy*gz*local
+        assert count <= scheduled <= 1 << 32
+        for variant in ("hash", "stress_hash", "stateful_memory"):
+            program = decode(compute_shader_spirv(2, variant, local))
+            row, plane = gx*local, gx*gy*local
+            probes = range(scheduled) if scheduled < 100 else sorted(i for i in {
+                0, count-1, count, scheduled-1, row-1, row, row+1, plane-1, plane, plane+1}
+                if 0 <= i < scheduled)
+            all_writes = []
+            seed = lambda i: (i*17+3) & 0xFFFFFFFF
+            buffer_words = min(0xFFFFFFFF, count+2)
+            for invocation in probes:
+                reads, writes = execute(program, (gx, gy, gz), invocation, count, buffer_words, seed)
+                assert len(writes) == int(invocation < count)
+                if writes:
+                    assert writes == [(invocation, worker.expected_word(invocation, 2, seed(invocation), variant))]
+                    assert reads == ([invocation] if variant == "stateful_memory" else [])
+                else: assert not reads
+                all_writes.extend(index for index, _ in writes)
+            assert len(all_writes) == len(set(all_writes))
+            if scheduled < 100: assert sorted(all_writes) == list(range(count))
+            # An erroneous oversized logical bound cannot bypass descriptor bounds.
+            reads, writes = execute(program, (gx, gy, gz), count-1, count, count-1, seed)
+            assert not reads and not writes
+    # Physical NVIDIA reproduction: the former OpArrayLength returned zero
+    # for a 3 GiB descriptor. Production must emit no query, and must execute
+    # word 1 using the independently validated two-word host bounds instead.
+    local = 256
+    program = decode(compute_shader_spirv(7, "stateful_memory", local))
+    assert not any(op == 68 for op, _ in program)
+    reads, writes = execute(program, (1101009, 1, 1), 1,
+                            281858304, 805306368, lambda _: 0)
+    assert reads == [1] and writes == [(1, 1003605230)]
+    assert tuple(worker.dispatch_bounds_constants(281858304, 3*1024**3)) == (281858304, 805306368)
+    for logical, size in ((0, 4), (2, 4), (1, 3), (1, 0), (1, 1 << 34), (True, 4)):
+        try: worker.dispatch_bounds_constants(logical, size)
+        except RuntimeError: pass
+        else: raise AssertionError("invalid descriptor/dispatch bounds accepted")
+    # Descriptor range is bound from the exact same record as the pushed
+    # capacity, rather than the possibly larger VkMemoryRequirements size.
+    host_tree = ast.parse((NATIVE / "vulkan_compute_worker.py").read_text())
+    descriptor = next(n for n in ast.walk(host_tree) if isinstance(n, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "buffer_info" for t in n.targets))
+    record = {"buffer": ctypes.c_void_p(99), "size": 3*1024**3}
+    env_descriptor = dict(VkDescriptorBufferInfo=worker.VkDescriptorBufferInfo, record=record)
+    exec(compile(ast.Module(body=[descriptor], type_ignores=[]), "<descriptor>", "exec"), env_descriptor)
+    assert env_descriptor["buffer_info"].range == record["size"]
+    assert compute_dispatch_dimensions(805_306_368, 256, [2147483647, 65535, 65535]) == (
+        3_145_728, 1, 1, 805_306_368)
+    for bad in [(0, 256, [65535]*3), (1 << 32, 256, [65535]*3),
+                (17, 1, [2, 2, 2]), (100, 0, [65535]*3), (100, 1, [0, 1, 1]),
+                (0xFFFFFFFF, 7, [0xFFFFFFFF]*3)]:
+        try: compute_dispatch_dimensions(*bad)
+        except RuntimeError: pass
+        else: raise AssertionError("invalid/overflowing dispatch accepted")
+
+    # Execute the production command-recording statements with the real ctypes
+    # ABI: shader push member offset/size and the host logical count must agree.
+    tree = ast.parse((NATIVE / "vulkan_compute_worker.py").read_text())
+    push_call = next(n for n in ast.walk(tree) if isinstance(n, ast.Expr)
+                     and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Attribute)
+                     and n.value.func.attr == "vkCmdPushConstants")
+    calls = []
+    class Vk:
+        def vkCmdPushConstants(self, _cmd, _layout, flags, offset, size, ptr):
+            calls.append((flags, offset, size, tuple(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint32 * 2)).contents)))
+    def assignment(name):
+        return next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == name for t in n.targets))
+    env = dict(vk=Vk(), command_buffer=1, pipeline_layout=2, VK_SHADER_STAGE_COMPUTE_BIT=32,
+               ctypes=ctypes, active_words=71453*256, active_record={"size": 3*1024**3},
+               dispatch_bounds_constants=worker.dispatch_bounds_constants,
+               VkPushConstantRange=worker.VkPushConstantRange,
+               VkPipelineLayoutCreateInfo=worker.VkPipelineLayoutCreateInfo,
+               VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO=worker.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+               VK_NULL_HANDLE=worker.VK_NULL_HANDLE, set_layouts=(ctypes.c_void_p*1)(1))
+    body = [assignment("push_range"), assignment("pipeline_layout_info"), assignment("logical_words"), push_call]
+    exec(compile(ast.Module(body=body, type_ignores=[]), "<actual-push-command>", "exec"), env)
+    assert calls == [(32, 0, 8, (71453*256, 805306368))]
+    assert ctypes.sizeof(worker.VkPushConstantRange) == 12
+    info = env["pipeline_layout_info"]
+    assert info.pushConstantRangeCount == 1
+    bound_range = ctypes.cast(info.pPushConstantRanges, ctypes.POINTER(worker.VkPushConstantRange)).contents
+    assert (bound_range.stageFlags, bound_range.offset, bound_range.size) == (32, 0, 8)
+
+
 def run_vulkan_workload_effectiveness_checks() -> None:
     # Legal geometry follows the device limits and uses a second dimension
     # without issuing invocations past the allocated buffer.
@@ -90,12 +262,7 @@ def run_vulkan_workload_effectiveness_checks() -> None:
         25_165_824,
     )
     assert compute_dispatch_dimensions(24 * 256, 256, [4, 3, 2]) == (4, 3, 2, 24 * 256)
-    try:
-        compute_dispatch_dimensions(17 * 256, 256, [8, 3, 1])
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("unrepresentable dispatch must fail closed")
+    assert compute_dispatch_dimensions(17 * 256, 256, [8, 3, 1]) == (6, 3, 1, 17 * 256)
 
     # The shader advertises the selected local size and supports linearized
     # two-dimensional workgroups; generated variants remain valid SPIR-V blobs.

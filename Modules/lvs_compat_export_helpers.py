@@ -173,9 +173,13 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         ]
     if not isinstance(value, dict):
         return value
+    if value.get("contract") in {"gpu_allocation_safety_v1", "gpu_allocation_feasibility_v1", "opencl_allocation_timing_v1", "opencl_allocation_progress_v1"}:
+        # Versioned supplementary diagnostics must survive legacy field filtering.
+        return deepcopy(value)
     if value.get("contract_id") == "linux_validation_suite.native_executable_provenance":
         return deepcopy(value)
-    if (value.get("contract_id") == "linux_validation_suite.gpu_worker_slow_operations"
+    if (value.get("contract_id") in {"linux_validation_suite.gpu_worker_slow_operations",
+                                    "linux_validation_suite.vulkan_compute_shutdown"}
             and value.get("contract_version") == 1):
         # A versioned diagnostic boundary includes physical GPU identities
         # inside records; legacy recursive field suppression must not erase them.

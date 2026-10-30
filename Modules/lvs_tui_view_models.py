@@ -38,5 +38,5 @@ def picker_row_labels(options: Iterable[str], current: str = "") -> Tuple[List[s
         marker = " <- current" if current_lower and str(option).lower() == current_lower else ""
         if marker:
             selected_index = option_index
-        labels.append(f"{option}{marker}")
+        labels.append(f"{option or '(none)'}{marker}")
     return labels, selected_index

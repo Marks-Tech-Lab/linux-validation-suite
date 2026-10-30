@@ -10,6 +10,37 @@ breaking change even when the producing module is internal.
 
 ## Contract Classes
 
+The parent-owned `linux_validation_suite.vulkan_compute_shutdown` v1 snake_case
+contract is attached as `shutdown_evidence` in normalized WorkerResults and
+preserved intact as additive `ShutdownEvidence` in compatibility GPU details
+and worker summaries. It records PID/role/physical target, timing source and
+freshness decision, selected compute/cleanup/total allowances, fallback/cap
+reason, SIGTERM request and absolute monotonic deadline, wait budget, observed
+exit/kill/reaping outcome, and normalized `final_worker_result`. It does not
+attest success, rewrite raw child JSON, or infer cleanup from accounting balances.
+Native compute JSON adds `worker_pid` and
+`last_result_write_started_monotonic_seconds` for current-process association.
+See [policy, limits and the focused physical capture](docs/vulkan_shutdown_phase_diagnostic.md).
+
+The opt-in Vulkan compute `linux_validation_suite.vulkan_shutdown_phases` v1
+contract uses snake_case keys in `*.json.shutdown-phases.json` sidecars and the
+embedded `shutdown_phase_evidence`. It retains 64 phase observations plus
+cumulative/overwritten counts, active phase, stop-request timestamps, identity,
+phase errors and diagnostic publication errors/elapsed time. Entered phases
+are not completed operations; `observed_cleanup_complete` merely mirrors the
+worker's recorded cleanup state. These diagnostic artifacts never establish a
+workload PASS or replace terminal worker/lifecycle evidence. See
+[the opt-in procedure and limits](docs/vulkan_shutdown_phase_diagnostic.md).
+
+The opt-in `native/vulkan_bounds_diagnostic.py` emits
+`linux_validation_suite.vulkan_bounds_startup_diagnostic` version 1 artifacts under a
+new results subdirectory. These are bounded startup observations, not ordinary
+profile results or stress acceptance. The manifest records source endpoints,
+target, exit/deadline state; the diagnostic result keeps host expectations,
+independent shader observations, guards, descriptor ranges and cleanup evidence.
+An `observed` result may reveal a query/push discrepancy and must not be rendered
+as a verified workload PASS. See [operator and interpretation details](docs/vulkan_startup_bounds_diagnostic.md).
+
 Vulkan native workers accept an optional exact `--target-device-uuid` binding.
 `target_device_uuid` and `selected_device_uuid` are additive native/WorkerResults
 evidence (canonical UUID display/byte order, not pipeline-cache or driver UUIDs).
@@ -17,12 +48,12 @@ Compatibility GPU validation details expose `TargetDeviceUuid` and
 `SelectedDeviceUuid` only when the new selected identity evidence is present;
 historical records are not backfilled. Physical PCI IDs and telemetry/provider
 indices retain their existing meanings. Planning, command construction, and both
-native workers require positive UUID or authoritative PCI proof; model names,
+native workers require positive UUID, authoritative PCI, or DRM render-node proof; model names,
 candidate uniqueness, ordinals, and Mesa UUID bus heuristics are not proof.
 Known target identifiers are retained independently of optional candidate data.
-Available UUID/PCI contradictions override any other matching evidence. Missing
-runtime UUIDs permit execution only with an independently matching runtime PCI
-identity, not with inferred PCI addresses. The optional core 1.1 UUID query does
+Available UUID/PCI/DRM contradictions override any other matching evidence. Missing
+runtime UUIDs permit execution only with independently matching runtime PCI or
+DRM render-node identity, not inferred PCI addresses. The optional core 1.1 UUID query does
 not impose UUID availability on a positively identified PCI-only device.
 The additive `physical_identity_evidence` contract
 (`linux_validation_suite.vulkan_physical_identity`, version 1) preserves requested
@@ -31,6 +62,20 @@ and selected identifiers, proof source, and `verified`, `unknown_identity`,
 Compatibility validation details retain it as `PhysicalIdentityEvidence`,
 including failed selections. Historical records are not reassessed. Auto backend
 selection remains whole-stage/target-set selection, not per-device fallback.
+
+The optional `VK_EXT_physical_device_drm` query adds `drm_render` (major/minor)
+to discovery. Only an advertised extension with populated `hasRender` properties
+can supply this proof. Linux character-device `st_rdev` must match; a node name,
+model name or platform-label similarity is insufficient. This supports non-PCI
+GPUs without inventing a PCI address. Platform inventory labels remain distinct
+from DRM proof, including DRM masters whose sysfs ancestry is a display controller.
+Workers retain `--target-render-node` and the observed `--target-drm-render`
+device number, independently rechecking them and the runtime device on launch.
+Bound node disappearance/reassignment fails closed. Additive `target_drm_render` and
+`selected_drm_render` fields in physical identity evidence preserve the proof;
+`source=drm_render_node` denotes direct DRM matching. A runtime UUID may be bound
+after this independent proof, then reverified by both native workers. Neither
+binding nor software fixtures imply physical workload acceptance.
 
 | Class | Meaning | Naming rule |
 | --- | --- | --- |
@@ -135,6 +180,40 @@ geometry, not NEON's fixed block size. Missing/failed evidence remains blocking;
 derived work is not measured instructions or a saturation verdict. See
 `docs/sve_fp32_fma_contract.md`. Existing NEON v1 contracts remain unchanged.
 
+ARM64 `highest_verified_vector` may select experimental SVE as a common-capable
+software-verified implementation, not an assertion of prior physical acceptance.
+Additive `cpu_selection_evidence` records `selection_basis`, `selection_reason`,
+`software_verification_status` (required at execution, not a preflight PASS),
+`physical_acceptance_status` (`not_inferred_from_selection`),
+`experimental_kernel_selected` and `vector_length_policy`. Existing executed
+kernel, all-thread verification and per-thread VL/progress fields remain authoritative.
+Standalone report stages may add `cpu_instruction_selection`, retaining recorded
+selection evidence and separate actual worker kernel/verification observations.
+Report worker `software_verification_satisfied` is affirmative only for successful
+execution with a recognized, complete FP32 v1 contract and consistent selected/
+executed identity. Additive `software_verification_status` distinguishes `verified`,
+`failed_or_incomplete`, `not_required` (explicitly recorded), and
+`insufficient_evidence`. Legacy/non-required checks are not affirmative proof of
+FP32 verification; their runtime acceptance semantics remain unchanged.
+No such evidence is invented for historical records. Ordinary Auto, Power Auto,
+baseline/high-throughput and x86 policies do not change.
+
+VRAM reporting distinguishes worker-requested, assigned and active/ramped targets.
+Assigned targets, not active targets, drive attainment and normalized target
+percentages; existing 60/85% bands are unchanged. GPU validation details add
+`ReadbackVerificationStatus`, `ReadbackVerificationPasses`, `RequestedTargetBytes`, `AssignedTargetBytes`,
+`ActiveTargetBytes`, `NominalAllocatedBytes`, `ActualAllocatedBytes`,
+`VerificationCoverage`, `VerifiedCoverageBytes`, `PhysicalCommitmentKnown` and
+`PhysicalCommittedBytes`. `VerificationSatisfied` requires applicable error-free
+readback evidence, not merely positive counters. Missing evidence remains
+`insufficient_evidence`; exhaustive verified bytes and physical commitment remain
+unavailable unless actually established. EGL requires texture-specific readback
+passes, not render/marker counts. Report stages expose the same facts as additive
+`gpu_vram_allocation_evidence` in snake_case. Shared-memory usage is not treated
+as dedicated-VRAM telemetry. Allocation and verification failures remain separate
+events; lifecycle failures retain their existing precedence. These are reporting
+corrections, not new allocation strategies or hardware-residency attestation.
+
 Native CPU `neon_fp32_fma` additionally writes `<result-file>.progress.jsonl`
 (`neon_fp32_fma_progress_v1`, LVS-owned snake_case). Newline-terminated snapshots
 carry process/thread/CPU identities, paired Linux monotonic/realtime timestamps,
@@ -165,7 +244,7 @@ records keep their established legacy projection.
 
 | Artifact | Classification | Ownership and compatibility notes |
 | --- | --- | --- |
-| `worker_results/*_cpu.json`, `*_memory.json`, `*_gpu_3d_*.json`, `*_vram_*.json` | LVS-owned snake_case contract | Worker evidence consumed by stage postprocessing. Treat existing keys as semi-public implementation contracts. Vulkan compute workers add bounded startup checkpoints/fault-diagnostic state, timing, dispatch/submission, verification-cadence, device-limit, and optional GPU-timestamp evidence; absence of those additive fields preserves the historical contract. |
+| `worker_results/*_cpu.json`, `*_memory.json`, `*_gpu_3d_*.json`, `*_vram_*.json` | LVS-owned snake_case contract | Worker evidence consumed by stage postprocessing. Treat existing keys as semi-public implementation contracts. Vulkan compute workers add bounded startup checkpoints/fault-diagnostic state, timing, dispatch/submission, verification-cadence, device-limit, and optional GPU-timestamp evidence; absence of those additive fields preserves the historical contract. Padded dispatches in stateful-memory v21 and hash/stress-hash v9 use a logical-word push constant and descriptor-length guard before buffer access. `dispatch_group_count` is the scheduled grid; `active_work_items`, active bytes and derived work exclude padded invocations. Allocation and sampled verification retain their separate meanings. |
 | Intel GPU sidecar `*.json` | Embedded external/vendor/raw payload | Raw `intel_gpu_top` output; preserve it verbatim. |
 | Intel GPU sidecar `*.summary.json` | LVS-owned snake_case contract | LVS summary of raw Intel GPU sidecar evidence. |
 | `gpu_safety_marker.json` | LVS-owned snake_case contract | Local operational state used for interrupted-run safety. |
@@ -575,6 +654,179 @@ and text at that root and keeps each drive's normalized, health, manifest, and
 verdict information is retained in the normal run manifest stage window and
 executed plan; raw fio payloads are never embedded there.
 
+## GPU Allocation Feasibility and OpenCL Timing v1
+
+`GpuWorkerSpec.allocation_feasibility` and worker
+`allocation_feasibility` use `contract: gpu_allocation_feasibility_v1`.
+The orchestrator retains the separate `planned_allocation_feasibility` so that
+runtime discovery/backoff cannot overwrite planning evidence. Assigned targets
+are not reduced to fit these plans. `planned_allocation_chunks` remain advisory
+geometry, not executable worker commands. Incomplete plans do not establish
+successful allocation or readback.
+
+EGL geometry is shared between planning and execution: start with the worker
+hint, grow texture dimensions only as needed to fit the assignment within the
+existing 512-object **software** bookkeeping budget, and respect actual
+`GL_MAX_TEXTURE_SIZE`. Unknown discovery is provisional, requiring a successful
+runtime GL query. Whole objects never exceed the assignment. Allocation failure
+retains existing smaller-texture backoff and reserve claims; the resulting
+nominal limit/shortfall remains explicit. Nominal texture bytes do not prove
+physical residency. OpenCL feasibility exposes its unchanged chunk/count policy
+(safe non-discrete: up to 1024 objects of at most 64 MiB), separately from API
+single-allocation limits, runtime reserve caps and actual allocation progress.
+
+OpenCL worker `allocation_timing_evidence` uses
+`contract: opencl_allocation_timing_v1`. Fixed operation summaries retain count,
+host monotonic elapsed/process CPU seconds, maximum and time correlation for
+buffer creation, initial touch enqueue/finish, recurring fill enqueue/finish,
+blocking readback, existing atomic result persistence, and existing sleep/yield.
+Counts of raised exceptions are not counts of nonzero API return codes; the
+worker's existing API failure counters remain authoritative. Loop accounting
+separates `attempted_loop_count`, `completed_loop_count`,
+`interrupted_loop_count` and `loop_in_progress`; attempts equal completed plus
+interrupted plus any active iteration. Exceptions, cancellation and caught
+persistence/verification errors cannot mark that iteration completed. Completed
+and interrupted elapsed seconds are separate; `observed_loop_seconds` includes
+both. `allocation_progress_evidence.loop_iterations` counts completed iterations;
+`authored_frames` preserves the worker's frame counter separately. Accounting
+also reports elapsed time and unaccounted time (Python work,
+guard calls, verification comparison and scheduling; not a causal attribution).
+Only the latest 32 operations lasting at least 0.25 seconds are retained, with
+an overwrite count and all-operation maxima. No event triggers an extra write.
+Each JSON write contains prior completed persistence observations; terminal
+`LVS_OPENCL_ALLOCATION_TIMING` stderr includes the final completed write. An
+unclean exit may omit that final evidence. Timing neither proves GPU execution
+time nor isolates driver latency from host descheduling.
+
+`allocation_progress_evidence` (`opencl_allocation_progress_v1`) separates
+iteration/object counts, API allocation failures, runtime-guard intervention,
+object-limit attainment and target attainment. A target miss without failures
+is not capacity exhaustion. Compatibility WorkerResults preserve these
+versioned dictionaries unchanged; GPU validation details expose
+`AllocationFeasibility`, `PlannedAllocationFeasibility`,
+`AllocationTimingEvidence` and `AllocationProgressEvidence`. Extended/report
+evidence uses snake_case. Missing historical evidence remains unavailable.
+Existing 60%/85% attainment bands, sampled-readback requirements, and memory
+reserves are unchanged.
+
+### Authoritative GPU Allocation Safety v1
+
+`allocation_safety` (`contract: gpu_allocation_safety_v1`) is resolved once from
+memory classification evidence and bound through worker specs, materialization,
+launch environment and native Vulkan arguments. `device_class` remains topology
+and tuning evidence, never authorization to bypass memory guards. Only high-
+confidence dedicated memory with a positive independently reported capacity and
+nonconflicting classification source may set
+`device_memory_requires_system_guard=false`. Shared, unknown, missing,
+low-confidence or conflicting evidence remains guarded, including discrete GPUs.
+Runtime revalidates the propagated evidence; a bare exemption boolean is not
+sufficient. `host_memory_requires_system_guard` is always true. Vulkan compute
+fixed host staging and transfer host staging are budgeted separately even on
+dedicated GPUs; shared transfer accounts for both device and staging allocations.
+Actual Vulkan alignment requirements are checked against the assignment and
+additional protected bytes require claims. Dedicated exemptions require a
+device-local Vulkan memory type, not a fallback to unguarded host memory.
+
+Guarded growth requires a configured, permitting runtime guard. Dedicated device
+bytes do not consume RAM allowance but still honor emergency termination.
+Successful protected claims are tracked per worker, failed attempts release
+their claims, and confirmed cleanup releases outstanding claims once. Incomplete
+cleanup retains claims conservatively; outstanding bytes/cleanup errors remain
+diagnostic evidence. Workers also poll emergency state without adding GPU waits.
+This is allocation safety evidence, not proof of physical residency.
+
+Final safe assignments are never raised by materialization or retuning. Current
+minimum executable assignments are 64 MiB for EGL/OpenCL VRAM, 8 MiB for Vulkan
+compute and 16 MiB for Vulkan transfer. Smaller assignments produce explicit
+`infeasible_gpu_assignments` and block launch, not hardware-failure verdicts or
+silent floors. Original requests, assigned/planned targets,
+`materialized_target_bytes` and runtime targets remain distinct. Existing
+percentage policy, reserve and 60%/85% attainment thresholds are unchanged.
+Compatibility exports retain `allocation_safety` and expose `AllocationSafety`;
+missing historical safety evidence remains unrecorded.
+
+## GPU correction follow-up: scheduling and observed evidence
+
+EGL VRAM initialization now clears each newly allocated texture using the same
+index/phase color contract as readback and immediately samples it. Recurring
+texture samples are due by monotonic elapsed time (one second), not frame 180;
+a safe normal shutdown samples 0/middle/final at the last written phase again.
+These are sampled texel checks, not exhaustive byte coverage. Deadlines are also
+checked inside clear sweeps at texture-write boundaries, so a slow frame does
+not gate recurring samples. A driver call can exceed the interval; it is not a
+hard wall-time guarantee.
+Emergency memory stops and recorded errors skip additional final GPU work.
+`vram_verification_satisfied` requires a positive texture-readback count and zero
+recorded errors; render/marker checks alone cannot establish VRAM verification.
+`egl_selected_device` and `egl_device_exact_match` persist the existing runtime
+binding observation (also `EglSelectedDevice`/`EglDeviceExactMatch` in normalized
+GPU details). They do not strengthen the underlying targeting decision.
+
+OpenCL's bounded object budget is unchanged. When a positive API maximum permits,
+`opencl_buffer_geometry()` raises chunk size only enough to fit the assignment
+within that budget, aligned to 4096 bytes and bounded by the API maximum and
+assignment. Unknown API limits do not authorize this growth. API limits,
+runtime backoff and runtime safety caps remain distinct feasibility evidence;
+successful allocation and physical residency are never inferred from a plan.
+During successful growth, full-buffer initialization plus its completion wait
+replaces the same iteration's recurring refill. Existing recurring work resumes
+when no allocation completes. Periodic sampled readback and queue synchronization
+remain enabled, with unchanged verification intervals. Worker evidence records
+`allocation_initialization_replaced_refill` and the bounded integer aggregate
+`allocation_refill_replaced_iteration_count`; existing operation timings capture
+initialization versus recurring work and interruptions. This policy does not
+guarantee a target can be attained in a particular elapsed duration.
+
+Parsed `VramAllocationPercent` and per-GPU `MaxAllocationPercent` use assigned
+targets, not ramped active targets. `AssignedTargetVramBytes`,
+`ActiveNominalAllocationPercent` and `MaxActiveNominalTargetBytes` retain that
+distinction. `TextureVerificationPasses` and `RenderVerificationPasses` are
+separate observed counts; the historical aggregate remains generic checks,
+not successful texture verification. Missing historical counts remain absent.
+Advanced Debug filters only command stdout: return codes, stderr and collection
+exceptions are retained, with explicit bounded-output truncation markers.
+
+## OpenCL bounded readback batches and coalesced persistence
+
+The OpenCL VRAM queue remains in-order (creation properties zero). Each due
+verification retains the existing selected buffers (0/middle/last on shared
+devices, latest initialized on the established discrete safe path), sample
+word counts, independent expected values and verification intervals. Up to
+three reads enqueue into disjoint fixed host slots, then one `clFinish` and
+per-event `CL_COMPLETE` checks precede all CPU inspection. No writes or growth
+overlap that batch. Asynchronous failure or incomplete events cannot establish
+verification. A failed enqueue/completion drains pending work; if completion
+cannot be confirmed, host storage/events remain retained and claims stay charged.
+Cancellation completes ownership cleanup rather than abandoning DMA pointers.
+
+`readback_batch_policy`, `readback_batch_count`,
+`readback_enqueued_sample_count`, `readback_pending`,
+`readback_retained_event_count` and `readback_staging_bytes` are additive worker
+evidence. Enqueued/completed counts alone do not prove error-free verification.
+The at-most-12-KiB host sample pool is separately included in stage budgeting and
+runtime growth claims, even for dedicated GPUs; it is not device VRAM coverage.
+Dedicated device bytes remain outside the RAM pool. Missing host resources block
+allocation rather than disabling that protection.
+
+Existing `opencl_allocation_timing_v1` observations remain readable.
+`blocking_readback` retains its historical meaning; new batches separately time
+`readback_enqueue`, `readback_batch_finish`, `readback_event_status`, and
+`readback_recovery_finish`. Compare their combined host costs, sample counts and
+worker duration against historical per-sample blocking reads, not wait-call counts
+alone. Initial-touch and recurring-fill completion timing remains unchanged.
+No driver-latency or physical-throughput improvement is inferred from batching.
+
+Ordinary progress persistence is coalesced to two monotonic seconds after the
+previous write attempt completes, independent of object/frame count. Initial,
+new arithmetic-error, allocation-backoff/failure, and final writes remain forced.
+Atomic replacement, flushing, fsync and terminal stderr timing are retained.
+`result_publication_interval_seconds`, `result_publication_deferred_count` and
+`result_write_count` document this cadence; write/fsync errors remain explicit.
+Blocking API/filesystem calls can delay publication beyond the nominal interval.
+This does not change workload geometry, allocation concurrency, assigned targets,
+safety reserves, or the 60%/85% attainment rules. It does not claim exhaustive
+verification or physical residency.
+
 ## Required Change Process
 
 Before changing an output contract:
@@ -587,3 +839,70 @@ Before changing an output contract:
    breaking milestone with an atomic reader migration and importer map. Do not
    introduce duplicate case aliases as a substitute for that migration.
 4. Run the full smoke suite, recursive `compileall`, and `git diff --check`.
+
+## GPU cleanup completion evidence
+
+Explicit `allocation_claim_cleanup_error` (compatibility detail:
+`AllocationClaimCleanupError`) blocks overall worker success even if earlier
+computation/readback verification passed. OpenCL compute publishes
+`cleanup_complete` / `CleanupComplete` after resource and claim cleanup and
+retains verification counts separately; a cleanup error is not an arithmetic
+mismatch. Compatibility GPU details also preserve
+`OutstandingSystemMemoryClaimBytes`. A positive outstanding claim count alone
+does not establish a cleanup failure. Historical records without these fields
+retain their existing interpretation; no cleanup evidence is synthesized.
+
+### Vulkan compute descriptor bounds
+
+The compute worker uses two uint32 push constants: `logical_words` at byte 0
+and `descriptor_words` at byte 4. The host validates positive logical work
+within the exact descriptor byte range (not aligned allocation size), with
+4-byte alignment and uint32 capacity limits. Both unsigned bounds guard every
+shader data access, including multidimensional padding. No `OpArrayLength` is
+used in production: the October 26 RTX 5090 diagnostic returned zero for a
+3 GiB view while its 1 GiB view returned the correct length. This changes no
+allocation target or integrity requirement. The bounds ABI was introduced in stateful v22 and hash/stress-hash v10;
+stateful v23 retains it. Historical observations remain unchanged.
+
+### Execution completion and unfinished captures
+
+New run manifests start with `verdict=running`, `execution_state=running`;
+finalization records the terminal verdict and `execution_completion` evidence.
+An offline/copy reader does not infer that a process is alive from a recorded
+running state. Missing run endpoints or finalized stages yield INCOMPLETE,
+not PASS; recorded aborts/interruption and explicit failures remain distinct.
+PASS requires the recorded run endpoint, terminal stage endpoints/outcomes and
+completion of enabled runnable stages. Worker errors, forced kills and explicit
+cleanup failures cannot be overridden by stale positive snapshots. Unknown
+cleanup remains unknown; retained claims do not prove physical memory leakage.
+
+The shared completion assessment is exported as `ExecutionCompletion` in
+compatibility output and `run.execution_completion` in compiled report data.
+Results listing, summaries, overview and pre-import/QA validation use the same
+assessment. Legacy results retain their own recorded terminal evidence; no
+historical artifacts are rewritten. Missing kernel captures do not establish
+absence of kernel faults, and successful arithmetic does not establish an
+error-free driver lifecycle.
+
+### Opt-in AMD Vulkan per-dispatch timestamps
+
+`dispatch_timing_evidence` (`linux_validation_suite.vulkan_dispatch_timing`, v1)
+is enabled only by `LVS_AMD_VULKAN_DISPATCH_TIMING=1` with an exact
+`LVS_AMD_VULKAN_DIAGNOSTIC_SLOT`. It records bounded per-dispatch compute-stage
+brackets, submission/fence timing and geometry separately from verification.
+Unsupported timing/journal evidence blocks observation. A selected-device kernel
+fault stops the diagnostic; a stop sidecar does not assert cleanup. The diagnostic itself does not alter production allocation, arithmetic or
+verification. Stateful submission grouping is described below.
+See [operator procedure](docs/amd_vulkan_dispatch_timing_diagnostic.md).
+
+### Stateful Vulkan submission partitions
+
+Stateful-memory worker v23 uses one buffer per sequential submission, independently
+of vendor. Allocation targets, descriptor ranges, recurrence rounds and sampled
+verification are unchanged. `submission_partition_policy`, `submissions_per_cycle`,
+`cycle_completed_submissions`, `incomplete_cycle` and `buffer_dispatch_counts`
+distinguish completed work from an interrupted cycle. `cycle_count`/frames and
+final verification advance only after all partitions complete. GPU batch timing
+counts individual submissions; cycle latency covers the full cycle. Hash and
+stress-hash batching retain their existing policy. Missing terminal cleanup
+continues to mean unknown, not successful cleanup or proven physical leakage.

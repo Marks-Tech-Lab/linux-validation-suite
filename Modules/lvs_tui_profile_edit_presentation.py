@@ -42,7 +42,10 @@ def selected_stage_detail_text(profile_summary: str) -> str:
         str(profile_summary)
         + "\n\nSelected stage. Use D duration, L label, T toggle, Delete remove, "
         "G GPU target, B backend, I intensity, C compute variant, "
-        "P CPU instruction, R memory instruction, N trim, V VRAM %, or M memory %. "
+        "P CPU instruction, O CPU Instruction Intent, H CPU backend, E CPU level, F CPU load, "
+        "R memory instruction, N trim, V VRAM %, or M memory %. "
+        "Configure workload settings exposes threads and the remaining applicable controls. "
+        "CPU/GPU/memory controls are inapplicable when their workload is disabled. "
         "For Storage Benchmark stages, use the indented storage configuration rows directly below the stage; duration is not applicable."
     )
 

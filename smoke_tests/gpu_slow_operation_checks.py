@@ -79,6 +79,130 @@ def _artifact_round_trip(worker, root):
         assert found and all(item == expected for item in found), filename
 
 
+def run_vulkan_shutdown_phase_checks():
+    import ast
+    import os
+    import time
+    from unittest.mock import Mock
+    import vulkan_compute_worker as worker
+    from Modules.lvs_runtime_memory_guard import RuntimeMemoryClaims
+
+    root = Path(__file__).resolve().parents[1]
+    with TemporaryDirectory(dir=root) as temporary:
+        path = Path(temporary) / "worker.json"
+        state = dict(target_slot="0000:00:02.0")
+        clock = Clock(); stream = io.StringIO()
+        diag = worker.ShutdownPhaseDiagnostic(state, str(path), clock=lambda: clock.mono,
+                                               wall=lambda: clock.wall, stream=stream)
+        assert diag.call("fence_wait", lambda: 7) == 7
+        assert not diag.path.exists()  # no hot-loop publication before SIGTERM
+        before_signal_keys = set(diag.evidence)
+        diag.request_stop()
+        assert set(diag.evidence) == before_signal_keys  # safe during JSON dictionary iteration
+        assert not diag.path.exists()  # signal handler never performs I/O
+        def wait():
+            observation = json.loads(diag.path.read_text())
+            assert observation["active_phase"] == "fence_wait"
+            assert observation["records"][-1]["outcome"] == "entered"
+            assert observation["observed_cleanup_complete"] is None
+            clock.advance(.25)
+            return 0
+        assert diag.call("fence_wait", wait) == 0
+        assert diag.evidence["records"][-1]["operation_elapsed_seconds"] == .25
+        def fail():
+            raise RuntimeError("injected teardown failure")
+        try:
+            diag.call("vkDestroyDevice", fail)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("instrumentation swallowed teardown failure")
+        assert diag.evidence["records"][-1]["outcome"] == "raised"
+        assert diag.evidence["active_phase"] is None
+        for _ in range(80):
+            diag.call("bounded", lambda: None)
+        assert len(diag.evidence["records"]) == 64
+        assert diag.evidence["overwritten_records"] == diag.evidence["record_count"] - 64
+        with patch.object(worker, "_write_json_atomic", side_effect=OSError("diagnostic disk failure")):
+            assert diag.call("publication:finalize", lambda: "preserved") == "preserved"
+        assert diag.evidence["publication_error_count"] == 2
+        assert "vulkan_shutdown_phase_publication_error" in stream.getvalue()
+
+        tree = ast.parse((root / "native/vulkan_compute_worker.py").read_text())
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        setup = next(n for n in main.body if isinstance(n, ast.Try) and n.finalbody)
+        optin = setup.body[0]
+        assert isinstance(optin, ast.If) and "LVS_VULKAN_SHUTDOWN_PHASES" in ast.unparse(optin)
+        for enabled, slot, selected, expected in (("0", "", "0000:00:02.0", False),
+                ("1", "0000:00:02.0", "0000:00:02.0", True),
+                ("1", "0000:00:02.0", "0000:01:00.0", False)):
+            recorder = worker.SlowOperationRecorder({})
+            env = dict(vars(worker), state={}, stalls=recorder,
+                       args=SimpleNamespace(result_file=str(path), target_slot=selected))
+            with patch.dict(os.environ, LVS_VULKAN_SHUTDOWN_PHASES=enabled, LVS_VULKAN_SHUTDOWN_SLOT=slot):
+                exec(compile(ast.Module(body=[optin], type_ignores=[]), "<actual-optin>", "exec"), env)
+            assert bool(recorder.shutdown_diagnostic) is expected
+        with patch.dict(os.environ, LVS_VULKAN_SHUTDOWN_PHASES="1", LVS_VULKAN_SHUTDOWN_SLOT="not-pci"):
+            try:
+                exec(compile(ast.Module(body=[optin], type_ignores=[]), "<invalid-optin>", "exec"), env)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("invalid diagnostic target accepted")
+
+        writer = next(n for n in main.body if isinstance(n, ast.FunctionDef) and n.name == "write_result")
+        stop = next(n for n in main.body if isinstance(n, ast.FunctionDef) and n.name == "stop")
+        wrapper = ast.FunctionDef(name="exercise", args=ast.arguments(posonlyargs=[], args=[],
+            kwonlyargs=[], kw_defaults=[], defaults=[]), decorator_list=[], body=[
+            *ast.parse("running = True\nlast_result_write_monotonic = 0.0").body, writer, stop,
+            *ast.parse('callbacks.append(write_result)\nstop()\nwrite_result("completed", force=True)').body,
+            ast.Try(body=[ast.Return(value=ast.Constant(0))], handlers=[], orelse=[], finalbody=setup.finalbody)])
+        code = compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])),
+                       "<actual-compute-shutdown>", "exec")
+        for failure in (None, "vkDeviceWaitIdle", "vkDestroyDevice", "close"):
+            state = dict(status="ok", error_count=0, verification_passes=29, compute_mismatch_count=0,
+                initial_verification_completed=True, final_verification_completed=True,
+                target_slot="0000:00:02.0", selected_device_pci_slot="0000:00:02.0",
+                hardware_device_verified=True, result_write_count=0, result_write_elapsed_seconds=0.,
+                result_write_error_count=0, result_write_interval_target_seconds=1.)
+            recorder = worker.SlowOperationRecorder(state)
+            recorder.shutdown_diagnostic = worker.ShutdownPhaseDiagnostic(state, str(path), stream=io.StringIO())
+            api = Mock(); api.vkDeviceWaitIdle.return_value = 0
+            ledger = RuntimeMemoryClaims(); ledger.outstanding = 4096
+            if failure == "close":
+                ledger.close = Mock(side_effect=OSError("close failed"))
+            elif failure:
+                getattr(api, failure).side_effect = RuntimeError("injected API failure")
+            env = dict(vars(worker), state=state, stalls=recorder, memory_claims=ledger, vk=api,
+                       args=SimpleNamespace(result_file=str(path)), handles=dict(device=1, instance=2,
+                       buffers=list(range(10, 24)), memories=list(range(24, 38))), dispatch_diagnostic=None,
+                       worker_cpu_started=time.process_time(), callbacks=[])
+            exec(code, env)
+            with patch("Modules.lvs_runtime_memory_guard.release_runtime_allocation_claim") as release:
+                try:
+                    result = env["exercise"]()
+                except SystemExit as exc:
+                    result = exc.code
+                assert result == (13 if failure else 0)
+                assert release.call_count == (0 if failure else 1)
+                callbacks = []
+                worker.register_worker_exit_diagnostics(recorder, env["callbacks"][0],
+                                                       register=callbacks.append, stream=io.StringIO())
+                callbacks[-1]()  # real forced atexit writer, without repeating cleanup
+                assert release.call_count == (0 if failure else 1)
+            payload = json.loads(path.read_text())
+            assert payload["cleanup_complete"] is (not failure)
+            assert payload["verification_passes"] == 29 and payload["compute_mismatch_count"] == 0
+            assert worker_result_successful(payload) is (not failure)
+            sidecar = json.loads(recorder.shutdown_diagnostic.path.read_text())
+            assert sidecar["active_phase"] is None
+            assert sidecar["observed_cleanup_complete"] is (not failure)
+            assert any(x["phase"] == "publication:finalize" and x["outcome"] == "completed"
+                       for x in sidecar["records"])
+            if failure:
+                assert sidecar["phase_error_count"] >= 1
+
+
 def run_gpu_slow_operation_checks():
     recorder, clock, state = _recorder()
     # Timing domains and physical identity are explicit, not guessed from clocks.
@@ -167,8 +291,9 @@ def run_gpu_slow_operation_checks():
     # its own completed timing must not disappear after the log was emitted.
     exiting, exit_clock, _ = _recorder()
     callbacks, output = [], io.StringIO()
-    def exit_writer(reason):
+    def exit_writer(reason, *, force=False):
         assert reason == "atexit"
+        assert force is True
         with exiting.measure("result_persistence"):
             exit_clock.advance(25)
     register_worker_exit_diagnostics(exiting, exit_writer, register=callbacks.append, stream=output)

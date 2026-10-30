@@ -3,14 +3,16 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
+from Modules.lvs_gpu_allocation_geometry import opencl_buffer_geometry, OPENCL_READBACK_STAGING_LIMIT_BYTES
+from Modules.lvs_gpu_allocation_safety import resolve_gpu_allocation_safety, gpu_assignment_minimum_bytes
 
 
 def gpu_backend_minimum_viable_allocation(backend: str, workload: str) -> tuple[int, str]:
     backend_name = str(backend or "")
     workload_name = str(workload or "")
     if workload_name == "vram" and backend_name in {"python_opencl", "python_egl_gles2"}:
-        return 64 * 1024 * 1024, f"{backend_name}_current_verified_workload_floor"
+        return gpu_assignment_minimum_bytes(backend_name, workload_name), f"{backend_name}_current_verified_workload_floor"
     if backend_name == "python_vulkan_transfer":
         return 16 * 1024 * 1024, "vulkan_transfer_current_buffer_floor"
     if backend_name == "python_vulkan_compute":
@@ -277,7 +279,10 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
             backend_capacity_source = "opencl_global_memory" if backend_capacity else ""
             backend_max_single = int(capability.get("opencl_max_single_allocation_bytes") or 0)
             backend_max_object = backend_max_single
-            backend_max_count = 0
+            backend_max_count = (opencl_buffer_geometry(
+                worker.target_vram_bytes, backend_max_single, worker.device_class,
+                bool(getattr(runner, "_gpu_safe_mode_enabled", lambda: False)()),
+            )["max_allocation_count"] if worker.backend == "python_opencl" else 0)
             backend_limit_source = "opencl_max_mem_alloc_size" if backend_max_single else ""
             backend_granularity = 4096
         elif worker.backend in {"python_vulkan_compute", "python_vulkan_transfer"}:
@@ -313,8 +318,11 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
             else 0
         )
         memory_kind = str(capability.get("memory_kind") or "unknown")
+        safety = resolve_gpu_allocation_safety(capability)
+        guarded_device = safety["device_memory_requires_system_guard"]
+        host_staging = worker.backend in {"python_vulkan_compute", "python_vulkan_transfer", "python_opencl"}
         budgetable = bool(
-            memory_kind in {"shared", "unknown"}
+            guarded_device
             and (
                 int(worker.target_vram_bytes or 0) > 0
                 or (
@@ -329,9 +337,12 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
                 or int(worker.system_memory_fixed_commitment_bytes or 0) > 0
             )
         )
+        budgetable = budgetable or host_staging
         if budgetable:
             budgetability = (
-                "nominal_fixed_texture_budget_physical_commitment_unknown"
+                "dedicated_device_memory_with_separately_budgeted_host_staging"
+                if host_staging and not guarded_device
+                else "nominal_fixed_texture_budget_physical_commitment_unknown"
                 if worker.backend == "python_egl_gles2" and worker.workload == "gpu_3d"
                 else "enforceable_byte_target"
                 if memory_kind == "shared"
@@ -351,6 +362,7 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
             replace(
                 worker,
                 gpu_memory_kind=memory_kind,
+                allocation_safety=safety,
                 memory_classification_source=str(capability.get("classification_source") or ""),
                 memory_classification_confidence=str(capability.get("classification_confidence") or "low"),
                 memory_capacity_source=str(
@@ -382,11 +394,15 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
                 max_buffer_or_object_bytes=backend_max_object,
                 max_buffer_or_object_source=backend_limit_source,
                 max_allocation_count=backend_max_count,
+                allocation_feasibility=({"safe_mode_enabled": bool(getattr(runner, "_gpu_safe_mode_enabled", lambda: False)())}
+                                        if worker.backend == "python_opencl" else {}),
                 max_allocation_count_source=(
                     "vulkan_max_memory_allocation_count"
                     if worker.backend.startswith("python_vulkan") and backend_max_count
                     else "lvs_egl_texture_count_practical_cap"
                     if worker.backend == "python_egl_gles2"
+                    else "lvs_opencl_buffer_budget"
+                    if worker.backend == "python_opencl"
                     else ""
                 ),
                 allocation_granularity_bytes=backend_granularity,
@@ -403,8 +419,10 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
                 requested_gpu_memory_percent=requested_percent,
                 planned_gpu_memory_target_bytes=int(worker.target_vram_bytes or 0),
                 system_memory_budget_participation=budgetable,
-                system_memory_commitment_multiplier=(2 if worker.backend == "python_vulkan_transfer" else 1),
+                system_memory_commitment_multiplier=(2 if guarded_device and worker.backend == "python_vulkan_transfer" else 1),
                 system_memory_fixed_commitment_bytes=(
+                    max(int(worker.system_memory_fixed_commitment_bytes or 0), OPENCL_READBACK_STAGING_LIMIT_BYTES)
+                    if worker.backend == "python_opencl" else
                     max(int(worker.system_memory_fixed_commitment_bytes or 0), 1024 * 1024)
                     if worker.backend == "python_vulkan_compute"
                     else int(worker.system_memory_fixed_commitment_bytes or 0)
@@ -426,4 +444,4 @@ def build_stage_gpu_worker_specs(runner: Any, stage: Any) -> List[GpuWorkerSpec]
                 minimum_viable_allocation_source=minimum_source,
             )
         )
-    return annotated
+    return [bind_gpu_allocation_safety(worker) for worker in annotated]

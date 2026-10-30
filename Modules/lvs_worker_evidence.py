@@ -10,6 +10,7 @@ from Modules.lvs_native_binary_provenance import executable_snapshot
 
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_cpu_targeting import parse_linux_cpu_list
+from Modules.lvs_gpu_vram_evidence import is_vram_worker, vram_readback_status
 from Modules.lvs_worker_integrity import (
     worker_cleanup_satisfied,
     worker_verification_required,
@@ -82,6 +83,7 @@ def apply_worker_entry_context(
         payload.setdefault("selection_ambiguous", getattr(gpu_spec, "selection_ambiguous", False))
         payload.setdefault("device_class", getattr(gpu_spec, "device_class", ""))
         payload.setdefault("gpu_memory_kind", getattr(gpu_spec, "gpu_memory_kind", "unknown"))
+        payload.setdefault("allocation_safety", deepcopy(getattr(gpu_spec, "allocation_safety", {})))
         payload.setdefault("memory_classification_source", getattr(gpu_spec, "memory_classification_source", ""))
         payload.setdefault("memory_classification_confidence", getattr(gpu_spec, "memory_classification_confidence", "low"))
         payload.setdefault("dedicated_vram_capacity_bytes", getattr(gpu_spec, "dedicated_vram_capacity_bytes", 0))
@@ -89,6 +91,10 @@ def apply_worker_entry_context(
         payload.setdefault("api_addressable_capacity_bytes", getattr(gpu_spec, "api_addressable_capacity_bytes", 0))
         payload.setdefault("api_addressable_capacity_source", getattr(gpu_spec, "api_addressable_capacity_source", ""))
         payload.setdefault("reported_vram_total_semantics", getattr(gpu_spec, "reported_vram_total_semantics", "unknown"))
+        payload.setdefault("requested_target_bytes", getattr(gpu_spec, "requested_gpu_memory_target_bytes", 0) or getattr(gpu_spec, "target_vram_bytes", 0))
+        payload.setdefault("assigned_target_bytes", getattr(gpu_spec, "planned_gpu_memory_target_bytes", 0) or getattr(gpu_spec, "target_vram_bytes", 0))
+        payload.setdefault("materialized_target_bytes", getattr(gpu_spec, "target_vram_bytes", 0))
+        payload.setdefault("planned_allocation_feasibility", deepcopy(getattr(gpu_spec, "allocation_feasibility", {})))
     if getattr(entry, "stdout_path", None):
         payload.setdefault("stdout_path", entry.stdout_path)
     if getattr(entry, "stderr_path", None):
@@ -193,7 +199,27 @@ def apply_worker_entry_context(
     if stderr_tail:
         payload.setdefault("stderr_tail", stderr_tail)
     payload["verification_required"] = worker_verification_required(payload)
-    payload["verification_satisfied"] = worker_verification_satisfied(payload)
+    if is_vram_worker(payload):
+        payload["readback_verification_status"] = vram_readback_status(payload)
+        payload["verification_satisfied"] = payload["readback_verification_status"] == "verified"
+    else:
+        payload["verification_satisfied"] = worker_verification_satisfied(payload)
+    shutdown = getattr(entry, "shutdown_evidence", None)
+    if isinstance(shutdown, dict):
+        if shutdown.get("shutdown_timed_out") or shutdown.get("outcome") == "exit_unconfirmed":
+            if str(payload.get("status") or "").lower() not in {"error", "crashed", "aborted", "failed", "fail"}:
+                payload["reported_status"] = payload.get("status")
+                payload["status"] = "error"
+            payload["error_count"] = max(1, int(payload.get("error_count") or 0))
+            if not payload.get("last_error"):
+                payload["last_error"] = "Vulkan compute did not complete bounded shutdown; exit or cleanup must not be inferred"
+        # Parent observations are authoritative; raw worker JSON cannot replace
+        # the observed exit/deadline outcome with an earlier successful status.
+        payload["shutdown_evidence"] = deepcopy(shutdown)
+        payload["shutdown_evidence"]["final_worker_result"] = {
+            key: payload.get(key) for key in ("status", "error_count", "observed_exit_code",
+                "verification_satisfied", "cleanup_complete", "allocation_claim_cleanup_error",
+                "outstanding_system_memory_claim_bytes")}
     return payload
 
 
@@ -277,7 +303,8 @@ def worker_result_events_from_payload(
         or payload.get("buffer_allocation_bytes")
         or 0
     )
-    if assigned_allocation > 0 and payload.get("allocation_valid") is False:
+    allocation_insufficient = assigned_allocation > 0 and payload.get("allocation_valid") is False
+    if allocation_insufficient:
         events.append(
             create_stability_event(
                 "allocation_insufficient",
@@ -288,9 +315,15 @@ def worker_result_events_from_payload(
                 payload,
             )
         )
-        return events
+        if not is_vram_worker(payload):
+            return events
     error_count = int(payload.get("error_count") or 0)
     status = str(payload.get("status") or "").lower()
+    if is_vram_worker(payload):
+        # Explicit mismatches cannot be concealed by contradictory zero totals.
+        mismatch_count = sum(value for key, value in payload.items()
+                             if key.endswith("_mismatch_count") and type(value) is int and value > 0)
+        error_count = max(error_count, mismatch_count)
     if status == "error" or error_count > 0:
         if telemetry_only_backend:
             child_failures = int(payload.get("child_failure_count") or error_count or 0)
@@ -320,17 +353,24 @@ def worker_result_events_from_payload(
             )
         )
         return events
-    if worker_verification_required(payload) and not worker_verification_satisfied(payload):
+    if ((worker_verification_required(payload) and not worker_verification_satisfied(payload))
+            or (is_vram_worker(payload) and (
+                vram_readback_status(payload) == "failed_or_incomplete"
+                or (worker_verification_required(payload) and vram_readback_status(payload) != "verified")))):
         events.append(
             create_stability_event(
                 "worker_verification_missing",
                 "error",
                 display_name,
                 kind,
-                f"{payload.get('backend', kind)} completed without a required readback verification pass",
+                (f"{payload.get('backend', kind)} completed without sufficient successful readback verification evidence"
+                 if is_vram_worker(payload)
+                 else f"{payload.get('backend', kind)} completed without a required readback verification pass"),
                 payload,
             )
         )
+        return events
+    if allocation_insufficient:
         return events
     if payload.get("runtime_memory_guard_triggered"):
         events.append(
@@ -346,7 +386,7 @@ def worker_result_events_from_payload(
     shortfall_bytes = int(payload.get("allocation_shortfall_bytes") or 0)
     target_vram_bytes = int(
         payload.get("assigned_target_bytes")
-        or payload.get("active_target_vram_bytes")
+        or (payload.get("active_target_vram_bytes") if not is_vram_worker(payload) else 0)
         or payload.get("target_vram_bytes")
         or 0
     )

@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .lvs_gpu_identity import normalize_pci_id, normalize_pci_slot, pci_physical_gpu_id
-from .lvs_vulkan_identity import normalize_device_uuid, requested_physical_identity, physical_identity_match
+from .lvs_vulkan_identity import normalize_device_uuid, requested_physical_identity, physical_identity_match, duplicate_drm_render_identities
 
 
 def vulkan_device_is_hardware_gpu(device: Dict[str, Any]) -> bool:
@@ -39,6 +39,8 @@ def vulkan_physical_identity(device: Dict[str, Any], gpu_cards: Iterable[Dict[st
     Do not infer an NVIDIA identity from another vendor's UUID or from a driver
     UUID/pipeline-cache UUID. Conflicts must not fall through to model scoring.
     """
+    if device.get("identity_error"):
+        return {"slot": "", "source": "", "error": str(device["identity_error"])}
     cards = list(gpu_cards)
     explicit = normalize_pci_slot(str(device.get("pci_slot", "") or device.get("pciSlot", "") or ""))
     identifier = normalize_device_uuid(device.get("deviceUUID"))
@@ -82,7 +84,8 @@ def vulkan_target_identity_evidence(device, target, gpu_cards):
     requested = requested_physical_identity(target)
     identity = vulkan_physical_identity(device, gpu_cards)
     evidence = physical_identity_match(requested["uuid"], requested["pci_slot"],
-        device.get("deviceUUID", ""), identity["slot"])
+        device.get("deviceUUID", ""), identity["slot"],
+        target_render=requested["drm_render"], device_render=device.get("drm_render"))
     if requested["error"] or identity["error"]:
         evidence.update(status="conflicting_identity", source="", reason=requested["error"] or identity["error"])
     if evidence["status"] == "verified" and identity["source"] == "nvidia_device_uuid":
@@ -168,6 +171,9 @@ def vulkan_device_for_target(
     if len(identifiers) != len(set(identifiers)):
         return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
                 "identity_status": "ambiguous_identity", "reason": "duplicate Vulkan device UUID requires unique identity"}
+    if duplicate_drm_render_identities(device.get("drm_render") for device in device_list):
+        return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
+                "identity_status": "ambiguous_identity", "reason": "duplicate Vulkan DRM render identity"}
     proofs = [vulkan_target_identity_evidence(device, target, card_list) for device in device_list]
     if sum(proof["status"] == "verified" for proof in proofs) > 1:
         return {"available": False, "device": None, "ambiguous": True, "score": 0.0,
@@ -213,7 +219,8 @@ def vulkan_device_for_target(
     selected_slot = vulkan_device_pci_slot(selected_device, card_list)
     if selected_slot:
         selected_device["pci_slot"] = selected_slot
-    selected_device["identity_match_source"] = vulkan_physical_identity(best_device, card_list)["source"]
+    selected_device["identity_match_source"] = (vulkan_physical_identity(best_device, card_list)["source"]
+        or vulkan_target_identity_evidence(best_device, target, card_list)["source"])
     return {
         "available": True,
         "device": selected_device,

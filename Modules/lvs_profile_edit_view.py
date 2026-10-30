@@ -581,6 +581,10 @@ class ProfileEditPresenter:
                     index=index,
                 )
             )
+            rows.append(ProfileEditItem("configure_stage", "  Configure workload settings (Enter)", index=index))
+            if stage.modules.cpu.enabled:
+                rows.append(ProfileEditItem("cpu_instruction_intent",
+                    f"  O CPU Instruction Intent: {stage.modules.cpu.instruction_intent or '(none)'}", index=index))
             if stage.modules.storage_benchmark.enabled:
                 storage = stage.modules.storage_benchmark
                 rows.extend([
@@ -631,6 +635,7 @@ class ProfileEditPresenter:
             f"Description: {profile.menu_description or '-'}",
             f"Strict warnings: {profile.defaults.strict_threshold_recommendation_warnings}",
             f"Dirty: {'yes' if edit.dirty else 'no'}",
+            "Persistence: " + ("unsaved new draft" if edit.is_new else "unsaved edits to existing profile" if edit.dirty else "saved profile"),
             "",
             "Stages:",
         ]
@@ -658,6 +663,8 @@ class ProfileEditPresenter:
                 "- I edits selected GPU stage intensity.",
                 "- C edits selected GPU compute variant.",
                 "- P edits selected CPU instruction set.",
+                "- O edits selected CPU Instruction Intent (CPU stages only).",
+                "- Configure workload settings exposes applicable backend, thread, mode, allocation and target controls without shortcuts.",
                 "- R edits selected memory instruction set.",
                 "- E edits selected CPU mode; F edits its steady/variable load pattern.",
                 "- CPU mode is a backend-specific workload envelope; it does not change ISA selection.",

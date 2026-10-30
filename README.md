@@ -16,33 +16,40 @@ requests fail closed when unavailable rather than silently substituting
 another ISA or backend.
 
 This is not a generic guarantee for every ARM architecture or platform. SVE
-FP32/FMA is experimental and explicit-only; Spark functional execution and
-preserved-binary instruction inspection passed (not sustained acceptance): explicit
-`sve`/`sve_fp32_fma` requests only; ordinary Auto, generic vector intents, and
-Power Auto do not select it. SVE2 and SME are not implemented. Architectures such as RISC-V
+FP32/FMA remains experimental: explicit `sve`/`sve_fp32_fma` requests and the
+operator-selected ARM64 `highest_verified_vector` intent may select it when
+common native capabilities permit. Spark functional and sustained acceptance
+passed at 128-bit VL; current Snapdragon non-SVE portability passed. Wider VLs
+remain physically unvalidated. Selection and software verification do not imply
+physical acceptance of a machine or vector length. Baseline/high-throughput
+intents retain NEON policies; ordinary Auto and Power Auto exclude SVE.
+The operator-selected highest-vector integration is physically confirmed on
+Spark (SVE) and Snapdragon (NEON FP32/FMA).
+SVE2 and SME are not implemented. Architectures such as RISC-V
 are outside the current support guarantee. Hardware and telemetry coverage
 still depends on the CPU, GPU, driver, kernel, firmware, and system tools
 available on each host.
 
-## Public Alpha
+## Current Release Preparation
 
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite),
-with `main` as the published branch. Alpha releases are published as
-pre-releases. The current version is `v0.5.2-alpha`, a reliability and correctness
-update adding physically accepted NEON FP32/FMA, fail-closed Vulkan physical-GPU
-identity, GPU inventory corrections, stall diagnostics, and automatic source
-provenance and comparisons. See the release notes below for acceptance boundaries.
-The maintainer creates and publishes GitHub prereleases manually after release
-code and annotated tags have been pushed.
+with `main` as the published branch. Version `v0.5.2` is prepared for final
+review as a corrective reliability release: verified CPU execution, fail-closed
+physical GPU targeting, protected GPU allocations, sampled readback integrity,
+bounded worker shutdown, truthful completion/reporting, automatic provenance,
+and coherent CLI/TUI configuration. See [the v0.5.2 notes](docs/release_notes_v0.5.2.md)
+for the accepted hardware boundaries and limitations. Preparation does not
+create a tag or publish a GitHub Release; publication remains a maintainer action
+after final commit and annotated-tag review.
 
 The `v0.2.0-alpha` tag contains the Storage Health and Storage Benchmark
 baseline. The `v0.3.0-alpha` release builds on that historical boundary. See
 [ROADMAP.md](ROADMAP.md) for completed, deferred, and undecided project status.
 
-Linux Validation Suite (LVS) is licensed under the MIT License. This alpha is
-intended for early validation and feedback; hardware-sensitive and experimental
-areas are identified below.
+Linux Validation Suite (LVS) is licensed under the MIT License. Hardware-sensitive
+and experimental areas remain explicitly bounded; the version does not imply
+universal hardware coverage or maximum stress saturation.
 
 ## Hardware Scalability
 
@@ -209,6 +216,32 @@ Benchmark utility at **Run Tests > Run Storage Benchmark**. The TUI supports
 profile selection, editing, readiness review, run execution, and result review;
 Storage Benchmark is available there as a completion-based profile module.
 
+### Profile editing and one-off run configuration
+
+In the TUI, **Save As** and **Copy** validate and save the named profile when
+the name is submitted. The source stays unchanged; an existing destination is
+never overwritten by these operations. The saved profile is immediately
+discoverable. Later edits remain unsaved until **Save**.
+
+For a single run, use **Setup → Stage Overrides → Configure Stage Workloads**,
+then select the stage and setting. Applicable CPU, memory, GPU and VRAM controls
+reuse the profile editor's mutation rules. This includes **CPU Instruction
+Intent** (`highest_verified_vector` clears the explicit instruction set to
+`auto`). The profile editor exposes the same controls through **Configure
+workload settings**; **O** remains its CPU Instruction Intent shortcut.
+
+Run-only changes are shown in the effective setup and captured execution
+profile, not written to the source profile or reused after the attempt.
+Advanced Debug and automatic pre-launch validation, identity checks and memory
+guards continue to apply. No extra profile copy or manual Dry Run is required.
+
+The CLI offers the same applicable workload settings from **Review Run Settings
+→ O (Stage Overrides) → 5 (Configure stage workloads)**. Select a stage, then a
+setting; Enter keeps its value and Back cancels. The effective settings are shown
+before execution and remain run-only. In the CLI profile stage editor, **W**
+opens the same shared workload settings. CLI **Copy Profile** and **F (Save As)**
+save immediately after the new name, preserving the source; blank names cancel.
+
 ## Result Folders And Artifacts
 
 Runs write timestamped folders under `results/` by default. A complete result
@@ -359,8 +392,8 @@ Available workflows include:
   location. Results, archived profiles, sensor logs, and derived hardware state
   remain excluded.
 
-The runtime version is `0.5.2-alpha`, corresponding to the planned `v0.5.2-alpha`
-pre-release tag. Passing smoke runs capture expected interactive output instead
+The prepared runtime version is `0.5.2`; its proposed new tag is `v0.5.2`.
+The published `v0.5.2-alpha` checkpoint remains unchanged. Passing smoke runs capture expected interactive output instead
 of dumping CLI/TUI setup screens; failures still retain their assertion
 diagnostics.
 
@@ -388,11 +421,27 @@ The coordinated canonical `parsed_results.json` migration remains deferred;
 New feature fields must continue to follow the forward-only snake_case and
 semantic-unit policy in `OUTPUT_CONTRACT_INDEX.md`.
 
-## Release Notes — v0.5.2-alpha
+## Release Notes — v0.5.2
 
-These notes describe the release checkpoint. Subsequent Spark SVE functional
-and preserved-binary acceptance is documented in
-[the SVE contract](docs/sve_fp32_fma_contract.md); SVE remains explicit-only.
+See [the complete release notes and manual publication draft](docs/release_notes_v0.5.2.md)
+and [the proposed release inventory](docs/release_inventory_v0.5.2.md).
+The accepted October 29 cross-hardware campaign and October 30 MSI S2/S4
+confirmation close the current functional physical gates. Specialized CPU ISA
+families, wider SVE lengths, SVE2/SME and dynamic/transient stress remain future
+work. Sampled GPU readbacks do not establish exhaustive byte verification or
+physical memory residency. Existing safety reserves and 60%/85% allocation
+assessment bands are preserved.
+
+Normal direct project copying and execution require no provenance stamp,
+packaging step, Git metadata or network access. The recorded physical-source
+fingerprint and metadata-only release differences are documented in the notes.
+
+## Release Notes — v0.5.2-alpha (historical)
+
+These notes describe the unchanged release checkpoint, where SVE was explicit-only
+and physically unverified. Subsequent Spark functional/sustained acceptance,
+Snapdragon portability and the development-only highest-vector policy are documented
+in [the SVE contract](docs/sve_fp32_fma_contract.md); they do not change that release.
 
 This corrective alpha consolidates the six development checkpoints since
 v0.5.1-alpha. Detailed commit scope, acceptance evidence, known limitations,

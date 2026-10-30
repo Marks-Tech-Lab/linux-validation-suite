@@ -37,9 +37,24 @@ from smoke_tests.module_organization_checks import (
     test_textual_is_confined_to_optional_tui_boundary,
 )
 from smoke_tests.clock_thermal_provider_checks import run_clock_thermal_provider_checks
+from smoke_tests.egl_vram_correctness_checks import run_egl_vram_pattern_checks, run_gpu_vram_reporting_checks, run_egl_slow_frame_checks, run_gpu_capture_reporting_checks
+from smoke_tests.gpu_allocation_scaling_checks import run_gpu_allocation_geometry_checks, run_egl_allocation_execution_checks, run_opencl_allocation_diagnostic_checks, run_opencl_growth_scheduling_checks
+from smoke_tests.opencl_scheduling_checks import run_opencl_readback_batch_checks, run_opencl_publication_and_staging_checks
+from smoke_tests.gpu_allocation_safety_checks import run_gpu_allocation_safety_boundary_checks, run_gpu_assignment_invariant_checks, run_opencl_loop_completion_checks, run_gpu_cleanup_reporting_checks, run_vulkan_terminal_publication_checks, run_vulkan_transfer_terminal_checks
 from smoke_tests.profile_metadata_checks import run_profile_metadata_checks
 from smoke_tests.captured_profile_checks import run_captured_profile_checks
 from smoke_tests.profile_authoring_ux_checks import run_profile_authoring_ux_checks
+from smoke_tests.vulkan_submission_partition_checks import run_vulkan_submission_partition_checks
+from smoke_tests.vulkan_dispatch_timing_checks import run_vulkan_dispatch_timing_checks
+from smoke_tests.run_completion_evidence_checks import run_completion_evidence_checks
+from smoke_tests.physical_gpu_selection_checks import run_physical_gpu_selection_checks
+from smoke_tests.configuration_workflow_checks import (
+    run_profile_save_completion_checks, run_stage_configuration_execution_checks,
+    run_tui_configuration_workflow_checks, run_stage_configuration_module_checks,
+)
+from smoke_tests.cli_configuration_checks import (
+    run_cli_profile_persistence_checks, run_cli_workload_override_parity_checks, run_cli_instruction_catalog_checks,
+)
 from smoke_tests.platform_sensor_telemetry_checks import run_platform_sensor_telemetry_checks
 from smoke_tests.direct_hwmon_telemetry_checks import run_direct_hwmon_telemetry_checks
 from smoke_tests.live_tui_telemetry_checks import run_live_tui_telemetry_checks
@@ -60,16 +75,18 @@ from smoke_tests.output_contract_checks import (
 )
 from smoke_tests.analysis_quality_checks import run_analysis_quality_checks
 from smoke_tests.gpu_evaluation_policy_checks import run_gpu_evaluation_policy_checks
-from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks
-from smoke_tests.gpu_slow_operation_checks import run_gpu_slow_operation_checks
-from smoke_tests.vulkan_physical_identity_checks import run_vulkan_physical_identity_checks, run_vulkan_fail_closed_checks
+from smoke_tests.vulkan_workload_effectiveness_checks import run_vulkan_workload_effectiveness_checks, run_vulkan_padded_dispatch_checks
+from smoke_tests.vulkan_bounds_diagnostic_checks import run_vulkan_bounds_diagnostic_checks
+from smoke_tests.gpu_slow_operation_checks import run_gpu_slow_operation_checks, run_vulkan_shutdown_phase_checks
+from smoke_tests.vulkan_shutdown_policy_checks import run_vulkan_shutdown_policy_checks
+from smoke_tests.vulkan_physical_identity_checks import run_vulkan_physical_identity_checks, run_vulkan_fail_closed_checks, run_vulkan_drm_identity_checks
 from smoke_tests.gpu_inventory_identity_checks import run_gpu_inventory_identity_checks
 from smoke_tests.source_provenance_checks import run_source_provenance_checks, run_source_provenance_artifact_checks
 from smoke_tests.source_review_checks import run_automatic_source_workflow_checks, run_source_git_correlation_checks
 from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
 from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
 from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
-from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks
+from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks, run_sve_highest_intent_checks, run_software_verification_reporting_checks
 
 from linux_validation_suite import (
     CompatibilityExporter,
@@ -3023,7 +3040,9 @@ def test_tui_run_execution_adapter_helpers() -> None:
         assert_equal(finish_tui.view_mode, "profiles", "TUI finish exits run-active view")
         assert_equal(finish_tui.status, "Run complete", "TUI finish keeps post-run status")
         assert_true("post-run: Run cancelled" in finish_tui.detail, "TUI finish keeps post-run detail")
-        assert_equal(finish_tui.saved_setup, finish_tui.run_setup, "TUI finish saves run setup history through shared service")
+        assert_equal(finish_tui.saved_setup.profile_path, Path("profiles/TuiSetupSmoke.json"),
+                     "TUI finish saves completed setup history through shared service")
+        assert_equal(finish_tui.run_setup, None, "TUI finish discards one-off setup before the next run")
 
     asyncio.run(run_finish_unlock_check())
 
@@ -6285,11 +6304,9 @@ def test_opencl_vram_worker_script_builder() -> None:
         for node in ast.walk(script_tree)
         if isinstance(node, ast.If)
         and any(
-            isinstance(child, ast.AugAssign)
-            and isinstance(child.target, ast.Subscript)
-            and "verification_passes" in ast.unparse(child.target)
-            for statement in node.body
-            for child in ast.walk(statement)
+            isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+            and child.func.id == "verify_buffer_samples"
+            for statement in node.body for child in ast.walk(statement)
         )
     ]
     assert_true(verification_checks, "OpenCL VRAM periodic verification condition exists")
@@ -7211,7 +7228,7 @@ def test_gpu_worker_validation_detail_builder() -> None:
     assert_equal(detail["Workload"], "vram", "worker detail workload")
     assert_equal(detail["Backend"], "python_vulkan_memory", "worker detail backend")
     assert_true(detail["VerificationRequired"], "worker detail records required verification")
-    assert_true(detail["VerificationSatisfied"], "worker detail records satisfied verification")
+    assert_true(not detail["VerificationSatisfied"], "positive counts cannot conceal recorded GPU mismatches")
     assert_equal(detail["DeviceName"], "RTX 5090 #3", "worker detail device")
     assert_equal(detail["ExpectedGpuIndex"], 2, "worker detail target GPU index fallback")
     assert_equal(detail["ExpectedSlot"], "0000:03:00.0", "worker detail target slot fallback")
@@ -7224,12 +7241,13 @@ def test_gpu_worker_validation_detail_builder() -> None:
     assert_equal(detail["ComputeVariant"], "stress_hash", "worker detail kernel variant fallback")
     assert_equal(detail["ActiveLoadFraction"], 0.877, "worker detail active load rounding")
     assert_equal(detail["AllocatedVramBytes"], 100, "worker detail allocated fallback")
-    assert_equal(detail["TargetVramBytes"], 400, "worker detail target VRAM")
+    assert_equal(detail["TargetVramBytes"], 102, "worker detail assigned target, not ramped target")
+    assert_equal(detail["ActiveTargetBytes"], 400, "worker detail retains separate active target")
     assert_equal(detail["AllocatedGpuMemoryBytes"], 100, "worker detail neutral allocated-memory alias")
-    assert_equal(detail["TargetGpuMemoryBytes"], 400, "worker detail neutral target-memory alias")
+    assert_equal(detail["TargetGpuMemoryBytes"], 102, "worker detail neutral assigned target-memory alias")
     assert_equal(detail["GpuMemoryKind"], "dedicated", "worker detail memory architecture")
     assert_equal(detail["DedicatedGpuMemoryBytes"], 32 * GIB, "worker detail dedicated capacity provenance")
-    assert_equal(detail["AllocationPercent"], 25.0, "worker detail allocation percent")
+    assert_equal(detail["AllocationPercent"], 98.0392, "worker detail assigned allocation percent")
     assert_equal(detail["VerifiedBufferIndexes"], [0, 2, 4], "worker detail verified buffers")
     assert_equal(detail["BufferMemoryTypeIndex"], 3, "positive Vulkan memory type index")
     assert_equal(detail["BufferMemoryHeapIndex"], 1, "positive Vulkan memory heap index")
@@ -8641,7 +8659,7 @@ def test_run_summary_text_fixture() -> None:
     )
     assert_true("Severity counts: info=1" in text, "summary action severity counts")
     assert_true(
-        "No rerun is required solely for this warning when worker allocation and verification passed"
+        "Review assigned allocation coverage, readback errors and device-memory telemetry semantics separately"
         in text,
         "summary action message override",
     )
@@ -10556,8 +10574,10 @@ def test_result_validation_facade_candidates_and_batch() -> None:
             {
                 "profile_name": "Manifest Fixture",
                 "verdict": "pass",
+                "ended": "2026-05-01T17:04:00-04:00",
                 "executed_plan": [{}, {}],
-                "stage_windows": [{}, {}],
+                "stage_windows": [{"verdict": "pass", "ended_iso": "2026-05-01T17:01:30-04:00"},
+                                  {"verdict": "pass", "ended_iso": "2026-05-01T17:03:30-04:00"}],
                 "skipped_stages": [{}],
             },
         )
@@ -20041,8 +20061,13 @@ def test_gpu_stage_event_helpers() -> None:
                 "target_id": "0000:02:00.0",
                 "gpu_index": 1,
                 "active_target_vram_bytes": 10 * one_gib,
+                "assigned_target_bytes": 10 * one_gib,
                 "allocated_vram_bytes": 9 * one_gib,
                 "verification_passes": 3,
+                "backend": "python_opencl",
+                "suite_verification": "memory_readback",
+                "status": "ok",
+                "error_count": 0,
                 "device_class": "discrete",
             }
         ],
@@ -22159,7 +22184,7 @@ def test_gpu_worker_materializer_helpers() -> None:
 
 
 def test_gpu_worker_retune_helpers() -> None:
-    target = {"target_id": "0000:01:00.0", "card": "card1", "gpu_index": 0, "vram_total": 4096}
+    target = {"target_id": "0000:01:00.0", "card": "card1", "gpu_index": 0, "vram_total": 4096 * 1024**2}
 
     class FakeRunner:
         def _gpu_target_by_id(self, target_id: str) -> dict:
@@ -22188,7 +22213,7 @@ def test_gpu_worker_retune_helpers() -> None:
             return GpuWorkerSpec("gpu_3d", "python_egl_gles2", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["egl", str(tuning_step)], tuning_step=tuning_step)
 
         def _cap_gpu_vram_target_bytes(self, target: dict, requested_bytes: int) -> int:
-            return min(requested_bytes, 2048)
+            return min(requested_bytes, 2048 * 1024**2)
 
         def _build_python_opencl_vram_worker(self, target: dict, target_vram_bytes: int, tuning_step: int = 0) -> GpuWorkerSpec:
             return GpuWorkerSpec("vram", "python_opencl", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["opencl-vram", str(target_vram_bytes), str(tuning_step)], target_vram_bytes=target_vram_bytes, tuning_step=tuning_step)
@@ -22219,28 +22244,28 @@ def test_gpu_worker_retune_helpers() -> None:
         "0000:01:00.0",
         "0000:01:00.0",
         ["planned"],
-        target_vram_bytes=2000,
+        target_vram_bytes=2000 * 1024**2,
         tuning_step=0,
     )
     tuned_vram = retune_gpu_worker(FakeRunner(), vram_spec)
-    assert_equal(tuned_vram.target_vram_bytes, 2048, "VRAM retune target cap")
+    assert_equal(tuned_vram.target_vram_bytes, 2000 * 1024**2, "VRAM retune must not enlarge the safe assignment")
     shared_vram_spec = replace(
         vram_spec,
         gpu_memory_kind="shared",
-        target_vram_bytes=1800,
-        requested_gpu_memory_target_bytes=2200,
-        planned_gpu_memory_target_bytes=1800,
+        target_vram_bytes=1800 * 1024**2,
+        requested_gpu_memory_target_bytes=2200 * 1024**2,
+        planned_gpu_memory_target_bytes=1800 * 1024**2,
         system_memory_budget_participation=True,
         memory_budget_consumer_id="gpu:1:vram:python_opencl:igpu",
         target_cap_reason="stage_system_memory_budget_rebalance",
     )
     tuned_shared_vram = retune_gpu_worker(FakeRunner(), shared_vram_spec)
-    assert_equal(tuned_shared_vram.target_vram_bytes, 1800, "shared VRAM retune cannot exceed assigned stage target")
-    assert_equal(tuned_shared_vram.planned_gpu_memory_target_bytes, 1800, "shared retune preserves allocation plan")
+    assert_equal(tuned_shared_vram.target_vram_bytes, 1800 * 1024**2, "shared VRAM retune cannot exceed assigned stage target")
+    assert_equal(tuned_shared_vram.planned_gpu_memory_target_bytes, 1800 * 1024**2, "shared retune preserves allocation plan")
     legacy_worker = preserve_legacy_worker_evidence_contract(serialize_gpu_worker_spec(tuned_shared_vram))
     assert_true("gpu_memory_kind" not in legacy_worker, "legacy output excludes additive GPU memory classification")
     assert_true("planned_gpu_memory_target_bytes" not in legacy_worker, "legacy output excludes additive GPU target plan")
-    assert_equal(legacy_worker["target_vram_bytes"], 1800, "legacy VRAM target field remains unchanged")
+    assert_equal(legacy_worker["target_vram_bytes"], 1800 * 1024**2, "legacy VRAM target field remains unchanged")
     maxed_spec = GpuWorkerSpec("gpu_3d", "python_egl_gles2", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["planned"], tuning_step=2)
     assert_equal(retune_gpu_worker(FakeRunner(), maxed_spec), None, "retune max step blocks")
     unsupported_spec = GpuWorkerSpec("gpu_3d", "python_vulkan_compute", 0, "card1", "0000:01:00.0", "0000:01:00.0", ["planned"])
@@ -22311,7 +22336,8 @@ def test_gpu_retune_process_helpers() -> None:
     )
     assert_true(old_process.terminated and old_process.killed, "retune stops old process")
     assert_equal(created[0]["cmd"], ["new"], "retune launches new command")
-    assert_equal(created[0]["env"], {"LVS": "1"}, "retune command env")
+    assert_equal(created[0]["env"]["LVS"], "1", "retune preserves command env")
+    assert_true(json.loads(created[0]["env"]["LVS_GPU_ALLOCATION_SAFETY"])["device_memory_requires_system_guard"], "retune propagates conservative safety classification")
     assert_equal(replacement.gpu_spec.tuning_step, 1, "retune replacement stage process")
     assert_equal(event["previous_tuning_step"], 0, "retune previous step event")
     assert_true("gpu-retune" in output[0], "retune phase line emitted")
@@ -24335,6 +24361,7 @@ def test_cpu_backend_preference_policy_and_arm_lab_profiles() -> None:
         suite_scaling_mode="parametric",
         suite_verification="compute_readback",
         resolved_device_name="Adreno X1-45",
+        target_vram_bytes=128 * 1024**2,
         device_class="integrated",
         profile_mode="steady",
         profile_intensity="extreme",
@@ -29320,11 +29347,32 @@ def test_service_orchestrator_factory_injection() -> None:
 def main() -> int:
     tests = [
         run_captured_profile_checks,
+        run_egl_vram_pattern_checks,
+        run_gpu_vram_reporting_checks,
+        run_egl_slow_frame_checks,
+        run_gpu_capture_reporting_checks,
+        run_opencl_growth_scheduling_checks,
+        run_opencl_readback_batch_checks,
+        run_opencl_publication_and_staging_checks,
+        run_gpu_allocation_geometry_checks,
+        run_egl_allocation_execution_checks,
+        run_opencl_allocation_diagnostic_checks,
+        run_gpu_allocation_safety_boundary_checks,
+        run_gpu_cleanup_reporting_checks,
+        run_vulkan_terminal_publication_checks,
+        run_vulkan_transfer_terminal_checks,
+        run_gpu_assignment_invariant_checks,
+        run_opencl_loop_completion_checks,
         run_analysis_quality_checks,
         run_gpu_evaluation_policy_checks,
         run_vulkan_workload_effectiveness_checks,
+        run_vulkan_padded_dispatch_checks,
+        run_vulkan_bounds_diagnostic_checks,
         run_gpu_slow_operation_checks,
+        run_vulkan_shutdown_phase_checks,
+        run_vulkan_shutdown_policy_checks,
         run_vulkan_physical_identity_checks,
+        run_vulkan_drm_identity_checks,
         run_vulkan_fail_closed_checks,
         run_gpu_inventory_identity_checks,
         run_source_provenance_checks,
@@ -29454,6 +29502,17 @@ def main() -> int:
         test_profile_loader_round_trip_and_sorting,
         run_profile_metadata_checks,
         run_profile_authoring_ux_checks,
+        run_profile_save_completion_checks,
+        run_stage_configuration_execution_checks,
+        run_tui_configuration_workflow_checks,
+        run_stage_configuration_module_checks,
+        run_physical_gpu_selection_checks,
+        run_completion_evidence_checks,
+        run_vulkan_dispatch_timing_checks,
+        run_vulkan_submission_partition_checks,
+        run_cli_profile_persistence_checks,
+        run_cli_workload_override_parity_checks,
+        run_cli_instruction_catalog_checks,
         run_platform_sensor_telemetry_checks,
         run_direct_hwmon_telemetry_checks,
         run_live_tui_telemetry_checks,
@@ -29547,6 +29606,8 @@ def main() -> int:
         run_neon_fp32_fma_export_checks,
         run_neon_fp32_progress_checks,
         run_sve_fp32_fma_checks,
+        run_sve_highest_intent_checks,
+        run_software_verification_reporting_checks,
         run_fp32_error_evidence_checks,
         run_sve_progress_export_checks,
         test_python_cpu_fallback_worker_supervision,

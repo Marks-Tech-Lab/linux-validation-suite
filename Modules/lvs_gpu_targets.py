@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from .lvs_gpu_identity import apply_physical_gpu_identity, gpu_vendor_name, normalize_pci_id, normalize_pci_slot
+from .lvs_gpu_identity import apply_physical_gpu_identity, gpu_vendor_name, normalize_pci_id, normalize_pci_slot, pci_physical_gpu_id
 from .lvs_telemetry_nvidia import discover_nvidia_smi_gpus as discover_nvidia_provider_gpus
 
 
@@ -388,10 +388,55 @@ def enrich_gpu_cards_with_vulkan_device_classes(
     return enriched
 
 
+def physical_slot_targets(selection: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Resolve explicit PCI identities completely, never silently drop a target.
+
+    API binding remains independently checked by the existing backend/native
+    resolvers. UI indexes are only menu positions, never saved GPU identity.
+    """
+    slots = selection.removeprefix("slots:").split(",")
+    slots = [normalize_pci_slot(slot).lower() for slot in slots]
+    if not slots or any(not pci_physical_gpu_id(slot) for slot in slots) or len(set(slots)) != len(slots):
+        raise ValueError("Invalid or duplicated physical GPU PCI selection.")
+    result = []
+    for slot in slots:
+        matches = [card for card in cards if normalize_pci_slot(card.get("slot")).lower() == slot]
+        if len(matches) != 1:
+            raise ValueError(f"Physical GPU {slot} is unavailable or ambiguous; select a uniquely identified device.")
+        card = matches[0]
+        physical_id = card.get("physical_gpu_id")
+        if physical_id and physical_id != pci_physical_gpu_id(slot):
+            raise ValueError(f"Physical GPU {slot} has conflicting inventory identity.")
+        for key in ("nvidia_uuid", "render_node"):
+            identifier = card.get(key)
+            if identifier and any(other is not card and other.get(key) == identifier for other in cards):
+                raise ValueError(f"Physical GPU {slot} has duplicated {key} identity.")
+        result.append(card)
+    return result
+
+
+def physical_gpu_choices(cards: List[Dict[str, Any]]) -> List[tuple[str, str]]:
+    """Offer only unique PCI selections; retain native binding as preflight authority."""
+    choices = []
+    for slot in sorted({normalize_pci_slot(card.get("slot")).lower() for card in cards}):
+        if not pci_physical_gpu_id(slot):
+            continue
+        value = "slots:" + slot
+        try:
+            card, = physical_slot_targets(value, cards)
+        except ValueError:
+            continue
+        name = card.get("name") or card.get("device_name") or card.get("vendor") or "GPU"
+        choices.append((value, f"{name} | PCI {slot}"))
+    return choices
+
+
 def gpu_targets(selection: Any, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    mode = (str(selection or "all")).strip().lower()
+    if mode.startswith("slots:"):
+        return physical_slot_targets(mode, cards)
     if not cards:
         return []
-    mode = (str(selection or "all")).strip().lower()
     if mode == "all":
         return cards
     if mode in {"integrated_all", "igpu_all", "shared_all"}:
@@ -404,13 +449,6 @@ def gpu_targets(selection: Any, cards: List[Dict[str, Any]]) -> List[Dict[str, A
             return []
         best = max(candidates, key=lambda card: (card["vram_total"], card["slot"]))
         return [best]
-    if mode.startswith("slots:"):
-        requested_slots = {
-            item.strip().lower()
-            for item in mode.split(":", 1)[1].split(",")
-            if item.strip()
-        }
-        return [card for card in cards if card["slot"].lower() in requested_slots]
     if mode.startswith("cards:"):
         requested_cards = {
             item.strip().lower()

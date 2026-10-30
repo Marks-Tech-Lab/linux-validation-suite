@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from Modules.lvs_core import JsonStore
+from Modules.lvs_run_completion_evidence import execution_completion, with_completion
 from Modules.lvs_profile_loader import ProfileLoader
 from Modules.lvs_source_provenance import collect_source_provenance
 from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
@@ -136,9 +137,16 @@ def write_final_run_artifacts(
     manifest_payload["executed_plan"] = executed_plan
     manifest_payload["stage_windows"] = [asdict(w) for w in stage_windows]
     manifest_payload["verdict"] = overall_verdict
+    manifest_payload["execution_state"] = "completed"
     manifest_payload["events"] = run_all_events
     manifest_payload["warning_events"] = run_warning_events
     manifest_payload["error_events"] = run_error_events
+    completion = execution_completion(manifest_payload)
+    manifest_payload["execution_completion"] = completion
+    if completion["status"] != "completed":
+        overall_verdict = completion["status"]
+        manifest_payload["verdict"] = overall_verdict
+        manifest_payload["execution_state"] = overall_verdict
     stamp_contract_identity(
         manifest_payload,
         contract_id=RUN_MANIFEST_CONTRACT_ID,
@@ -174,7 +182,7 @@ def write_final_run_artifacts(
         recovery_report,
         skipped_stages,
     )
-    compat = preserve_legacy_worker_evidence_contract(compatibility_payload)
+    compat = with_completion(preserve_legacy_worker_evidence_contract(compatibility_payload), completion)
     if "source_provenance" in manifest_payload:
         # Preserve actual endpoints in compatibility output so every later
         # summary writer can render them without consulting today's checkout.

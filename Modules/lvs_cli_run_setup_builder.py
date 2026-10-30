@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
 from typing import List
 
 from .lvs_profile_models import ValidationProfile
@@ -28,6 +29,7 @@ class RunSetupBuilderMixin:
             profile=profile,
             labels=labels,
             heatsoak_minutes=self._pending_heatsoak_value(),
+            original_profile=deepcopy(profile),
         )
         if self._feature_enabled("run_setup_history"):
             setup.metadata = self._maybe_recall_run_setup_history(setup.metadata)

@@ -132,12 +132,16 @@ class ProfileEditController:
     def stage_action_error(stage: Any, action: str) -> str:
         if action == "duration" and stage.modules.storage_benchmark.enabled:
             return "Storage Benchmark is completion-based and has no stage duration."
-        if action in {"cpu_backend", "cpu_mode", "cpu_load", "cpu_instruction", "cpu_instruction_intent", "cpu_threads"} and not stage.modules.cpu.enabled:
+        if action in {"cpu_power_auto", "cpu_backend", "cpu_mode", "cpu_load", "cpu_instruction", "cpu_instruction_intent", "cpu_threads"} and not stage.modules.cpu.enabled:
             return "CPU module is not enabled on this stage."
         if action in {"memory_allocation", "memory_instruction"} and not stage.modules.memory.enabled:
             return "Memory module is not enabled on this stage."
         if action == "gpu_target" and not (stage.modules.gpu_3d.enabled or stage.modules.vram.enabled):
             return "No GPU workload is enabled on this stage."
+        if action == "gpu_3d_target" and not stage.modules.gpu_3d.enabled:
+            return "3D module is not enabled on this stage."
+        if action == "vram_target" and not stage.modules.vram.enabled:
+            return "VRAM module is not enabled on this stage."
         if action in {"gpu_backend", "gpu_mode", "gpu_intensity", "gpu_compute_variant", "gpu_allocation"} and not stage.modules.gpu_3d.enabled:
             return "3D module is not enabled on this stage."
         if action in {"vram_backend", "vram_allocation"} and not stage.modules.vram.enabled:
@@ -188,6 +192,11 @@ class ProfileEditController:
             changed, labels = self.profile_editor.move_stage(
                 profile, labels, index, -1 if action == "move_up" else 1
             )
+        elif action == "cpu_power_auto":
+            stage.modules.cpu.power_auto = str(value) == "true"
+            if not stage.modules.cpu.power_auto:
+                stage.modules.cpu.validation_runner = ""
+            changed = stage.modules.cpu.power_auto
         elif action == "cpu_backend":
             changed = self.profile_editor.set_cpu_backend_preference(stage, str(value))
         elif action == "cpu_mode":
@@ -208,6 +217,9 @@ class ProfileEditController:
             changed = self.profile_editor.set_memory_allocation_percent(stage, int(value))
         elif action == "gpu_target":
             changed = self.profile_editor.set_gpu_target_mode(stage, str(value))
+        elif action in {"gpu_3d_target", "vram_target"}:
+            changed = self.profile_editor.set_gpu_target_mode(stage, str(value),
+                workload="gpu_3d" if action == "gpu_3d_target" else "vram")
         elif action == "gpu_backend":
             changed = self.profile_editor.set_gpu_backend_preference(stage, str(value))
         elif action == "vram_backend":

@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
+from Modules.lvs_gpu_allocation_safety import validate_gpu_assignment
 
 
 def retune_gpu_worker(runner: Any, spec: GpuWorkerSpec) -> Optional[GpuWorkerSpec]:
     if spec.backend not in {"python_egl_gles2", "python_opencl_compute", "python_opencl"}:
         return None
-    if spec.system_memory_budget_participation and (
+    protected = bind_gpu_allocation_safety(spec).allocation_safety["device_memory_requires_system_guard"]
+    if protected and spec.system_memory_budget_participation and (
         spec.workload == "gpu_3d" or spec.backend == "python_egl_gles2"
     ):
         # These workers derive fixed buffers/textures from tuned load
@@ -36,7 +38,7 @@ def retune_gpu_worker(runner: Any, spec: GpuWorkerSpec) -> Optional[GpuWorkerSpe
                 profile_mode=spec.profile_mode,
                 profile_intensity=spec.profile_intensity,
             )
-        return replace(
+        return bind_gpu_allocation_safety(replace(
             rebuilt,
             gpu_memory_kind=spec.gpu_memory_kind,
             memory_classification_source=spec.memory_classification_source,
@@ -57,10 +59,12 @@ def retune_gpu_worker(runner: Any, spec: GpuWorkerSpec) -> Optional[GpuWorkerSpe
             memory_budget_consumer_id=spec.memory_budget_consumer_id,
             memory_budgetability=spec.memory_budgetability,
             target_cap_reason=spec.target_cap_reason,
-        )
+            allocation_safety=spec.allocation_safety,
+        ))
     if spec.workload == "vram":
         target_total = int(target.get("vram_total") or 0) if target else 0
-        tuned_target = int(spec.target_vram_bytes * 1.15)
+        validate_gpu_assignment(spec.backend, spec.workload, spec.target_vram_bytes)
+        tuned_target = int(spec.target_vram_bytes)
         if target_total > 0:
             tuned_target = min(tuned_target, int(target_total * 0.99))
         tuned_target = runner._cap_gpu_vram_target_bytes(target, tuned_target)
@@ -70,7 +74,7 @@ def retune_gpu_worker(runner: Any, spec: GpuWorkerSpec) -> Optional[GpuWorkerSpe
             rebuilt = runner._build_python_opencl_vram_worker(target, tuned_target, next_step)
         else:
             rebuilt = runner._build_python_vram_worker(target, tuned_target, next_step)
-        return replace(
+        return bind_gpu_allocation_safety(replace(
             rebuilt,
             gpu_memory_kind=spec.gpu_memory_kind,
             memory_classification_source=spec.memory_classification_source,
@@ -91,5 +95,6 @@ def retune_gpu_worker(runner: Any, spec: GpuWorkerSpec) -> Optional[GpuWorkerSpe
             memory_budget_consumer_id=spec.memory_budget_consumer_id,
             memory_budgetability=spec.memory_budgetability,
             target_cap_reason=spec.target_cap_reason,
-        )
+            allocation_safety=spec.allocation_safety,
+        ))
     return None

@@ -7,11 +7,31 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
 
 MIB = 1024 ** 2
+_stop_observation = ("", 0.0, False)
+
+
+def runtime_memory_stop_required() -> bool:
+    """Bounded-read emergency polling, also for dedicated-memory workers."""
+    global _stop_observation
+    path = os.environ.get("LVS_RUNTIME_MEMORY_GUARD_PATH", "")
+    if not path:
+        return False
+    now = time.monotonic()
+    previous_path, observed, stopped = _stop_observation
+    if path == previous_path and (stopped or now - observed < 0.25):
+        return stopped
+    try:
+        stopped = bool(json.loads(Path(path).read_text(encoding="utf-8")).get("stage_termination_required"))
+    except Exception:
+        stopped = True
+    _stop_observation = (path, now, stopped)
+    return stopped
 
 
 def runtime_memory_thresholds(reserve_bytes: int) -> Dict[str, int]:
@@ -172,11 +192,20 @@ def claim_runtime_allocation_growth(
     control_path: str | None = None,
 ) -> Dict[str, Any]:
     request = max(0, int(request_bytes or 0))
-    if not shared_system_memory or request <= 0:
-        return {"allowed": True, "claimed_bytes": request, "reason": "not_shared_system_memory"}
     raw_path = control_path or os.environ.get("LVS_RUNTIME_MEMORY_GUARD_PATH", "")
+    if not shared_system_memory:
+        # Dedicated bytes do not consume RAM allowance, but cannot bypass the
+        # supervisor's emergency stop. This observation never modifies claims.
+        if raw_path:
+            try:
+                state = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+                if state.get("stage_termination_required"):
+                    return {"allowed": False, "claimed_bytes": 0, "reason": "stage_termination_required"}
+            except Exception:
+                return {"allowed": False, "claimed_bytes": 0, "reason": "runtime_guard_unreadable"}
+        return {"allowed": True, "claimed_bytes": 0, "reason": "dedicated_device_memory"}
     if not raw_path:
-        return {"allowed": True, "claimed_bytes": request, "reason": "guard_not_configured"}
+        return {"allowed": False, "claimed_bytes": 0, "reason": "guard_not_configured"}
     path = Path(raw_path)
 
     def apply(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -218,10 +247,41 @@ def release_runtime_allocation_claim(
     path = Path(raw_path)
 
     def apply(state: Dict[str, Any]) -> Dict[str, Any]:
-        state["runtime_growth_allowance_bytes"] = int(state.get("runtime_growth_allowance_bytes") or 0) + amount
+        state["runtime_growth_allowance_bytes"] = min(
+            max(0, int(state.get("runtime_headroom_bytes") or 0)),
+            int(state.get("runtime_growth_allowance_bytes") or 0) + amount,
+        )
         state["total_runtime_growth_claimed_bytes"] = max(
             0, int(state.get("total_runtime_growth_claimed_bytes") or 0) - amount
         )
         return state
 
     _locked_update(path, apply)
+
+
+class RuntimeMemoryClaims:
+    """Per-process accounting; failed attempts and final cleanup release once."""
+    def __init__(self):
+        self.outstanding = 0
+        self.cleanup_error = ""
+
+    def claim(self, amount, *, shared_system_memory):
+        result = claim_runtime_allocation_growth(amount, shared_system_memory=shared_system_memory)
+        if result.get("allowed") and shared_system_memory:
+            self.outstanding += int(result.get("claimed_bytes") or 0)
+        return result
+
+    def release(self, amount, *, shared_system_memory):
+        if not shared_system_memory:
+            return
+        amount = min(self.outstanding, max(0, int(amount)))
+        if amount:
+            release_runtime_allocation_claim(amount, shared_system_memory=True)
+            self.outstanding -= amount
+
+    def close(self):
+        try:
+            self.release(self.outstanding, shared_system_memory=True)
+        except Exception as exc:
+            # Failed release remains charged; cleanup must not grant fake credit.
+            self.cleanup_error = str(exc)

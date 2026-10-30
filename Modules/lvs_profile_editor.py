@@ -551,11 +551,11 @@ class ProfileEditor:
         stage.enabled = not stage.enabled
         return stage.enabled
 
-    def set_gpu_target_mode(self, stage: StageConfig, mode: str) -> str:
+    def set_gpu_target_mode(self, stage: StageConfig, mode: str, *, workload: str = "") -> str:
         normalized = str(mode or "all").strip() or "all"
-        if stage.modules.gpu_3d.enabled:
+        if stage.modules.gpu_3d.enabled and workload in {"", "gpu_3d"}:
             stage.modules.gpu_3d.gpus = normalized
-        if stage.modules.vram.enabled:
+        if stage.modules.vram.enabled and workload in {"", "vram"}:
             stage.modules.vram.gpus = normalized
         return normalized
 

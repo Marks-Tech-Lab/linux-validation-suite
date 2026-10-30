@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import json
+import os
+from Modules.lvs_gpu_allocation_safety import resolve_gpu_allocation_safety, ENV_KEY
 from typing import Any, Dict, List, Optional
 
 
@@ -41,6 +44,7 @@ class GpuWorkerSpec:
     profile_intensity: str = ""
     compute_variant: str = ""
     gpu_memory_kind: str = "unknown"
+    allocation_safety: Dict[str, Any] = field(default_factory=dict)
     memory_classification_source: str = ""
     memory_classification_confidence: str = "low"
     memory_capacity_source: str = ""
@@ -63,6 +67,7 @@ class GpuWorkerSpec:
     allocation_granularity_bytes: int = 1
     planned_allocation_chunks: List[int] = field(default_factory=list)
     planned_allocation_chunk_count: int = 0
+    allocation_feasibility: Dict[str, Any] = field(default_factory=dict)
     reported_vram_total_bytes: int = 0
     reported_vram_total_semantics: str = "unknown"
     ambiguous_integrated_vram_report_bytes: int = 0
@@ -117,6 +122,8 @@ def serialize_gpu_worker_spec(worker: GpuWorkerSpec) -> Dict[str, Any]:
         "clear_passes": worker.clear_passes,
         "tuning_step": worker.tuning_step,
         "gpu_memory_kind": worker.gpu_memory_kind,
+        "device_class": worker.device_class,
+        "allocation_safety": dict(worker.allocation_safety),
         "memory_classification_source": worker.memory_classification_source,
         "memory_classification_confidence": worker.memory_classification_confidence,
         "memory_capacity_source": worker.memory_capacity_source,
@@ -139,6 +146,7 @@ def serialize_gpu_worker_spec(worker: GpuWorkerSpec) -> Dict[str, Any]:
         "allocation_granularity_bytes": worker.allocation_granularity_bytes,
         "planned_allocation_chunks": list(worker.planned_allocation_chunks),
         "planned_allocation_chunk_count": worker.planned_allocation_chunk_count,
+        "allocation_feasibility": dict(worker.allocation_feasibility),
         "reported_vram_total_bytes": worker.reported_vram_total_bytes,
         "reported_vram_total_semantics": worker.reported_vram_total_semantics,
         "ambiguous_integrated_vram_report_bytes": worker.ambiguous_integrated_vram_report_bytes,
@@ -160,3 +168,41 @@ def serialize_gpu_worker_spec(worker: GpuWorkerSpec) -> Dict[str, Any]:
         "minimum_viable_allocation_bytes": worker.minimum_viable_allocation_bytes,
         "minimum_viable_allocation_source": worker.minimum_viable_allocation_source,
     }
+
+
+def bind_gpu_allocation_safety(worker: GpuWorkerSpec, capability: Optional[Dict[str, Any]] = None) -> GpuWorkerSpec:
+    """Bind the same immutable decision to metadata and actual execution ABI."""
+    if capability is not None:
+        worker = replace(worker, gpu_memory_kind=str(capability.get("memory_kind") or "unknown"),
+                         memory_classification_source=str(capability.get("classification_source") or ""),
+                         memory_classification_confidence=str(capability.get("classification_confidence") or "low"),
+                         dedicated_vram_capacity_bytes=int(capability.get("dedicated_vram_capacity_bytes") or 0),
+                         allocation_safety=resolve_gpu_allocation_safety(capability))
+    evidence = dict(gpu_memory_kind=worker.gpu_memory_kind,
+                    memory_classification_source=worker.memory_classification_source,
+                    memory_classification_confidence=worker.memory_classification_confidence,
+                    dedicated_vram_capacity_bytes=worker.dedicated_vram_capacity_bytes)
+    if worker.allocation_safety.get("classification_conflict"):
+        evidence["classification_conflict"] = True
+    policy = resolve_gpu_allocation_safety(evidence)
+    if worker.allocation_safety.get("device_memory_requires_system_guard") is True:
+        policy["device_memory_requires_system_guard"] = True
+    # A stage budget is an additional protection obligation, never an exemption.
+    host_staging_budget = (worker.backend in {"python_vulkan_compute", "python_vulkan_transfer"}
+                           or (worker.backend == "python_opencl" and worker.system_memory_fixed_commitment_bytes > 0))
+    if worker.system_memory_budget_participation and (worker.gpu_memory_kind != "dedicated" or not host_staging_budget):
+        policy["device_memory_requires_system_guard"] = True
+    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+    env = {**worker.env_overrides, ENV_KEY: encoded}
+    command = list(worker.command)
+    if worker.backend in {"python_vulkan_compute", "python_vulkan_transfer"}:
+        if "--allocation-safety-json" in command:
+            index = command.index("--allocation-safety-json")
+            del command[index:index + 2]
+        command.extend(["--allocation-safety-json", encoded])
+    return replace(worker, allocation_safety=policy, env_overrides=env, command=command)
+
+
+def gpu_allocation_environment(base: Optional[Dict[str, str]], worker: GpuWorkerSpec) -> Dict[str, str]:
+    bound = bind_gpu_allocation_safety(worker)
+    return {**(os.environ if base is None else base), ENV_KEY: bound.env_overrides[ENV_KEY]}

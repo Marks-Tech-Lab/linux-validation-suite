@@ -437,6 +437,8 @@ class TuiRunExecutionAdapterMixin:
                     self.service.save_run_setup_history(self.run_setup)
                 except Exception:
                     pass
+        # One-off configuration belongs to this completed attempt only.
+        self.run_setup = None
         transition = post_run_completion_transition(
             result_available=result is not None,
             completed_text=text,

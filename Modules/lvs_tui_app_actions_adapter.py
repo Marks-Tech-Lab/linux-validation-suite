@@ -58,15 +58,18 @@ class TuiAppActionsAdapterMixin:
             environment_label=self.service.environment_mode_label(),
             row_label=profile_row_label,
         )
+        preferred_path = getattr(getattr(self, "selected_profile", None), "path", None)
+        selected_index = next((i for i, p in enumerate(self.profiles) if p.path == preferred_path),
+                              presentation.selected_index)
         self.query_one("#sidebar-title").update(presentation.title)
         list_view = self.query_one("#items")
         await self._replace_sidebar_labels(
             list_view,
             list(presentation.rows),
-            selected_index=presentation.selected_index,
+            selected_index=selected_index,
         )
         if presentation.first_item is not None:
-            self.selected_profile = presentation.first_item
+            self.selected_profile = self.profiles[selected_index if selected_index is not None else 0]
             self._show_profile_summary(self.selected_profile)
             self._focus_items()
         else:

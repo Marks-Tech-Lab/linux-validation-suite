@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Callable, List
 
 from .lvs_service_models import FrontendActionSpec, RunSetupState
+from .lvs_stage_configuration import effective_stage_text
 
 
 def setup_action_detail_value(setup: RunSetupState | None, key: str) -> str:
@@ -75,7 +76,7 @@ def setup_action_detail_text(
         enabled = sum(1 for stage in setup.profile.stages if stage.enabled)
         lines.append("Type: stage override")
         lines.append(f"Stages enabled: {enabled}/{len(setup.profile.stages)}")
-        lines.append("Edit durations, trim windows, or enabled state for this run only.")
+        lines.append("Edit workload configuration, durations, trim windows, or enabled state for this run only.")
     elif action.action == "segment_label_picker":
         lines.append("Type: segment label editor")
         lines.append(f"Labels available: {len(setup.labels)}")
@@ -164,7 +165,7 @@ def run_setup_summary_text(
         [
             "- 2 Description text entry",
             "- 3 Heatsoak minutes text entry",
-            "- O Stage durations / trim / enabled",
+            "- O Stage Overrides: workloads / duration / trim / enabled",
             "- L Segment labels for this run",
             "- H Load previous setup",
             "- D Advanced debug logging toggle",
@@ -179,6 +180,7 @@ def run_setup_summary_text(
         state = "enabled" if stage.enabled else "disabled"
         execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
         lines.append(f"- {index}. {label} [{stage.name}] {execution}, {state}")
+        lines.extend(effective_stage_text(stage))
     return "\n".join(lines)
 
 
@@ -245,6 +247,11 @@ def run_setup_overview_text(
         if expected is not None:
             analysis_text += f", expected usable {expected}s"
         lines.append(f"{index}. {label}: {execution}, {state}, {trim}{analysis_text}")
+        lines.extend(effective_stage_text(stage))
+        original = getattr(setup, "original_profile", None)
+        if original is not None and original.stages[index - 1] != stage:
+            lines.append("  Overridden for this run only; original profile settings:")
+            lines.extend(effective_stage_text(original.stages[index - 1]))
     lines.extend(
         [
             "",

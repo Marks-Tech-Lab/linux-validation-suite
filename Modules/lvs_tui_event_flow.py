@@ -31,6 +31,7 @@ BUTTON_ACTIONS = {
 }
 
 ESCAPE_CANCEL_VIEW_MODES = {
+    "stage_configuration",
     "migration_support",
     "migration_bundle_select",
     "setup_picker",

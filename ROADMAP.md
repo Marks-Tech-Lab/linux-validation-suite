@@ -3,7 +3,7 @@
 This roadmap is the project-status source for completed, deferred, and
 undecided work. Deferred or possible work is not committed release scope.
 
-## Status And Current Priority Queue — 2026-10-23
+## Status And Current Priority Queue — 2026-10-30
 
 `[x]` marks only the named checkpoint in its stated scope. Proposal/design,
 implementation, software validation and physical acceptance are separate gates;
@@ -12,31 +12,52 @@ acceptance. Existing historical sections retain their original release scope.
 
 1. [x] Implement and software-validate current CLI/TUI configuration parity,
    immediate Copy/Save As persistence and temporary workload overrides. Latest
-   local checkpoint: 303/303 smoke tests and 81/81 profiles valid. This is not
+   pre-release checkpoint: 314/314 smoke tests and 81/81 profiles valid. This is not
    hardware acceptance; the UX does not require physical stress to validate it.
 2. [x] Physically confirm corrected EGL readback/scheduling and geometry, and
    Core Ultra OpenCL assigned-target attainment with sampled integrity, guards
    and cleanup on the exercised configurations. This is not exhaustive memory
    verification, physical-residency proof or acceptance of every backend.
-3. [ ] Complete corrected Vulkan allocation-path integration acceptance:
+3. [x] Complete corrected Vulkan allocation-path integration acceptance:
    dedicated/shared device memory, separately protected host staging, alignment
    accounting and cleanup. The changes and negative safety checks are
-   implemented/software-validated; earlier Vulkan identity acceptance does not
-   accept these newer paths. Keep unresolved I/O/persistence incidents separate
+   implemented, software-validated and physically confirmed on tested NVIDIA,
+   AMD and Adreno configurations. NVIDIA large-descriptor bounds, AMD per-buffer
+   submission scheduling, terminal publication and final MSI compute-aware
+   shutdown acceptance are complete. Keep unresolved I/O/persistence incidents separate
    from workload correctness and do not declare their cause fixed.
-4. [ ] Complete current ARM64 `highest_verified_vector` physical integration
-   confirmation on Spark and Snapdragon. The policy is implemented and
-   software-validated; earlier SVE/NEON arithmetic acceptance remains scoped to
-   its actual campaigns, not the newly exposed selection workflow.
+4. [x] Complete current ARM64 `highest_verified_vector` physical integration
+   confirmation on Spark and Snapdragon. Capability selection, actual SVE/NEON
+   execution, all-thread verification and truthful reporting passed. This does
+   not accept wider SVE lengths or other hardware configurations.
 5. [ ] Finish the already-adopted major x86_64/AArch64 ISA milestones below,
    with independent verification and scoped hardware acceptance. Record any
    hardware-unavailability deferrals explicitly rather than marking them done.
-6. [ ] Retain corrective release-readiness, safety, provenance and compatibility
-   review before publication. No future feature here assigns a release version.
+6. [ ] Finalize the v0.5.2 release inventory, metadata, documentation, safety,
+   provenance and compatibility review before approved commit/tag/publication.
+   Physical acceptance is closed; no future feature here assigns release scope.
 
 Only after these current prerequisites are closed or explicitly re-scoped may
 the dynamic-stress sequence below begin. This records future planning priority,
 not authorization to implement workers or change current test/verdict policy.
+
+## Prepared In v0.5.2
+
+- [x] Close the eight-system October 29 hardware wave and October 30 MSI S2/S4
+  shutdown confirmation within their recorded support boundaries.
+- [x] Preserve independent CPU/RAM verification, automatic source/executable
+  provenance, physical GPU identities, shared-memory guards and legacy readers.
+- [x] Correct EGL readback pattern/scheduling, scalable allocation geometry,
+  bounded OpenCL allocation/readback/publication scheduling, Vulkan descriptor
+  bounds and per-buffer stateful submissions, cleanup and incomplete-run verdicts.
+- [x] Provide shared validated CLI/TUI run-local workload and physical-target
+  overrides, immediate Save As/Copy persistence and captured-profile replay.
+- [x] Archive the five correction profiles byte-for-byte outside ordinary
+  discovery, with retained historical operator instructions.
+- [ ] Approve the final release staging inventory. Commit, tag and publication
+  remain pending.
+
+See [v0.5.2 scope, limitations and physical-source provenance](docs/release_notes_v0.5.2.md).
 
 ## Prepared In v0.5.2-alpha
 
@@ -219,8 +240,9 @@ The adopted general SIMD work is:
    established software-verification contracts: SVE FP32/FMA, NEON FP32/FMA,
    then integer NEON. This is not a physical-coverage or performance ranking.
    Baseline/high-throughput intents, ordinary Auto and Power Auto are unchanged.
-- [ ] Physically confirm the current highest-vector selection integration;
-  this is separate from the accepted arithmetic campaigns.
+- [x] Physically confirm highest-vector selection integration on Spark (SVE,
+  128-bit VL) and Snapdragon (NEON FP32/FMA); the October 29 current-build
+  confirmation is separate from the earlier arithmetic campaigns.
 - [ ] Physically validate wider SVE vector lengths and other implementations;
   software scalable/mixed-VL fixtures do not close this gate.
 - [ ] Design, implement, independently verify and physically accept distinct
@@ -414,9 +436,10 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 
 - Additional storage testing beyond the current Storage Health and Storage
   Benchmark baseline is deferred pending milestone 4 planning above.
-- Before the first real AArch64 GPU OpenCL validation, add common AArch64
-  multiarch loader paths through one shared resolver. Do not fork the OpenCL
-  workers or claim ARM GPU OpenCL acceptance before hardware validation.
+- Broaden AArch64 OpenCL driver/loader portability through one shared resolver
+  where current probing is unavailable. GB10 OpenCL compute/VRAM passed in the
+  accepted campaign; Snapdragon OpenCL exposed no usable GPU. Do not generalize
+  one platform's execution into universal ARM GPU OpenCL support or fork workers.
 - Additional CPU/package-power telemetry providers may be added for unfamiliar
   platforms. Current missing-watts behavior remains a truthful reported
   fallback, not a failed feature.

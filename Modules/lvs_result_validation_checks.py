@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from .lvs_run_completion_evidence import completion_from_directory
 from typing import Any, Dict, List
 
 
@@ -280,6 +281,11 @@ def validate_run_manifest(result_dir: Path, parsed: Dict[str, Any]) -> Dict[str,
             run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
             if not isinstance(run_manifest, dict):
                 raise ValueError("run_manifest.json root is not an object")
+            completion = completion_from_directory(result_dir, parsed)
+            run_manifest_check["execution_completion"] = completion
+            if not completion["complete"] or (completion["status"] == "fail" and str(run_manifest.get("verdict")).lower() not in {"fail", "failed", "error"}):
+                issues.append({"severity": "error", "category": "execution_incomplete" if not completion["complete"] else "worker_failure",
+                    "message": completion["reason"], "details": {"status": completion["status"]}})
             executed_plan = run_manifest.get("executed_plan") if isinstance(run_manifest.get("executed_plan"), list) else []
             stage_windows_payload = run_manifest.get("stage_windows") if isinstance(run_manifest.get("stage_windows"), list) else []
             skipped_payload = run_manifest.get("skipped_stages") if isinstance(run_manifest.get("skipped_stages"), list) else []

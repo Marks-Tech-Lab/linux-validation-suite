@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 from .lvs_result_report_adapters import result_summary_text
+from .lvs_run_completion_evidence import completion_from_directory, with_completion
 from .lvs_source_review import load_result_source_identity
 from .lvs_result_report_text import (
     missing_result_overview_text,
@@ -29,6 +30,8 @@ class ResultOverviewReportBuilder:
     def result_overview_text(self, result_dir: Path) -> str:
         parsed_path = result_dir / "parsed_results_custom.json"
         parsed = self.read_json(parsed_path) if parsed_path.exists() else {}
+        if (result_dir / "run_manifest.json").exists():
+            parsed = with_completion(parsed, completion_from_directory(result_dir, parsed))
         if not parsed:
             return missing_result_overview_text(result_dir.name)
         return result_overview_text_from_payload(result_dir.name, parsed, load_result_source_identity(result_dir, parsed=parsed))

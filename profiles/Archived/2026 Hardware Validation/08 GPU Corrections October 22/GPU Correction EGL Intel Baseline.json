@@ -1,0 +1,20 @@
+{
+  "profile_name": "GPU Correction EGL Intel Baseline",
+  "menu_group": "advanced",
+  "menu_description": "MSI iGPU small baseline before bounded geometry test",
+  "require_all_stages_runnable": true,
+  "defaults": {"telemetry_interval_seconds": 2.0, "trim_start_seconds": 5, "trim_end_seconds": 5},
+  "stages": [{
+    "id": "egl_geometry_baseline", "name": "VRAM", "display_label": "EGL Intel Small Baseline",
+    "duration_seconds": 90, "enabled": true,
+    "modules": {
+      "cpu": {"enabled": false, "power_auto": false},
+      "memory": {"enabled": false},
+      "gpu_3d": {"enabled": false},
+      "vram": {"enabled": true, "allocation_percent": 1, "gpus": "slots:0000:00:02.0", "backend_preference": "egl", "priority": "normal"},
+      "storage_benchmark": {"enabled": false}
+    },
+    "normalization": {"trim_start_seconds": 5, "trim_end_seconds": 5},
+    "analysis": {"intent": "functional"}
+  }]
+}

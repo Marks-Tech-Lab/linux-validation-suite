@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
 
 
 def build_python_gpu_3d_worker(
@@ -32,7 +32,8 @@ def build_python_gpu_3d_worker(
     target_name = str(target.get("name", "") if target else "")
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
-    device_class = str(runner._gpu_capability_profile(target).get("device_class", "") or "") if target else ""
+    capability = runner._gpu_capability_profile(target) if target else {}
+    device_class = str(capability.get("device_class", "") or "")
     command = runner._wrap_gpu_command(
         [
             runtime,
@@ -57,7 +58,7 @@ def build_python_gpu_3d_worker(
         target,
         selected_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="gpu_3d",
         backend="python_egl_gles2",
         gpu_index=int(target.get("gpu_index", 0)) if target else 0,
@@ -85,7 +86,7 @@ def build_python_gpu_3d_worker(
         # backing is driver-controlled and is protected only by the runtime
         # MemAvailable guard, not represented as an invented exact byte value.
         system_memory_fixed_commitment_bytes=int(params["surface_size"]) * int(params["surface_size"]) * 4,
-    )
+    ), capability)
 
 
 def build_python_vram_worker(
@@ -104,7 +105,8 @@ def build_python_vram_worker(
     target_name = str(target.get("name", "") if target else "")
     target_slot = str(target.get("slot", "") if target else "")
     target_id = str(target.get("target_id", "") if target else "")
-    device_class = str(runner._gpu_capability_profile(target).get("device_class", "") or "") if target else ""
+    capability = runner._gpu_capability_profile(target) if target else {}
+    device_class = str(capability.get("device_class", "") or "")
     surface_size = max(512, params["surface_size"] // 2)
     draw_count = max(8, params["draw_count"] // 8)
     shader_iterations = max(12, params["shader_iterations"] // 2)
@@ -135,7 +137,7 @@ def build_python_vram_worker(
         target,
         selected_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="vram",
         backend="python_egl_gles2",
         gpu_index=int(target.get("gpu_index", 0)) if target else 0,
@@ -161,4 +163,4 @@ def build_python_vram_worker(
         suite_verification="render_readback",
         device_class=device_class,
         system_memory_fixed_commitment_bytes=int(surface_size) * int(surface_size) * 4,
-    )
+    ), capability)

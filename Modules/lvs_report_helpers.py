@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from Modules.lvs_worker_integrity import worker_result_successful, worker_verification_satisfied
+from Modules.lvs_worker_integrity import worker_result_successful, worker_verification_satisfied, worker_cleanup_satisfied
 
 
 REPORT_SUMMARY_MIRROR_FIELDS = (
@@ -821,7 +821,7 @@ def build_department_use_summary(
         )
     if "gpu_vram_telemetry_discrepancy" in warning_categories:
         operator_notes.append(
-            "VRAM worker allocation/verification passed; OS VRAM telemetry may under-report shared-memory or driver-managed allocations."
+            "Compare assigned coverage, worker errors and sampled readback with device telemetry; nominal allocation does not establish physical residency."
         )
     if "gpu_thermal_throttle_zone" in warning_categories:
         operator_notes.append(
@@ -930,7 +930,7 @@ def build_report_action_item_details(
         add_item(
             "info",
             "gpu_vram_telemetry_discrepancy",
-            "No rerun is required solely for this warning when worker allocation and verification passed; treat worker-verified VRAM allocation as authoritative over under-reporting OS telemetry.",
+            "Review assigned allocation coverage, readback errors and device-memory telemetry semantics separately; neither nominal allocation nor sampled readback proves physical residency.",
             count=int((stability_interpretation.get("WarningCategoryCounts") or {}).get("gpu_vram_telemetry_discrepancy") or 0),
         )
     try:
@@ -1064,6 +1064,8 @@ def build_report_stage_summary(segment: Dict[str, Any]) -> Dict[str, Any]:
                 "VramUsedMaxGB": (metric.get("VramUsedGB") or {}).get("Max"),
                 "AllocationPercent": (metric.get("WorkerEvidence") or {}).get("MaxAllocationPercent"),
                 "VerificationPasses": (metric.get("WorkerEvidence") or {}).get("VerificationPasses"),
+                "TextureVerificationPasses": (metric.get("WorkerEvidence") or {}).get("TextureVerificationPasses"),
+                "RenderVerificationPasses": (metric.get("WorkerEvidence") or {}).get("RenderVerificationPasses"),
             }
             for metric in gpu_metrics
         ],
@@ -1125,7 +1127,7 @@ def overall_report_outcome_summary(
     if warning_categories <= {"gpu_vram_telemetry_discrepancy"}:
         return {
             "OutcomeClass": "worker_verified_telemetry_limited",
-            "Summary": "Run completed with verified worker results, but one or more OS telemetry sources under-reported the workload.",
+            "Summary": "Run completed with worker verification evidence and an allocation/device-telemetry discrepancy; physical residency is not established.",
         }
     if warning_categories <= {"gpu_thermal_throttle_zone"}:
         return {
@@ -1390,10 +1392,14 @@ def build_report_summary(
                 "VramMismatchCount",
                 "TransferMismatchCount",
             )
-        ) or status in {"error", "fail", "failed"} or not worker_verification_satisfied(detail)
+        ) or status in {"error", "fail", "failed"} or not worker_verification_satisfied(detail) or not worker_cleanup_satisfied(detail) or (
+            detail.get("ReadbackVerificationStatus") == "failed_or_incomplete"
+            or (detail.get("VerificationRequired") is True
+                and detail.get("ReadbackVerificationStatus") in {"insufficient_evidence", "not_required"})
+        )
         if integrity_failed:
             worker_failure_count += 1
-        elif worker_result_successful(detail):
+        elif worker_result_successful(detail) and detail.get("ReadbackVerificationStatus", "verified") == "verified":
             worker_success_count += 1
         try:
             verification_passes += int(detail.get("VerificationPasses") or 0)

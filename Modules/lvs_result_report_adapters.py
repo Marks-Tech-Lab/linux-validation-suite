@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from .lvs_core import JsonStore
 from .lvs_service_models import FrontendActionSpec, ResultListEntry
+from .lvs_run_completion_evidence import completion_from_directory, with_completion
 from .lvs_summary_text import summary_with_recorded_source
 
 
@@ -49,12 +50,14 @@ def list_result_entries(results_dir: Path) -> List[ResultListEntry]:
             if benchmark_batch_path.exists()
             else read_result_json(manifest_path)
         )
+        if manifest_path.exists():
+            payload = with_completion(payload, completion_from_directory(path, payload if parsed_path.exists() else None))
         entries.append(
             ResultListEntry(
                 path=path,
                 name=path.name,
                 verdict=str(
-                    payload.get("Verdict")
+                    (payload.get("ExecutionCompletion") or {}).get("status") if payload.get("ExecutionCompletion") and not payload["ExecutionCompletion"]["complete"] else payload.get("Verdict")
                     or payload.get("verdict")
                     or payload.get("Result")
                     or payload.get("result")
@@ -104,6 +107,11 @@ def result_action_help_text() -> str:
 
 def result_summary_text(result_dir: Path, summary_exporter: Any) -> str:
     summary_path = result_dir / "run_summary.txt"
+    if (result_dir / "run_manifest.json").exists():
+        completion = completion_from_directory(result_dir)
+        if not completion["complete"] or completion["status"] == "fail":
+            payload = read_result_json(result_dir / "parsed_results_custom.json")
+            return summary_exporter.build(summary_with_recorded_source(payload, result_dir))
     if summary_path.exists():
         return summary_path.read_text(encoding="utf-8", errors="replace")
     benchmark_summary = result_dir / "storage_benchmark_summary.txt"
@@ -135,7 +143,8 @@ def refresh_run_summary(result_dir: Path, summary_exporter: Any) -> Dict[str, An
 
 
 def completed_result_dirs(entries: List[ResultListEntry]) -> List[Path]:
-    return [entry.path for entry in entries if (entry.path / "parsed_results_custom.json").exists()]
+    return [entry.path for entry in entries if (entry.path / "parsed_results_custom.json").exists()
+            and (not (entry.path / "run_manifest.json").exists() or completion_from_directory(entry.path)["complete"])]
 
 
 def count_entries_by(entries: List[ResultListEntry], field: str) -> Dict[str, int]:

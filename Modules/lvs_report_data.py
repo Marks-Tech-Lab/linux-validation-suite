@@ -13,6 +13,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .lvs_core import APP_NAME, APP_VERSION
 from .lvs_source_review import review_result_source_payloads, source_identity_text
 from .lvs_native_binary_provenance import native_binary_reviews, native_binary_text
+from .lvs_gpu_vram_evidence import is_vram_worker, vram_allocation_evidence
+from .lvs_run_completion_evidence import completion_from_directory
+from .lvs_worker_integrity import (
+    VERIFIED_FP32_KERNELS, verified_fp32_worker, worker_result_successful,
+    worker_verification_required,
+)
 from .lvs_output_contract_identity import (
     REPORT_DATA_CONTRACT_ID,
     REPORT_DATA_KIND,
@@ -563,6 +569,22 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "analysis_window_valid": analysis_window_valid,
         "analysis_evidence": analysis_evidence,
         "gpu_evaluation_evidence": dict(window.get("gpu_evaluation_evidence") or {}),
+        "gpu_vram_allocation_evidence": [
+            {"target_id": worker.get("target_id"), **vram_allocation_evidence(worker)}
+            for worker in (window.get("worker_results") or [])
+            if isinstance(worker, dict) and is_vram_worker(worker)
+        ],
+        **({"cpu_instruction_selection": {
+            "requested_intent": window.get("cpu_instruction_intent"),
+            "selected_kernel_flavor": window.get("cpu_kernel_flavor"),
+            "selection_evidence": dict(window["cpu_selection_evidence"]),
+            "workers": [{"kernel_flavor": worker.get("kernel_flavor"),
+                         "verification_contract": worker.get("verification_contract"),
+                         **_reported_software_verification(worker, window.get("cpu_kernel_flavor"))}
+                        for worker in (window.get("worker_results") or [])
+                        if isinstance(worker, dict) and worker.get("kind") == "cpu"],
+        }} if isinstance(window.get("cpu_selection_evidence"), dict)
+              and window["cpu_selection_evidence"].get("selection_reason") else {}),
         **({"cpu_verified_progress": cpu_progress} if cpu_progress else {}),
         "native_executable_review": native_binaries,
         "native_executable_text": native_binary_text(native_binaries),
@@ -572,6 +594,46 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         "warnings": [],
         "metrics": [],
     }
+
+
+def _reported_software_verification(worker: Dict[str, Any], selected_kernel: Any) -> Dict[str, Any]:
+    """Affirm recorded versioned verification, never a vacuously satisfied check.
+
+    This is presentation only: legacy worker acceptance and runtime integrity
+    predicates deliberately retain their established semantics. Unknown legacy
+    contracts cannot establish the FP32 verification claim shown here.
+    """
+    kernel = worker.get("kernel_flavor")
+    contract = worker.get("verification_contract")
+    status = str(worker.get("status") or worker.get("Status") or "").lower().strip()
+    exit_failed = ("observed_exit_code" in worker and
+                   (type(worker["observed_exit_code"]) is not int or worker["observed_exit_code"] != 0))
+    if status in {"error", "fail", "failed", "aborted", "cancelled", "interrupted"} or exit_failed:
+        assessment = "failed_or_incomplete"
+    elif verified_fp32_worker(worker):
+        try:
+            successful = worker_result_successful(worker)
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            # Malformed historical/compatibility input is not positive proof.
+            successful = False
+        if (not isinstance(kernel, str) or kernel not in VERIFIED_FP32_KERNELS or contract != f"{kernel}_v1"
+                or (selected_kernel and selected_kernel != kernel)
+                or any(worker[key] is not True for key in ("verification_required", "VerificationRequired") if key in worker)
+                or not successful):
+            assessment = "failed_or_incomplete"
+        else:
+            assessment = "verified"
+    elif contract:
+        assessment = "insufficient_evidence"
+    elif (worker.get("verification_required") is False
+          or worker.get("VerificationRequired") is False
+          or worker.get("suite_verification") in ("none", "not_applicable", "telemetry_only")
+          or worker.get("SuiteVerification") in ("none", "not_applicable", "telemetry_only")) and not worker_verification_required(worker):
+        assessment = "not_required"
+    else:
+        assessment = "insufficient_evidence"
+    return {"software_verification_satisfied": assessment == "verified",
+            "software_verification_status": assessment}
 
 
 def _raw_stage_metrics(stage: Dict[str, Any], telemetry_rows: List[Tuple[float, Dict[str, float]]], field_context: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1034,6 +1096,7 @@ def _windows_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
         if not isinstance(segment, dict):
             continue
         name = str(segment.get("DisplayName") or segment.get("Label") or segment.get("Name") or f"Stage {index + 1}")
+        cpu = segment.get("CpuInstructionSet") if isinstance(segment.get("CpuInstructionSet"), dict) else {}
         windows.append({
             "stage_id": str(segment.get("StageId") or f"stage_{index + 1}"),
             "stage_type": str(segment.get("TestType") or ""),
@@ -1050,6 +1113,9 @@ def _windows_from_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
             "analysis_evidence": dict(segment.get("AnalysisEvidence") or {}),
             "gpu_evaluation_evidence": dict(segment.get("GpuEvaluationEvidence") or {}),
             "worker_results": list(segment.get("WorkerResults") or []),
+            "cpu_instruction_intent": cpu.get("InstructionIntent"),
+            "cpu_kernel_flavor": cpu.get("KernelFlavor"),
+            "cpu_selection_evidence": cpu.get("SelectionEvidence"),
         })
     return windows
 
@@ -1253,6 +1319,14 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
     else:
         report_outcome = native_outcome.upper() if native_outcome else "UNKNOWN"
 
+    completion = completion_from_directory(root, custom)
+    if completion["status"] == "fail":
+        report_outcome = "FAIL"
+    elif not completion["complete"]:
+        report_outcome = completion["status"].upper()
+    if not completion["complete"]:
+        information.append({"category": "execution_completion", "message": completion["reason"], "source": "run_manifest.json"})
+
     if native_outcome in _WARNING_OUTCOMES and not warnings:
         warnings.append({"category": "run_warning", "message": "Run reported a warning outcome.", "source": "run_manifest.json"})
     if native_outcome in _FAIL_OUTCOMES and not failures:
@@ -1352,6 +1426,7 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
             "duration_seconds": round(float(duration or 0.0), 2),
             "native_outcome": native_outcome,
             "report_outcome": report_outcome,
+            "execution_completion": completion,
             "metadata": _portable_metadata(metadata),
             "lvs_version": str(manifest.get("app_version") or extended.get("app_version") or ""),
             "source_provenance": manifest.get("source_provenance") or extended.get("source_provenance")

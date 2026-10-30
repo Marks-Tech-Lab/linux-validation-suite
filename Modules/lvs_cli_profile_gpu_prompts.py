@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from .lvs_profile_editor import ProfileEditor
 
 from .lvs_gpu_backend_catalog import (
     GPU_3D_BACKEND_PREFERENCE_OPTIONS,
@@ -86,7 +87,7 @@ class ProfileCliGpuPromptMixin:
             return current or "auto"
 
     def _choose_gpu_3d_mode(self, current: str = "steady") -> str:
-        options = ["steady", "variable"]
+        options = list(ProfileEditor.GPU_3D_MODE_OPTIONS)
         labels = {
             "steady": "Steady",
             "variable": "Variable",

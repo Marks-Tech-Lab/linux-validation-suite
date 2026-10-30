@@ -38,6 +38,7 @@ from Modules.lvs_tui_input_state import TuiInputResetState, TuiInputState, tui_i
 from Modules.lvs_tui_list_adapter import replace_list_labels
 from Modules.lvs_tui_navigation_state import TuiNavigationReset
 from Modules.lvs_tui_profile_edit_adapter import TuiProfileEditAdapterMixin
+from Modules.lvs_tui_stage_configuration import TuiStageConfigurationMixin
 from Modules.lvs_tui_results_adapter import TuiResultsAdapterMixin
 from Modules.lvs_tui_run_execution_adapter import TuiRunExecutionAdapterMixin
 from Modules.lvs_tui_run_presentation import (
@@ -51,6 +52,7 @@ from Modules.lvs_tui_settings_adapter import TuiSettingsAdapterMixin
 
 
 class LinuxValidationSuiteTui(
+    TuiStageConfigurationMixin,
     TuiAppActionsAdapterMixin,
     TuiEventAdapterMixin,
     TuiResultsAdapterMixin,

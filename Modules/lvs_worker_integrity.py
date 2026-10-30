@@ -241,9 +241,12 @@ def sve_thread_geometry_valid(row: Dict[str, Any]) -> bool:
 
 def worker_cleanup_satisfied(payload: Dict[str, Any]) -> bool:
     """Historical workers pass; workers declaring cleanup state must finish it."""
+    for key in ("allocation_claim_cleanup_error", "AllocationClaimCleanupError"):
+        if key in payload and payload[key] not in (None, ""):
+            return False
     for key in ("cleanup_complete", "CleanupComplete"):
-        if key in payload:
-            return bool(payload.get(key))
+        if key in payload and not bool(payload[key]):
+            return False
     return True
 
 

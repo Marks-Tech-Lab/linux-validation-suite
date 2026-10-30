@@ -132,6 +132,10 @@ class TuiProfileEditAdapterMixin:
             return
         if kind == "stage":
             self._set_detail(selected_stage_detail_text(self.service.profile_edit_summary_text(self.profile_edit)))
+        if kind == "configure_stage" and item.index is not None:
+            await self._open_stage_configuration(item.index)
+        if kind == "cpu_instruction_intent" and item.index is not None:
+            await self._open_profile_stage_picker("cpu_instruction_intent", stage_index=item.index)
 
     def _begin_next_profile_template_allocation_input(self) -> None:
         stage = self.pending_profile_template_stage
@@ -210,7 +214,7 @@ class TuiProfileEditAdapterMixin:
                 "__profile_copy_name",
                 value="",
                 placeholder="New profile name",
-                detail="Enter a new profile name. The destination will remain unsaved and editable.",
+                detail="Enter a new profile name to validate and save immediately. The source is preserved; existing destinations are never overwritten.",
             ))
             return
         if index == 1:
@@ -278,6 +282,8 @@ class TuiProfileEditAdapterMixin:
             message = self.service.save_profile_edit(self.profile_edit)
             self.profiles = self.service.list_profiles()
             self.profile_edit = self.service.create_profile_edit(path)
+            self.selected_profile = next((p for p in self.profiles if p.path == path), None)
+            self.run_setup = None
             self.profile_edit_discard_confirm = False
             await self._show_profile_edit(message)
         except Exception as exc:
@@ -326,10 +332,10 @@ class TuiProfileEditAdapterMixin:
         self.profile_edit_discard_confirm = False
         await self._show_profile_edit(f"Stage {index + 1} is now {'enabled' if state else 'disabled'}.")
 
-    async def _open_profile_stage_picker(self, key: str) -> None:
+    async def _open_profile_stage_picker(self, key: str, *, stage_index: Optional[int] = None) -> None:
         if self.profile_edit is None:
             return
-        index = self._selected_profile_edit_stage_index()
+        index = stage_index if stage_index is not None else self._selected_profile_edit_stage_index()
         if index is None:
             self._set_detail("Select a stage row first.")
             return
@@ -347,6 +353,9 @@ class TuiProfileEditAdapterMixin:
         )
 
     async def _select_profile_edit_picker_option(self, selected: str) -> None:
+        if str(self.profile_edit_picker_key or "").startswith("configuration:"):
+            await self._commit_stage_configuration(selected)
+            return
         if self.profile_edit is None or self.profile_edit_picker_key is None:
             return
         index = self.profile_edit_picker_stage_index
@@ -362,6 +371,9 @@ class TuiProfileEditAdapterMixin:
             await self._restore_profile_edit_sidebar(f"Profile edit failed: {exc}")
 
     async def _restore_profile_edit_sidebar(self, detail: str = "") -> None:
+        if str(self.profile_edit_picker_key or "").startswith("configuration:"):
+            await self._show_stage_configuration(detail)
+            return
         self._apply_navigation_reset(
             tui_navigation_reset(
                 clear_setup_picker=False,
@@ -432,6 +444,9 @@ class TuiProfileEditAdapterMixin:
         )
 
     async def _commit_profile_edit_input(self, field: str, value: str) -> None:
+        if field == "__profile_configuration_value":
+            await self._commit_stage_configuration(value)
+            return
         if field.startswith("__profile_template_") and field.endswith("_allocation"):
             stage = self.pending_profile_template_stage
             allocation_field = field.removeprefix("__profile_template_").removesuffix("_allocation")
@@ -453,10 +468,14 @@ class TuiProfileEditAdapterMixin:
                 self._clear_setup_input()
                 return
             try:
-                self.profile_edit = self.service.finish_profile_copy_selection(selection, value)
+                saved = self.service.save_profile_copy_selection(selection, value)
+                self.profile_edit = saved
+                self.profiles = self.service.list_profiles()
+                self.selected_profile = next((p for p in self.profiles if p.path == saved.profile_path), None)
+                self.run_setup = None
                 self.profile_copy_selection = None
                 self._clear_setup_input()
-                await self._show_profile_edit("Independent unsaved profile opened. Review its group and settings, then Save.")
+                await self._show_profile_edit(f"Profile saved: {saved.profile.profile_name}\nDestination: {saved.profile_path}\nAvailable in the normal profile list. Further edits require Save.")
             except Exception as exc:
                 self._clear_setup_input()
                 await self._show_profile_copy_selection(str(exc))

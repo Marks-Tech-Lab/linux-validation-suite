@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Optional
 
 from Modules.lvs_gpu_memory_model import classify_gpu_memory
+from Modules.lvs_gpu_allocation_safety import resolve_gpu_allocation_safety
 
 
 def gpu_capability_cache_key(target: Optional[Dict[str, Any]]) -> str:
@@ -177,4 +178,5 @@ def build_gpu_capability_profile(
             "gles_max_texture_size": egl_max_texture,
         }
     )
+    profile["allocation_safety"] = resolve_gpu_allocation_safety(profile)
     return profile

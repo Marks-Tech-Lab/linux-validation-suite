@@ -278,21 +278,24 @@ class AdvancedDebugLogger:
                 timeout=timeout,
                 env=env,
             )
+            stdout = completed.stdout or ""
+            if filter_terms:
+                stdout = self._filter_lines(stdout, filter_terms)
+            # Filter only the log payload, never command status or errors.
+            # Keep bounded diagnostics without dropping the return code prefix.
+            stdout = ("[stdout truncated to trailing output]\n" + stdout[-max_chars:]) if len(stdout) > max_chars else stdout
+            stderr = completed.stderr or ""
+            stderr = ("[stderr truncated to trailing output]\n" + stderr[-max_chars:]) if len(stderr) > max_chars else stderr
             output = (
                 f"$ {' '.join(command)}\n"
                 f"returncode: {completed.returncode}\n\n"
                 "[stdout]\n"
-                f"{completed.stdout or ''}\n"
+                f"{stdout}\n"
                 "[stderr]\n"
-                f"{completed.stderr or ''}\n"
+                f"{stderr}\n"
             )
         except Exception as exc:
             output = f"$ {' '.join(command)}\nerror: {exc}\n"
-        if filter_terms:
-            output = self._filter_lines(output, filter_terms)
-        if len(output) > max_chars:
-            output = output[-max_chars:]
-            output = "[truncated to trailing output]\n" + output
         self._write_text(output_path, output)
         self._append_line(f"{safe_label}: {output_path.name}")
 

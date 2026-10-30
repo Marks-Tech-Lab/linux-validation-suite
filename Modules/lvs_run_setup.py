@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -101,6 +102,7 @@ class RunSetupManager:
             profile=profile,
             labels=labels,
             heatsoak_minutes=0.0,
+            original_profile=deepcopy(profile),
         )
 
     def run_setup_history_entries(self) -> List[RunSetupHistoryEntry]:

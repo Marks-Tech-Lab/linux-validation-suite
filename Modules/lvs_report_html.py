@@ -719,6 +719,54 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
     gpu_counts = gpu_evaluation.get("status_counts") if isinstance(gpu_evaluation.get("status_counts"), dict) else {}
     gpu_evaluation_text = ""
     cpu_progress_text = ""
+    for evidence in stage.get("gpu_vram_allocation_evidence") or []:
+        safety = evidence.get("allocation_safety") or {}
+        if safety:
+            cpu_progress_text += (
+                '<p class="muted compact">Allocation safety: device system-memory guard '
+                f'{_escape(safety.get("device_memory_requires_system_guard"))}; host guard '
+                f'{_escape(safety.get("host_memory_requires_system_guard"))}; '
+                f'{_escape(safety.get("reason"))}.</p>'
+            )
+        def gib(key: str) -> str:
+            value = evidence.get(key)
+            return _number(value / (1024 ** 3) if isinstance(value, int) else None)
+        cpu_progress_text += (
+            '<p class="muted compact">VRAM '
+            f'{_escape(evidence.get("target_id") or "target unavailable")}: '
+            f'worker-requested/assigned/active target {gib("requested_target_bytes")}/'
+            f'{gib("assigned_target_bytes")}/{gib("active_target_bytes")} GiB; '
+            f'nominal allocation {gib("nominal_allocated_bytes")} GiB; '
+            f'readback {_escape(evidence.get("readback_verification_status"))}; '
+            f'coverage {_escape(evidence.get("verification_coverage"))}; '
+            f'physical commitment {gib("physical_committed_bytes")} GiB. '
+            'Nominal allocation and sampled readback do not prove exhaustive byte coverage or residency.</p>'
+        )
+        feasibility = evidence.get("allocation_feasibility") or evidence.get("planned_allocation_feasibility") or {}
+        if feasibility:
+            cpu_progress_text += (
+                '<p class="muted compact">Allocation feasibility: '
+                f'{_escape(feasibility.get("status") or "unavailable")}; '
+                f'nominal plan {_escape(feasibility.get("planned_nominal_bytes"))} bytes; '
+                f'shortfall {_escape(feasibility.get("shortfall_bytes"))} bytes. '
+                'Runtime allocation success and sampled readback are separate evidence.</p>'
+            )
+    selection = stage.get("cpu_instruction_selection") or {}
+    if selection:
+        workers = selection.get("workers") or []
+        actual = "; ".join(
+            f'{worker.get("kernel_flavor") or "unavailable"}: software verification '
+            f'{"satisfied" if worker.get("software_verification_satisfied") is True and worker.get("software_verification_status") == "verified" else "not established"}'
+            f' ({worker.get("software_verification_status") or "insufficient_evidence"})'
+            for worker in workers) or "not recorded"
+        cpu_progress_text += (
+            '<p class="muted compact">CPU instruction selection: '
+            f'{_escape(selection.get("requested_intent"))}; selected '
+            f'{_escape(selection.get("selected_kernel_flavor"))}. '
+            f'{_escape((selection.get("selection_evidence") or {}).get("selection_reason"))}. '
+            f'Executed worker evidence: {_escape(actual)}. '
+            'Software verification does not establish prior physical acceptance of this hardware or vector length.</p>'
+        )
     if stage.get("native_executable_text"):
         cpu_progress_text += '<p class="muted compact" style="overflow-wrap:anywhere">' + _escape(stage["native_executable_text"]).replace("\n", "<br>") + '</p>'
     for evidence in stage.get("cpu_verified_progress") or []:

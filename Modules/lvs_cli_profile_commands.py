@@ -12,6 +12,9 @@ class ProfileCliCommandMixin:
     def profiles_menu(self) -> None:
         self.editor.profiles_menu()
 
+    def configure_stage_workloads(self, profile: ValidationProfile, index: int, labels: List[str], *, run_only: bool = False) -> None:
+        self.editor.configure_stage_workloads(profile, index, labels, run_only=run_only)
+
     def profile_choice_text(self, path: Path) -> str:
         return self.editor.profile_choice_text(path)
 

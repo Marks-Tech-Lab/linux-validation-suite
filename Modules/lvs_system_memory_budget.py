@@ -6,9 +6,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Dict, Iterable, List, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
+from Modules.lvs_gpu_allocation_safety import gpu_assignment_minimum_bytes
 from Modules.lvs_gpu_allocation_plan import plan_gpu_allocation_chunks
 from Modules.lvs_runtime_memory_guard import runtime_memory_thresholds
+from Modules.lvs_gpu_allocation_geometry import egl_texture_geometry, opencl_buffer_geometry
+from math import isqrt
 
 
 MIB = 1024 ** 2
@@ -127,10 +130,15 @@ def gpu_worker_system_memory_consumer(
     *,
     system_pool_bytes: int = 0,
 ) -> Optional[SystemMemoryConsumer]:
-    if worker.gpu_memory_kind not in {"shared", "unknown"} or not worker.system_memory_budget_participation:
+    worker = bind_gpu_allocation_safety(worker)
+    guarded_device = worker.allocation_safety["device_memory_requires_system_guard"]
+    if not worker.system_memory_budget_participation:
         return None
     requested = max(0, int(worker.target_vram_bytes or 0))
     fixed_commitment = max(0, int(worker.system_memory_fixed_commitment_bytes or 0))
+    host_only_fixed = not guarded_device and worker.backend in {"python_vulkan_compute", "python_opencl"}
+    if host_only_fixed:
+        requested = 0
     percentage_target_workload = worker.workload == "vram" or worker.compute_variant == "stateful_memory"
     if worker.gpu_memory_kind == "shared" and int(worker.requested_gpu_memory_percent or 0) > 0 and percentage_target_workload:
         percent = max(1, min(95, int(worker.requested_gpu_memory_percent)))
@@ -157,7 +165,8 @@ def gpu_worker_system_memory_consumer(
             if worker.gpu_memory_kind == "shared" and worker.workload == "vram"
             else "shared_gpu_3d"
             if worker.gpu_memory_kind == "shared"
-            else "unknown_gpu_memory_conservative"
+            else "unknown_gpu_memory_conservative" if guarded_device
+            else "gpu_host_memory"
         ),
         requested_bytes=system_commitment,
         minimum_viable_bytes=min(requested, max(0, int(worker.minimum_viable_allocation_bytes or 0))) * multiplier + fixed_commitment,
@@ -291,6 +300,18 @@ def build_stage_system_memory_plan(
         aggregate["consumer_ids"].append(row["consumer_id"])
         aggregate["requested_bytes"] += int(row.get("original_requested_bytes") or row["requested_bytes"])
         aggregate["resolved_bytes"] += int(row["resolved_target_bytes"])
+    infeasible = []
+    rows_by_id = {row["consumer_id"]: row for row in consumer_rows}
+    for worker in gpu_workers:
+        row = rows_by_id.get(worker.memory_budget_consumer_id)
+        protected = bind_gpu_allocation_safety(worker).allocation_safety["device_memory_requires_system_guard"]
+        host_only = not protected and worker.backend in {"python_vulkan_compute", "python_opencl"}
+        assigned = int(row["resolved_target_bytes"]) if row is not None and not host_only else int(worker.target_vram_bytes)
+        minimum = gpu_assignment_minimum_bytes(worker.backend, worker.workload)
+        if minimum and assigned < minimum:
+            infeasible.append(dict(target_id=worker.target_id, backend=worker.backend,
+                                   assigned_target_bytes=assigned, backend_minimum_bytes=minimum,
+                                   reason="safe_assignment_below_backend_minimum"))
     return {
         **bounds,
         "mem_available_source": str((memory_snapshot or {}).get("mem_available_source") or "unknown"),
@@ -307,8 +328,9 @@ def build_stage_system_memory_plan(
                 "swap_free_bytes",
             )
         },
-        "valid": bool(allocation.get("valid")),
-        "resolution_reason": str(allocation.get("reason") or ""),
+        "valid": bool(allocation.get("valid")) and not infeasible,
+        "resolution_reason": "gpu_assignment_below_backend_minimum" if infeasible else str(allocation.get("reason") or ""),
+        "infeasible_gpu_assignments": infeasible,
         "consumers": consumer_rows,
         "allocations": allocations,
         "ram_requested_bytes": next((row["requested_bytes"] for row in consumer_rows if row["consumer_id"] == "system_ram"), 0),
@@ -332,6 +354,7 @@ def apply_stage_system_memory_plan(
     consumer_rows = {str(row.get("consumer_id") or ""): row for row in plan.get("consumers", [])}
     resolved_workers: List[GpuWorkerSpec] = []
     for worker in workers:
+        worker = bind_gpu_allocation_safety(worker)
         if not worker.system_memory_budget_participation:
             resolved_workers.append(worker)
             continue
@@ -340,6 +363,12 @@ def apply_stage_system_memory_plan(
         multiplier = max(1, int(consumer_row.get("target_multiplier") or worker.system_memory_commitment_multiplier or 1))
         fixed_commitment = max(0, int(consumer_row.get("fixed_commitment_bytes") or worker.system_memory_fixed_commitment_bytes or 0))
         resolved = max(0, (resolved_commitment - fixed_commitment) // multiplier)
+        if (not worker.allocation_safety["device_memory_requires_system_guard"]
+                and worker.backend in {"python_vulkan_compute", "python_opencl"}):
+            # Only fixed host staging was arbitrated; dedicated device bytes
+            # remain outside the RAM pool and are not replaced by a zero target.
+            resolved_workers.append(worker)
+            continue
         truthful_requested = max(
             0,
             int(consumer_row.get("original_requested_bytes") or worker.requested_gpu_memory_target_bytes or 0),
@@ -381,4 +410,34 @@ def apply_stage_system_memory_plan(
                 ),
             )
         )
-    return resolved_workers
+    # Chunk lists are advisory planning evidence, NOT commands consumed by the
+    # workers. Use the same geometry policy as EGL/OpenCL execution and retain
+    # assigned targets even when software object budgets imply a shortfall.
+    executable_workers = []
+    for worker in resolved_workers:
+        if worker.workload != "vram" or worker.backend not in {"python_egl_gles2", "python_opencl"}:
+            executable_workers.append(worker)
+            continue
+        if worker.backend == "python_egl_gles2":
+            geometry = egl_texture_geometry(
+                worker.target_vram_bytes, worker.texture_side or 4096,
+                isqrt(worker.max_buffer_or_object_bytes // 4),
+            )
+            chunks = [geometry["object_bytes"]] * geometry["planned_object_count"]
+        else:
+            safe = bool(worker.allocation_feasibility.get("safe_mode_enabled"))
+            geometry = opencl_buffer_geometry(worker.target_vram_bytes, worker.max_single_allocation_bytes,
+                                              worker.device_class, safe)
+            geometry["safe_mode_enabled"] = safe
+            chunks = plan_gpu_allocation_chunks(
+                target_bytes=worker.target_vram_bytes,
+                practical_chunk_bytes=geometry["object_bytes"],
+                max_allocation_count=geometry["max_allocation_count"],
+                allocation_granularity_bytes=4096,
+            )["chunks"]
+        geometry["chunk_list_semantics"] = "advisory_geometry_not_runtime_commands"
+        executable_workers.append(replace(worker, allocation_feasibility=geometry,
+                                          max_allocation_count=geometry["max_allocation_count"],
+                                          planned_allocation_chunks=chunks,
+                                          planned_allocation_chunk_count=len(chunks)))
+    return executable_workers

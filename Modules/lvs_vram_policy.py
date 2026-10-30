@@ -26,7 +26,8 @@ def cap_gpu_vram_target_bytes(
     safe_mode_enabled: bool,
     safe_max_vram_percent: float,
 ) -> int:
-    capped = max(64 * 1024 * 1024, int(requested_bytes or 0))
+    # A cap may reduce a request, never enlarge a final stage assignment.
+    capped = max(0, int(requested_bytes or 0))
     capacity_cap = capacity_vram_request_cap_bytes(target_total)
     if capacity_cap > 0:
         capped = min(capped, capacity_cap)

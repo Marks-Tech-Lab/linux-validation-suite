@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict
 
 from Modules.lvs_stability_events import create_stability_event
 from Modules.lvs_gpu_evaluation_policy import maximum_qualifying_seconds
+from Modules.lvs_gpu_vram_evidence import vram_allocation_evidence
 
 
 def _sample_values(samples: list[Any], key: str) -> list[float]:
@@ -59,11 +60,9 @@ def vram_target_attainment_events(
         except Exception:
             gpu_index = None
 
-        target_bytes = int(
-            payload.get("active_target_vram_bytes")
-            or payload.get("target_vram_bytes")
-            or 0
-        )
+        evidence = vram_allocation_evidence(payload)
+        # Active/ramped targets are not substitutes for the assigned workload.
+        target_bytes = int(evidence["assigned_target_bytes"] or 0)
         allocated_bytes = int(
             payload.get("allocated_vram_bytes")
             or payload.get("buffer_bytes")
@@ -87,28 +86,37 @@ def vram_target_attainment_events(
         severity = ""
         message = ""
         category = "gpu_vram_target_attainment"
-        verification_passes = int(payload.get("verification_passes") or 0)
+        verification_passes = evidence["readback_verification_passes"]
+        readback_verified = evidence["readback_verification_status"] == "verified"
+        allocation_verified = bool(ratio is not None and ratio >= 0.85 and readback_verified
+                                   and payload.get("allocation_valid") is not False
+                                   and payload.get("allocation_runtime_failed") is not True)
+        dedicated_telemetry = (payload.get("gpu_memory_kind") == "dedicated"
+                               or (payload.get("device_class") == "discrete"
+                                   and payload.get("gpu_memory_kind") != "shared"))
         if target_bytes > 0 and ratio is not None and ratio < 0.6:
             severity = "error"
             message = (
-                f"target GPU {target_id} only allocated {allocated_gib}GB of the requested {target_gib}GB VRAM target"
+                f"target GPU {target_id} only reported {allocated_gib}GiB nominal allocation of the assigned {target_gib}GiB VRAM target"
             )
         elif target_bytes > 0 and ratio is not None and ratio < 0.85:
             severity = "warning"
             message = (
-                f"target GPU {target_id} only allocated {allocated_gib}GB of the requested {target_gib}GB VRAM target"
+                f"target GPU {target_id} only reported {allocated_gib}GiB nominal allocation of the assigned {target_gib}GiB VRAM target"
             )
-        elif target_gib and observed_max is not None and observed_max < target_gib * 0.6:
+        elif dedicated_telemetry and target_gib and observed_max is not None and observed_max < target_gib * 0.6:
             severity = "warning"
-            if ratio is not None and ratio >= 0.85 and verification_passes > 0:
+            if allocation_verified:
                 category = "gpu_vram_telemetry_discrepancy"
                 message = (
-                    f"target GPU {target_id} allocated and verified {allocated_gib}GB of a {target_gib}GB VRAM target, "
-                    + f"but OS telemetry reported only {observed_max}GB peak VRAM use"
+                    f"target GPU {target_id} reported {allocated_gib}GiB nominal allocation with successful sampled readback "
+                    + f"against an assigned {target_gib}GiB target; device telemetry reported {observed_max}GiB peak VRAM use. "
+                    + "Sampled readback does not establish exhaustive byte coverage or physical residency."
                 )
             else:
                 message = (
-                    f"target GPU {target_id} reported only {observed_max}GB peak VRAM use during a {target_gib}GB VRAM stage"
+                    f"target GPU {target_id} reported {observed_max}GiB peak device VRAM use against an assigned {target_gib}GiB target; "
+                    + "successful readback verification is not established"
                 )
 
         metric_key = f"gpu_{gpu_index}_vram_used_gb" if gpu_index is not None else "gpu_vram_used_gb"
@@ -121,6 +129,7 @@ def vram_target_attainment_events(
                     metric_key,
                     message,
                     {
+                        **evidence,
                         "gpu_index": gpu_index,
                         "target_id": target_id,
                         "target_vram_bytes": target_bytes,
@@ -131,8 +140,8 @@ def vram_target_attainment_events(
                         "allocation_ratio": round(ratio, 4) if ratio is not None else None,
                         "observed_vram_used_max_gb": observed_max,
                         "verification_passes": verification_passes,
-                        "allocation_verified": bool(ratio is not None and ratio >= 0.85 and verification_passes > 0),
-                        "target_attainment": "worker_verified" if ratio is not None and ratio >= 0.85 and verification_passes > 0 else "telemetry_reported",
+                        "allocation_verified": allocation_verified,
+                        "target_attainment": "worker_verified" if allocation_verified else "not_established",
                     },
                 )
             )
@@ -143,10 +152,10 @@ def vram_target_attainment_events(
             verification_threshold = 3
         elif target_bytes > 0:
             verification_threshold = 2
-        if target_bytes > 0 and verification_passes < verification_threshold:
+        if target_bytes > 0 and (verification_passes is None or verification_passes < verification_threshold):
             interval_seconds = payload.get("verification_interval_seconds")
             phase = str(payload.get("phase") or "")
-            qualifier = "no" if verification_passes <= 0 else f"only {verification_passes}"
+            qualifier = "no recorded" if verification_passes is None else "no" if verification_passes <= 0 else f"only {verification_passes}"
             events.append(
                 create_stability_event(
                     "gpu_vram_verification_coverage",
@@ -154,10 +163,11 @@ def vram_target_attainment_events(
                     stage_name,
                     metric_key,
                     (
-                        f"target GPU {target_id} completed the VRAM stage with {qualifier} readback verification "
-                        + f"pass{'es' if verification_passes != 1 else ''}; allocation succeeded but integrity coverage was thin"
+                        f"target GPU {target_id} recorded {qualifier} readback verification "
+                        + f"pass{'es' if verification_passes != 1 else ''}; sampled integrity coverage was thin and allocation alone does not prove verification"
                     ),
                     {
+                        **evidence,
                         "gpu_index": gpu_index,
                         "target_id": target_id,
                         "device_class": device_class,

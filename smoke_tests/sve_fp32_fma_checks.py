@@ -23,7 +23,7 @@ from Modules.lvs_cpu_execution import (
     resolve_cpu_execution_policy, cpu_candidate_kernel_flavors,
 )
 from Modules.lvs_cpu_power_selection import power_cpu_fallback_order, power_cpu_candidate_inventory
-from Modules.lvs_cpu_targeting import select_common_kernel
+from Modules.lvs_cpu_targeting import select_common_kernel, common_kernel_capabilities
 from Modules.lvs_cpu_verified_progress import analyze_verified_progress
 from Modules.lvs_native_helpers import resolve_native_helper_status, native_helper_binary_ready
 from Modules.lvs_worker_evidence import apply_worker_entry_context
@@ -176,6 +176,8 @@ def run_sve_fp32_fma_checks() -> None:
         status = resolve_native_helper_status(source=source_copy, binary=output, compiler="gcc",
             reason_label="CPU", build_runner=compile_fixture)
         assert status["available"] and status["sve_build"]["status"] == "unavailable"
+        assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector",
+            ["scalar", "neon", "neon_fp32_fma"])["resolved_kernel_flavor"] == "neon_fp32_fma"
         assert len(calls) == 2 and "-march" not in " ".join(calls[0])
         header = source_copy.with_name("cpu_sve_kernel.h")
         header.write_text("changed optional region")
@@ -193,8 +195,8 @@ def run_sve_fp32_fma_checks() -> None:
     common = ["scalar", "neon", "neon_fp32_fma", KERNEL]
     assert resolve_cpu_instruction_intent("arm64", "baseline_vector", common)["resolved_kernel_flavor"] == "neon"
     assert resolve_cpu_instruction_intent("arm64", "high_throughput_vector", common)["resolved_kernel_flavor"] == "neon_fp32_fma"
-    assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector", common)["resolved_kernel_flavor"] == "neon_fp32_fma"
-    assert not resolve_cpu_instruction_intent("arm64", "highest_verified_vector", [KERNEL])["resolved_kernel_flavor"]
+    assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector", common)["resolved_kernel_flavor"] == KERNEL
+    assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector", [KERNEL])["resolved_kernel_flavor"] == KERNEL
     for policy in ("max_power", "capabilities", "family_locked"):
         implicit = cpu_candidate_kernel_flavors(helper_available=True, policy=policy, resolved_mode="neon",
             supports_kernel_flavor=lambda flavor: flavor in common, architecture="arm64")
@@ -565,6 +567,219 @@ def run_sve_progress_export_checks() -> None:
         # Same counter history, independent per-thread VL; never use NEON's
         # fixed block geometry for scalable operations.
         assert not worker_verification_satisfied(dict(worker, execution_implementation="other"))
+
+
+def run_sve_highest_intent_checks() -> None:
+    """Policy/report tests only; scalable arithmetic emulation is tested separately."""
+    from Modules.lvs_workload_runner import WorkloadRunner
+    from Modules.lvs_profile_report_text import profile_execution_cpu_line
+    from Modules.lvs_report_data import _stage_shell, _windows_from_segments, compile_report_data
+    from Modules.lvs_report_html import _stage_card
+    from Modules.lvs_profile_models import StageConfig, StageModules
+
+    common = ["scalar", "neon", "neon_fp32_fma", KERNEL]
+    intent = "highest_verified_vector"
+    for kernels, expected in ((common, KERNEL), (common[:-1], "neon_fp32_fma"),
+                              (["scalar", "neon"], "neon"), ([], ""), (["scalar"], "")):
+        decision = resolve_cpu_instruction_intent("arm64", intent, kernels)
+        assert decision["resolved_kernel_flavor"] == expected
+        assert decision["physical_acceptance_status"] == "not_inferred_from_selection"
+        assert decision["software_verification_status"] == ("required_at_execution" if expected else "unavailable")
+    for code, output in ((1, KERNEL), (0, ""), (0, "{bad JSON}"), (0, "unknown_kernel")):
+        assert not resolve_cpu_instruction_intent("arm64", intent, parse_cpu_capability_probe(code, output))["resolved_kernel_flavor"]
+    assert not resolve_cpu_instruction_intent("riscv64", intent, common)["resolved_kernel_flavor"]
+    assert resolve_cpu_instruction_intent("x86_64", intent, [*common, "avx2_fma"])["resolved_kernel_flavor"] == "avx2_fma"
+    for per_cpu in ({2: common, 9: common[:-1]}, {2: common}):
+        intersection = common_kernel_capabilities([2, 9], per_cpu)
+        decision = resolve_cpu_instruction_intent("arm64", intent, intersection["common_kernel_flavors"])
+        assert decision["resolved_kernel_flavor"] == ("neon_fp32_fma" if 9 in per_cpu else "")
+
+    def runner_for(kernels: list[str], *, available: bool = True) -> WorkloadRunner:
+        runner = WorkloadRunner()
+        runner._cpu_machine = lambda: "arm64"
+        runner._cpu_target_plan = lambda _: dict(available_cpu_ids=[2, 9], online_cpu_ids=[2, 9],
+            allowed_cpu_ids=[2, 9], target_cpu_ids=[2, 9], requested_thread_count="all", actual_worker_count=2)
+        runner._cpu_helper_status = lambda: dict(available=available, path="/fixture/helper", reason="fixture")
+        # This is the normal helper's authoritative supported-kernels boundary:
+        # native enumeration itself requires compiled support AND FP/SVE HWCAP.
+        runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: list(kernels)
+        runner._cpu_helper_default_kernel_flavor = lambda _: "neon"
+        runner._cpu_power_tuning_available = lambda: False
+        runner._benchmark_cpu_kernel = lambda *_: (_ for _ in ()).throw(AssertionError("intent must not invoke Power Auto"))
+        runner._python_runtime = lambda: "python3"
+        runner._command_exists = lambda _: True
+        return runner
+
+    cpu = ModuleCpu(enabled=True, instruction_set="auto", instruction_intent=intent, backend_preference="native")
+    runner = runner_for(common)
+    execution = runner.resolve_cpu_execution(cpu, tune_max_power=True)
+    assert execution["kernel_flavor"] == KERNEL and execution["candidate_kernel_flavors"] == [KERNEL]
+    assert execution["selection_evidence"]["physical_acceptance_status"] == "not_inferred_from_selection"
+    command = runner._cpu_command(cpu, execution["kernel_flavor"], "/fixture/cpu.json")
+    assert command[command.index("--kernel-flavor") + 1] == KERNEL
+    assert command[command.index("--cpu-ids") + 1] == "2,9"
+    assert "--vector-length" not in command  # no VL override, mask or barrier
+    diagnostics = runner.stage_diagnostics(StageConfig(id="highest", name="CPU", duration_seconds=120,
+        modules=StageModules(cpu=cpu)), "Highest")
+    assert diagnostics["cpu_kernel_flavor"] == KERNEL
+    assert diagnostics["cpu_selection_evidence"] == execution["selection_evidence"]
+    planned_command = diagnostics["commands"][0]
+    assert planned_command[planned_command.index("--kernel-flavor") + 1] == KERNEL
+    for kernels in (common[:-1], ["neon", "scalar"]):
+        fallback = runner_for(kernels).resolve_cpu_execution(cpu)
+        assert fallback["kernel_flavor"] == ("neon_fp32_fma" if "neon_fp32_fma" in kernels else "neon")
+    assert runner_for(common, available=False)._cpu_backend_name(cpu) == "none"
+    unavailable = runner_for(common, available=False)._cpu_capability_plan(cpu)
+    assert unavailable["selected_kernel_flavor"] == ""
+    assert unavailable["instruction_intent_evidence"]["software_verification_status"] == "unavailable"
+    runner._cpu_helper_supported_kernel_flavors = lambda cpu_id=None: common[:-1]
+    try:
+        runner._cpu_command(cpu, KERNEL, "/fixture/cpu.json")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("launch must reject disappeared SVE capability, not retry NEON")
+
+    selected = execution["selection_evidence"]
+    plan = dict(cpu_instruction_intent=intent, cpu_mode_requested="auto", cpu_mode_resolved="sve",
+                cpu_kernel_flavor=KERNEL, cpu_selection_evidence=selected, backend_usage={"cpu": "cpu_native_helper"})
+    assert "prior physical hardware acceptance is separate evidence" in profile_execution_cpu_line(plan)
+    worker = _sve_fixture()  # mixed 128/384-bit software fixture, NOT physical acceptance
+    window = dict(plan, stage_id="highest", stage_type="CPU", display_name="Highest",
+                  started_monotonic=0, ended_monotonic=120, duration_seconds=120,
+                  worker_results=[worker], verdict="pass")
+    rendered = _stage_shell(0, window)
+    assert rendered["cpu_instruction_selection"]["workers"][0]["software_verification_satisfied"] is True
+    html = _stage_card(rendered, {})
+    assert KERNEL in html and "does not establish prior physical acceptance" in html
+    with TemporaryDirectory(prefix="lvs-highest-intent-export-") as temporary:
+        root = Path(temporary)
+        exported = _worker_export_round_trip(worker, root, selection_evidence=selected)
+        for payload, container in ((json.loads((root / "run_manifest.json").read_text()), "stage_windows"),
+                                   (json.loads((root / "parsed_results_extended.json").read_text()), "stage_windows")):
+            assert payload[container][0]["cpu_selection_evidence"] == selected
+        assert exported["Segments"][0]["CpuInstructionSet"]["SelectionEvidence"] == selected
+        fallback_windows = _windows_from_segments(exported["Segments"])
+        assert _stage_shell(0, fallback_windows[0])["cpu_instruction_selection"]["selection_evidence"] == selected
+        assert compile_report_data(root)["stages"][0]["cpu_instruction_selection"]["selection_evidence"] == selected
+        historical = copy.deepcopy(window)
+        historical.pop("cpu_selection_evidence")
+        assert "cpu_instruction_selection" not in _stage_shell(0, historical)
+    for mutation in (lambda w: w["threads_detail"][0].update(vector_length_errno=1),
+                     lambda w: w["threads_detail"][0].update(vector_length_bytes=17),
+                     lambda w: w["threads_detail"][0].update(error_count=1),
+                     lambda w: w["threads_detail"][0].update(affinity_applied=False),
+                     lambda w: w.update(isa_hwcap=0),
+                     lambda w: w.update(actual_isa="neon"),
+                     lambda w: w["threads_detail"][0].update(final_verification_completed=False)):
+        broken = copy.deepcopy(worker)
+        mutation(broken)
+        failed = _stage_shell(0, dict(window, worker_results=[broken], verdict="fail"))
+        assert failed["cpu_instruction_selection"]["workers"][0]["software_verification_satisfied"] is False
+        assert "not established" in _stage_card(failed, {})
+        assert selected["physical_acceptance_status"] == "not_inferred_from_selection"
+
+
+def run_software_verification_reporting_checks() -> None:
+    """Reject vacuous runtime predicates as affirmative report evidence."""
+    from Modules.lvs_report_data import _stage_shell, _windows_from_segments, compile_report_data
+    from Modules.lvs_report_html import _stage_card
+    from Modules.lvs_worker_integrity import worker_result_successful
+
+    selection = {"selection_reason": "fixture: capability is not execution"}
+    def render(worker: dict | None, kernel: str = KERNEL) -> dict:
+        window = dict(cpu_kernel_flavor=kernel, cpu_selection_evidence=selection,
+                      started_monotonic=0, ended_monotonic=120,
+                      worker_results=[] if worker is None else [worker])
+        return _stage_shell(0, window)
+
+    cases = [
+        ({"kind": "cpu"}, "insufficient_evidence"),
+        ({"kind": "cpu", "status": "error", "error_count": 1}, "failed_or_incomplete"),
+        ({"kind": "cpu", "status": "ok"}, "insufficient_evidence"),
+        ({"kind": "cpu", "status": "ok", "verification_required": False}, "not_required"),
+        ({"kind": "cpu", "status": "ok", "suite_verification": "telemetry_only"}, "not_required"),
+        ({"kind": "cpu", "status": "ok", "verification_required": True,
+          "verify_passes": 10}, "insufficient_evidence"),
+        ({"kind": "cpu", "status": "ok", "verification_contract": "future_v9",
+          "verification_required": False}, "insufficient_evidence"),
+    ]
+    for kernel in ("scalar", "neon", "avx2_fma"):
+        legacy = dict(kind="cpu", kernel_flavor=kernel, status="ok", error_count=0,
+                      verification_required=False, canary_passes=10)
+        assert worker_result_successful(legacy)  # runtime legacy contract unchanged
+        cases.append((legacy, "not_required"))
+    valid = _sve_fixture()
+    for mutation in (
+        lambda w: w.pop("kernel_flavor"),
+        lambda w: w.pop("verification_contract"),
+        lambda w: w.pop("status"),
+        lambda w: w.update(kernel_flavor=[]),
+        lambda w: w.update(kernel_flavor="neon"),
+        lambda w: w.update(verification_required=False),
+        lambda w: w.update(observed_exit_code=-9),
+        lambda w: w.update(observed_exit_code=False),
+        lambda w: w.update(error_count=1),
+        lambda w: w.update(error_count="0"),
+        lambda w: w.update(first_error={"kind": "fp32_fma_mismatch"}),
+        lambda w: w.update(verification_complete=False),
+        lambda w: w.update(requested_thread_count=float("inf")),
+        lambda w: w["threads_detail"][0].update(final_verification_completed=False),
+        lambda w: w["threads_detail"][0].update(affinity_applied=False),
+    ):
+        broken = copy.deepcopy(valid)
+        mutation(broken)
+        cases.append((broken, "failed_or_incomplete"))
+
+    for worker, expected in cases:
+        stage = render(worker)
+        result = stage["cpu_instruction_selection"]["workers"][0]
+        assert result["software_verification_satisfied"] is False, worker
+        assert result["software_verification_status"] == expected, (worker, result)
+        assert "software verification satisfied" not in _stage_card(stage, {})
+        assert expected in _stage_card(stage, {})
+        assert json.loads(json.dumps(stage))["cpu_instruction_selection"]["workers"][0] == result
+
+    assert render(None)["cpu_instruction_selection"]["workers"] == []
+    assert "Executed worker evidence: not recorded" in _stage_card(render(None), {})
+    stale = render({"kind": "cpu"})
+    stale["cpu_instruction_selection"]["workers"][0] = {"software_verification_satisfied": True}
+    assert "software verification satisfied" not in _stage_card(stale, {})
+    assert "cpu_instruction_selection" not in _stage_shell(0, {"worker_results": [valid]})
+    for worker in (valid, _export_worker_fixture()):
+        kernel = worker["kernel_flavor"]
+        stage = render(worker, kernel)
+        assert stage["cpu_instruction_selection"]["workers"][0]["software_verification_satisfied"] is True
+        assert "software verification satisfied (verified)" in _stage_card(stage, {})
+        if kernel != KERNEL:
+            assert render(worker)["cpu_instruction_selection"]["workers"][0]["software_verification_satisfied"] is False
+        with TemporaryDirectory(prefix="lvs-report-verification-") as temporary:
+            root = Path(temporary)
+            exported = _worker_export_round_trip(worker, root, selection_evidence=selection)
+            for report in (compile_report_data(root)["stages"][0],
+                           _stage_shell(0, _windows_from_segments(exported["Segments"])[0])):
+                result = report["cpu_instruction_selection"]["workers"][0]
+                assert result["software_verification_status"] == "verified", report
+                assert result["software_verification_satisfied"] is True
+    # Real artifact/compatibility paths must preserve contradictory error details.
+    broken = copy.deepcopy(valid)
+    broken["first_error"] = {"kind": "fp32_fma_mismatch"}
+    with TemporaryDirectory(prefix="lvs-report-rejection-") as temporary:
+        root = Path(temporary)
+        exported = _worker_export_round_trip(broken, root, selection_evidence=selection)
+        for report in (compile_report_data(root)["stages"][0],
+                       _stage_shell(0, _windows_from_segments(exported["Segments"])[0])):
+            result = report["cpu_instruction_selection"]["workers"][0]
+            assert result["software_verification_status"] == "failed_or_incomplete"
+            assert result["software_verification_satisfied"] is False
+    for worker, expected in cases[:10]:
+        from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
+        exported = preserve_legacy_worker_evidence_contract(worker)
+        segments = json.loads(json.dumps([{"WorkerResults": [exported], "CpuInstructionSet": {
+            "KernelFlavor": KERNEL, "SelectionEvidence": selection}}]))
+        result = _stage_shell(0, _windows_from_segments(segments)[0])["cpu_instruction_selection"]["workers"][0]
+        assert result["software_verification_satisfied"] is False
+        assert result["software_verification_status"] == expected
 
 
 if __name__ == "__main__":

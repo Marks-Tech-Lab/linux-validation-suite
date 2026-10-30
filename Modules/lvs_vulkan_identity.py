@@ -7,7 +7,9 @@ NVIDIA's GPU- prefix is textual framing; UUID bytes retain network/display order
 from __future__ import annotations
 
 import ctypes
+import os
 import re
+import stat
 import uuid
 
 from .lvs_gpu_identity import pci_physical_gpu_id
@@ -40,10 +42,35 @@ def requested_physical_identity(target):
     slots = {canonical_pci_slot(value) for value in raw_slots}
     invalid = "" in normalized or "" in slots or len(normalized) > 1 or len(slots) > 1
     return {"uuid": next(iter(normalized), ""), "pci_slot": next(iter(slots), ""),
+            "drm_render": drm_render_node_identity(target.get("render_node", "")),
             "error": "conflicting or malformed requested physical identity" if invalid else ""}
 
 
-def physical_identity_match(target_uuid, target_slot, device_uuid, device_slot):
+def drm_render_node_identity(path):
+    """Observe Linux character-device identity; names/ordinals prove nothing."""
+    if not path:
+        return None
+    try:
+        info = os.stat(path)
+        if stat.S_ISCHR(info.st_mode):
+            return (os.major(info.st_rdev), os.minor(info.st_rdev))
+    except OSError:
+        pass
+    return None
+
+
+def valid_drm_render_identity(node):
+    return (isinstance(node, (tuple, list)) and len(node) == 2
+            and all(type(number) is int and number >= 0 for number in node) and node[0] > 0)
+
+
+def duplicate_drm_render_identities(nodes):
+    observed = [tuple(node) for node in nodes if valid_drm_render_identity(node)]
+    return len(observed) != len(set(observed))
+
+
+def physical_identity_match(target_uuid, target_slot, device_uuid, device_slot,
+                            *, target_render=None, device_render=None):
     """Positive proof is mandatory; absence of contradiction is not proof.
 
     PCI-only execution is valid when UUID discovery is unavailable, but any
@@ -56,18 +83,28 @@ def physical_identity_match(target_uuid, target_slot, device_uuid, device_slot):
                 "status": "missing_evidence", "source": "", "reason": "",
                 "target_uuid": tu, "target_pci_slot": tp,
                 "selected_uuid": du, "selected_pci_slot": dp}
+    identity_kinds = "UUID/PCI"
+    if target_render is not None or device_render is not None:
+        identity_kinds += "/DRM"
+        evidence.update(target_drm_render=target_render, selected_drm_render=device_render)
     malformed = any(raw not in (None, "") and not normalized for raw, normalized in
                     ((target_uuid, tu), (device_uuid, du), (target_slot, tp), (device_slot, dp)))
-    if malformed or (tu and du and tu != du) or (tp and dp and tp != dp):
-        evidence.update(status="conflicting_identity", reason="malformed or conflicting physical UUID/PCI evidence")
+    malformed = malformed or any(node is not None and not valid_drm_render_identity(node)
+                                for node in (target_render, device_render))
+    if (malformed or (tu and du and tu != du) or (tp and dp and tp != dp)
+            or (target_render is not None and device_render is not None
+                and tuple(target_render) != tuple(device_render))):
+        evidence.update(status="conflicting_identity", reason=f"malformed or conflicting physical {identity_kinds} evidence")
     elif tu and du and tu == du:
         evidence.update(status="verified", source="device_uuid")
     elif tp and dp and tp == dp:
         evidence.update(status="verified", source="pci_bus_info")
-    elif not tu and not tp:
+    elif target_render is not None and device_render is not None:
+        evidence.update(status="verified", source="drm_render_node")
+    elif not tu and not tp and target_render is None:
         evidence.update(status="unknown_identity", reason="requested physical identity is unknown")
     else:
-        evidence["reason"] = "runtime physical UUID/PCI evidence is missing or cannot establish the requested identity"
+        evidence["reason"] = f"runtime physical {identity_kinds} evidence is missing or cannot establish the requested identity"
     return evidence
 
 
@@ -83,7 +120,7 @@ class PhysicalDeviceProperties2(ctypes.Structure):
                 ("properties", ctypes.c_uint64 * 1024)]
 
 
-def supports_pci_bus_info(vk, physical_device):
+def supports_device_extension(vk, physical_device, extension_name):
     """Do not query an optional device extension merely because a symbol exists."""
     fn = getattr(vk, "vkEnumerateDeviceExtensionProperties", None)
     if fn is None:
@@ -98,7 +135,37 @@ def supports_pci_bus_info(vk, physical_device):
     extensions = (ExtensionProperties * count.value)()
     if fn(physical_device, None, ctypes.byref(count), extensions) != 0:
         return False
-    return any(bytes(item.extensionName) == b"VK_EXT_pci_bus_info" for item in extensions[:count.value])
+    return any(bytes(item.extensionName) == extension_name for item in extensions[:count.value])
+
+
+def supports_pci_bus_info(vk, physical_device):
+    return supports_device_extension(vk, physical_device, b"VK_EXT_pci_bus_info")
+
+
+class PhysicalDeviceDrmProperties(ctypes.Structure):
+    _fields_ = [("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
+                ("hasPrimary", ctypes.c_uint32), ("hasRender", ctypes.c_uint32),
+                ("primaryMajor", ctypes.c_int64), ("primaryMinor", ctypes.c_int64),
+                ("renderMajor", ctypes.c_int64), ("renderMinor", ctypes.c_int64)]
+
+
+def read_drm_render_identity(vk, physical_device, instance_api_version):
+    """Query populated DRM properties only when the device advertises support."""
+    if instance_api_version < ((1 << 22) | (1 << 12)):
+        return None
+    if not supports_device_extension(vk, physical_device, b"VK_EXT_physical_device_drm"):
+        return None
+    fn = getattr(vk, "vkGetPhysicalDeviceProperties2", None)
+    if fn is None:
+        return None
+    drm = PhysicalDeviceDrmProperties(1000353000, None)
+    props = PhysicalDeviceProperties2(1000059001, ctypes.cast(ctypes.pointer(drm), ctypes.c_void_p))
+    fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    fn.restype = None
+    fn(physical_device, ctypes.byref(props))
+    if drm.hasRender == 1 and drm.renderMajor > 0 and drm.renderMinor >= 0:
+        return (int(drm.renderMajor), int(drm.renderMinor))
+    return None
 
 
 def identity_instance_api_version(vk):

@@ -272,6 +272,10 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             "stage system-memory budget cannot satisfy minimum viable enabled allocations: "
             + str(stage_memory_plan.get("resolution_reason") or "insufficient safe memory")
         )
+        for failure in stage_memory_plan.get("infeasible_gpu_assignments", []):
+            issues.append(f"GPU allocation configuration infeasible: {failure['backend']} target {failure['target_id']} "
+                          f"has safe assignment {failure['assigned_target_bytes']} bytes below backend minimum "
+                          f"{failure['backend_minimum_bytes']} bytes; no workload will be launched.")
     if stage.modules.memory.enabled and stage_memory_plan.get("unbudgeted_shared_gpu_workers"):
         workers_text = ", ".join(
             f"{item.get('backend')}@{item.get('target_id') or 'GPU'}"
@@ -690,6 +694,15 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
             ),
         }
 
+    for worker in gpu_workers:
+        feasibility = getattr(worker, "allocation_feasibility", {}) or {}
+        if feasibility.get("status") in {"limited_by_software_object_budget", "conditional_runtime_gl_query", "limited_by_worker_allocation_granularity"}:
+            warnings.append(
+                f"{worker.backend} VRAM allocation feasibility for {worker.target_id}: "
+                f"{feasibility['status']}; assigned={worker.target_vram_bytes} bytes, "
+                f"nominal planned={feasibility.get('planned_nominal_bytes')} bytes. "
+                "Assignment is not reduced; runtime attainment and readback remain required."
+            )
     settings = getattr(runner, "_settings", None)
     telemetry_interval = float(getattr(settings, "sample_interval_seconds", 0.0) or 0.0)
     analysis_evidence = planned_analysis_evidence(stage, telemetry_interval)

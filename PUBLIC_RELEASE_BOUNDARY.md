@@ -3,16 +3,18 @@
 The public repository is
 [`Marks-Tech-Lab/linux-validation-suite`](https://github.com/Marks-Tech-Lab/linux-validation-suite).
 The published branch is `main`, mirrored at `origin/main`. The MIT License is
-included. The prepared version is `v0.5.2-alpha`, a corrective reliability
-milestone after `v0.5.1-alpha`. It preserves the
+included. The prepared version is `v0.5.2`, a corrective reliability
+milestone following the published `v0.5.2-alpha` checkpoint. It preserves the
 hardware-scalability contract, first-class AArch64 and x86_64 support, safety,
 and established output-compatibility boundaries. Validation includes the full
-smoke suite, accepted ARM64 NEON FP32/FMA, and exact Vulkan execution on the
-three-GPU Gigabyte system. Prior hardware-coverage limitations remain applicable.
-See [release scope and limitations](docs/release_notes_v0.5.2-alpha.md).
+smoke suite and scoped x86-64/AArch64 physical campaigns, including Spark SVE at
+128-bit VL, mixed/identical GPU targeting, protected shared/dedicated GPU memory
+paths and final MSI Vulkan shutdown confirmation. Hardware coverage remains
+specific to tested configurations. See [release scope and limitations](docs/release_notes_v0.5.2.md)
+and [the proposed file inventory](docs/release_inventory_v0.5.2.md).
 
 Release preparation commits and annotated Git tags are pushed to the public
-repository. The maintainer creates and publishes GitHub prereleases manually;
+repository only after approval. The maintainer creates and publishes GitHub releases manually;
 preparing a version or pushing its tag does not itself publish a GitHub Release.
 
 Use this checklist when updating the public repository. Publish only generic
@@ -61,7 +63,7 @@ scaffolds.
 - Keep Google Drive upload disabled or documented as user-configured.
 - Avoid organization-specific profile group labels.
 - Keep the MIT License and public release metadata current.
-- Keep runtime version display aligned with the current alpha release tag.
+- Keep runtime version display aligned with the approved release identity.
 - Document `./scripts/setup_venv.sh` and the repo-local `.venv/bin/python` entrypoints.
 - Keep `.venv/` ignored; never publish or copy a maintainer virtual environment.
 - Document enhanced telemetry as a session-scoped sudo-backed option, not a saved setting.
@@ -69,23 +71,28 @@ scaffolds.
 ## Supported Architecture Boundary
 
 - Supported Linux architectures are x86_64 and AArch64.
-- Accepted AArch64 native CPU implementations are scalar, integer NEON, and
-  verified NEON FP32/FMA. SVE FP32/FMA is implemented, experimental, and explicit-only.
+- Accepted AArch64 native CPU implementations include scalar, integer NEON, and
+  verified NEON FP32/FMA. SVE FP32/FMA is implemented and remains experimental;
+  explicit SVE requests and operator-selected `highest_verified_vector` may use
+  it when common native capability and compilation requirements are satisfied.
 - Explicit architecture-specific ISA requests remain constrained to their
   architecture and fail closed when unavailable.
 - Spark SVE functional execution and preserved-binary instruction inspection
   passed after the v0.5.2-alpha checkpoint; exact historical launch hashes were
-  not recorded. Sustained and wider-VL acceptance remain pending.
-  Generic intents, Auto, and Power Auto still exclude experimental SVE.
-  Its active functional-confirmation profile remains an explicit experimental
-  development test, not a general SVE support guarantee. SVE2 and SME remain
-  unimplemented and outside the ISA guarantee.
+  not recorded. Spark's 600-second sustained campaign passed at 128-bit VL with
+  matching native executable observations. Highest-vector integration passed on
+  Spark and non-SVE Snapdragon. Wider VLs and other SVE implementations remain
+  physically unaccepted. Baseline/high-throughput vector policy is unchanged;
+  ordinary Auto and Power Auto exclude SVE. SVE2, specialized ARM kernels and
+  SME remain unimplemented and outside the ISA guarantee.
 - Do not generalize AArch64 support into a promise for every ARM architecture,
   version, device, or platform.
 - Unrelated architectures are not supported unless separately implemented and
   validated.
-- Real ARM GPU OpenCL hardware acceptance has not occurred. Preserve that
-  limitation until the loader path and actual hardware have been validated.
+- ARM GPU OpenCL compute and VRAM execution are physically confirmed on NVIDIA
+  GB10 within the recorded campaign. This does not accept every ARM driver:
+  Snapdragon's captured OpenCL stack exposed no usable GPU and was correctly
+  blocked. Adreno Vulkan compute/transfer acceptance remains independent.
 - Future CPU/package-power telemetry providers are optional expansion work;
   current Power Auto behavior must report measured and fallback mechanisms
   truthfully.
@@ -110,9 +117,9 @@ scaffolds.
 - Confirm sample profiles are generic and do not encode organization-specific workflows.
 - Confirm the README clearly describes hardware stress risk and telemetry caveats.
 - Confirm QA wrapper examples use generic result folder names and do not expose local filesystem paths.
-- Confirm the README identifies x86_64 and AArch64 as the supported
-  architectures without implying generic ARM, accepted SVE/SVE2/SME, ARM GPU OpenCL, or
-  unrelated-architecture support.
+- Confirm the README identifies x86_64 and AArch64 as supported architectures
+  and scopes SVE/ARM OpenCL acceptance to actual tested configurations, without
+  implying generic ARM, wider-VL, SVE2/SME or unrelated-architecture support.
 - Confirm passing smoke tests capture expected interactive screens while still
   exposing assertion diagnostics on failures.
 - Confirm public-safe support exports remain redacted. Private migration bundles

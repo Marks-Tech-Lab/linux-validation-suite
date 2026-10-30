@@ -7,7 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
 from Modules.lvs_vulkan_identity import requested_physical_identity, normalize_device_uuid
 from Modules.lvs_vulkan_targeting import vulkan_target_identity_evidence
 
@@ -21,9 +21,23 @@ def worker_identity_binding(target, match):
     if not match.get("available") or match.get("ambiguous") or proof["status"] != "verified":
         raise RuntimeError("Vulkan worker requires verified physical identity: " + proof["status"])
     requested = requested_physical_identity(target)
-    # A newly bound runtime UUID is usable only after independent PCI proof.
+    # A newly bound runtime UUID is usable only after independent PCI/DRM proof.
     # A known requested UUID is retained even when the runtime query is absent.
     return requested["uuid"] or normalize_device_uuid(resolved.get("deviceUUID")), requested["pci_slot"]
+
+
+def worker_render_binding_args(target, match):
+    requested = requested_physical_identity(target)
+    render = requested["drm_render"]
+    observed = (match.get("device") or {}).get("drm_render")
+    if render is not None:
+        if observed is not None and tuple(render) != tuple(observed):
+            raise RuntimeError("Vulkan DRM target changed during worker construction")
+        return ["--target-render-node", str(target["render_node"]),
+                "--target-drm-render", f"{render[0]}:{render[1]}"]
+    if match.get("physical_identity_evidence", {}).get("source") == "drm_render_node":
+        raise RuntimeError("Vulkan DRM target disappeared during worker construction")
+    return []
 
 
 def build_python_vulkan_transfer_worker(
@@ -79,6 +93,7 @@ def build_python_vulkan_transfer_worker(
             target_card,
             "--target-slot",
             target_slot,
+            *worker_render_binding_args(target, vulkan_match),
             "--target-device-uuid",
             target_uuid,
             "--target-id",
@@ -111,7 +126,7 @@ def build_python_vulkan_transfer_worker(
         target,
         target_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="gpu_3d",
         backend="python_vulkan_transfer",
         gpu_index=target_gpu_index,
@@ -138,7 +153,7 @@ def build_python_vulkan_transfer_worker(
         device_class=str(capability.get("device_class", "") or ""),
         profile_mode=str(profile_mode or ""),
         profile_intensity=runner._normalize_gpu_3d_intensity(profile_intensity),
-    )
+    ), capability)
 
 
 def build_python_vulkan_compute_worker(
@@ -211,6 +226,7 @@ def build_python_vulkan_compute_worker(
             target_card,
             "--target-slot",
             target_slot,
+            *worker_render_binding_args(target, vulkan_match),
             "--target-device-uuid",
             target_uuid,
             "--target-id",
@@ -251,7 +267,7 @@ def build_python_vulkan_compute_worker(
         target,
         target_env,
     )
-    return GpuWorkerSpec(
+    return bind_gpu_allocation_safety(GpuWorkerSpec(
         workload="gpu_3d",
         backend="python_vulkan_compute",
         gpu_index=target_gpu_index,
@@ -277,7 +293,7 @@ def build_python_vulkan_compute_worker(
         profile_mode=str(profile_mode or ""),
         profile_intensity=runner._normalize_gpu_3d_intensity(profile_intensity),
         compute_variant=normalized_compute_variant,
-    )
+    ), capability)
 
 
 def build_python_vulkan_vram_worker(

@@ -137,7 +137,7 @@ def power_cpu_candidate_inventory(
         for flavor in native_flavors:
             if flavor in EXPERIMENTAL_CPU_KERNELS:
                 unavailable.append({"candidate_id": f"cpu_native_helper:{flavor}",
-                                    "reason": "experimental kernel requires explicit ISA selection; physical acceptance pending"})
+                                    "reason": "experimental kernel excluded from Power Auto; use explicit ISA selection or highest_verified_vector; selection does not establish physical acceptance"})
                 continue
             viable.append(_candidate(
                 f"cpu_native_helper:{flavor}",

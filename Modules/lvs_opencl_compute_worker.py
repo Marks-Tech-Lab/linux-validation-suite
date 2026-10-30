@@ -107,7 +107,13 @@ def build_opencl_compute_workload_script(
         import time
 
         from Modules.lvs_opencl_compute_worker import opencl_compute_phase_at_elapsed, opencl_compute_phase_limits
-        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim, runtime_memory_stop_required, RuntimeMemoryClaims
+        from Modules.lvs_gpu_allocation_safety import runtime_gpu_allocation_safety
+
+        ALLOCATION_SAFETY = runtime_gpu_allocation_safety()
+        memory_claims = RuntimeMemoryClaims()
+        claim_runtime_allocation_growth = memory_claims.claim
+        release_runtime_allocation_claim = memory_claims.release
 
         TARGET_VENDOR = {target_vendor!r}
         TARGET_VENDOR_ID = {target_vendor_id!r}
@@ -238,6 +244,7 @@ def build_opencl_compute_workload_script(
         CL.clReleaseContext.restype = cl_int
 
         state = {{
+            "allocation_safety": ALLOCATION_SAFETY,
             "kind": "gpu",
             "mode": "gpu_3d",
             "backend": "python_opencl_compute",
@@ -683,6 +690,8 @@ def build_opencl_compute_workload_script(
         def write_result():
             if not RESULT_FILE:
                 return
+            state["outstanding_system_memory_claim_bytes"] = memory_claims.outstanding
+            state["allocation_claim_cleanup_error"] = memory_claims.cleanup_error
             try:
                 temp_path = RESULT_FILE + ".tmp"
                 with open(temp_path, "w", encoding="utf-8") as handle:
@@ -909,7 +918,7 @@ def build_opencl_compute_workload_script(
             for _ in range(runtime_buffer_count):
                 guard_claim = claim_runtime_allocation_growth(
                     buffer_bytes,
-                    shared_system_memory=DEVICE_CLASS != "discrete",
+                    shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                 )
                 if not guard_claim.get("allowed"):
                     state["runtime_memory_guard_triggered"] = True
@@ -921,7 +930,7 @@ def build_opencl_compute_workload_script(
                 if int(error_code.value) != 0 or not buffer_handle:
                     release_runtime_allocation_claim(
                         buffer_bytes,
-                        shared_system_memory=DEVICE_CLASS != "discrete",
+                        shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                     )
                     check(error_code.value, "clCreateBuffer")
                 buffers.append(buffer_handle)
@@ -968,6 +977,10 @@ def build_opencl_compute_workload_script(
             last_verify_monotonic = started_monotonic - verify_interval_seconds
             state["verification_interval_seconds"] = verify_interval_seconds
             while running:
+                if runtime_memory_stop_required():
+                    state["runtime_memory_guard_triggered"] = True
+                    state["allocation_growth_stopped"] = True
+                    break
                 load_fraction = current_load_fraction(started_monotonic)
                 phase_name = current_phase(started_monotonic)
                 set_phase(phase_name)
@@ -1029,30 +1042,40 @@ def build_opencl_compute_workload_script(
         finally:
             state["verification_satisfied"] = int(state.get("verification_passes") or 0) > 0
             write_result()
+            cleanup_ok = True
             for buffer_handle in buffers:
                 try:
-                    CL.clReleaseMemObject(buffer_handle)
+                    cleanup_ok = int(CL.clReleaseMemObject(buffer_handle)) == 0 and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if kernel:
                 try:
-                    CL.clReleaseKernel(kernel)
+                    cleanup_ok = int(CL.clReleaseKernel(kernel)) == 0 and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if program:
                 try:
-                    CL.clReleaseProgram(program)
+                    cleanup_ok = int(CL.clReleaseProgram(program)) == 0 and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if queue:
                 try:
-                    CL.clReleaseCommandQueue(queue)
+                    cleanup_ok = int(CL.clReleaseCommandQueue(queue)) == 0 and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if context:
                 try:
-                    CL.clReleaseContext(context)
+                    cleanup_ok = int(CL.clReleaseContext(context)) == 0 and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
+            if cleanup_ok:
+                memory_claims.close()
+            else:
+                memory_claims.cleanup_error = "OpenCL cleanup incomplete; claims retained conservatively"
+            state["cleanup_complete"] = cleanup_ok and not bool(memory_claims.cleanup_error)
+            if not state["cleanup_complete"]:
+                # Keep computation/readback observations separate from cleanup.
+                record_error(memory_claims.cleanup_error)
+            write_result()
         """
     ).strip()

@@ -212,7 +212,7 @@ class ProfileLoader:
         self._hydrate_legacy_display_labels(path, profile)
         return profile
 
-    def save_profile(self, path: Path, profile: ValidationProfile, labels: Optional[List[str]] = None) -> None:
+    def save_profile(self, path: Path, profile: ValidationProfile, labels: Optional[List[str]] = None, *, exclusive: bool = False) -> None:
         if labels is not None:
             for index, stage in enumerate(profile.stages):
                 if index < len(labels) and str(labels[index] or "").strip():
@@ -221,7 +221,21 @@ class ProfileLoader:
             if not stage.display_label.strip():
                 stage.display_label = stage.name
         profile.segment_label_source = None
-        JsonStore.write(path, self.profile_payload(profile))
+        if exclusive:
+            # New/Save As destinations must never overwrite a file that appeared
+            # after name selection. Use the same serializer as normal saves.
+            encoded = json.dumps(self.profile_payload(profile), indent=2) + "\n"
+            handle = path.open("x", encoding="utf-8")
+            try:
+                with handle:
+                    handle.write(encoded)
+            except Exception:
+                # This file was created exclusively by this attempt. Never
+                # leave a failed Save As masquerading as a discoverable profile.
+                path.unlink(missing_ok=True)
+                raise
+        else:
+            JsonStore.write(path, self.profile_payload(profile))
 
     @classmethod
     def profile_payload(cls, profile: ValidationProfile, labels: Optional[List[str]] = None) -> Dict[str, Any]:

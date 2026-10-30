@@ -5,12 +5,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 from .lvs_source_review import provenance_from_payload, source_identity, source_identity_text, load_result_source_identity
+from .lvs_run_completion_evidence import completion_from_directory, with_completion, execution_completion
 from .lvs_native_binary_provenance import native_binary_reviews, native_binary_text
 
 
 def summary_with_recorded_source(result: Dict[str, Any], result_dir: Any) -> Dict[str, Any]:
     """Ephemeral rendering context; never collect the reviewing machine's source."""
-    return {**result, "_recorded_source_review": load_result_source_identity(result_dir, parsed=result, correlate=False)}
+    from pathlib import Path
+    return {**with_completion(result, completion_from_directory(Path(result_dir), result)),
+            "_recorded_source_review": load_result_source_identity(result_dir, parsed=result, correlate=False)}
 
 
 class SummaryTextBuilder:
@@ -18,6 +21,8 @@ class SummaryTextBuilder:
         self.app_name = app_name
 
     def build(self, result: Dict[str, Any]) -> str:
+        if "ExecutionCompletion" not in result:
+            result = with_completion(result, execution_completion({}, result))
         report = result.get("ReportSummary") if isinstance(result.get("ReportSummary"), dict) else {}
         metadata = result.get("Metadata") if isinstance(result.get("Metadata"), dict) else {}
         lines: List[str] = []
@@ -47,6 +52,24 @@ class SummaryTextBuilder:
         self._append_department_use_summary(lines, report)
         self._append_issue_categories(lines, report)
         self._append_worker_summary(lines, report)
+        gpu_details = result.get("GpuDetails") or {}
+        for detail in gpu_details.get("validation_details", []) if isinstance(gpu_details, dict) else []:
+            if not isinstance(detail, dict) or "ReadbackVerificationStatus" not in detail:
+                continue
+            feasibility = detail.get("AllocationFeasibility") or detail.get("PlannedAllocationFeasibility")
+            if isinstance(feasibility, dict) and feasibility:
+                lines.append(f"VRAM feasibility {detail.get('TargetId') or '-'}: {feasibility.get('status') or 'unknown'}; "
+                             f"nominal plan {feasibility.get('planned_nominal_bytes')} bytes; "
+                             f"shortfall {feasibility.get('shortfall_bytes')} bytes (not residency evidence).")
+            lines.append(
+                f"VRAM {detail.get('Stage', '-')}, {detail.get('TargetId') or '-'}: "
+                f"readback {detail['ReadbackVerificationStatus']}; "
+                f"requested/assigned/active bytes {detail.get('RequestedTargetBytes')}/"
+                f"{detail.get('AssignedTargetBytes')}/{detail.get('ActiveTargetBytes')}; "
+                f"nominal bytes {detail.get('NominalAllocatedBytes')}; "
+                f"coverage {detail.get('VerificationCoverage')}; "
+                f"physical committed bytes {detail.get('PhysicalCommittedBytes')} (None = unavailable)."
+            )
         self._append_stage_summaries(lines, report)
         self._append_action_items(lines, report)
         self._append_export_contract(lines, result)
@@ -115,7 +138,7 @@ class SummaryTextBuilder:
         notes = []
         if "gpu_vram_telemetry_discrepancy" in warnings:
             notes.append(
-                "VRAM worker allocation/verification passed; OS VRAM telemetry may under-report shared-memory or driver-managed allocations."
+                "Compare assigned coverage, worker errors and sampled readback with device telemetry; nominal allocation does not establish physical residency."
             )
         if "gpu_thermal_throttle_zone" in warnings or "gpu_temperature" in warnings:
             notes.append("Review cooling, airflow, and ambient conditions for thermal warnings.")
@@ -267,10 +290,13 @@ class SummaryTextBuilder:
             parts.append(f"vram max {vram}")
         allocation = self._format_value(highlight.get("AllocationPercent"), "%")
         if allocation != "-":
-            parts.append(f"allocation {allocation}")
+            parts.append(f"assigned-target allocation {allocation}")
         verification = highlight.get("VerificationPasses")
         if verification:
-            parts.append(f"verify {verification}")
+            parts.append(f"generic checks {verification}")
+        for label, field in (("texture readback checks", "TextureVerificationPasses"), ("render checks", "RenderVerificationPasses")):
+            if highlight.get(field) is not None:
+                parts.append(f"{label} {highlight[field]}")
         backends = highlight.get("Backends") if isinstance(highlight.get("Backends"), list) else []
         if backends:
             parts.append("backend " + ",".join(str(item) for item in backends if str(item)))
@@ -397,8 +423,8 @@ class SummaryTextBuilder:
         key = str(category or "").strip()
         overrides = {
             "gpu_vram_telemetry_discrepancy": (
-                "No rerun is required solely for this warning when worker allocation and verification passed; "
-                + "treat worker-verified VRAM allocation as authoritative over under-reporting OS telemetry."
+                "Review assigned allocation coverage, readback errors and device-memory telemetry semantics separately; "
+                + "neither nominal allocation nor sampled readback proves physical residency."
             ),
             "gpu_thermal_throttle_zone": (
                 "Review cooling, airflow, and ambient conditions before sustained production use; "

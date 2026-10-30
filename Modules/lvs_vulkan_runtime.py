@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from .lvs_backend_readiness import build_vulkan_native_backend_payload
-from .lvs_vulkan_identity import identity_instance_api_version, read_device_uuid, normalize_device_uuid
+from .lvs_vulkan_identity import identity_instance_api_version, read_device_uuid, normalize_device_uuid, read_drm_render_identity
 
 
 def merge_vulkan_device_inventories(
@@ -54,9 +54,17 @@ def merge_vulkan_device_inventories(
             "max_storage_buffer_range_bytes",
             "max_memory_allocation_count",
             "driverVersionRaw",
+            "drm_render",
         ):
             value = native_device.get(key)
             if value not in (None, ""):
+                if key == "drm_render":
+                    # Similar names alone must never transfer physical identity.
+                    if not identifier:
+                        continue
+                    if combined.get(key) is not None and tuple(combined[key]) != tuple(value):
+                        combined["identity_error"] = "conflicting Vulkan DRM inventories"
+                        continue
                 combined[key] = value
         combined["identity_inventory_source"] = str(runtime_device.get("source") or "vulkaninfo")
         combined["allocation_capability_source"] = str(native_device.get("source") or "libvulkan")
@@ -321,6 +329,7 @@ def collect_vulkan_native_physical_devices(
                     {
                         "index": index,
                         "deviceUUID": read_device_uuid(vk, device, instance_api_version, api_version),
+                        "drm_render": read_drm_render_identity(vk, device, instance_api_version),
                         "apiVersion": f"{(api_version >> 22) & 0x3FF}.{(api_version >> 12) & 0x3FF}.{api_version & 0xFFF}",
                         "driverVersionRaw": int.from_bytes(raw[4:8], "little"),
                         "vendorID": f"0x{int.from_bytes(raw[8:12], 'little'):04x}",

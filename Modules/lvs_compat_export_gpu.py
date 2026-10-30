@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .lvs_compat_export_helpers import build_gpu_metric_test, build_gpu_temp_test
 from .lvs_worker_integrity import worker_verification_required, worker_verification_satisfied
+from .lvs_gpu_vram_evidence import is_vram_worker, vram_allocation_evidence
 
 
 def _integer_index_or_unavailable(payload: dict[str, Any], key: str) -> int:
@@ -83,8 +84,9 @@ def build_gpu_worker_validation_detail(
     expected_slot = str(payload.get("slot") or payload.get("target_slot") or "").strip()
     expected_card = str(payload.get("card") or payload.get("target_card") or "").strip()
     worker_mode = str(payload.get("mode") or payload.get("workload") or "").strip()
+    vram_evidence = vram_allocation_evidence(payload) if is_vram_worker(payload) else None
     allocated_vram_bytes = int(payload.get("allocated_vram_bytes") or payload.get("buffer_allocation_bytes") or 0)
-    target_vram_bytes = int(
+    target_vram_bytes = int(vram_evidence["assigned_target_bytes"] or 0) if vram_evidence else int(
         payload.get("active_target_vram_bytes")
         or payload.get("target_vram_bytes")
         or payload.get("target_buffer_bytes")
@@ -107,7 +109,28 @@ def build_gpu_worker_validation_detail(
         "SuiteScalingMode": str(payload.get("suite_scaling_mode") or ""),
         "SuiteVerification": str(payload.get("suite_verification") or ""),
         "VerificationRequired": worker_verification_required(payload),
-        "VerificationSatisfied": worker_verification_satisfied(payload),
+        **{exported: deepcopy(payload[key]) for key, exported in (
+            ("cleanup_complete", "CleanupComplete"),
+            ("allocation_claim_cleanup_error", "AllocationClaimCleanupError"),
+            ("outstanding_system_memory_claim_bytes", "OutstandingSystemMemoryClaimBytes"),
+            ("shutdown_evidence", "ShutdownEvidence"),
+        ) if key in payload},
+        "VerificationSatisfied": (vram_evidence["readback_verification_status"] == "verified"
+                                  if vram_evidence else worker_verification_satisfied(payload)),
+        **({
+            "ReadbackVerificationStatus": vram_evidence["readback_verification_status"],
+            "ReadbackVerificationPasses": vram_evidence["readback_verification_passes"],
+            "RequestedTargetBytes": vram_evidence["requested_target_bytes"],
+            "AssignedTargetBytes": vram_evidence["assigned_target_bytes"],
+            "MaterializedTargetBytes": vram_evidence["materialized_target_bytes"],
+            "ActiveTargetBytes": vram_evidence["active_target_bytes"],
+            "NominalAllocatedBytes": vram_evidence["nominal_allocated_bytes"],
+            "ActualAllocatedBytes": vram_evidence["actual_allocated_bytes"],
+            "VerificationCoverage": vram_evidence["verification_coverage"],
+            "VerifiedCoverageBytes": vram_evidence["verified_coverage_bytes"],
+            "PhysicalCommitmentKnown": vram_evidence["physical_commitment_known"],
+            "PhysicalCommittedBytes": vram_evidence["physical_committed_bytes"],
+        } if vram_evidence else {}),
         "DiagnosticBackend": bool(payload.get("diagnostic_backend")),
         "SaturationResult": bool(payload.get("saturation_result")),
         "PowerSaturationExpected": bool(payload.get("power_saturation_expected")),
@@ -146,6 +169,9 @@ def build_gpu_worker_validation_detail(
         "TransferMismatchCount": int(payload.get("transfer_mismatch_count") or 0),
         "VerificationPasses": int(payload.get("verification_passes") or 0),
         "RenderVerificationPasses": int(payload.get("render_verification_passes") or 0),
+        "EglSelectedDevice": deepcopy(payload.get("egl_selected_device")),
+        "EglDeviceExactMatch": payload.get("egl_device_exact_match"),
+        "VramVerificationSatisfied": payload.get("vram_verification_satisfied"),
         "VramVerificationPasses": int(payload.get("vram_verification_passes") or 0),
         "Frames": int(payload.get("frames") or 0),
         "TuningStep": int(payload.get("tuning_step") or 0),
@@ -184,6 +210,11 @@ def build_gpu_worker_validation_detail(
         "ResultWriteCount": int(payload.get("result_write_count") or 0),
         "ResultWriteElapsedSeconds": float(payload.get("result_write_elapsed_seconds") or 0.0),
         "SlowOperationEvidence": deepcopy(payload.get("slow_operation_evidence")),
+        "AllocationFeasibility": deepcopy(payload.get("allocation_feasibility")),
+        "AllocationSafety": deepcopy(payload.get("allocation_safety")),
+        "PlannedAllocationFeasibility": deepcopy(payload.get("planned_allocation_feasibility")),
+        "AllocationTimingEvidence": deepcopy(payload.get("allocation_timing_evidence")),
+        "AllocationProgressEvidence": deepcopy(payload.get("allocation_progress_evidence")),
         "ResultWriteErrorCount": payload.get("result_write_error_count"),
         "LastResultWriteError": payload.get("last_result_write_error"),
         "SleepYieldElapsedSeconds": float(payload.get("sleep_yield_elapsed_seconds") or 0.0),

@@ -40,9 +40,17 @@ def build_opencl_vram_workload_script(
         import sys
         import time
 
-        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim, runtime_memory_stop_required, RuntimeMemoryClaims
+        from Modules.lvs_gpu_allocation_safety import runtime_gpu_allocation_safety, validate_gpu_assignment
+        from Modules.lvs_gpu_allocation_geometry import opencl_buffer_geometry, opencl_buffer_count, OPENCL_READBACK_STAGING_LIMIT_BYTES
+        from Modules.lvs_opencl_allocation_timing import OpenCLAllocationTiming
 
         TARGET_VRAM_BYTES = {int(target_vram_bytes)}
+        ALLOCATION_SAFETY = runtime_gpu_allocation_safety()
+        memory_claims = RuntimeMemoryClaims()
+        claim_runtime_allocation_growth = memory_claims.claim
+        release_runtime_allocation_claim = memory_claims.release
+        validate_gpu_assignment("python_opencl", "vram", TARGET_VRAM_BYTES)
         TARGET_VENDOR = {json.dumps(target_vendor)}
         TARGET_VENDOR_ID = {json.dumps(target_vendor_id)}
         TARGET_NAME = {json.dumps(target_name)}
@@ -64,6 +72,7 @@ def build_opencl_vram_workload_script(
 
         state = {{
             "kind": "gpu",
+            "allocation_safety": ALLOCATION_SAFETY,
             "mode": "vram",
             "backend": "python_opencl",
             "status": "ok",
@@ -119,6 +128,14 @@ def build_opencl_vram_workload_script(
             "runtime_memory_guard_triggered": False,
             "allocation_growth_stopped": False,
             "runtime_memory_guard_details": {{}},
+            "readback_batch_policy": "in_order_events_max_three_samples",
+            "readback_batch_count": 0,
+            "readback_enqueued_sample_count": 0,
+            "readback_pending": False,
+            "readback_staging_bytes": 0,
+            "result_publication_interval_seconds": 2.0,
+            "result_write_count": 0,
+            "result_publication_deferred_count": 0,
         }}
 
         running = True
@@ -134,24 +151,53 @@ def build_opencl_vram_workload_script(
             state["error_count"] += 1
             state["status"] = "error"
             state["last_error"] = message
+            state["verification_satisfied"] = False
 
-        def write_result():
+        timings = OpenCLAllocationTiming({{"target_id": TARGET_ID, "target_slot": TARGET_SLOT,
+                                          "opencl_device_index": OPENCL_DEVICE_INDEX}})
+
+        last_result_write_monotonic = None
+
+        def write_result(force=True):
+            global last_result_write_monotonic
             if not RESULT_FILE:
                 return
+            now = time.monotonic()
+            if not force and last_result_write_monotonic is not None and now - last_result_write_monotonic < 2.0:
+                state["result_publication_deferred_count"] = int(state.get("result_publication_deferred_count", 0)) + 1
+                return
+            state["result_write_count"] = int(state.get("result_write_count", 0)) + 1
+            state["allocation_timing_evidence"] = timings.snapshot()
+            state["outstanding_system_memory_claim_bytes"] = memory_claims.outstanding
+            state["allocation_claim_cleanup_error"] = memory_claims.cleanup_error
+            state["readback_retained_event_count"] = len(globals().get("readback_events", []))
             try:
-                temp_path = RESULT_FILE + ".tmp"
-                with open(temp_path, "w", encoding="utf-8") as handle:
-                    json.dump(state, handle, indent=2)
-                    handle.flush()
-                    try:
-                        os.fsync(handle.fileno())
-                    except Exception:
-                        pass
-                os.replace(temp_path, RESULT_FILE)
-            except Exception:
-                pass
+                with timings.measure("result_persistence"):
+                    temp_path = RESULT_FILE + ".tmp"
+                    with open(temp_path, "w", encoding="utf-8") as handle:
+                        json.dump(state, handle, indent=2)
+                        handle.flush()
+                        try:
+                            os.fsync(handle.fileno())
+                        except Exception:
+                            state["result_fsync_error_count"] = int(state.get("result_fsync_error_count", 0)) + 1
+                    os.replace(temp_path, RESULT_FILE)
+            except Exception as exc:
+                state["result_write_error_count"] = int(state.get("result_write_error_count", 0)) + 1
+                state["last_result_write_error"] = str(exc)
+            finally:
+                # No catch-up fsync storm after slow or failed filesystem calls.
+                last_result_write_monotonic = time.monotonic()
 
-        atexit.register(write_result)
+        def terminal_result():
+            timings.finish_loop()
+            write_result()
+            terminal = timings.snapshot()
+            terminal["result_write_error_count"] = int(state.get("result_write_error_count", 0))
+            terminal["result_fsync_error_count"] = int(state.get("result_fsync_error_count", 0))
+            print("LVS_OPENCL_ALLOCATION_TIMING " + json.dumps(terminal, separators=(",", ":")), file=sys.stderr)
+
+        atexit.register(terminal_result)
 
         def resolve_opencl_library():
             candidates = []
@@ -206,6 +252,10 @@ def build_opencl_vram_workload_script(
 
         CL_SUCCESS = 0
         CL_TRUE = 1
+        CL_FALSE = 0
+        CL_COMPLETE = 0
+        CL_EVENT_COMMAND_EXECUTION_STATUS = 0x11D3
+        cl_event = ctypes.c_void_p
         CL_DEVICE_TYPE_GPU = 1 << 2
         CL_PLATFORM_VERSION = 0x0901
         CL_PLATFORM_NAME = 0x0902
@@ -249,6 +299,10 @@ def build_opencl_vram_workload_script(
         cl.clEnqueueReadBuffer.restype = cl_int
         cl.clFinish.argtypes = [cl_command_queue]
         cl.clFinish.restype = cl_int
+        cl.clGetEventInfo.argtypes = [cl_event, cl_uint, size_t, ctypes.c_void_p, ctypes.POINTER(size_t)]
+        cl.clGetEventInfo.restype = cl_int
+        cl.clReleaseEvent.argtypes = [cl_event]
+        cl.clReleaseEvent.restype = cl_int
         cl.clReleaseMemObject.argtypes = [cl_mem]
         cl.clReleaseMemObject.restype = cl_int
         cl.clReleaseKernel.argtypes = [cl_kernel]
@@ -524,6 +578,91 @@ def build_opencl_vram_workload_script(
         program = None
         kernel = None
         buffers = []
+        readback_events = []
+
+        def drain_readbacks():
+            if not state["readback_pending"]:
+                return True
+            try:
+                check(timings.call("readback_recovery_finish", cl.clFinish, queue), "clFinish(readback recovery)")
+                for event in readback_events:
+                    status = cl_int()
+                    check(timings.call("readback_event_status", cl.clGetEventInfo, event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                          ctypes.sizeof(status), ctypes.byref(status), None), "clGetEventInfo(recovery)")
+                    if status.value > CL_COMPLETE:
+                        raise RuntimeError("readback event remains pending after clFinish")
+                state["readback_pending"] = False
+                return True
+            except Exception as exc:
+                record_error("OpenCL readback completion unconfirmed: " + str(exc))
+                return False
+
+        def release_readback_events():
+            global running
+            if state["readback_pending"]:
+                return
+            retained = []
+            for event in readback_events:
+                try:
+                    check(cl.clReleaseEvent(event), "clReleaseEvent")
+                except Exception as exc:
+                    retained.append(event)
+                    record_error(str(exc))
+                    running = False  # Never accumulate leaked events over loops.
+            readback_events[:] = retained
+
+        def verify_buffer_samples(indices):
+            if not indices or len(indices) > 3 or len(set(indices)) != len(indices):
+                raise RuntimeError("OpenCL readback batch exceeds three distinct samples")
+            if state["readback_pending"] or readback_events:
+                raise RuntimeError("OpenCL readback staging is still owned by a previous batch")
+            samples = []
+            for index in indices:
+                if not 0 <= index < len(buffers) or not buffer_has_data[index]:
+                    raise RuntimeError("OpenCL readback requested an uninitialized buffer")
+                handle, count = buffers[index]
+                count = min(count, sample_words * 4)
+                if count < 4:
+                    raise RuntimeError("OpenCL readback has no complete sample word")
+                samples.append((index, handle, count, int(buffer_last_seed[index]) & 0xFFFFFFFF))
+            try:
+                for slot, (index, handle, count, seed) in enumerate(samples):
+                    event = cl_event()
+                    # Fixed, disjoint slots remain alive until completion. No
+                    # allocation or fill may run between enqueue and verification.
+                    state["readback_pending"] = True
+                    check(timings.call("readback_enqueue", cl.clEnqueueReadBuffer, queue, handle, CL_FALSE, 0, count,
+                          ctypes.byref(sample_array, slot * sample_words * 4), 0, None, ctypes.byref(event)), "clEnqueueReadBuffer")
+                    if not event.value:
+                        raise RuntimeError("OpenCL readback returned no completion event")
+                    readback_events.append(event)
+                    state["readback_enqueued_sample_count"] += 1
+                if samples:
+                    check(timings.call("readback_batch_finish", cl.clFinish, queue), "clFinish(readback batch)")
+                    # Completion alone is not success: inspect every event for
+                    # asynchronous errors before reading or crediting any sample.
+                    for event in readback_events:
+                        status = cl_int()
+                        check(timings.call("readback_event_status", cl.clGetEventInfo, event, CL_EVENT_COMMAND_EXECUTION_STATUS,
+                              ctypes.sizeof(status), ctypes.byref(status), None), "clGetEventInfo")
+                        if status.value != CL_COMPLETE:
+                            raise RuntimeError(f"OpenCL readback event incomplete or failed: {{status.value}}")
+                    state["readback_pending"] = False
+                for slot, (index, handle, count, seed) in enumerate(samples):
+                    for word in range(count // 4):
+                        expected = pattern_value(word, seed, index)
+                        actual = int(sample_array[slot * sample_words + word]) & 0xFFFFFFFF
+                        if actual != expected:
+                            state["vram_mismatch_count"] += 1
+                            record_error(f"OpenCL VRAM mismatch on buffer {{index}} word {{word}}: expected={{expected}} actual={{actual}}")
+                            break
+                    state["verification_passes"] += 1
+                state["readback_batch_count"] += int(bool(samples))
+                state["verification_satisfied"] = state["verification_passes"] > 0 and state["error_count"] == 0
+            finally:
+                if drain_readbacks():
+                    release_readback_events()
+
         buffer_last_seed = []
         buffer_has_data = []
         write_result()
@@ -668,7 +807,7 @@ def build_opencl_vram_workload_script(
             kernel = cl.clCreateKernel(program, b"fill_pattern", ctypes.byref(err))
             check(err.value, "clCreateKernel")
 
-            target_bytes = max(64 * 1024 * 1024, int(TARGET_VRAM_BYTES))
+            target_bytes = TARGET_VRAM_BYTES
             compute_units = max(1, int(CAP_COMPUTE_UNITS) or 16)
             clock_hint = max(1000, int(CAP_MAX_CLOCK_MHZ) or 1800)
             parallelism_hint = max(1, int(PARALLELISM_HINT) or 1)
@@ -678,25 +817,37 @@ def build_opencl_vram_workload_script(
             state["max_buffer_or_object_bytes"] = reported_max_alloc
             runtime_target_bytes = min(target_bytes, discrete_runtime_target_cap(int(selected["global_mem_bytes"]), max_alloc, target_bytes))
             state["runtime_target_cap_bytes"] = runtime_target_bytes
-            chunk_cap = 128 * 1024 * 1024 if DEVICE_CLASS == "discrete" and SAFE_MODE_ENABLED else 512 * 1024 * 1024
-            if DEVICE_CLASS != "discrete":
-                chunk_cap = 64 * 1024 * 1024 if SAFE_MODE_ENABLED else 128 * 1024 * 1024
-            chunk_bytes = min(max_alloc, chunk_cap, target_bytes)
-            chunk_bytes -= chunk_bytes % 4096
-            if chunk_bytes <= 0:
-                chunk_bytes = min(max_alloc, max(4096, target_bytes))
-            max_buffer_count = max(32, ((runtime_target_bytes + chunk_bytes - 1) // max(4096, chunk_bytes)) + 8)
-            if SAFE_MODE_ENABLED and DEVICE_CLASS == "discrete":
-                max_buffer_count = min(2048, max(512, max_buffer_count))
-            elif SAFE_MODE_ENABLED:
-                max_buffer_count = min(1024, max(128, max_buffer_count))
-            else:
-                max_buffer_count = min(4096, max_buffer_count)
+            # Share capability-bounded geometry with planning. Retain the count
+            # policy and any independent runtime safety cap on the assignment.
+            geometry = opencl_buffer_geometry(target_bytes, reported_max_alloc, DEVICE_CLASS, SAFE_MODE_ENABLED)
+            chunk_bytes = geometry["object_bytes"]
+            max_buffer_count = opencl_buffer_count(runtime_target_bytes, chunk_bytes, DEVICE_CLASS, SAFE_MODE_ENABLED)
+            planned_nominal_bytes = min(geometry["planned_nominal_bytes"], runtime_target_bytes, chunk_bytes * max_buffer_count)
+            planned_nominal_bytes -= planned_nominal_bytes % 4096
+            geometry.update(max_allocation_count=max_buffer_count,
+                            backend_nominal_limit_bytes=chunk_bytes * max_buffer_count,
+                            runtime_target_cap_bytes=runtime_target_bytes,
+                            planned_nominal_bytes=planned_nominal_bytes,
+                            shortfall_bytes=max(0, target_bytes - planned_nominal_bytes))
+            if runtime_target_bytes < target_bytes and runtime_target_bytes <= chunk_bytes * max_buffer_count:
+                geometry["status"] = "limited_by_existing_runtime_safety_cap"
+            state["allocation_feasibility"] = geometry
             state["max_buffer_count"] = int(max_buffer_count)
+            state["initial_chunk_bytes"] = chunk_bytes
             write_result()
 
             sample_words = max(256, min(1024, 256 + compute_units * 8 + parallelism_hint * 32 + clock_hint // 80))
-            sample_array = (cl_uint * sample_words)()
+            staging_bytes = 3 * sample_words * 4  # At most 12 KiB, reused, never queued across loops.
+            if staging_bytes > OPENCL_READBACK_STAGING_LIMIT_BYTES:
+                raise RuntimeError("OpenCL sample pool exceeds its planned host staging bound")
+            host_claim = claim_runtime_allocation_growth(staging_bytes, shared_system_memory=True)
+            if not host_claim.get("allowed"):
+                state["runtime_memory_guard_triggered"] = True
+                state["allocation_growth_stopped"] = True
+                state["runtime_memory_guard_details"] = host_claim
+                raise RuntimeError("OpenCL readback host staging denied by runtime memory guard")
+            sample_array = (cl_uint * (3 * sample_words))()
+            state["readback_staging_bytes"] = staging_bytes
             started_monotonic = time.monotonic()
             verify_interval_seconds = 0.75
             if SAFE_MODE_ENABLED and DEVICE_CLASS == "discrete":
@@ -735,6 +886,12 @@ def build_opencl_vram_workload_script(
                 buffer_has_data[buffer_index] = True
 
             while running:
+                if runtime_memory_stop_required():
+                    state["runtime_memory_guard_triggered"] = True
+                    state["allocation_growth_stopped"] = True
+                    break
+                timings.begin_loop()
+                loop_errors_before = (state["error_count"], int(state.get("result_write_error_count", 0)))
                 load_fraction = current_load_fraction(started_monotonic)
                 phase_name = current_phase(started_monotonic)
                 set_phase(phase_name)
@@ -745,7 +902,7 @@ def build_opencl_vram_workload_script(
                 allocation_budget = 1 if SAFE_MODE_ENABLED else 4
                 allocations_this_frame = 0
                 while (
-                    not state["allocation_exhausted"]
+                    running and not state["allocation_exhausted"]
                     and state["allocated_vram_bytes"] < desired_target_bytes
                     and len(buffers) < max_buffer_count
                     and allocations_this_frame < allocation_budget
@@ -760,7 +917,7 @@ def build_opencl_vram_workload_script(
                         break
                     guard_claim = claim_runtime_allocation_growth(
                         request_bytes,
-                        shared_system_memory=DEVICE_CLASS != "discrete",
+                        shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                     )
                     if not guard_claim.get("allowed"):
                         state["runtime_memory_guard_triggered"] = True
@@ -770,11 +927,11 @@ def build_opencl_vram_workload_script(
                         state["allocation_exhausted"] = True
                         break
                     state["allocation_attempts"] += 1
-                    buffer_handle = cl_mem(cl.clCreateBuffer(context, CL_MEM_READ_WRITE, request_bytes, None, ctypes.byref(err)))
+                    buffer_handle = cl_mem(timings.call("create_buffer", cl.clCreateBuffer, context, CL_MEM_READ_WRITE, request_bytes, None, ctypes.byref(err)))
                     if int(err.value) != CL_SUCCESS or not buffer_handle:
                         release_runtime_allocation_claim(
                             request_bytes,
-                            shared_system_memory=DEVICE_CLASS != "discrete",
+                            shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                         )
                         state["allocation_failures"] += 1
                         history = list(state.get("allocation_backoff_attempts") or [])
@@ -796,15 +953,24 @@ def build_opencl_vram_workload_script(
                     state["last_successful_bytes"] = int(state["allocated_vram_bytes"])
                     allocations_this_frame += 1
                     new_buffer_index = len(buffers) - 1
-                    enqueue_fill(new_buffer_index, state["frames"] + 1 + new_buffer_index * 17)
-                    check(cl.clFinish(queue), "clFinish")
+                    timings.call("allocation_touch_enqueue", enqueue_fill, new_buffer_index, state["frames"] + 1 + new_buffer_index * 17)
+                    check(timings.call("allocation_touch_finish", cl.clFinish, queue), "clFinish")
                     last_fill_monotonic = time.monotonic()
                     state["allocation_touch_count"] += 1
-                    write_result()
                 state["allocation_shortfall_bytes"] = max(0, target_bytes - state["allocated_vram_bytes"])
+                state["allocation_feasibility"]["current_object_bytes"] = chunk_bytes
+                state["allocation_feasibility"]["current_nominal_limit_bytes"] = state["allocated_vram_bytes"] + max(0, max_buffer_count - len(buffers)) * chunk_bytes
                 update_allocation_outcome()
                 now_monotonic = time.monotonic()
                 fill_count = fill_buffer_count(len(buffers), load_fraction, phase_name)
+                # Initializing each new object is already real full-buffer GPU
+                # work, followed by clFinish. Do not immediately queue a second
+                # sweep of the growing allocation before allowing more growth.
+                # When no growth occurs the established recurring policy resumes.
+                state["allocation_initialization_replaced_refill"] = allocations_this_frame > 0
+                if allocations_this_frame > 0:
+                    state["allocation_refill_replaced_iteration_count"] = int(state.get("allocation_refill_replaced_iteration_count", 0)) + 1
+                    fill_count = 0
                 if (
                     SAFE_MODE_ENABLED
                     and DEVICE_CLASS == "discrete"
@@ -819,10 +985,11 @@ def build_opencl_vram_workload_script(
                     fill_indexes = [((start_index + offset) % len(buffers)) for offset in range(fill_count)]
                 else:
                     fill_indexes = []
-                for buffer_index in fill_indexes:
-                    enqueue_fill(buffer_index, state["frames"] + 1 + buffer_index * 17)
+                with timings.measure("recurring_fill_enqueue"):
+                    for buffer_index in fill_indexes:
+                        enqueue_fill(buffer_index, state["frames"] + 1 + buffer_index * 17)
                 if fill_indexes:
-                    check(cl.clFinish(queue), "clFinish")
+                    check(timings.call("recurring_fill_finish", cl.clFinish, queue), "clFinish")
                     last_fill_monotonic = time.monotonic()
                 now_monotonic = time.monotonic()
                 if (
@@ -841,40 +1008,18 @@ def build_opencl_vram_workload_script(
                     else:
                         verify_indices = sorted({{0, len(buffers) // 2, len(buffers) - 1}})
                     state["active_verify_indices"] = list(verify_indices)
-                    for verify_index in verify_indices:
-                        if verify_index >= len(buffer_has_data) or not buffer_has_data[verify_index]:
-                            continue
-                        buffer_handle, buffer_bytes = buffers[verify_index]
-                        sample_bytes = min(buffer_bytes, sample_words * 4)
-                        if sample_bytes < 4:
-                            continue
-                        check(
-                            cl.clEnqueueReadBuffer(queue, buffer_handle, CL_TRUE, 0, sample_bytes, ctypes.byref(sample_array), 0, None, None),
-                            "clEnqueueReadBuffer",
-                        )
-                        seed_value = int(buffer_last_seed[verify_index]) & 0xFFFFFFFF
-                        words_to_check = sample_bytes // 4
-                        for word_index in range(words_to_check):
-                            expected = pattern_value(word_index, seed_value, verify_index)
-                            actual = int(sample_array[word_index]) & 0xFFFFFFFF
-                            if actual != expected:
-                                state["vram_mismatch_count"] += 1
-                                record_error(
-                                    f"OpenCL VRAM mismatch on buffer {{verify_index}} word {{word_index}}: expected={{expected}} actual={{actual}}"
-                                )
-                                break
-                        state["verification_passes"] += 1
-                        state["verification_satisfied"] = True
+                    verify_buffer_samples(verify_indices)
                     last_verify_monotonic = now_monotonic
                 state["frames"] += 1
-                if state["frames"] % 4 == 0:
-                    write_result()
+                write_result(force=state["error_count"] != loop_errors_before[0])
                 if SAFE_MODE_ENABLED and DEVICE_CLASS == "discrete":
-                    time.sleep(0.006)
+                    timings.call("sleep_yield", time.sleep, 0.006)
                 elif SAFE_MODE_ENABLED:
-                    time.sleep(0.003)
+                    timings.call("sleep_yield", time.sleep, 0.003)
                 else:
-                    time.sleep(0.002)
+                    timings.call("sleep_yield", time.sleep, 0.002)
+                timings.finish_loop(completed=running and loop_errors_before ==
+                    (state["error_count"], int(state.get("result_write_error_count", 0))))
             if int(state.get("verification_passes") or 0) <= 0:
                 record_error("OpenCL VRAM ended before completing a required readback verification pass")
                 raise SystemExit(13)
@@ -883,34 +1028,58 @@ def build_opencl_vram_workload_script(
             record_error(str(exc))
             raise SystemExit(12)
         finally:
-            state["verification_satisfied"] = int(state.get("verification_passes") or 0) > 0
+            timings.finish_loop()
+            state["allocation_progress_evidence"] = {{
+                "contract": "opencl_allocation_progress_v1",
+                "loop_iterations": timings.loops,
+                "authored_frames": int(state["frames"]),
+                "attempted_iterations": timings.attempts,
+                "interrupted_iterations": timings.interrupted,
+                "successful_objects": len(buffers), "current_chunk_bytes": chunk_bytes if "chunk_bytes" in locals() else None,
+                "object_count_limit_reached": bool(state["max_buffer_count"] and len(buffers) >= state["max_buffer_count"]),
+                "runtime_guard_intervened": bool(state["runtime_memory_guard_triggered"]),
+                "api_allocation_failure_count": int(state["allocation_failures"]),
+                "assigned_target_reached": state["allocated_vram_bytes"] >= TARGET_VRAM_BYTES,
+                "capacity_exhaustion_proven": False,
+                "interpretation": "a shortfall without API failures, guard intervention or count exhaustion leaves elapsed-time progress limiting; individual operation costs require timings",
+            }}
+            state["verification_satisfied"] = int(state.get("verification_passes") or 0) > 0 and state["error_count"] == 0
             update_allocation_outcome()
             write_result()
+            cleanup_ok = drain_readbacks()
+            if cleanup_ok:
+                release_readback_events()
+            cleanup_ok = cleanup_ok and not readback_events
             for buffer_handle, _ in buffers:
                 try:
-                    cl.clReleaseMemObject(buffer_handle)
+                    cleanup_ok = int(cl.clReleaseMemObject(buffer_handle)) == CL_SUCCESS and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if kernel is not None:
                 try:
-                    cl.clReleaseKernel(kernel)
+                    cleanup_ok = int(cl.clReleaseKernel(kernel)) == CL_SUCCESS and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if program is not None:
                 try:
-                    cl.clReleaseProgram(program)
+                    cleanup_ok = int(cl.clReleaseProgram(program)) == CL_SUCCESS and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if queue is not None:
                 try:
-                    cl.clReleaseCommandQueue(queue)
+                    cleanup_ok = int(cl.clReleaseCommandQueue(queue)) == CL_SUCCESS and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
             if context is not None:
                 try:
-                    cl.clReleaseContext(context)
+                    cleanup_ok = int(cl.clReleaseContext(context)) == CL_SUCCESS and cleanup_ok
                 except Exception:
-                    pass
+                    cleanup_ok = False
+            if cleanup_ok:
+                memory_claims.close()
+            else:
+                memory_claims.cleanup_error = "OpenCL cleanup incomplete; claims retained conservatively"
+                record_error(memory_claims.cleanup_error)
         """
     ).strip()
 

@@ -13,6 +13,7 @@ def stage_override_options(setup: RunSetupState) -> List[str]:
         "Edit Stage Durations",
         "Edit Trim For All Stages",
         "Toggle Stage Enabled/Disabled",
+        "Configure Stage Workloads (this run only)",
     ]
 
 

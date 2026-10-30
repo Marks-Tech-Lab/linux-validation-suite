@@ -93,6 +93,9 @@ class TuiEventAdapterMixin:
         index = selected_index(event)
         if index is None:
             return
+        if self.view_mode == "stage_configuration":
+            await self._activate_stage_configuration_item(index)
+            return
         if self.view_mode == "setup_history":
             if index_in_range(index, self.history_entries):
                 await self._select_setup_history_entry(self.history_entries[index])
@@ -352,6 +355,12 @@ class TuiEventAdapterMixin:
     async def action_cancel_setup_input(self) -> None:
         if self.run_in_progress:
             self._show_locked_interaction_message(cancel_requested=True)
+            return
+        if self.view_mode == "stage_configuration":
+            if self.pending_input_field:
+                await self._show_stage_configuration("Edit cancelled; setting unchanged.")
+            else:
+                await self._leave_stage_configuration()
             return
         if self.setup_picker_key:
             await self._restore_setup_sidebar()

@@ -17,9 +17,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim, runtime_memory_stop_required, RuntimeMemoryClaims
+from Modules.lvs_gpu_allocation_safety import runtime_gpu_allocation_safety, validate_gpu_assignment
 from Modules.lvs_vulkan_identity import (identity_instance_api_version, read_device_uuid,
-    normalize_device_uuid, supports_pci_bus_info, requested_physical_identity, physical_identity_match)
+    normalize_device_uuid, supports_pci_bus_info, requested_physical_identity, physical_identity_match,
+    read_drm_render_identity, duplicate_drm_render_identities)
 
 
 VK_SUCCESS = 0
@@ -622,17 +624,28 @@ def parse_properties(vk: ctypes.CDLL, physical_device: ctypes.c_void_p, index: i
         "timestamp_period_nanoseconds": float(timestamp_period) if timestamp_period > 0 else 0.0,
         "pci_slot": read_pci_slot(vk, physical_device),
         "device_uuid": read_device_uuid(vk, physical_device, getattr(vk, "_lvs_instance_api_version", 1 << 22), api_version),
+        "drm_render": read_drm_render_identity(vk, physical_device, getattr(vk, "_lvs_instance_api_version", 1 << 22)),
     }
 
 
 def native_identity_evidence(info: dict, args: argparse.Namespace) -> dict:
     requested = requested_physical_identity({"target_device_uuid": getattr(args, "target_device_uuid", ""),
+        "render_node": getattr(args, "target_render_node", ""),
         "slot": args.target_slot, "target_id": args.target_id,
         "physical_gpu_id": getattr(args, "physical_gpu_id", "")})
     proof = physical_identity_match(requested["uuid"], requested["pci_slot"],
-        info.get("device_uuid", ""), info.get("pci_slot", ""))
+        info.get("device_uuid", ""), info.get("pci_slot", ""),
+        target_render=requested["drm_render"], device_render=info.get("drm_render"))
     if requested["error"]:
         proof.update(status="conflicting_identity", source="", reason=requested["error"])
+    expected_render = getattr(args, "target_drm_render", "")
+    if expected_render:
+        current = requested["drm_render"]
+        if current is None or expected_render != f"{current[0]}:{current[1]}":
+            proof.update(status="conflicting_identity", source="", reason="requested DRM node changed or is unavailable")
+    elif getattr(args, "target_render_node", ""):
+        # A path alone cannot authorize a device whose node was replaced.
+        proof.update(status="missing_evidence", source="", reason="expected DRM device number is missing")
     for key, actual_key in (("target_vendor_id", "vendor_id"), ("target_device_id", "device_id")):
         expected = str(getattr(args, key, "") or "").lower().removeprefix("0x")
         actual = str(info.get(actual_key) or "").lower().removeprefix("0x")
@@ -700,6 +713,10 @@ def select_physical_device(infos: list, args: argparse.Namespace):
     if len(identifiers) != len(set(identifiers)):
         proof = native_identity_evidence({}, args)
         proof.update(status="ambiguous_identity", source="", reason="duplicated runtime UUID")
+        raise PhysicalIdentitySelectionError(proof)
+    if duplicate_drm_render_identities(info.get("drm_render") for info, _ in infos):
+        proof = native_identity_evidence({}, args)
+        proof.update(status="ambiguous_identity", source="", reason="duplicated runtime DRM render identity")
         raise PhysicalIdentitySelectionError(proof)
     eligible = [item for item in ranked if item[0] > 0]
     if not eligible:
@@ -893,6 +910,8 @@ def main() -> int:
     parser.add_argument("--target-card", default="")
     parser.add_argument("--target-slot", default="")
     parser.add_argument("--target-device-uuid", default="")
+    parser.add_argument("--target-render-node", default="")
+    parser.add_argument("--target-drm-render", default="")
     parser.add_argument("--target-id", default="")
     parser.add_argument("--physical-gpu-id", default="")
     parser.add_argument("--target-gpu-index", type=int, default=0)
@@ -903,12 +922,22 @@ def main() -> int:
     parser.add_argument("--start-load-fraction", type=float, default=0.35)
     parser.add_argument("--result-file", default="")
     parser.add_argument("--device-class", default="")
+    parser.add_argument("--allocation-safety-json", default=None)
     parser.add_argument("--profile-mode", default="steady")
     parser.add_argument("--profile-intensity", default="extreme")
     parser.add_argument("--tuning-step", type=int, default=0)
     args = parser.parse_args()
+    try:
+        validate_gpu_assignment("python_vulkan_transfer", "gpu_3d", args.buffer_bytes)
+    except ValueError as exc:
+        parser.error(str(exc))
+    allocation_safety = runtime_gpu_allocation_safety(args.allocation_safety_json)
+    memory_claims = RuntimeMemoryClaims()
+    claim_runtime_allocation_growth = memory_claims.claim
+    release_runtime_allocation_claim = memory_claims.release
 
     state = {
+        "allocation_safety": allocation_safety,
         "kind": "gpu",
         "mode": "gpu_3d",
         "backend": "python_vulkan_transfer",
@@ -997,6 +1026,8 @@ def main() -> int:
         "tuning_step": args.tuning_step,
         "last_error": "",
         "failure_reason": "",
+        "result_write_error_count": 0,
+        "last_result_write_error": "",
     }
     running = True
 
@@ -1006,14 +1037,26 @@ def main() -> int:
         state["last_error"] = str(message)
         state["failure_reason"] = vulkan_failure_reason(message)
 
-    def write_result():
+    def write_result(*, force=False):
         if not args.result_file:
-            return
+            return True
         try:
-            with open(args.result_file, "w", encoding="utf-8") as handle:
+            # Retain the last complete snapshot if publication fails. Terminal
+            # writes (including the atexit retry) request durable file contents.
+            with open(args.result_file + ".tmp", "w", encoding="utf-8") as handle:
                 json.dump(state, handle, indent=2)
-        except Exception:
-            pass
+                if force:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            os.replace(args.result_file + ".tmp", args.result_file)
+            return True
+        except Exception as exc:
+            state["result_write_error_count"] += 1
+            state["last_result_write_error"] = f"{type(exc).__name__}: {exc}"
+            record_error("Vulkan transfer result publication failed: " + state["last_result_write_error"])
+            if force or state["result_write_error_count"] == 1:
+                print(state["last_error"], file=sys.stderr, flush=True)
+            return False
 
     def stop(*_):
         nonlocal running
@@ -1021,7 +1064,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    atexit.register(write_result)
+    atexit.register(lambda: write_result(force=True))
 
     library = resolve_vulkan_library()
     if not library:
@@ -1102,7 +1145,7 @@ def main() -> int:
                 device_local_heap_bytes += int(heap.size)
         state["device_local_heap_bytes"] = int(device_local_heap_bytes)
         state["device_local_heap_gb"] = round(device_local_heap_bytes / (1024 ** 3), 3) if device_local_heap_bytes else 0.0
-        assigned_target_size = max(16 * 1024 * 1024, int(args.buffer_bytes))
+        assigned_target_size = int(args.buffer_bytes)
         requested_size = min(assigned_target_size, 512 * 1024 * 1024)
         requested_size -= requested_size % 4
         state["requested_buffer_bytes"] = int(args.buffer_bytes)
@@ -1111,11 +1154,11 @@ def main() -> int:
             state["target_device_local_heap_percent"] = round((int(requested_size) / float(device_local_heap_bytes)) * 100.0, 4)
 
         while requested_size >= 16 * 1024 * 1024:
-            shared_memory_device = str(args.device_class or "").strip().lower() != "discrete"
-            guard_claim_bytes = 2 * int(requested_size)
+            shared_memory_device = allocation_safety["device_memory_requires_system_guard"]
+            guard_claim_bytes = (2 if shared_memory_device else 1) * int(requested_size)
             guard_claim = claim_runtime_allocation_growth(
                 guard_claim_bytes,
-                shared_system_memory=shared_memory_device,
+                shared_system_memory=True,
             )
             if not guard_claim.get("allowed"):
                 state["runtime_memory_guard_triggered"] = True
@@ -1132,7 +1175,7 @@ def main() -> int:
                     memory_props,
                     requested_size,
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                    0,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT if not shared_memory_device else 0,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                 )
                 staging_buffer, staging_memory, staging_allocation_bytes, staging_memory_type = create_buffer(
@@ -1143,18 +1186,21 @@ def main() -> int:
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 )
-                if shared_memory_device:
-                    guard_overage = max(
-                        0,
-                        int(device_allocation_bytes) + int(staging_allocation_bytes) - 2 * int(assigned_target_size),
-                    )
-                    if guard_overage > 0:
-                        raise RuntimeError("shared system-memory target guard")
+                protected_bytes = int(staging_allocation_bytes) + (int(device_allocation_bytes) if shared_memory_device else 0)
+                guard_overage = max(0, protected_bytes - (2 if shared_memory_device else 1) * int(assigned_target_size))
+                if guard_overage > 0:
+                    raise RuntimeError("shared system-memory target guard")
+                extra = max(0, protected_bytes - guard_claim_bytes)
+                if extra:
+                    extra_claim = claim_runtime_allocation_growth(extra, shared_system_memory=True)
+                    if not extra_claim.get("allowed"):
+                        raise RuntimeError("runtime memory guard denied allocation alignment overhead")
+                    guard_claim_bytes += extra
                 break
             except Exception as exc:
                 release_runtime_allocation_claim(
                     guard_claim_bytes,
-                    shared_system_memory=shared_memory_device,
+                    shared_system_memory=True,
                 )
                 state["allocation_failures"] += 1
                 state["allocation_backoff_attempts"].append(
@@ -1241,6 +1287,10 @@ def main() -> int:
         total_estimated_memory_bytes = 0
 
         while running:
+            if runtime_memory_stop_required():
+                state["runtime_memory_guard_triggered"] = True
+                state["allocation_growth_stopped"] = True
+                break
             elapsed = time.monotonic() - started
             if args.ramp_step_seconds > 0:
                 progress = min(1.0, elapsed / max(0.001, args.ramp_step_seconds * 3.0))
@@ -1377,11 +1427,13 @@ def main() -> int:
         record_error(exc)
         return 12
     finally:
+        device_destroyed = not bool(device)
+        cleanup_errors = []
         try:
             if vk and device:
-                vk.vkDeviceWaitIdle(device)
-        except Exception:
-            pass
+                check(vk.vkDeviceWaitIdle(device), "vkDeviceWaitIdle")
+        except Exception as exc:
+            cleanup_errors.append(f"vkDeviceWaitIdle: {type(exc).__name__}: {exc}")
         for handle, destroy in (
             (fence, "vkDestroyFence"),
             (command_pool, "vkDestroyCommandPool"),
@@ -1391,25 +1443,42 @@ def main() -> int:
             if vk and device and handle:
                 try:
                     getattr(vk, destroy)(device, handle, None)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    cleanup_errors.append(f"{destroy}: {type(exc).__name__}: {exc}")
         for memory in (staging_memory, device_memory):
             if vk and device and memory:
                 try:
                     vk.vkFreeMemory(device, memory, None)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    cleanup_errors.append(f"vkFreeMemory: {type(exc).__name__}: {exc}")
         if vk and device:
             try:
                 vk.vkDestroyDevice(device, None)
-            except Exception:
-                pass
+                device_destroyed = True
+            except Exception as exc:
+                cleanup_errors.append(f"vkDestroyDevice: {type(exc).__name__}: {exc}")
         if vk and instance:
             try:
                 vk.vkDestroyInstance(instance, None)
-            except Exception:
-                pass
-        write_result()
+            except Exception as exc:
+                cleanup_errors.append(f"vkDestroyInstance: {type(exc).__name__}: {exc}")
+        # A failed teardown must not return accounting claims as if resource
+        # release were confirmed. close() may either raise or record an error.
+        if device_destroyed and not cleanup_errors:
+            try:
+                memory_claims.close()
+            except Exception as exc:
+                cleanup_errors.append(f"memory_claims.close: {type(exc).__name__}: {exc}")
+        if cleanup_errors:
+            memory_claims.cleanup_error = "; ".join(cleanup_errors)
+        state["outstanding_system_memory_claim_bytes"] = memory_claims.outstanding
+        state["allocation_claim_cleanup_error"] = memory_claims.cleanup_error
+        state["cleanup_complete"] = device_destroyed and not bool(memory_claims.cleanup_error)
+        if not state["cleanup_complete"]:
+            record_error("Vulkan transfer cleanup incomplete: " + memory_claims.cleanup_error)
+        published = write_result(force=True)
+        if not state["cleanup_complete"] or not published:
+            raise SystemExit(13)
 
 
 if __name__ == "__main__":

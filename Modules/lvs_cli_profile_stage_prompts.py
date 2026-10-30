@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from .lvs_profile_editor import ProfileEditor
+
 
 class ProfileCliStagePromptMixin:
     """CLI prompt helpers for CPU, memory, and allocation stage options."""
 
     def _choose_cpu_instruction_set(self, current: str = "auto") -> str:
-        options = ["auto", "sse", "avx", "avx2", "avx512", "neon"]
+        options = list(ProfileEditor.CPU_INSTRUCTION_OPTIONS)
         print("CPU instruction set:")
         for idx, name in enumerate(options, start=1):
             label = "Auto" if name == "auto" else name.upper()
+            if name == "sve_fp32_fma":
+                label += " (experimental; runtime capability/verification checks required)"
             print(f"{idx}. {label}")
         raw = self._input(f"Choose CPU instruction set [{current}]: ").strip().lower()
         if not raw:
@@ -16,13 +20,16 @@ class ProfileCliStagePromptMixin:
         if raw in options:
             return raw
         try:
-            return options[int(raw) - 1]
+            index = int(raw) - 1
+            if not 0 <= index < len(options):
+                raise ValueError("selection out of range")
+            return options[index]
         except Exception:
             print("Invalid CPU instruction set, keeping current.")
             return current or "auto"
 
     def _choose_memory_instruction_set(self, current: str = "auto") -> str:
-        options = ["auto", "sse", "avx", "avx2", "avx512"]
+        options = list(ProfileEditor.MEMORY_INSTRUCTION_OPTIONS)
         print("Memory instruction set:")
         for idx, name in enumerate(options, start=1):
             label = "Auto" if name == "auto" else name.upper()
@@ -33,7 +40,10 @@ class ProfileCliStagePromptMixin:
         if raw in options:
             return raw
         try:
-            return options[int(raw) - 1]
+            index = int(raw) - 1
+            if not 0 <= index < len(options):
+                raise ValueError("selection out of range")
+            return options[index]
         except Exception:
             print("Invalid memory instruction set, keeping current.")
             return current or "auto"

@@ -86,7 +86,12 @@ def resolve_cpu_instruction_intent(
     if not intent or architecture not in {"x86_64", "arm64"}:
         candidates = ()
     elif architecture == "arm64":
-        candidates = ("neon",) if intent == "baseline_vector" else ("neon_fp32_fma", "neon")
+        if intent == "baseline_vector":
+            candidates = ("neon",)
+        elif intent == "highest_verified_vector":
+            candidates = ("sve_fp32_fma", "neon_fp32_fma", "neon")
+        else:
+            candidates = ("neon_fp32_fma", "neon")
     elif intent == "baseline_vector":
         candidates = ("sse2", "sse2_int")
     elif intent == "high_throughput_vector":
@@ -134,6 +139,18 @@ def resolve_cpu_instruction_intent(
             else ""
         ),
         "fail_closed_reason": reason,
+        **({
+            "selection_basis": "common_native_simd_and_established_software_verification_contract",
+            "selection_reason": (
+                f"highest_verified_vector selected {selected or 'no kernel'} from the common native SIMD set; "
+                "verification is required at execution, not established by selection; "
+                "prior physical hardware acceptance is separate evidence"
+            ),
+            "software_verification_status": "required_at_execution" if selected else "unavailable",
+            "physical_acceptance_status": "not_inferred_from_selection",
+            "experimental_kernel_selected": selected == "sve_fp32_fma",
+            "vector_length_policy": "inherited_per_thread_validated_at_execution" if selected == "sve_fp32_fma" else "not_applicable",
+        } if architecture == "arm64" and intent == "highest_verified_vector" else {}),
     }
 
 

@@ -130,6 +130,9 @@ def profile_execution_cpu_line(stage: Dict[str, Any]) -> str:
     cpu_preference = stage.get("cpu_backend_preference") or "auto"
     cpu_intent = stage.get("cpu_instruction_intent") or ""
     intent_text = f", intent={cpu_intent}" if cpu_intent else ""
+    evidence = stage.get("cpu_selection_evidence") or {}
+    reason = evidence.get("selection_reason") or ""
+    intent_text += f", selection_reason={reason}" if reason else ""
     if cpu_preference == "auto":
         return f"  cpu: backend={cpu_backend}{intent_text}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
     return f"  cpu: requested_backend={cpu_preference}, backend={cpu_backend}{intent_text}, mode={cpu_requested}->{cpu_resolved}, kernel={cpu_kernel}"
@@ -270,6 +273,25 @@ def profile_execution_gpu_detail_lines(stage: Dict[str, Any]) -> List[str]:
             + f"cap={worker.get('target_cap_reason') or '-'}, "
             + f"budgetability={worker.get('memory_budgetability') or '-'}"
         )
+    for worker in workers:
+        safety = worker.get("allocation_safety") or {}
+        if safety:
+            lines.append(
+                f"  GPU allocation safety: target={worker.get('target_id') or '-'}, "
+                f"device_system_memory_guard={safety.get('device_memory_requires_system_guard')}, "
+                f"host_system_memory_guard={safety.get('host_memory_requires_system_guard')}, "
+                f"reason={safety.get('reason') or 'unavailable'}"
+            )
+        feasibility = worker.get("allocation_feasibility") or {}
+        if feasibility:
+            lines.append(
+                "  GPU allocation feasibility: "
+                + f"target={worker.get('target_id') or worker.get('card') or '-'}, "
+                + f"status={feasibility.get('status') or 'unknown'}, "
+                + f"nominal_plan={int(feasibility.get('planned_nominal_bytes') or 0)}B, "
+                + f"shortfall={int(feasibility.get('shortfall_bytes') or 0)}B, "
+                + "runtime allocation/readback still required; physical residency not established"
+            )
     if workers:
         rendered_workers = []
         for worker in workers[:8]:

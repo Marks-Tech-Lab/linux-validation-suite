@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import os
+import stat
+from unittest.mock import patch
 
 from smoke_tests.vulkan_workload_effectiveness_checks import _worker_payload
 from smoke_tests.gpu_slow_operation_checks import _artifact_round_trip
@@ -21,6 +24,128 @@ from Modules.lvs_gpu_backend_resolver import resolve_gpu_backend_for_targets, gp
 from Modules.lvs_compat_export_helpers import preserve_legacy_worker_evidence_contract
 from Modules.lvs_compat_export_gpu import build_gpu_worker_validation_detail
 from vulkan_transfer_worker import score_device
+
+
+def run_vulkan_drm_identity_checks():
+    """Captured Turnip UUID/DRM values; no Vulkan workload or node creation."""
+    import Modules.lvs_vulkan_identity as identity
+    from Modules.lvs_vulkan_workers import build_python_vulkan_compute_worker, build_python_vulkan_transfer_worker
+    from vulkan_transfer_worker import select_physical_device as transfer_select, native_identity_evidence
+    from vulkan_compute_worker import select_physical_device as compute_select
+    identifier = "a6906649-f113-4900-219b-c5ec6e8d9a23"
+    target = dict(target_id="card1", card="card1", physical_gpu_id="platform:3d00000.gpu",
+                  render_node="/dev/dri/renderD128", vendor="Qualcomm", vendor_id="", device="")
+    device = dict(deviceName="Adreno X1-45", deviceUUID=identifier, vendorID="0x5143",
+                  deviceID="0x43030c00", deviceType="PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+                  drm_render=(226, 128), index=7)
+    def node_stat(_path):
+        return SimpleNamespace(st_mode=stat.S_IFCHR, st_rdev=os.makedev(226, 128))
+    def match(ds, t=target):
+        return vulkan_device_for_target(ds, t, gpu_cards=[t], likely_discrete_ids=set())
+    with patch.object(identity.os, "stat", side_effect=node_stat):
+        result = match([device])
+        assert result["available"] and result["physical_identity_evidence"]["source"] == "drm_render_node"
+        assert result["physical_identity_evidence"]["target_pci_slot"] == ""
+        for backend in ("python_vulkan_compute", "python_vulkan_transfer"):
+            assert vulkan_backend_target_support(backend=backend, target=target,
+                workload="gpu_3d", vulkan_match=result)["supported"]
+        other = dict(device, deviceUUID="11111111-1111-1111-1111-111111111111", drm_render=(226, 129))
+        for ds in ([device, other], [other, device]):
+            assert match(ds)["device"]["deviceUUID"] == identifier
+        for drm in (None, (226, 129), (0, 0), (True, 128), (226, -1), "226:128"):
+            assert not match([dict(device, drm_render=drm)])["available"]
+        assert match([dict(device, drm_render=None)])["identity_status"] == "missing_evidence"
+        assert not match([device, dict(other, drm_render=(226, 128))])["available"]
+        assert not match([device], dict(target, target_device_uuid=other["deviceUUID"]))["available"]
+        assert not match([dict(device, pci_slot="0000:01:00.0")],
+                         dict(target, slot="0000:02:00.0"))["available"]
+        # PCI targets can use independently established DRM association too.
+        assert match([device], dict(target, slot="0000:0d:00.0",
+                     target_id="0000:0d:00.0", physical_gpu_id="pci:0000:0d:00.0"))["available"]
+
+        class Runner:
+            def _python_runtime(self): return "python3"
+            def _gpu_worker_tuned_params(self, *_a, **_k): return {"capability": {
+                "memory_kind": "shared", "device_class": "integrated",
+                "classification_confidence": "high", "classification_source": "fixture"}}
+            def _gpu_internal_ramp_params(self): return {"ramp_step_seconds": 15, "start_load_fraction": .35}
+            def _vulkan_device_for_target(self, _t): return match([device])
+            def _vulkan_transfer_buffer_bytes(self, *_a): return 64 * 1024**2
+            def _vulkan_compute_buffer_bytes(self, *_a, **_k): return 64 * 1024**2
+            def _vulkan_compute_rounds(self, *_a): return 8
+            def _vulkan_compute_dispatch_repeats(self, *_a): return 1
+            def _normalize_vulkan_compute_variant(self, v): return v
+            def _normalize_gpu_3d_intensity(self, v): return v
+            def _vulkan_target_env(self, _t): return {}
+            def _wrap_gpu_command(self, c, *_a): return c
+        for builder in (build_python_vulkan_compute_worker, build_python_vulkan_transfer_worker):
+            spec = builder(Runner(), target)
+            cmd = spec.command
+            assert cmd[cmd.index("--target-device-uuid")+1] == identifier
+            assert cmd[cmd.index("--target-slot")+1] == ""
+            assert cmd[cmd.index("--target-render-node")+1] == target["render_node"]
+            assert cmd[cmd.index("--target-drm-render")+1] == "226:128"
+            assert spec.allocation_safety["device_memory_requires_system_guard"] is True
+            args = SimpleNamespace(target_device_uuid=identifier, target_slot="", target_id="card1",
+                physical_gpu_id=target["physical_gpu_id"], target_render_node=target["render_node"],
+                target_drm_render="226:128", target_vendor="Qualcomm", target_vendor_id="5143",
+                target_device_id="43030c00", target_device_name="Adreno X1-45", device_class="integrated")
+            info = dict(device_uuid=identifier, pci_slot="", drm_render=(226, 128),
+                vendor_id="5143", device_id="43030c00", device_name="Adreno X1-45", device_type="integrated")
+            for selector in (compute_select, transfer_select):
+                assert selector([(info, "right")], args)[2] == "right"
+                other_info = dict(info, device_uuid=other["deviceUUID"], drm_render=(226, 129))
+                assert selector([(other_info, "wrong"), (info, "right")], args)[2] == "right"
+                assert selector([(dict(info, device_uuid=""), "right")], args)[2] == "right"
+                for bad in (dict(info, drm_render=(226, 129)), dict(info, device_uuid=other["deviceUUID"])):
+                    try: selector([(bad, "wrong")], args)
+                    except RuntimeError: pass
+                    else: raise AssertionError("native worker accepted wrong physical device")
+                try: selector([(info, "one"), (dict(other_info, drm_render=(226, 128)), "two")], args)
+                except RuntimeError: pass
+                else: raise AssertionError("native worker accepted duplicated DRM identity")
+            assert native_identity_evidence(info, SimpleNamespace(**{**vars(args),
+                "target_drm_render": "226:129"}))["status"] == "conflicting_identity"
+            assert native_identity_evidence(info, SimpleNamespace(**{**vars(args),
+                "target_drm_render": ""}))["status"] == "missing_evidence"
+
+        # Exact UUID merge carries native DRM evidence across provider order.
+        merged = merge_vulkan_device_inventories([dict(device, drm_render=None)], [device])
+        assert merged[0]["drm_render"] == (226, 128)
+        mismatch = merge_vulkan_device_inventories([dict(device, drm_render=(226, 129))], [device])
+        assert not match(mismatch)["available"]
+        no_uuid = {k:v for k,v in device.items() if k not in ("deviceUUID", "drm_render")}
+        assert merge_vulkan_device_inventories([no_uuid], [device])[0].get("drm_render") is None
+        worker = _worker_payload()
+        worker["physical_identity_evidence"] = result["physical_identity_evidence"]
+        compat = preserve_legacy_worker_evidence_contract(json.loads(json.dumps(worker)))
+        detail = build_gpu_worker_validation_detail(payload=compat, stage_name="GPU", stage_type="GPU",
+            stage_verdict="pass", backend_name="python_vulkan_compute", device_name="Adreno")
+        assert detail["PhysicalIdentityEvidence"]["source"] == "drm_render_node"
+    with patch.object(identity.os, "stat", side_effect=FileNotFoundError):
+        assert not match([device])["available"]
+    with patch.object(identity.os, "stat", return_value=SimpleNamespace(st_mode=stat.S_IFREG)):
+        assert not match([device])["available"]
+
+    # Exercise the real ctypes pNext ABI with extension advertisement separated
+    # from populated properties. No loader or actual Vulkan device is used.
+    class Function:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, *args): return self.fn(*args)
+    def properties(_handle, pointer):
+        props = ctypes.cast(pointer, ctypes.POINTER(identity.PhysicalDeviceProperties2)).contents
+        drm = ctypes.cast(props.pNext, ctypes.POINTER(identity.PhysicalDeviceDrmProperties)).contents
+        assert drm.sType == 1000353000
+        drm.hasRender, drm.renderMajor, drm.renderMinor = 1, 226, 128
+    vk = SimpleNamespace(vkGetPhysicalDeviceProperties2=Function(properties))
+    v11 = (1 << 22) | (1 << 12)
+    with patch.object(identity, "supports_device_extension", return_value=True):
+        assert identity.read_drm_render_identity(vk, None, v11) == (226, 128)
+        vk.vkGetPhysicalDeviceProperties2 = Function(lambda *_: None)
+        assert identity.read_drm_render_identity(vk, None, v11) is None
+    with patch.object(identity, "supports_device_extension", return_value=False):
+        assert identity.read_drm_render_identity(vk, None, v11) is None
+    assert identity.read_drm_render_identity(vk, None, 1 << 22) is None
 
 
 def _fixtures():

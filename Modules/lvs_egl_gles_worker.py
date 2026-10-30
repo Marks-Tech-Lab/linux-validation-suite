@@ -38,10 +38,18 @@ def build_egl_gles_workload_script(
         import sys
         import time
 
-        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim
+        from Modules.lvs_runtime_memory_guard import claim_runtime_allocation_growth, release_runtime_allocation_claim, runtime_memory_stop_required, RuntimeMemoryClaims
+        from Modules.lvs_gpu_allocation_safety import runtime_gpu_allocation_safety, validate_gpu_assignment
+        from Modules.lvs_gpu_allocation_geometry import egl_texture_geometry, EGL_TEXTURE_OBJECT_BUDGET
 
         MODE = {mode_value}
         TARGET_VRAM_BYTES = {target_value}
+        ALLOCATION_SAFETY = runtime_gpu_allocation_safety()
+        memory_claims = RuntimeMemoryClaims()
+        claim_runtime_allocation_growth = memory_claims.claim
+        release_runtime_allocation_claim = memory_claims.release
+        if MODE == "vram":
+            validate_gpu_assignment("python_egl_gles2", MODE, TARGET_VRAM_BYTES)
         SURFACE_SIZE = {surface_size}
         DRAW_COUNT = {draw_count}
         SHADER_ITERATIONS = {shader_iterations}
@@ -226,6 +234,12 @@ def build_egl_gles_workload_script(
         EGL.eglCreateContext.restype = EGLContext
         EGL.eglMakeCurrent.argtypes = [EGLDisplay, EGLSurface, EGLSurface, EGLContext]
         EGL.eglMakeCurrent.restype = EGLBoolean
+        EGL.eglDestroyContext.argtypes = [EGLDisplay, EGLContext]
+        EGL.eglDestroyContext.restype = EGLBoolean
+        EGL.eglDestroySurface.argtypes = [EGLDisplay, EGLSurface]
+        EGL.eglDestroySurface.restype = EGLBoolean
+        EGL.eglTerminate.argtypes = [EGLDisplay]
+        EGL.eglTerminate.restype = EGLBoolean
         GLES.glGetString.argtypes = [ctypes.c_uint]
         GLES.glGetString.restype = ctypes.c_char_p
         GLES.glViewport.argtypes = [GLint, GLint, GLsizei, GLsizei]
@@ -438,6 +452,13 @@ def build_egl_gles_workload_script(
                 255,
             ]
 
+        def vram_clear_color(phase, texture_index):
+            # Authored VRAM pattern: only red varies with texture identity.
+            # Writer and readback expectation share the unquantized contract;
+            # quantize only the expectation, preserving GL conversion behavior.
+            return (abs(math.sin(phase + texture_index * 0.1)),
+                    abs(math.sin(phase + 1.0)), abs(math.sin(phase + 2.0)), 1.0)
+
         def marker_origin(frame_index):
             marker_size = 16
             span = max(1, SURFACE_SIZE - marker_size - sample_w)
@@ -521,7 +542,7 @@ def build_egl_gles_workload_script(
             GLES.glBindFramebuffer(GL_FRAMEBUFFER, vram_framebuffer)
             GLES.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
             GLES.glViewport(0, 0, width, height)
-            expected = clear_color_channels(phase, texture_index * 0.1)
+            expected = [clamp_byte(value) for value in vram_clear_color(phase, texture_index)]
             actual = read_rgba_sample(width, height)[:4]
             state["verification_passes"] += 1
             state["vram_verification_passes"] += 1
@@ -538,9 +559,15 @@ def build_egl_gles_workload_script(
                 return
             payload = {{
                 "kind": "gpu",
+                "allocation_safety": ALLOCATION_SAFETY,
+                "outstanding_system_memory_claim_bytes": memory_claims.outstanding,
+                "allocation_claim_cleanup_error": memory_claims.cleanup_error,
                 "mode": MODE,
                 "status": "error" if state["error_count"] else "ok",
                 "renderer": renderer,
+                "egl_selected_device": state["egl_selected_device"],
+                "egl_device_exact_match": state["egl_device_exact_match"],
+                "vram_verification_satisfied": (state["vram_verification_passes"] > 0 and state["error_count"] == 0) if MODE == "vram" else None,
                 "frames": globals().get("frame", 0),
                 "verification_passes": state["verification_passes"],
                 "render_verification_passes": state["render_verification_passes"],
@@ -566,6 +593,12 @@ def build_egl_gles_workload_script(
                 "bytes_per_texture": state["bytes_per_texture"],
                 "max_buffer_or_object_bytes": state["max_buffer_or_object_bytes"],
                 "max_allocation_count": state["max_allocation_count"],
+                "max_allocation_count_source": state.get("max_allocation_count_source"),
+                "allocation_feasibility": state.get("allocation_feasibility"),
+                "allocation_attempts": state["allocation_attempts"],
+                "allocation_failures": state["allocation_failures"],
+                "allocation_backoff_attempts": state["allocation_backoff_attempts"],
+                "allocation_exhausted": state["allocation_exhausted"],
                 "allocation_granularity_bytes": state["allocation_granularity_bytes"],
                 "allocation_outcome": state["allocation_outcome"],
                 "allocation_ratio": state["allocation_ratio"],
@@ -593,6 +626,19 @@ def build_egl_gles_workload_script(
                 pass
 
         atexit.register(write_result)
+        def cleanup_allocations():
+            try:
+                detached = EGL.eglMakeCurrent(display, EGLSurface(0), EGLSurface(0), EGLContext(0))
+                destroyed_context = EGL.eglDestroyContext(display, context)
+                destroyed_surface = EGL.eglDestroySurface(display, surface)
+                terminated = EGL.eglTerminate(display)
+                if not all((detached, destroyed_context, destroyed_surface, terminated)):
+                    record_error("EGL resource cleanup failed; memory claims retained")
+                    return
+                memory_claims.close()
+            except Exception as exc:
+                record_error("EGL resource cleanup failed: " + str(exc))
+        atexit.register(cleanup_allocations)
 
         vertex_src = b"attribute vec2 a_pos; uniform float u_phase; varying highp vec2 v_uv; void main(){{ v_uv = a_pos * 0.5 + 0.5; vec2 wobble = vec2(sin((a_pos.y + u_phase) * 3.0), cos((a_pos.x - u_phase) * 2.0)) * 0.015; gl_Position = vec4(a_pos + wobble, 0.0, 1.0); }}"
         fragment_src = b"precision highp float; varying highp vec2 v_uv; uniform float u_phase; void main(){{ highp vec2 p = (v_uv * 2.0 - 1.0) * 1.25; highp float acc = 0.0; highp float wave = 0.0; for (int i = 0; i < {shader_iterations}; ++i) {{ highp float fi = float(i) * 0.173; highp vec2 q = p * (1.0 + fi * 0.11) + vec2(sin(u_phase * 0.13 + fi), cos(u_phase * 0.17 - fi)) * 0.35; acc += sin(q.x * q.y * 9.0 + u_phase * (0.7 + fi)); wave += cos(length(q) * (12.0 + fi * 0.5) - u_phase * 0.9); p = vec2(q.x * 0.81 - q.y * 0.59, q.x * 0.59 + q.y * 0.81); }} highp float r = abs(sin(acc * 0.21 + u_phase * 0.15)); highp float g = abs(sin(wave * 0.19 + u_phase * 0.11 + 1.2)); highp float b = abs(sin((acc + wave) * 0.13 - u_phase * 0.09 + 2.4)); gl_FragColor = vec4(r, g, b, 1.0); }}"
@@ -653,13 +699,18 @@ def build_egl_gles_workload_script(
             GLES.glBindFramebuffer(GL_FRAMEBUFFER, vram_framebuffer)
             max_texture_size = GLint()
             GLES.glGetIntegerv(GL_MAX_TEXTURE_SIZE, ctypes.byref(max_texture_size))
-            tex_side = min(TEXTURE_SIDE_HINT, max_texture_size.value) if max_texture_size.value > 0 else TEXTURE_SIDE_HINT
-            tex_side = 4096 if tex_side >= 4096 else max(1024, tex_side or 2048)
-            bytes_per_texture = tex_side * tex_side * 4
-            target = max(64 * 1024 * 1024, TARGET_VRAM_BYTES)
+            if max_texture_size.value <= 0:
+                fail("GL_MAX_TEXTURE_SIZE unavailable; cannot establish legal VRAM geometry", 15)
+            target = TARGET_VRAM_BYTES
+            geometry = egl_texture_geometry(target, TEXTURE_SIDE_HINT, max_texture_size.value)
+            state["allocation_feasibility"] = geometry
+            tex_side = geometry["texture_side"]
+            bytes_per_texture = geometry["object_bytes"]
             # Use only whole legal texture objects and never let their nominal
             # aggregate exceed the assigned worker target.
-            texture_count = max(1, min(512, target // bytes_per_texture))
+            texture_count = geometry["planned_object_count"]
+            state["max_allocation_count"] = EGL_TEXTURE_OBJECT_BUDGET
+            state["max_allocation_count_source"] = "lvs_software_object_budget"
             state["bytes_per_texture"] = bytes_per_texture
             state["max_buffer_or_object_bytes"] = max(0, int(max_texture_size.value)) ** 2 * 4
             state["target_texture_count"] = texture_count
@@ -674,8 +725,14 @@ def build_egl_gles_workload_script(
         signal.signal(signal.SIGINT, stop)
 
         frame = 0
+        last_vram_check = time.monotonic()
+        last_written_phase = None
         started_monotonic = time.monotonic()
         while running:
+            if runtime_memory_stop_required():
+                state["runtime_memory_guard_triggered"] = True
+                state["allocation_growth_stopped"] = True
+                break
             phase = frame * 0.03
             load_fraction = current_load_fraction(started_monotonic)
             current_draw_count = max(4, min(DRAW_COUNT, int(round(DRAW_COUNT * load_fraction))))
@@ -689,13 +746,20 @@ def build_egl_gles_workload_script(
                         GLES.glBindFramebuffer(GL_FRAMEBUFFER, vram_framebuffer)
                         GLES.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0)
                         GLES.glViewport(0, 0, tex_side, tex_side)
-                        GLES.glClearColor(abs(math.sin(phase + index * 0.1)), abs(math.sin(phase + 1.0)), abs(math.sin(phase + 2.0)), 1.0)
+                        GLES.glClearColor(*vram_clear_color(phase, index))
                         GLES.glClear(GL_COLOR_BUFFER_BIT)
+                        # Bound scheduling by texture-write boundaries, not by
+                        # completing a potentially very slow whole-frame sweep.
+                        if time.monotonic() - last_vram_check >= 1.0:
+                            verify_vram_texture(phase, texture, index, tex_side, tex_side)
+                            last_vram_check = time.monotonic()
                 record_gl_errors("vram clear passes")
-                if frame % 180 == 0:
+                last_written_phase = phase
+                if time.monotonic() - last_vram_check >= 1.0:
                     verification_indexes = sorted({{0, len(textures) // 2, len(textures) - 1}})
                     for verification_index in verification_indexes:
                         verify_vram_texture(phase, textures[verification_index], verification_index, tex_side, tex_side)
+                    last_vram_check = time.monotonic()
             GLES.glBindFramebuffer(GL_FRAMEBUFFER, main_framebuffer)
             GLES.glViewport(0, 0, SURFACE_SIZE, SURFACE_SIZE)
             GLES.glClearColor(abs(math.sin(phase)), abs(math.sin(phase + 1.0)), abs(math.sin(phase + 2.0)), 1.0)
@@ -708,10 +772,10 @@ def build_egl_gles_workload_script(
                 desired_texture_count = max(1, min(state["target_texture_count"], int(round(state["target_texture_count"] * load_fraction))))
                 state["active_target_texture_count"] = desired_texture_count
                 state["active_target_vram_bytes"] = desired_texture_count * state["bytes_per_texture"]
-                while len(textures) < desired_texture_count:
+                while running and len(textures) < desired_texture_count:
                     guard_claim = claim_runtime_allocation_growth(
                         state["bytes_per_texture"],
-                        shared_system_memory=DEVICE_CLASS != "discrete",
+                        shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                     )
                     if not guard_claim.get("allowed"):
                         state["runtime_memory_guard_triggered"] = True
@@ -735,7 +799,7 @@ def build_egl_gles_workload_script(
                     if allocation_errors or not framebuffer_complete:
                         release_runtime_allocation_claim(
                             state["bytes_per_texture"],
-                            shared_system_memory=DEVICE_CLASS != "discrete",
+                            shared_system_memory=ALLOCATION_SAFETY["device_memory_requires_system_guard"],
                         )
                         state["allocation_failures"] += 1
                         history = list(state.get("allocation_backoff_attempts") or [])
@@ -750,17 +814,34 @@ def build_egl_gles_workload_script(
                         if not textures and tex_side > 256:
                             tex_side = max(256, tex_side // 2)
                             bytes_per_texture = tex_side * tex_side * 4
-                            texture_count = max(1, min(512, target // bytes_per_texture))
+                            texture_count = min(EGL_TEXTURE_OBJECT_BUDGET, target // bytes_per_texture)
+                            # Backoff may make the original assignment infeasible.
+                            # Retain that assignment and expose the lower nominal bound.
+                            state["allocation_feasibility"].update({{
+                                "texture_side": tex_side, "object_bytes": bytes_per_texture,
+                                "planned_object_count": texture_count,
+                                "backend_nominal_limit_bytes": bytes_per_texture * EGL_TEXTURE_OBJECT_BUDGET,
+                                "planned_nominal_bytes": texture_count * bytes_per_texture,
+                                "shortfall_bytes": target - texture_count * bytes_per_texture,
+                                "status": "runtime_geometry_backoff",
+                            }})
                             desired_texture_count = max(1, min(texture_count, int(round(texture_count * load_fraction))))
                             state["bytes_per_texture"] = bytes_per_texture
                             state["target_texture_count"] = texture_count
+                            state["active_target_texture_count"] = desired_texture_count
+                            state["active_target_vram_bytes"] = desired_texture_count * bytes_per_texture
                             continue
                         state["allocation_exhausted"] = True
                         break
                     GLES.glViewport(0, 0, tex_side, tex_side)
-                    GLES.glClearColor(0.25, 0.5, 0.75, 1.0)
+                    texture_index = len(textures)
+                    GLES.glClearColor(*vram_clear_color(phase, texture_index))
                     GLES.glClear(GL_COLOR_BUFFER_BIT)
                     textures.append(texture)
+                    # Read after the authored write, including every nonzero new
+                    # index. glReadPixels synchronizes this sample; no frame gate.
+                    verify_vram_texture(phase, texture, texture_index, tex_side, tex_side)
+                    last_written_phase = phase
                     state["allocated_textures"] = len(textures)
                     state["allocated_vram_bytes"] = len(textures) * state["bytes_per_texture"]
                     state["nominal_allocated_texture_bytes"] = state["allocated_vram_bytes"]
@@ -787,5 +868,12 @@ def build_egl_gles_workload_script(
             if frame % 60 == 0:
                 write_result()
             time.sleep(0.001)
+        # The context is still current. Do not issue additional GPU work following
+        # an emergency guard stop or a recorded GL/readback error.
+        if MODE == "vram" and textures and last_written_phase is not None and not state["error_count"] and not state["runtime_memory_guard_triggered"]:
+            for index in sorted({{0, len(textures) // 2, len(textures) - 1}}):
+                verify_vram_texture(last_written_phase, textures[index], index, tex_side, tex_side)
+        if MODE == "vram" and state["vram_verification_passes"] == 0:
+            record_error("EGL VRAM ended without a texture readback verification")
         """
     ).strip()

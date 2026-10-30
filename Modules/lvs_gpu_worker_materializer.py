@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any, Optional
 
-from Modules.lvs_gpu_worker_plan import GpuWorkerSpec
+from Modules.lvs_gpu_worker_plan import GpuWorkerSpec, bind_gpu_allocation_safety
+from Modules.lvs_gpu_allocation_safety import validate_gpu_assignment
 
 
 _MEMORY_PLAN_FIELDS = (
     "gpu_memory_kind",
+    "allocation_safety",
     "memory_classification_source",
     "memory_classification_confidence",
     "memory_capacity_source",
@@ -30,6 +32,7 @@ _MEMORY_PLAN_FIELDS = (
     "allocation_granularity_bytes",
     "planned_allocation_chunks",
     "planned_allocation_chunk_count",
+    "allocation_feasibility",
     "reported_vram_total_bytes",
     "reported_vram_total_semantics",
     "ambiguous_integrated_vram_report_bytes",
@@ -54,10 +57,12 @@ _MEMORY_PLAN_FIELDS = (
 
 
 def _preserve_memory_plan(materialized: GpuWorkerSpec, planned: GpuWorkerSpec) -> GpuWorkerSpec:
-    return replace(
+    if materialized.target_vram_bytes > planned.target_vram_bytes and planned.target_vram_bytes > 0:
+        raise ValueError("GPU allocation configuration infeasible: materialization enlarged the safe assignment")
+    return bind_gpu_allocation_safety(replace(
         materialized,
         **{field: getattr(planned, field) for field in _MEMORY_PLAN_FIELDS},
-    )
+    ))
 
 
 def materialize_gpu_worker(
@@ -65,6 +70,7 @@ def materialize_gpu_worker(
     worker: GpuWorkerSpec,
     result_file: Optional[str] = None,
 ) -> GpuWorkerSpec:
+    validate_gpu_assignment(worker.backend, worker.workload, worker.target_vram_bytes)
     if worker.backend in {"glmark2", "vkmark", "vkcube", "glxgears"}:
         target = runner._gpu_target_by_id(worker.target_id)
         return GpuWorkerSpec(

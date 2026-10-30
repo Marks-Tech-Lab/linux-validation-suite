@@ -278,13 +278,19 @@ class GpuTargetingResolver:
                 evidence["VerificationPasses"] += int(payload.get("verification_passes") or 0)
             except Exception:
                 pass
+            for output_key, input_key in (("TextureVerificationPasses", "vram_verification_passes"), ("RenderVerificationPasses", "render_verification_passes")):
+                if type(payload.get(input_key)) is int:
+                    evidence[output_key] = evidence.get(output_key, 0) + payload[input_key]
             backend = str(payload.get("backend") or "").strip()
             if backend and backend not in evidence["Backends"]:
                 evidence["Backends"].append(backend)
             if workload and workload not in evidence["Workloads"]:
                 evidence["Workloads"].append(workload)
             allocated = payload.get("allocated_vram_bytes", payload.get("buffer_allocation_bytes"))
-            target = payload.get("active_target_vram_bytes", payload.get("target_vram_bytes", payload.get("target_buffer_bytes")))
+            target = payload.get("target_vram_bytes", payload.get("target_buffer_bytes"))
+            active_target = payload.get("active_target_vram_bytes")
+            if type(active_target) is int:
+                evidence["MaxActiveNominalTargetBytes"] = max(evidence.get("MaxActiveNominalTargetBytes", 0), active_target)
             if isinstance(allocated, (int, float)):
                 current = evidence.get("MaxAllocatedVramBytes")
                 evidence["MaxAllocatedVramBytes"] = int(max(float(current or 0), float(allocated)))

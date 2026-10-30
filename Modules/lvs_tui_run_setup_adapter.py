@@ -311,6 +311,10 @@ class TuiRunSetupAdapterMixin:
         if self.run_setup is None:
             return
         choice = str(selected or "").strip().lower()
+        if "workload" in choice:
+            options = self.service.stage_option_values(self.run_setup, "label")
+            await self._open_custom_setup_picker(key="stage_configuration_select", title="Choose stage to configure", options=options)
+            return
         if "duration" in choice:
             await self._open_custom_setup_picker(spec=self.service.setup_stage_duration_picker_spec(self.run_setup))
             return
@@ -379,6 +383,11 @@ class TuiRunSetupAdapterMixin:
         if self.run_setup is None or not self.setup_picker_key:
             return
         key = self.setup_picker_key
+        if key == "stage_configuration_select":
+            index = self._stage_index_from_option(selected)
+            if index is not None:
+                await self._open_stage_configuration(index, for_run=True)
+            return
         if key == "power_limit_vendor":
             await self._handle_power_limit_vendor(selected)
             return

@@ -92,15 +92,42 @@ counts, not measured machine instructions or proof of maximum pipeline saturatio
 Reports expose quality, per-thread lengths, verified blocks/s, and derived lane work.
 Historical NEON records retain their fixed geometry and established interpretation.
 
-SVE remains experimental and explicit-only. Spark functional build, instruction,
-and execution evidence is now accepted as described below; sustained and broader
-vector-length acceptance remain pending. Generic auto, all generic
-vector intents (including highest-verified-vector), and Power Auto exclude SVE,
-even when hardware capability is present. Capability discovery still reports SVE
-and exact `sve`/`sve_fp32_fma` functional requests remain available without fallback.
-Baseline-vector and high-throughput-vector preserve their NEON policies.
-Tuning involving explicit SVE is not cached across invocations,
+SVE remains experimental. Spark functional, instruction and sustained acceptance
+at 128-bit VL and current-build Snapdragon non-SVE portability are completed.
+Wider VLs remain physically unvalidated. Exact `sve`/`sve_fp32_fma` requests and
+the operator-selected ARM64 `highest_verified_vector` intent may select SVE.
+Ordinary Auto and Power Auto exclude it; baseline-vector and high-throughput-vector
+preserve their NEON policies. Tuning involving SVE is not cached across invocations,
 because inherited per-thread VL is not a stable pre-execution cache key.
+
+### Highest-vector selection is not physical acceptance
+
+For ARM64, `highest_verified_vector` means the highest common-capable native SIMD
+implementation with an established software-verification contract. Its order is
+`sve_fp32_fma`, `neon_fp32_fma`, then integer `neon` (whose legacy canary contract
+is unchanged). It is not a highest-throughput, hottest-workload or physically
+validated-machine ranking. The native helper must advertise compiled support and
+Linux common FP/SVE capabilities before SVE is eligible. Missing SVE hardware or
+optional compiler support leaves NEON FP32/FMA, then integer NEON eligible.
+No vector intent substitutes scalar when no vector implementation is available.
+
+Selection evidence records its basis/reason, the selected kernel, experimental
+status, verification still required at execution, and
+`physical_acceptance_status: not_inferred_from_selection`. Normal readiness text
+and reports distinguish this from actual worker kernel and verification evidence.
+The new report view does not add current policy claims to historical results
+that never recorded this selection evidence.
+
+Per-thread inherited VL is preserved and validated after affinity, without a VL
+override, model allowlist or new startup authorization barrier. All architecturally
+valid supported VLs, including mixed per-thread VLs, can use the software contract.
+A successful wider-VL execution establishes that run's software verification,
+not prior physical acceptance or broader hardware coverage. Complete per-thread
+VL, geometry, phase and error evidence remains in the existing worker/progress
+contracts. Affinity, capability loss before launch, VL initialization, arithmetic
+or verification failures remain blocking; there is no runtime retry with NEON.
+Power Auto still excludes SVE from measured candidates and unmeasured fallback;
+ordinary native Auto stays integer NEON/scalar. x86 selection is unchanged.
 
 ## Validation boundary and future physical acceptance
 
@@ -135,9 +162,10 @@ workflow, including `native/cpu_sve_kernel.h`. Let normal LVS diagnostics/runtim
 compile the helper; no separately compiled helper is required. On Spark, retain
 the native backend's actual helper path, optional SVE build attempt/result,
 compiler command/version, capability probe, and per-thread inherited VL evidence.
-For the next Spark acceptance step, dry-run the sustained profile described below
-and require the exact kernel with no fallback; the accepted functional profile
-does not need repeating. Run the sustained profile with Advanced Debug, then
+For additional physical coverage, dry-run the appropriate profile and require
+the recorded kernel with no fallback; completed Spark functional and sustained
+campaigns do not need repeating to substantiate their existing acceptance.
+Use Advanced Debug, then
 preserve the actual helper executable,
 its SHA-256 and source hashes alongside diagnostics and execution artifacts for
 optimized disassembly of `execute_sve_fp32_block` and relevant compiler clones.
@@ -147,7 +175,7 @@ witnesses. A failed optional compiler build must remain explicit unsupported-SVE
 evidence while baseline kernels stay usable. Snapdragon's captured non-SVE
 environment is a negative-capability target, not a positive execution target.
 
-## Current acceptance step: sustained effectiveness
+## Sustained profile and evidence requirements
 
 The advanced-menu profile
 `profiles/ARM64 SVE FP32 FMA Sustained Effectiveness.json` requests one
@@ -189,8 +217,8 @@ unavailable. Publication/verification overhead is not separately timed by the
 current worker: throughput includes those costs; neither their exact cost nor
 hardware pipeline occupancy can be inferred from utilization or block totals.
 No universal throughput, clock, power, temperature or saturation target applies.
-SVE remains experimental and explicit-only; this profile does not approve Auto
-or Power Auto promotion. Wider-VL physical acceptance remains outstanding.
+SVE remains experimental; this profile does not approve ordinary Auto or Power
+Auto promotion. Wider-VL physical acceptance remains outstanding.
 
 ### Comparison with October 19 Spark NEON sustained evidence
 
@@ -255,3 +283,52 @@ CPU-specific temperatures, power and throttling remain unavailable/platform-depe
 
 New builds automatically capture separate [native executable provenance](native_executable_provenance.md)
 at normal launch and completion. This does not retrospectively attest this run.
+
+## Completed October 21 sustained and portability acceptance
+
+Spark's `2026-10-21_11-24-41_ARM64 SVE FP32 FMA Sustained Effectiveness` and
+matching `11-24-40` diagnostics passed: 20/20 CPUs, all verification phases,
+affinity, FPCR zero, 16-byte VL/four lanes, no arithmetic errors and clean exit.
+The stage lasted 600.921284 seconds with 480.921284 seconds after trimming.
+301 valid progress snapshots yielded 18,518,284.294 verified blocks/s and derived
+151,701,784,939.607 active-lane stress FMAs/s. First/second-half aggregate rates
+were 18,518,248.596 and 18,518,272.056 blocks/s. This is sustained verified-work
+acceptance, not maximum execution-unit saturation or universal efficiency.
+Prelaunch, validated `/proc/105272/exe` and post-execution observations matched
+the previously disassembled SHA-256 `5916457f945d7b28d19ad7c5aa998c8382b470209de67240646bed26c746d4fc`.
+This strengthens association for the sustained run, not the historical functional
+run that lacked a launch hash. CPU power/temperature/throttling remain platform-dependent.
+
+Snapdragon's `2026-10-21_12-32-40` SVE functional diagnostics recorded successful
+optional SVE compilation, HWCAP 4290772991 without SVE, no runnable SVE command,
+and no substitution. The `12-34-44` scalar and `12-37-45` NEON FP32/FMA executions
+passed on CPUs 0..7, with 150,879 canary passes and 1,523,033,352 independently
+verified FP32 blocks respectively. Both exited cleanly with zero errors; all
+NEON verification phases completed. Validated process observations matched
+prelaunch and post-execution SHA-256 `1786ddc921b570d931388b5d682b594dbb3e774bcbee2ffb04b016acd177a17a`.
+Source fingerprint differences were reproduced by copying the two archived
+profiles into active discovery; execution-scope endpoints were unchanged.
+No dedicated generic-intent physical execution was supplied in that batch;
+policy mapping is covered by software regressions against captured capabilities.
+Wider VLs and other SVE implementations still require distinct physical evidence.
+
+## Completed highest-vector integration for v0.5.2
+
+The October 29 Quick Test S3 executions on Spark
+(`2026-10-29_15-36-20_Quick Test`) and Snapdragon
+(`2026-10-29_15-41-03_Quick Test`) explicitly requested
+`highest_verified_vector`. Spark selected and executed `sve_fp32_fma` on all
+20 CPUs at inherited VL 16 bytes/four FP32 lanes; Snapdragon selected and
+executed `neon_fp32_fma` on all eight CPUs. Initial, periodic and final
+independent arithmetic verification completed with zero errors and successful
+affinity. Process executable associations were accepted with matching bytes.
+
+This closes the selection-to-execution integration gate for these platforms.
+SVE remains experimental; wider VLs, other SVE implementations, SVE2 and
+specialized ARM workloads remain separate future gates. Ordinary Auto and
+Power Auto still exclude SVE. The historical functional run's missing launch
+hash remains a limitation; later evidence does not retrofit that observation.
+
+These campaign sources precede metadata-only final release preparation. See
+[v0.5.2 release provenance](release_notes_v0.5.2.md) for the accepted final
+physical-source fingerprint and the distinction from the release fingerprint.

@@ -33,10 +33,8 @@ class GpuWorkerStateSummaryBuilder:
                 active_load_fraction = float(active_load_fraction) if active_load_fraction is not None else None
             except Exception:
                 active_load_fraction = None
-            active_target_vram_bytes = (
-                payload.get("active_target_vram_bytes")
-                or payload.get("target_vram_bytes")
-                or payload.get("target_buffer_bytes")
+            active_target_vram_bytes = payload.get(
+                "active_target_vram_bytes", payload.get("target_vram_bytes", payload.get("target_buffer_bytes"))
             )
             try:
                 active_target_vram_bytes = int(active_target_vram_bytes) if active_target_vram_bytes is not None else None
@@ -47,10 +45,8 @@ class GpuWorkerStateSummaryBuilder:
                 active_buffer_bytes = int(active_buffer_bytes) if active_buffer_bytes is not None else None
             except Exception:
                 active_buffer_bytes = None
-            allocated_vram_bytes = (
-                payload.get("allocated_vram_bytes")
-                or payload.get("buffer_bytes")
-                or payload.get("buffer_allocation_bytes")
+            allocated_vram_bytes = payload.get(
+                "allocated_vram_bytes", payload.get("buffer_bytes", payload.get("buffer_allocation_bytes"))
             )
             try:
                 allocated_vram_bytes = int(allocated_vram_bytes) if allocated_vram_bytes is not None else None
@@ -62,8 +58,9 @@ class GpuWorkerStateSummaryBuilder:
             except Exception:
                 allocation_shortfall_bytes = None
             allocation_percent = None
-            if active_target_vram_bytes and allocated_vram_bytes is not None:
-                allocation_percent = min(100.0, (allocated_vram_bytes / float(active_target_vram_bytes)) * 100.0)
+            assigned_target = payload.get("target_vram_bytes", payload.get("target_buffer_bytes"))
+            if type(assigned_target) is int and assigned_target > 0 and allocated_vram_bytes is not None:
+                allocation_percent = (allocated_vram_bytes / float(assigned_target)) * 100.0
                 allocation_percent_values.append(allocation_percent)
             if active_target_vram_bytes and allocation_shortfall_bytes is not None:
                 allocation_shortfall_mb_values.append(allocation_shortfall_bytes / float(1024 ** 2))
@@ -106,7 +103,11 @@ class GpuWorkerStateSummaryBuilder:
                     "Status": str(payload.get("status") or ""),
                     "TuningStep": int(payload.get("tuning_step") or 0),
                     "ActiveLoadFraction": round(active_load_fraction, 3) if active_load_fraction is not None else None,
-                    "ActiveTargetVramGB": round(active_target_vram_bytes / float(1024 ** 3), 2) if active_target_vram_bytes else None,
+                    "ActiveTargetVramGB": round(active_target_vram_bytes / float(1024 ** 3), 2) if active_target_vram_bytes is not None else None,
+                    "AssignedTargetVramBytes": assigned_target,
+                    "ActiveNominalAllocationPercent": (allocated_vram_bytes / active_target_vram_bytes * 100.0) if active_target_vram_bytes and allocated_vram_bytes is not None else None,
+                    "TextureVerificationPasses": payload.get("vram_verification_passes") if payload.get("backend") == "python_egl_gles2" else None,
+                    "RenderVerificationPasses": payload.get("render_verification_passes"),
                     "ActiveBufferMB": round(active_buffer_bytes / float(1024 ** 2), 2) if active_buffer_bytes else None,
                     "ActiveDispatchBufferMB": round(float(payload.get("active_dispatch_buffer_bytes") or 0) / float(1024 ** 2), 2)
                     if payload.get("active_dispatch_buffer_bytes") is not None
@@ -125,7 +126,7 @@ class GpuWorkerStateSummaryBuilder:
                         if payload.get("verified_buffer_coverage_percent") is not None
                         else None
                     ),
-                    "AllocatedVramGB": round(allocated_vram_bytes / float(1024 ** 3), 2) if allocated_vram_bytes else None,
+                    "AllocatedVramGB": round(allocated_vram_bytes / float(1024 ** 3), 2) if allocated_vram_bytes is not None else None,
                     "VramAllocationPercent": round(allocation_percent, 4) if allocation_percent is not None else None,
                     "AllocationShortfallMB": round(allocation_shortfall_bytes / float(1024 ** 2), 4) if active_target_vram_bytes and allocation_shortfall_bytes is not None else None,
                     "ActiveTargetTextureCount": payload.get("active_target_texture_count"),
@@ -149,6 +150,8 @@ class GpuWorkerStateSummaryBuilder:
                     "FinalVerificationCompleted": payload.get("final_verification_completed"),
                     "ResultWriteCount": int(payload.get("result_write_count") or 0),
                     "SlowOperationEvidence": deepcopy(payload.get("slow_operation_evidence")),
+                    **({"ShutdownEvidence": deepcopy(payload["shutdown_evidence"])}
+                       if isinstance(payload.get("shutdown_evidence"), dict) else {}),
                     "ResultWriteErrorCount": payload.get("result_write_error_count"),
                     "LastResultWriteError": payload.get("last_result_write_error"),
                     "WorkerCpuSeconds": float(payload.get("worker_cpu_seconds") or 0.0),

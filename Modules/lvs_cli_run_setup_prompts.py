@@ -15,6 +15,7 @@ class RunSetupPromptMixin:
             print("2. Edit trim for all stages")
             print("3. Toggle stage enabled/disabled")
             print("4. Continue")
+            print("5. Configure stage workloads (this run only)")
             choice = self._input("Select: ").strip()
             if choice == "1":
                 for idx, stage in enumerate(profile.stages, start=1):
@@ -58,6 +59,20 @@ class RunSetupPromptMixin:
                         stage.enabled = False
             elif choice == "4":
                 return
+            elif choice == "5":
+                for index, stage in enumerate(profile.stages, 1):
+                    print(f"{index}. {stage.display_label or stage.name} ({'enabled' if stage.enabled else 'disabled'})")
+                raw = self._input("Stage number [Enter cancels]: ").strip()
+                if not raw:
+                    continue
+                try:
+                    index = int(raw) - 1
+                    if not 0 <= index < len(profile.stages):
+                        raise ValueError("Invalid stage number.")
+                    labels = [stage.display_label or stage.name for stage in profile.stages]
+                    self.profile_cli.configure_stage_workloads(profile, index, labels, run_only=True)
+                except (ValueError, IndexError) as exc:
+                    print(f"Stage unchanged: {exc}")
 
     def _maybe_edit_labels(self, labels: List[str]) -> List[str]:
         edit = self._input("Edit segment labels before run? [y/N]: ").strip().lower()
