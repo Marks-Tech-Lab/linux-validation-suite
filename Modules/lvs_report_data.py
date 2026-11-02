@@ -16,7 +16,7 @@ from .lvs_native_binary_provenance import native_binary_reviews, native_binary_t
 from .lvs_gpu_vram_evidence import is_vram_worker, vram_allocation_evidence
 from .lvs_run_completion_evidence import completion_from_directory
 from .lvs_worker_integrity import (
-    VERIFIED_FP32_KERNELS, verified_fp32_worker, worker_result_successful,
+    VERIFIED_FP32_KERNELS, verified_fp32_worker, verified_vnni_worker, worker_result_successful,
     worker_verification_required,
 )
 from .lvs_output_contract_identity import (
@@ -601,7 +601,7 @@ def _reported_software_verification(worker: Dict[str, Any], selected_kernel: Any
 
     This is presentation only: legacy worker acceptance and runtime integrity
     predicates deliberately retain their established semantics. Unknown legacy
-    contracts cannot establish the FP32 verification claim shown here.
+    contracts cannot establish the versioned arithmetic verification claim shown here.
     """
     kernel = worker.get("kernel_flavor")
     contract = worker.get("verification_contract")
@@ -610,6 +610,14 @@ def _reported_software_verification(worker: Dict[str, Any], selected_kernel: Any
                    (type(worker["observed_exit_code"]) is not int or worker["observed_exit_code"] != 0))
     if status in {"error", "fail", "failed", "aborted", "cancelled", "interrupted"} or exit_failed:
         assessment = "failed_or_incomplete"
+    elif verified_vnni_worker(worker):
+        try:
+            valid = (worker.get("verification_required") is True
+                     and (not selected_kernel or selected_kernel == kernel)
+                     and worker_result_successful(worker))
+        except (ValueError, TypeError, AttributeError):
+            valid = False
+        assessment = "verified" if valid else "failed_or_incomplete"
     elif verified_fp32_worker(worker):
         try:
             successful = worker_result_successful(worker)

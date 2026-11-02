@@ -10,6 +10,8 @@ implementation, software validation and physical acceptance are separate gates;
 source presence, smoke-test success or ISA selection does not prove physical
 acceptance. Existing historical sections retain their original release scope.
 
+### Published baseline and completed acceptance
+
 1. [x] Implement and software-validate current CLI/TUI configuration parity,
    immediate Copy/Save As persistence and temporary workload overrides. Latest
    pre-release checkpoint: 314/314 smoke tests and 81/81 profiles valid. This is not
@@ -30,18 +32,37 @@ acceptance. Existing historical sections retain their original release scope.
    confirmation on Spark and Snapdragon. Capability selection, actual SVE/NEON
    execution, all-thread verification and truthful reporting passed. This does
    not accept wider SVE lengths or other hardware configurations.
-5. [ ] Finish the already-adopted major x86_64/AArch64 ISA milestones below,
-   with independent verification and scoped hardware acceptance. Record any
-   hardware-unavailability deferrals explicitly rather than marking them done.
-6. [ ] Finalize the v0.5.3-alpha release inventory, metadata, documentation, safety,
-   provenance and compatibility review before approved commit/tag/publication.
-   Physical acceptance is closed; no future feature here assigns release scope.
+5. [x] Complete v0.5.3-alpha inventory, version/documentation reconciliation,
+   final review, commit, annotated tag and GitHub publication as an **alpha
+   prerelease**. Its physical acceptance campaign is closed within the recorded
+   boundaries; post-release development is not retroactively part of that release.
 
-Only after these current prerequisites are closed or explicitly re-scoped may
-the dynamic-stress sequence below begin. This records future planning priority,
-not authorization to implement workers or change current test/verdict policy.
+### Immediate development order — Spark first
 
-## Prepared In v0.5.3-alpha
+After stabilizing existing LVS functionality, follow this order:
+
+1. [ ] Finish the adopted, worthwhile specialized **ARM64 work on NVIDIA GB10
+   Spark**, prioritizing genuinely different arithmetic and execution behavior.
+   Use the acceptance gates below to decide integrity coverage versus sustained
+   stress value; do not implement every available ARM extension.
+2. [ ] Physically validate shared, supported **NEON implementations on Snapdragon
+   X1 Plus**. Preserve baseline/non-SVE operation and fail-closed rejection of
+   absent SVE or specialized capabilities; Spark success does not substitute for
+   this portability evidence.
+3. [ ] Return to outstanding **x86-64 ISA work**: BF16/FP16 and separately gated
+   AMX work. VNNI physical acceptance is now complete within the configurations
+   below; preserve the current uncommitted VNNI milestone for commit review.
+   Additional x86 development follows Spark/Snapdragon priorities.
+4. [ ] Proceed to the existing **dynamic GPU, CPU and platform stress sequence**
+   after the applicable ISA prerequisites are completed or explicitly,
+   responsibly deferred. Record each deferral's unavailable capability/hardware,
+   evidence gap, risk and reopening condition; do not label it physically accepted.
+
+This is planning, not authorization to start workloads or a new hardware campaign.
+Optional or hardware-gated candidates are not automatic prerequisites for every
+release or an indefinite requirement to wait for unavailable hardware.
+
+## Published In v0.5.3-alpha
 
 - [x] Close the eight-system October 29 hardware wave and October 30 MSI S2/S4
   shutdown confirmation within their recorded support boundaries.
@@ -55,8 +76,9 @@ not authorization to implement workers or change current test/verdict policy.
 - [x] Archive the five correction profiles byte-for-byte outside ordinary
   discovery, with retained historical operator instructions.
 - [x] Approve and commit the development inventory in `00772b2c9a233680827bc765cd368e23677d6d2b`.
-- [ ] Approve the separate v0.5.3-alpha identity correction, then commit, tag
-  and publish the alpha prerelease. No published history is rewritten.
+- [x] Commit the separate v0.5.3-alpha identity correction in
+  `a229ceb09870e9c4723a13091f0e4e0342717fdf`, create its annotated tag and publish
+  the GitHub **alpha prerelease**. No published history was rewritten.
 
 See [v0.5.3-alpha scope, limitations and physical-source provenance](docs/release_notes_v0.5.3-alpha.md).
 
@@ -183,37 +205,179 @@ milestone and does not authorize new storage testing, comparison, or reporting.
 
 ## Adopted CPU ISA Stress Roadmap
 
-Generic ISA capability selection and Power Auto thermal selection remain
-separate policies. An implemented or higher-throughput ISA is not assumed to be
-the hottest workload. Power Auto continues to measure valid candidates when
-trustworthy package-watt telemetry exists; unmeasured thermal ordering requires
-physical evidence.
+LVS is a **hardware stress and stability validation suite**, not an exhaustive
+CPU instruction-set compatibility tester. Adopt workloads that exercise
+meaningfully different arithmetic, execution resources or operating conditions,
+provide independently verified fault detection, or add useful sustained stress.
+Newer, wider, supported or architecturally different instructions do not by
+themselves prove higher power, independent execution hardware, greater stability
+coverage or a need for a separate sustained workload. Architectural coverage and
+physically demonstrated incremental stress effectiveness must be reported separately.
 
-### Current x86_64 kernels
+A useful workload need not produce the highest wattage: different arithmetic,
+execution behavior and fault-detection opportunities can justify multiple modes.
+Conversely, different instruction semantics alone do not establish useful
+incremental stress coverage. Apply the purpose and evidence gates below rather
+than implementing an extension checklist.
 
-The implemented general and Power Auto native kernels are `scalar`, `sse2`,
+### Complementary CPU operating conditions
+
+Preserve two deliberate, complementary sustained-stress objectives rather than
+optimizing every CPU mode for the same operating region:
+
+- **High-frequency sustained stress:** relatively lightweight, continuously
+  independently verified work intended to exercise stability at potentially
+  higher sustained clocks. Existing x86-64 scalar and SSE2/128-bit SIMD are
+  important baseline candidates; ARM64 scalar and fixed-width NEON provide
+  corresponding baseline capabilities.
+- **High-compute-demand sustained stress:** intensive independently verified
+  arithmetic targeting demanding computational resources. Existing x86 AVX,
+  AVX2 and AVX-512 families, ARM NEON FMA/SVE, and adopted specialized integer
+  dot-product and matrix kernels contribute where supported and accepted.
+
+These are workload objectives, not guaranteed ISA properties or a ranking of
+instruction sets. Actual sustained clocks, power, thermal limitations and stress
+effectiveness require physical measurements. Do not assume AVX always reduces
+frequency, that SVE is inherently more demanding than NEON, or that the two use
+independent execution hardware. Spark's observed SVE acceptance is at **128-bit
+VL**, not evidence of a wider-vector operating region.
+
+Existing SSE2 coverage is sufficient for the x86 baseline SIMD objective: it
+already provides verified fixed-width 128-bit SIMD work alongside scalar work.
+Dedicated SSE3/SSSE3/SSE4 stress families are not required to preserve that
+operating-region objective; extra instruction semantics alone do not establish
+incremental stability coverage. ARM likewise needs no artificial SSE-equivalent
+ISA hierarchy: scalar and NEON baselines plus justified specialized workloads
+serve the objectives under ARM's actual capabilities.
+
+Keep operating-region goals separate from existing selection policies.
+`baseline_vector` requests the architecture's baseline vector tier;
+`high_throughput_vector` requests its established throughput-oriented tier;
+`highest_verified_vector` requests the highest eligible tier under its existing
+verification policy. None promises a measured clock, power level or stress
+optimum. Power Auto remains a separate measurement-driven policy with its
+existing telemetry requirements and fallbacks. This requirement changes no
+selection order, eligibility, promotion policy or accepted functionality, and
+does not replace the established VNNI functional/sustained acceptance procedure.
+
+### Two separate acceptance decisions
+
+**A — ISA arithmetic/integrity acceptance**
+
+For each adopted implementation:
+
+- [ ] Prove genuine target-specific instruction emission and actual execution;
+  isolate instruction-specific compilation so unsupported hosts retain baseline
+  kernels. Runtime capability, OS state and pinned-core/common-target eligibility
+  remain authoritative on heterogeneous systems.
+- [ ] Independently calculate reference results for the instruction's signedness,
+  accumulation, overflow, rounding, saturation or matrix semantics as applicable.
+  Demonstrate corruption detection, bounded verification and truthful progress,
+  affinity, termination and cleanup evidence; unsupported or failed requests
+  must fail closed without silent ISA substitution.
+- [ ] Physically confirm the intended implementation and verification on suitable
+  capability-proven hardware, within the specific recorded configuration.
+
+An ISA can be accepted for arithmetic/integrity coverage without becoming a
+primary sustained stress workload. Compiler flags, disassembly, simulation and
+feature detection are software/capability evidence, not physical acceptance by
+themselves. These unchecked items are a reusable gate template for pending work,
+not a reopening of completed acceptance below.
+
+**B — Sustained stability-stress acceptance**
+
+- [ ] Establish a repeatable sustained workload with meaningful verified activity,
+  arithmetic integrity, progress coverage, bounded cancellation/cleanup and the
+  existing safeguards, reserves and thermal protections.
+- [ ] Choose duration, repetitions and evidence according to the workload's
+  purpose and observed behavior. Physically evaluate its stress characteristics,
+  telemetry availability and incremental value against relevant existing modes.
+  Distinguish measured effects from architectural hypotheses or missing telemetry.
+- [ ] Decide whether the mode merits standalone sustained use, complementary
+  coverage or integrity-only availability. No universal wattage, saturation or
+  superiority threshold is implied.
+
+A separate 600-second campaign is **not automatically mandatory for every
+precision variant or closely related flavor** merely because it is listed here.
+Existing completed 600-second campaigns retain their actual acceptance; future
+campaigns require purpose-specific duration and coverage decisions. A previous
+per-flavor test recipe is a candidate procedure, not a universal acceptance gate.
+
+Generic ISA selection and thermal/power selection remain separate. Power Auto
+continues its established measurement-driven selection where trustworthy telemetry
+exists and its documented fallbacks otherwise. Newly implemented specialized
+kernels are not automatically eligible for ordinary Auto, generic vector intents
+or Power Auto. Any later promotion needs an explicit policy/effectiveness review;
+capability alone does not authorize it.
+
+### Current x86_64 kernels and adopted specialized scope
+
+The released general and Power Auto native kernels remain `scalar`, `sse2`,
 `sse2_int`, `avx`, `avx_fma`, `avx2`, `avx2_fma`, `avx512_fma`, and
-`avx512_int`.
+`avx512_int`, with their existing common-capability requirements and scoped
+physical acceptance. This plan neither expands nor retracts that accepted scope.
 
-The adopted specialized x86_64 stress roadmap is AVX-VNNI/256-bit VNNI,
-AVX-512 VNNI, AVX-512 BF16, and AVX-512 FP16 as high-throughput stress flavors
-and Power Auto candidates. Intel AMX INT8/BF16/FP16 is a separate matrix/tile
-stress family. These are not additional ordinary top-level SIMD tiers unless
-architecture semantics require one. AVX10.x remains future work until physical
-hardware is available.
+The adopted specialized x86-64 scope remains AVX-VNNI/256-bit VNNI, AVX-512
+VNNI, AVX-512 BF16, AVX-512 FP16 and the dedicated Intel AMX INT8/BF16/FP16
+tile/matrix family. They are not new ordinary top-level SIMD tiers. Future
+Power Auto consideration is conditional on the separate policy and evidence
+review above, not an implemented or promised promotion.
 
-Outstanding adopted flavors (design/implementation, software validation and
-physical acceptance remain to be completed for each):
+**Uncommitted post-release VNNI checkpoint:** both variants are implemented and
+software-validated in the current development tree, with **320/320 smoke tests
+passing**. They use genuine `VPDPBUSD`, independent integer verification and
+verified progress. They are not committed and are **not part of published
+v0.5.3-alpha**. Both physical acceptance decisions are complete within the
+tested configurations below. Ordinary Auto,
+generic vector intents and Power Auto continue to exclude these specialized modes.
 
-- [ ] AVX-VNNI / 256-bit VNNI.
-- [ ] AVX-512 VNNI.
+- [x] Implement AVX-VNNI / 256-bit VNNI with bounded independent verification
+  (uncommitted development).
+- [x] Implement AVX-512 VNNI with bounded independent verification
+  (uncommitted development).
+- [x] Software-validate VNNI arithmetic, instruction emission, selection and lifecycle.
+- [x] Physically accept AVX-VNNI / 256-bit VNNI arithmetic/integrity on Core Ultra
+  9 285K (24 allowed CPUs) and Ryzen 9950X (32 allowed logical CPUs).
+- [x] Physically accept AVX-512 VNNI arithmetic/integrity on Ryzen 9950X
+  (32 allowed logical CPUs).
+- [x] Accept sustained verified stress under gate B in those configurations:
+  three 120-second functional and three 600-second sustained executions passed
+  on October 30 and November 2, 2026, with at least 480 usable seconds per
+  sustained run, zero mismatches, all-thread affinity and independent
+  initial/periodic/final verification, successful exits and parent finalization.
+
+Matching native-helper inspection confirms genuine VEX/YMM and EVEX/ZMM
+`VPDPBUSD`. All six runs share the complete 364-file scoped source fingerprint
+`4f5a3ee3290ade6e109532b091d9d39955c386f9386051db41bfc4944136b6fc`
+and prelaunch/process/post-execution helper SHA-256
+`d5a52421f973143400b8e4980afebbad96add9d11b851a40b4a68ee1cc30e087`.
+Associated diagnostic captures rejected the original SVE templates on x86;
+successful run-local VNNI preflight and actual execution evidence are retained
+separately. Kernel visibility is limited by denied `dmesg` access and empty
+filtered journal captures. Recorded CPU clocks are CPU0 cpufreq observations,
+not all-core effective-frequency measurements.
+
+See [the VNNI contract, six-run acceptance record and retained procedure](docs/vnni_dot_product_contract.md).
+Arithmetic/integrity and measured sustained-stress acceptance remain separate;
+these results establish useful sustained verified activity within the tested
+configurations, not maximum power, universal stress superiority or automatic
+ISA promotion. The established VNNI durations remain intact without imposing a
+600-second campaign on every future instruction flavor. This physical campaign
+is closed; next implementation work is specialized ARM64 on Spark, followed by
+Snapdragon compatibility and physical acceptance as ordered above.
+
+Remaining adopted specialized work, deferred behind Spark/Snapdragon priorities:
+
 - [ ] AVX-512 BF16.
 - [ ] AVX-512 FP16.
-- [ ] Separate Intel AMX INT8/BF16/FP16 matrix/tile family.
+- [ ] Dedicated Intel AMX INT8 tile/matrix workload.
+- [ ] Dedicated Intel AMX BF16 tile/matrix workload.
+- [ ] Dedicated Intel AMX FP16 tile/matrix workload.
 
-SSE3/SSSE3/SSE4.x, AES/SHA/GFNI, BMI/ADX, IFMA/VBMI, and similar extensions are
-not adopted merely because they exist; they are not current general
-thermal-stress priorities.
+AMX subfeatures require independent runtime capability, compiler, OS tile-state
+and execution checks. AMX INT8 or BF16 availability does **not** establish AMX
+FP16 support. Each arithmetic implementation needs gate A; gate B depends on its
+intended stability-stress role, not its presence in this list.
 
 ### AArch64 general SIMD work
 
@@ -246,8 +410,8 @@ The adopted general SIMD work is:
   confirmation is separate from the earlier arithmetic campaigns.
 - [ ] Physically validate wider SVE vector lengths and other implementations;
   software scalable/mixed-VL fixtures do not close this gate.
-- [ ] Design, implement, independently verify and physically accept distinct
-  SVE2-specific work; SVE FP32/FMA is not SVE2.
+- [ ] Complete the distinct SVE2 integer workload defined below; existing SVE
+  FP32/FMA is not SVE2 coverage. Apply gates A/B separately.
 
 Current ARM instruction intents resolve as follows:
 
@@ -261,28 +425,87 @@ Current ARM instruction intents resolve as follows:
 
 SVE and SVE2 must not be encoded as automatically hotter than scalar or NEON.
 The published v0.5.2-alpha policy excluded SVE from generic intents. This
-post-release development change affects only the deliberate highest-vector
+change published in v0.5.3-alpha affects only the deliberate highest-vector
 intent. Ordinary Auto stays NEON/scalar and Power Auto excludes SVE. A wider
 inherited VL is software-validated, never thereby declared physically accepted.
 
-### AArch64 specialized stress flavors
+### AArch64 specialized stress flavors — Spark-first work
 
-The adopted specialized AArch64 roadmap is NEON FP16/FHM (`asimdhp` and
-`asimdfhm`), NEON DotProd (`asimddp`), NEON I8MM, NEON BF16, SVE I8MM, and SVE
-BF16. AES/SHA/SM3/SM4/CRC and SVE crypto extensions, SVE bitperm, and FCMA/RDM
-or miscellaneous DSP extensions are outside current scope unless later evidence
-establishes unique validation value. SME and SME2 remain deferred until
-physical hardware exposing them is available.
+The adopted ARM64 scope is deliberately finite:
 
-Outstanding adopted specialized families, each requiring its own design,
-implementation, independent software verification and physical acceptance:
-
-- [ ] NEON FP16/FHM (`asimdhp` / `asimdfhm`).
+- [ ] NEON FP16/FHM (`asimdhp` / `asimdfhm`), with each required subfeature gated.
 - [ ] NEON DotProd (`asimddp`).
 - [ ] NEON I8MM.
 - [ ] NEON BF16.
+- [ ] Distinct SVE2-specific integer workload, scoped below.
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
+
+All remain adopted future implementations, not current specialized-kernel
+acceptance. Prioritize on Spark by demonstrated capability and worthwhile
+arithmetic/execution differences, then confirm the shared supported NEON paths
+on Snapdragon X1 Plus. Require separate runtime eligibility for each family;
+Snapdragon portability includes correct rejection of unavailable capabilities.
+Do not infer Snapdragon support from Spark execution or a shared architecture name.
+
+NEON and SVE variants cover distinct instruction behavior but may share execution
+hardware. Neither independent pipelines nor additive thermal/power demand may be
+assumed. Evidence must establish their incremental stress effectiveness before
+claiming a distinct sustained-stress benefit. Integrity acceptance can still be
+useful when that incremental benefit is absent or not yet established.
+
+**Scoped SVE2 integer design target (not implemented):** independently verified
+signed widening integer multiply-accumulate in normal non-streaming SVE2,
+using the `SMLALB` / `SMLALT` bottom/top pair, for example 16-bit inputs
+accumulating into 32-bit lanes. This is SVE2 instruction coverage, not SME coverage.
+These exercise widening integer arithmetic and alternating source-element
+mapping that SVE FP32/FMA does not cover; separate physical execution resources
+or improved fault coverage are hypotheses, not established facts. Require:
+
+- [ ] Isolated SVE2 compilation, actual SVE2-only opcode emission/execution and
+  SVE2 runtime eligibility, not merely an SVE-capable binary or FP32 FMA run.
+- [ ] Independent wide-integer reference results, signed extrema, exact defined
+  accumulator wraparound, both bottom/top source mappings and deterministic
+  corruption detection across all active vector lanes.
+- [ ] Validated inherited per-thread VL and affinity, bounded work/progress and
+  guarded memory/tail handling; do not assume the arithmetic instructions
+  themselves supply predication or memory safety.
+- [ ] Gate A physical arithmetic/integrity confirmation on suitable hardware;
+  evaluate sustained usefulness separately through gate B before adopting a
+  standalone sustained mode.
+
+The design target follows Arm's [SVE2 widening multiply-add example](https://documentation-service.arm.com/static/6659c722876c8d213b7870d3)
+and [ACLE instruction mappings](https://arm-software.github.io/acle/main/acle.html).
+It is one bounded stability-validation kernel, not a commitment to cover every
+SVE2 instruction or to generalize current Spark SVE acceptance.
+
+### Exclusions and hardware-gated evaluation candidates
+
+The following remain **outside mandatory standalone ISA stress scope**:
+
+- **x86-64:** SSE3/SSSE3/SSE4.x; AES/SHA/GFNI and related crypto operations;
+  BMI/ADX; AVX-512 IFMA; VBMI and miscellaneous permutation extensions.
+- **ARM64:** AES/SHA/SM3/SM4/CRC and SVE crypto; SVE bit permutation; FCMA/RDM
+  and miscellaneous DSP extensions.
+
+In particular, AVX-512 IFMA is not promoted merely because its arithmetic differs
+from VNNI. Different semantics alone do not prove worthwhile incremental stability
+coverage. These exclusions concern standalone mandatory workloads, not incidental
+supporting instructions within otherwise justified implementations.
+
+**Noncommitted, low-priority evaluation only:** consider whether compact,
+independently verified cryptographic instruction integrity diagnostics across
+x86-64 and ARM64 would add useful fault-detection coverage. There is no adopted
+crypto implementation milestone, no mandatory individual crypto family, no
+sustained crypto stress campaign and no dependency on this evaluation for the
+current priority queue. Scope, value, safety and acceptance require a future decision.
+
+**Hardware-gated deferrals:** AVX10 and SME/SME2 remain deferred evaluation
+candidates, not immediate development requirements. Suitable physical hardware,
+authoritative runtime capability evidence, compiler support and a specific
+stress/stability justification are required before adoption or implementation.
+Processor model names alone establish neither capability nor availability.
+Do not add further ISA families without such a justification.
 
 ### AArch64 evidence and portability boundary
 
@@ -373,6 +596,12 @@ belongs alongside each earlier workload, not only in milestone 5.
   progress through transitions. Calibrate maximum package power separately
   from lightly threaded high-boost/hotspot behavior; the highest-watt kernel
   need not cover the hottest-core condition or desktop-like boost behavior.
+  Preserve both CPU operating objectives defined above: evaluate lightweight
+  verified baselines and high-compute-demand modes across core-count, burst,
+  frequency and hotspot conditions. Measure achieved clocks and operating
+  regions rather than inferring them from ISA labels; retain integrity and
+  progress evidence through transitions. These dynamic trials complement,
+  rather than replace, sustained acceptance of each intended stress mode.
 - **3:** Share one phase timeline across verified workers for coincident ramps,
   offset/anti-phase swings and alternating bursts. Include separate combined
   sustained-power, abrupt-step and anti-phase modes. Calibrate achieved platform
@@ -427,9 +656,13 @@ Common gates for new stress milestones (all remain outstanding):
 Design decisions still open: empirical backend/candidate choice; calibration
 confidence and sensor-poor fallback; verification cost versus phase fidelity;
 safe defaults; interrupted-run verdict presentation; and the acceptance matrix.
-Agree which current ISA gates must close and explicitly approve any unavailable-
-hardware deferrals before starting 1A; do not let this proposal silently waive
-SVE wider-VL, specialized ISA or existing release-readiness obligations.
+Follow the Spark → Snapdragon → x86 priority order above. Agree which ISA gates
+must close and explicitly approve any justified deferrals before starting 1A;
+do not silently waive specialized ISA or wider-SVE evidence requirements. Wider
+VLs and other implementations remain physically unaccepted until suitable
+hardware is available; a recorded deferral is not acceptance. The published
+v0.5.3-alpha campaign stays closed, while future releases retain their own
+release-readiness obligations.
 Existing deferred Phase 3/4 output migration remains separately gated; early
 evidence groundwork does not authorize changing the legacy compatibility format.
 

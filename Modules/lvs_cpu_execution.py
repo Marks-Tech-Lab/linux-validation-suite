@@ -10,8 +10,10 @@ from .lvs_cpu_architecture import EXPERIMENTAL_CPU_KERNELS, X86_NATIVE_POWER_PRO
 from .lvs_worker_integrity import worker_verification_satisfied
 
 
-CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon", "sve")
+CPU_MODE_OPTIONS = ("scalar", "sse", "avx", "avx2", "avx512", "neon", "sve", "avx_vnni", "avx512_vnni")
 CPU_KERNEL_MODE_MAP = {
+    "avx_vnni": "avx_vnni",
+    "avx512_vnni": "avx512_vnni",
     "scalar": "scalar",
     "sse2": "sse",
     "sse2_int": "sse",
@@ -29,6 +31,8 @@ CPU_KERNEL_MODE_MAP = {
 # deliberate preference is the FMA flavor when every target CPU proves FMA,
 # followed by the non-FMA flavor. ``--kernel-flavor`` remains exact.
 CPU_KERNEL_FAMILY_CANDIDATES = {
+    "avx_vnni": ["avx_vnni"],
+    "avx512_vnni": ["avx512_vnni"],
     "scalar": ["scalar"],
     "sse": ["sse2", "sse2_int"],
     "avx": ["avx_fma", "avx"],
@@ -40,7 +44,7 @@ CPU_KERNEL_FAMILY_CANDIDATES = {
 CPU_NATIVE_POWER_PROBE_KERNEL_ORDER = list(X86_NATIVE_POWER_PROBE_KERNEL_ORDER)
 # Compatibility alias retained for existing callers and fixtures.
 CPU_KERNEL_MAX_POWER_ORDER = CPU_NATIVE_POWER_PROBE_KERNEL_ORDER
-CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon", "neon_fp32_fma", "sve_fp32_fma"]
+CPU_KERNEL_CAPABILITY_ORDER = [*CPU_NATIVE_POWER_PROBE_KERNEL_ORDER, "neon", "neon_fp32_fma", "sve_fp32_fma", "avx_vnni", "avx512_vnni"]
 
 
 def normalize_cpu_helper_mode(requested_mode: str) -> str:
@@ -458,7 +462,7 @@ def build_cpu_benchmark_result(
     error_count = int(result_payload.get("error_count") or 0) if result_payload else 0
     status = str(result_payload.get("status") or "").strip().lower()
     valid = bool(result_payload) and return_code in (0, None) and status != "error" and error_count == 0
-    if kernel_flavor in {"neon_fp32_fma", "sve_fp32_fma"}:
+    if kernel_flavor in {"neon_fp32_fma", "sve_fp32_fma", "avx_vnni", "avx512_vnni"}:
         valid = (valid and return_code == 0 and result_payload.get("kernel_flavor") == kernel_flavor
                  and worker_verification_satisfied(result_payload))
     return {

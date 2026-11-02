@@ -175,6 +175,8 @@ def select_common_kernel(
     common = {str(value) for value in common_flavors}
     requested = str(requested_mode or "auto").strip().lower() or "auto"
     family = {
+        "avx_vnni": ("avx_vnni",),
+        "avx512_vnni": ("avx512_vnni",),
         "scalar": ("scalar",),
         "sse": ("sse2", "sse2_int"),
         "avx": ("avx_fma", "avx"),
@@ -199,6 +201,8 @@ def select_common_kernel(
 
 def mode_for_common_kernel(flavor: str) -> str:
     value = str(flavor or "")
+    if value in {"avx_vnni", "avx512_vnni"}:
+        return value
     if value == "sve_fp32_fma":
         return "sve"
     if value.startswith("avx512"):

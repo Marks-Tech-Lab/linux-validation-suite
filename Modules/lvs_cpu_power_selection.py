@@ -135,6 +135,10 @@ def power_cpu_candidate_inventory(
     native_flavors = list(dict.fromkeys(str(value or "").strip().lower() for value in native_kernel_flavors if value))
     if availability.get("cpu_native_helper") and native_flavors:
         for flavor in native_flavors:
+            if flavor in {"avx_vnni", "avx512_vnni"}:
+                unavailable.append({"candidate_id": f"cpu_native_helper:{flavor}",
+                                    "reason": "specialized VNNI is explicit-only; generic SIMD and Power Auto eligibility are not established"})
+                continue
             if flavor in EXPERIMENTAL_CPU_KERNELS:
                 unavailable.append({"candidate_id": f"cpu_native_helper:{flavor}",
                                     "reason": "experimental kernel excluded from Power Auto; use explicit ISA selection or highest_verified_vector; selection does not establish physical acceptance"})

@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 
 _SUCCESS_STATUSES = {"ok", "pass", "passed", "success", "successful"}
 _NON_REQUIRED_VERIFICATION_MODES = {"", "none", "not_applicable", "telemetry_only"}
+from .lvs_cpu_architecture import VNNI_CPU_KERNELS
+
 VERIFIED_FP32_KERNELS = frozenset({"neon_fp32_fma", "sve_fp32_fma"})
 
 
@@ -17,8 +19,15 @@ def verified_fp32_worker(payload: Dict[str, Any]) -> bool:
             or requested == "sve_fp32_fma")
 
 
+def verified_vnni_worker(payload: Dict[str, Any]) -> bool:
+    return any(isinstance(payload.get(key), str) and payload[key] in VNNI_CPU_KERNELS
+               for key in ("kernel_flavor", "requested_kernel_flavor")) or (
+        isinstance(payload.get("verification_contract"), str)
+        and payload["verification_contract"] in {f"{k}_v1" for k in VNNI_CPU_KERNELS})
+
+
 def worker_verification_required(payload: Dict[str, Any]) -> bool:
-    if verified_fp32_worker(payload):
+    if verified_fp32_worker(payload) or verified_vnni_worker(payload):
         return True
     for key in ("verification_required", "VerificationRequired"):
         if key in payload:
@@ -44,6 +53,8 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
 
 
 def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
+    if verified_vnni_worker(payload) and not _verified_vnni_satisfied(payload):
+        return False
     if verified_fp32_worker(payload):
         if not _verified_fp32_fma_verification_satisfied(payload):
             return False
@@ -273,7 +284,7 @@ def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
                 value = int(payload.get(key) or 0)
                 # Invalid negative v1 counters cannot cancel the blocking
                 # verification failure (or another worker's real errors).
-                payload_error_count += max(0, value) if verified_fp32_worker(payload) else value
+                payload_error_count += max(0, value) if verified_fp32_worker(payload) or verified_vnni_worker(payload) else value
             except Exception:
                 continue
         status_failed = str(payload.get("status") or "").lower() in {"error", "failed", "fail"}
@@ -285,3 +296,74 @@ def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
         ):
             total += 1
     return total
+
+
+def _verified_vnni_satisfied(payload: Dict[str, Any]) -> bool:
+    """Exact v1 all-thread signed/unsigned dot-product contract; no FP32 claims."""
+    try:
+        kernel = payload["kernel_flavor"]
+        count, targets, rows = payload["requested_thread_count"], payload["target_cpu_ids"], payload["threads_detail"]
+        flags = ("initial_verification_completed", "periodic_verification_completed", "final_verification_completed")
+        if (kernel not in VNNI_CPU_KERNELS or payload.get("requested_kernel_flavor", kernel) != kernel
+                or payload.get("verification_contract") != f"{kernel}_v1"
+                or type(payload.get("verification_version")) is not int or payload["verification_version"] != 1
+                or payload.get("verification_required") is not True
+                or payload.get("verification_complete") is not True
+                or payload.get("verification_method") != "wide_integer_dot_reference_modulo_2_32"
+                or payload.get("operation_family") != "u8_s8_dot_product_accumulate"
+                or payload.get("accumulator_chains") != 8 or payload.get("dot_rounds_per_block") != 256
+                or payload.get("products_per_lane") != 4
+                or payload.get("active_int32_lanes") != (8 if kernel == "avx_vnni" else 16)
+                or type(count) is not int or count <= 0
+                or type(payload.get("actual_worker_count")) is not int or payload["actual_worker_count"] != count
+                or not isinstance(targets, list) or len(targets) != count
+                or any(type(cpu) is not int or cpu < 0 for cpu in targets) or len(set(targets)) != count
+                or not isinstance(rows, list) or len(rows) != count
+                or not _versioned_fp32_error_free(payload, kernel)
+                or any(payload.get(key) is not True for key in flags)
+                or any(payload.get(key) != count for key in ("affinity_attempted_count", "affinity_applied_count"))
+                or type(payload.get("affinity_failed_count")) is not int or payload["affinity_failed_count"] != 0
+                or any(type(payload.get(key)) is not int for key in ("affinity_attempted_count", "affinity_applied_count"))
+                or ("observed_exit_code" in payload and
+                    (type(payload["observed_exit_code"]) is not int or payload["observed_exit_code"] != 0))):
+            return False
+        emulated = payload.get("execution_implementation") == "test_integer_emulation"
+        if (payload.get("execution_implementation") != ("test_integer_emulation" if emulated else "x86_vnni_intrinsics")
+                or payload.get("actual_isa") != ("test_integer_emulation" if emulated else kernel)
+                or payload.get("isa_capability_source") != ("test_override" if emulated else "per_cpu_affinity_pinned_cpuid")):
+            return False
+        total = 0
+        for i, row in enumerate(rows):
+            blocks = row.get("arithmetic_verified_blocks")
+            if (type(row.get("thread_index")) is not int or row["thread_index"] != i
+                    or type(row.get("affinity_target_cpu")) is not int or row["affinity_target_cpu"] != targets[i]
+                    or type(row.get("observed_cpu")) is not int or row["observed_cpu"] != targets[i]
+                    or any(row.get(key) is not True for key in ("affinity_applied", "affinity_required", *flags))
+                    or type(blocks) is not int or not 3 <= blocks <= (1 << 64) - 1
+                    or type(row.get("verify_passes")) is not int or row["verify_passes"] != blocks
+                    or not _versioned_fp32_error_free(row, kernel)):
+                return False
+            evidence = row.get("vnni_capability")
+            if not isinstance(evidence, dict) or any(type(evidence.get(k)) is not int or evidence[k] < 0 for k in (
+                "xcr0", "cpuid_7_0_ebx", "cpuid_7_0_ecx", "cpuid_7_max_subleaf", "cpuid_7_1_eax")):
+                return False
+            if (evidence["xcr0"] > (1 << 64) - 1
+                    or any(v > (1 << 32) - 1 for k, v in evidence.items() if k != "xcr0")):
+                return False
+            if not emulated:
+                if evidence["xcr0"] & 6 != 6 or not evidence["cpuid_7_0_ebx"] & (1 << 5):
+                    return False
+                if kernel == "avx_vnni":
+                    if evidence["cpuid_7_max_subleaf"] < 1 or not evidence["cpuid_7_1_eax"] & (1 << 4):
+                        return False
+                elif (evidence["xcr0"] & 0xe6 != 0xe6 or not evidence["cpuid_7_0_ebx"] & (1 << 16)
+                      or not evidence["cpuid_7_0_ecx"] & (1 << 11)):
+                    return False
+            total += blocks
+        return (type(payload.get("arithmetic_verified_blocks")) is int
+                and payload["arithmetic_verified_blocks"] == total <= (1 << 64) - 1
+                and all(type(payload.get(k)) is int and payload[k] == total for k in ("verify_passes",))
+                and all(type(payload[k]) is int and payload[k] == total
+                        for k in ("verification_passes", "VerificationPasses") if k in payload))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False

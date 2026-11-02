@@ -906,3 +906,28 @@ final verification advance only after all partitions complete. GPU batch timing
 counts individual submissions; cycle latency covers the full cycle. Hash and
 stress-hash batching retain their existing policy. Missing terminal cleanup
 continues to mean unknown, not successful cleanup or proven physical leakage.
+
+## Explicit VNNI integer dot-product development contracts
+
+Native CPU kernels `avx_vnni` (256-bit VEX) and `avx512_vnni` (512-bit EVEX)
+add `avx_vnni_v1` / `avx512_vnni_v1` verification and corresponding
+`*_progress_v1` contracts. Their `operation_family` is
+`u8_s8_dot_product_accumulate`, never FP32 FMA. `verification_method` is
+`wide_integer_dot_reference_modulo_2_32`; `actual_isa`,
+`execution_implementation`, `isa_capability_source`, per-thread
+`vnni_capability` CPUID/XCR0 fields, `active_int32_lanes`, `products_per_lane`,
+`accumulator_chains`, `dot_rounds_per_block`, all-thread phases, error details
+and verified/interrupted counts establish the versioned evidence boundary.
+The existing progress time base, targeted CPU IDs and publication semantics
+are reused without changing either FP32 v1 contract. Derived byte products/s
+are arithmetic work counts, not measured instruction rate, performance targets
+or a saturation verdict. Emulation identifies `test_integer_emulation` and
+`test_override`; it cannot establish physical ISA acceptance.
+
+The legacy export preserves each recognized VNNI worker record intact, including
+failed records, and retains supplementary progress analysis. No historical
+records are synthesized or reclassified. Explicit VNNI stages do not become a
+new ordinary SIMD tier or an invented legacy AVX bucket. Reports keep selected
+kernel, actual kernel and successful versioned verification separate from prior
+physical acceptance. Missing, contradictory or incomplete verification blocks
+worker success. See [the implementation contract](docs/vnni_dot_product_contract.md).

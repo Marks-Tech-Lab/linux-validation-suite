@@ -84,6 +84,11 @@ from smoke_tests.gpu_inventory_identity_checks import run_gpu_inventory_identity
 from smoke_tests.source_provenance_checks import run_source_provenance_checks, run_source_provenance_artifact_checks
 from smoke_tests.source_review_checks import run_automatic_source_workflow_checks, run_source_git_correlation_checks
 from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
+from smoke_tests.vnni_dot_product_checks import (
+    run_vnni_reference_instruction_checks, run_vnni_native_lifecycle_checks,
+    run_vnni_integrity_reporting_checks, run_vnni_selection_configuration_checks,
+    run_vnni_sustained_progress_checks, run_vnni_frontend_parity_checks,
+)
 from smoke_tests.neon_fp32_fma_checks import run_neon_fp32_fma_checks, run_neon_fp32_fma_export_checks
 from smoke_tests.neon_fp32_progress_checks import run_neon_fp32_progress_checks
 from smoke_tests.sve_fp32_fma_checks import run_sve_fp32_fma_checks, run_sve_progress_export_checks, run_fp32_error_evidence_checks, run_sve_highest_intent_checks, run_software_verification_reporting_checks
@@ -29346,6 +29351,12 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_vnni_reference_instruction_checks,
+        run_vnni_native_lifecycle_checks,
+        run_vnni_integrity_reporting_checks,
+        run_vnni_selection_configuration_checks,
+        run_vnni_sustained_progress_checks,
+        run_vnni_frontend_parity_checks,
         run_captured_profile_checks,
         run_egl_vram_pattern_checks,
         run_gpu_vram_reporting_checks,

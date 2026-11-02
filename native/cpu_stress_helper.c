@@ -37,7 +37,9 @@ typedef enum {
     MODE_AVX2 = 4,
     MODE_AVX512 = 5,
     MODE_NEON = 6,
-    MODE_SVE = 7
+    MODE_SVE = 7,
+    MODE_AVX_VNNI = 8,
+    MODE_AVX512_VNNI = 9
 } stress_mode_t;
 
 typedef enum {
@@ -53,7 +55,9 @@ typedef enum {
     KERNEL_AVX512_INT = 9,
     KERNEL_NEON = 10,
     KERNEL_NEON_FP32_FMA = 11,
-    KERNEL_SVE_FP32_FMA = 12
+    KERNEL_SVE_FP32_FMA = 12,
+    KERNEL_AVX_VNNI = 13,
+    KERNEL_AVX512_VNNI = 14
 } kernel_flavor_t;
 
 typedef struct {
@@ -86,6 +90,8 @@ typedef struct {
     int sve_vl_flags;
     int sve_vl_errno;
     int sve_fp32_lanes;
+    uint64_t vnni_xcr0;
+    uint32_t vnni_leaf7_ebx, vnni_leaf7_ecx, vnni_leaf71_eax, vnni_max_subleaf;
 } worker_stats_t;
 
 typedef struct {
@@ -100,6 +106,9 @@ static volatile sig_atomic_t keep_running = 1;
 static volatile uint64_t vector_sink_u64 = 0;
 static const char *result_file_path = NULL;
 static int sve_progress;
+static kernel_flavor_t progress_kernel;
+static const char *kernel_flavor_name(kernel_flavor_t flavor);
+static int verified_arithmetic_kernel(kernel_flavor_t flavor);
 
 static int verified_fp32_kernel(kernel_flavor_t flavor) {
     return flavor == KERNEL_NEON_FP32_FMA || flavor == KERNEL_SVE_FP32_FMA;
@@ -163,11 +172,13 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
     uint64_t total = 0;
     fprintf(progress_file, "{\"contract\":\"%s_progress_v1\","
         "\"sequence\":%lu,\"pid\":%ld,\"kernel_flavor\":\"%s\","
-        "\"operation_family\":\"fp32_fused_multiply_add\",\"state\":\"%s\","
+        "\"operation_family\":\"%s\",\"state\":\"%s\","
         "\"monotonic_seconds\":%.9f,\"realtime_seconds\":%.9f,"
         "\"clock_pair_uncertainty_seconds\":%.9f,\"snapshot_interval_seconds\":2.0,\"threads\":[",
-        sve_progress ? "sve_fp32_fma" : "neon_fp32_fma", progress_sequence++, (long)getpid(),
-        sve_progress ? "sve_fp32_fma" : "neon_fp32_fma", state, now, realtime, now - pair_before);
+        kernel_flavor_name(progress_kernel), progress_sequence++, (long)getpid(),
+        kernel_flavor_name(progress_kernel),
+        progress_kernel == KERNEL_AVX_VNNI || progress_kernel == KERNEL_AVX512_VNNI ? "u8_s8_dot_product_accumulate" : "fp32_fused_multiply_add",
+        state, now, realtime, now - pair_before);
     for (int i = 0; i < progress_threads; ++i) {
         const progress_slot_t *slot = &progress_snapshot[i];
         const worker_stats_t *s = &slot->stats;
@@ -325,6 +336,12 @@ static void record_worker_error(worker_stats_t *stats, const char *kind, uint64_
     publish_verified_progress(stats, 1);
 }
 
+#include "cpu_vnni_kernel.h"
+
+static int verified_arithmetic_kernel(kernel_flavor_t flavor) {
+    return verified_fp32_kernel(flavor) || vnni_kernel(flavor);
+}
+
 static uint64_t mul_add_mod_u64(uint64_t a, uint64_t b, uint64_t c) {
     __uint128_t wide = (__uint128_t)a * (__uint128_t)b;
     wide += (__uint128_t)c;
@@ -464,6 +481,8 @@ static void run_scalar_loop(uint64_t seed, worker_stats_t *stats) {
 
 static const char *mode_name(stress_mode_t mode) {
     switch (mode) {
+        case MODE_AVX_VNNI: return "avx_vnni";
+        case MODE_AVX512_VNNI: return "avx512_vnni";
         case MODE_SSE:
             return "sse";
         case MODE_AVX:
@@ -486,6 +505,8 @@ static const char *mode_name(stress_mode_t mode) {
 
 static const char *kernel_flavor_name(kernel_flavor_t flavor) {
     switch (flavor) {
+        case KERNEL_AVX_VNNI: return "avx_vnni";
+        case KERNEL_AVX512_VNNI: return "avx512_vnni";
         case KERNEL_SSE2:
             return "sse2";
         case KERNEL_SSE2_INT:
@@ -1131,7 +1152,27 @@ static int cpu_supports_sve_fp32_fma(void) {
 #endif
 }
 
-static void print_isa_capabilities(void) {
+static void observe_vnni_capability(worker_stats_t *stats);
+static int cpu_supports_vnni(int wide);
+
+static void print_isa_capabilities(int pinned) {
+    (void)pinned;
+#if defined(__x86_64__) || defined(__i386__)
+    worker_stats_t evidence={0};
+    observe_vnni_capability(&evidence);
+    printf("{\"source\":\"%s\",\"hwcap\":null,\"hwcap2\":null,"
+           "\"current_vector_length_bytes\":null,\"sve_compiled\":false,\"observed_cpu\":%d,"
+           "\"avx_vnni_compiled\":%s,\"avx512_vnni_compiled\":%s,"
+           "\"avx_vnni_available\":%s,\"avx512_vnni_available\":%s,"
+           "\"xcr0\":%" PRIu64 ",\"cpuid_7_0_ebx\":%u,\"cpuid_7_0_ecx\":%u,"
+           "\"cpuid_7_max_subleaf\":%u,\"cpuid_7_1_eax\":%u}\n",
+           pinned ? "per_cpu_affinity_pinned_cpuid" : "current_cpu_cpuid_not_pinned",
+           sched_getcpu(), LVS_COMPILED_AVX_VNNI ? "true":"false",LVS_COMPILED_AVX512_VNNI ? "true":"false",
+           cpu_supports_vnni(0) ? "true":"false",cpu_supports_vnni(1) ? "true":"false",
+           evidence.vnni_xcr0,evidence.vnni_leaf7_ebx,evidence.vnni_leaf7_ecx,evidence.vnni_max_subleaf,evidence.vnni_leaf71_eax);
+    return;
+#endif
+
     printf("{\"source\":\"%s\",\"sve_compiled\":%s,",
 #if defined(__aarch64__) && defined(__linux__)
            "linux_getauxval_common_set",
@@ -1360,6 +1401,35 @@ static int current_cpu_supports_avx512f(void) {
 }
 #endif
 
+static void observe_vnni_capability(worker_stats_t *stats) {
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(LVS_CPU_HELPER_TEST_VNNI)
+    unsigned int eax=0, ebx=0, ecx=0, edx=0;
+    if (current_cpu_supports_avx()) stats->vnni_xcr0=read_xcr0();
+    if (__get_cpuid_max(0,NULL) >= 7U) {
+        __cpuid_count(7,0,eax,ebx,ecx,edx);
+        stats->vnni_max_subleaf=eax; stats->vnni_leaf7_ebx=ebx; stats->vnni_leaf7_ecx=ecx;
+        if (eax >= 1U) { __cpuid_count(7,1,eax,ebx,ecx,edx); stats->vnni_leaf71_eax=eax; }
+    }
+#else
+    (void)stats;
+#endif
+}
+
+static int cpu_supports_vnni(int wide) {
+#if defined(LVS_CPU_HELPER_TEST_VNNI)
+    (void)wide; return 1;
+#elif defined(__x86_64__) || defined(__i386__)
+    worker_stats_t evidence = {0};
+    observe_vnni_capability(&evidence);
+    return (wide ? LVS_COMPILED_AVX512_VNNI : LVS_COMPILED_AVX_VNNI) &&
+        vnni_capability(wide,current_cpu_supports_avx(),evidence.vnni_xcr0,
+            evidence.vnni_leaf7_ebx,evidence.vnni_leaf7_ecx,
+            evidence.vnni_max_subleaf,evidence.vnni_leaf71_eax);
+#else
+    (void)wide; return 0;
+#endif
+}
+
 static int cpu_supports_fma(void) {
 #if defined(__x86_64__) || defined(__i386__)
     return current_cpu_supports_fma();
@@ -1369,6 +1439,7 @@ static int cpu_supports_fma(void) {
 }
 
 static stress_mode_t resolve_mode(stress_mode_t requested) {
+    if (requested == MODE_AVX_VNNI || requested == MODE_AVX512_VNNI) return requested;
 #if defined(__x86_64__) || defined(__i386__)
     if (requested == MODE_AUTO) {
         if (current_cpu_supports_avx512f()) {
@@ -1413,6 +1484,7 @@ static stress_mode_t resolve_mode(stress_mode_t requested) {
 }
 
 static int requested_mode_supported(stress_mode_t requested) {
+    if (requested == MODE_AVX_VNNI || requested == MODE_AVX512_VNNI) return cpu_supports_vnni(requested == MODE_AVX512_VNNI);
 #if defined(__x86_64__) || defined(__i386__)
     return requested != MODE_NEON && requested != MODE_SVE;
 #elif defined(__aarch64__) && defined(__linux__)
@@ -1425,6 +1497,8 @@ static int requested_mode_supported(stress_mode_t requested) {
 }
 
 static kernel_flavor_t parse_kernel_flavor(const char *raw) {
+    if (strcmp(raw,"avx_vnni")==0) return KERNEL_AVX_VNNI;
+    if (strcmp(raw,"avx512_vnni")==0) return KERNEL_AVX512_VNNI;
     if (strcmp(raw, "scalar") == 0) {
         return KERNEL_SCALAR;
     }
@@ -1463,6 +1537,7 @@ static kernel_flavor_t parse_kernel_flavor(const char *raw) {
 }
 
 static int kernel_flavor_supported(kernel_flavor_t flavor) {
+    if (vnni_kernel(flavor)) return cpu_supports_vnni(flavor == KERNEL_AVX512_VNNI);
     switch (flavor) {
         case KERNEL_SVE_FP32_FMA:
             return cpu_supports_sve_fp32_fma();
@@ -1527,6 +1602,7 @@ static void report_unsupported_kernel(kernel_flavor_t flavor) {
 }
 
 static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
+    if (vnni_kernel(flavor)) return flavor == KERNEL_AVX_VNNI ? MODE_AVX_VNNI : MODE_AVX512_VNNI;
     switch (flavor) {
         case KERNEL_SVE_FP32_FMA:
             return MODE_SVE;
@@ -1553,6 +1629,8 @@ static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
 }
 
 static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
+    if (requested == MODE_AVX_VNNI) return KERNEL_AVX_VNNI;
+    if (requested == MODE_AVX512_VNNI) return KERNEL_AVX512_VNNI;
     stress_mode_t resolved = resolve_mode(requested);
     switch (resolved) {
         case MODE_SSE:
@@ -1587,7 +1665,7 @@ static void *worker_main(void *opaque) {
     if (flavor == KERNEL_UNSPECIFIED) {
         flavor = default_kernel_flavor(args->mode);
     }
-    if (verified_fp32_kernel(flavor)) {
+    if (verified_arithmetic_kernel(flavor)) {
         args->stats->affinity_required = 1;
         if (affinity_result != 0) {
             record_worker_error(args->stats, "affinity_required", 0, 0, (uint64_t)affinity_result);
@@ -1608,12 +1686,16 @@ static void *worker_main(void *opaque) {
         args->stats->error_count += 1ULL;
         args->stats->first_error_recorded = 1;
         snprintf(args->stats->first_error_kind, sizeof(args->stats->first_error_kind), "%s", "isa_not_supported");
-        if (verified_fp32_kernel(flavor)) keep_running = 0;
+        if (verified_arithmetic_kernel(flavor)) keep_running = 0;
         return NULL;
     }
     uint32_t seed = (uint32_t)(args->worker_index + 1);
+    if (vnni_kernel(flavor)) observe_vnni_capability(args->stats);
 
     switch (flavor) {
+        case KERNEL_AVX_VNNI:
+        case KERNEL_AVX512_VNNI:
+            run_vnni_loop(flavor,seed,args->stats); break;
         case KERNEL_SVE_FP32_FMA:
 #if defined(LVS_CPU_HELPER_ENABLE_SVE) || defined(LVS_CPU_HELPER_TEST_SVE)
             run_sve_fp32_fma_loop(seed, args->stats);
@@ -1685,6 +1767,8 @@ static void *worker_main(void *opaque) {
 }
 
 static stress_mode_t parse_mode(const char *raw) {
+    if (strcmp(raw,"avx_vnni")==0) return MODE_AVX_VNNI;
+    if (strcmp(raw,"avx512_vnni")==0) return MODE_AVX512_VNNI;
     if (strcmp(raw, "auto") == 0) {
         return MODE_AUTO;
     }
@@ -1715,7 +1799,7 @@ static stress_mode_t parse_mode(const char *raw) {
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|neon|sve] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma|sve_fp32_fma] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--print-isa-capabilities] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|avx_vnni|avx512_vnni|neon|sve] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma|sve_fp32_fma|avx_vnni|avx512_vnni] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--print-isa-capabilities] [--result-file <path>]\n",
         argv0
     );
 }
@@ -1840,6 +1924,41 @@ static void write_result_file(
         fprintf(handle, "%s%d", index == 0 ? "" : ", ", target_cpu_ids[index]);
     }
     fprintf(handle, "],\n");
+    if (vnni_kernel(kernel_flavor)) {
+        uint64_t blocks=0;
+        int initial=threads==requested_threads && threads>0, periodic=initial, final=initial;
+        for (int i=0;i<threads;++i) {
+            blocks+=worker_stats[i].arithmetic_verified_blocks;
+            initial &= worker_stats[i].initial_verification_completed;
+            periodic &= worker_stats[i].periodic_verification_completed;
+            final &= worker_stats[i].final_verification_completed;
+        }
+        fprintf(handle,"  \"operation_family\":\"u8_s8_dot_product_accumulate\",\n"
+            "  \"verification_required\":true,\n  \"verification_version\":1,\n"
+            "  \"verification_contract\":\"%s_v1\",\n"
+            "  \"verification_method\":\"wide_integer_dot_reference_modulo_2_32\",\n"
+            "  \"execution_implementation\":\"%s\",\n"
+            "  \"actual_isa\":\"%s\",\n"
+            "  \"isa_capability_source\":\"%s\",\n"
+            "  \"arithmetic_verified_blocks\":%" PRIu64 ",\n"
+            "  \"accumulator_chains\":8,\n  \"dot_rounds_per_block\":256,\n"
+            "  \"active_int32_lanes\":%d,\n  \"products_per_lane\":4,\n"
+            "  \"initial_verification_completed\":%s,\n  \"periodic_verification_completed\":%s,\n"
+            "  \"final_verification_completed\":%s,\n  \"verification_complete\":%s,\n"
+            "  \"verified_progress\":{\"contract\":\"%s_progress_v1\","
+            "\"sidecar_suffix\":\".progress.jsonl\",\"snapshot_interval_seconds\":2.0,"
+            "\"persistence_error\":%s,\"snapshot_count\":%lu,\"snapshot_write_seconds\":%.9f},\n",
+            kernel_flavor_name(kernel_flavor),
+#if defined(LVS_CPU_HELPER_TEST_VNNI)
+            "test_integer_emulation","test_integer_emulation","test_override",
+#else
+            "x86_vnni_intrinsics",kernel_flavor_name(kernel_flavor),"per_cpu_affinity_pinned_cpuid",
+#endif
+            blocks,kernel_flavor==KERNEL_AVX_VNNI ? 8:16,
+            initial ? "true":"false",periodic ? "true":"false",final ? "true":"false",
+            initial && periodic && final && !error_count ? "true":"false",
+            kernel_flavor_name(kernel_flavor),progress_io_error ? "true":"false",progress_sequence,progress_write_seconds);
+    }
     if (verified_fp32_kernel(kernel_flavor)) {
         const char *contract_kernel = kernel_flavor_name(kernel_flavor);
         fprintf(handle, "  \"verified_progress\": {\"contract\":\"%s_progress_v1\","
@@ -1937,7 +2056,7 @@ static void write_result_file(
             worker_stats[index].canary_passes,
             worker_stats[index].error_count
         );
-        if (verified_fp32_kernel(kernel_flavor)) {
+        if (verified_arithmetic_kernel(kernel_flavor)) {
             fprintf(handle,
                 ",\n      \"arithmetic_verified_blocks\": %" PRIu64 ",\n"
                 "      \"interrupted_arithmetic_blocks\": %" PRIu64 ",\n"
@@ -1952,7 +2071,8 @@ static void write_result_file(
                 worker_stats[index].periodic_verification_completed ? "true" : "false",
                 worker_stats[index].final_verification_completed ? "true" : "false",
                 (strcmp(worker_stats[index].first_error_kind, "fp32_fma_mismatch") == 0 ||
-                 strcmp(worker_stats[index].first_error_kind, "sve_masked_store") == 0)
+                 strcmp(worker_stats[index].first_error_kind, "sve_masked_store") == 0 ||
+                 strcmp(worker_stats[index].first_error_kind, "vnni_mismatch") == 0)
                     ? worker_stats[index].first_error_lane : -1);
             if (kernel_flavor == KERNEL_SVE_FP32_FMA) {
                 const worker_stats_t *s = &worker_stats[index];
@@ -1963,6 +2083,12 @@ static void write_result_file(
                     s->sve_vl_bytes, s->sve_vl_flags, s->sve_vl_errno, s->sve_fp32_lanes,
                     s->sve_fp32_lanes * 8, s->sve_fp32_lanes * 8 * FP32_FMA_ROUNDS);
             }
+        }
+        if (vnni_kernel(kernel_flavor)) {
+            const worker_stats_t *v=&worker_stats[index];
+            fprintf(handle,",\n      \"vnni_capability\":{\"xcr0\":%" PRIu64 ","
+                "\"cpuid_7_0_ebx\":%u,\"cpuid_7_0_ecx\":%u,\"cpuid_7_max_subleaf\":%u,\"cpuid_7_1_eax\":%u}",
+                v->vnni_xcr0,v->vnni_leaf7_ebx,v->vnni_leaf7_ecx,v->vnni_max_subleaf,v->vnni_leaf71_eax);
         }
         if (worker_stats[index].first_error_recorded) {
             fprintf(
@@ -2068,7 +2194,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (print_isa) { print_isa_capabilities(); return 0; }
+    if (print_isa) { print_isa_capabilities(probe_cpu >= 0); return 0; }
     if (print_core_type) {
 #if defined(__x86_64__) || defined(__i386__)
         unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
@@ -2133,8 +2259,10 @@ int main(int argc, char **argv) {
 #endif
     }
 
-    if (!requested_mode_supported(mode)) {
-        if (mode == MODE_NEON) {
+    if (!(cpu_ids_raw && (mode == MODE_AVX_VNNI || mode == MODE_AVX512_VNNI)) && !requested_mode_supported(mode)) {
+        if (mode == MODE_AVX_VNNI || mode == MODE_AVX512_VNNI) {
+            fprintf(stderr, "requested specialized CPU mode '%s' requires optional compiled support, pinned CPUID VNNI/AVX2 features and enabled OS vector state; no fallback; inspect --print-isa-capabilities\n", mode_name(mode));
+        } else if (mode == MODE_NEON) {
             fprintf(stderr, "requested CPU mode 'neon' requires Linux AArch64 ASIMD/NEON capability\n");
         } else if (mode == MODE_SVE) {
             fprintf(stderr, "requested CPU mode 'sve' requires Linux AArch64 FP/SVE and optional SVE compiler support\n");
@@ -2167,7 +2295,7 @@ int main(int argc, char **argv) {
             KERNEL_AVX2_FMA, KERNEL_AVX2,
             KERNEL_AVX_FMA, KERNEL_AVX,
             KERNEL_SSE2, KERNEL_SSE2_INT,
-            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SVE_FP32_FMA, KERNEL_SCALAR
+            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SVE_FP32_FMA, KERNEL_AVX_VNNI, KERNEL_AVX512_VNNI, KERNEL_SCALAR
         };
         int printed = 0;
         size_t flavor_count = sizeof(flavors) / sizeof(flavors[0]);
@@ -2232,8 +2360,11 @@ int main(int argc, char **argv) {
     }
 
     const int requested_threads = threads;
+    if (kernel_flavor == KERNEL_UNSPECIFIED && (mode == MODE_AVX_VNNI || mode == MODE_AVX512_VNNI))
+        kernel_flavor=default_kernel_flavor(mode);
+    progress_kernel=kernel_flavor;
     sve_progress = kernel_flavor == KERNEL_SVE_FP32_FMA;
-    if (verified_fp32_kernel(kernel_flavor) && result_file_path) {
+    if (verified_arithmetic_kernel(kernel_flavor) && result_file_path) {
         progress_threads = threads;
         progress_slots = calloc((size_t)threads, sizeof(*progress_slots));
         progress_snapshot = calloc((size_t)threads, sizeof(*progress_snapshot));
@@ -2312,13 +2443,13 @@ int main(int argc, char **argv) {
         resolved_flavor = default_kernel_flavor(mode);
     }
     for (int i = 0; i < threads; ++i) {
-        if (verified_fp32_kernel(resolved_flavor) && worker_stats[i].error_count == 0 &&
+        if (verified_arithmetic_kernel(resolved_flavor) && worker_stats[i].error_count == 0 &&
             (!worker_stats[i].initial_verification_completed ||
              !worker_stats[i].periodic_verification_completed ||
              !worker_stats[i].final_verification_completed ||
              worker_stats[i].arithmetic_verified_blocks < 3 ||
              !worker_stats[i].affinity_applied)) {
-            record_worker_error(&worker_stats[i], "fp32_verification_incomplete", 0, 3,
+            record_worker_error(&worker_stats[i], vnni_kernel(resolved_flavor) ? "vnni_verification_incomplete" : "fp32_verification_incomplete", 0, 3,
                                 worker_stats[i].arithmetic_verified_blocks);
         }
         total_verify_passes += worker_stats[i].verify_passes;

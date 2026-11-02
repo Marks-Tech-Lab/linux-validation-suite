@@ -464,7 +464,7 @@ class WorkloadCpuMemoryMixin:
 
     def _cpu_candidate_kernel_flavors(self, cpu: Any) -> List[str]:
         capability = self._cpu_capability_plan(cpu)
-        if self._cpu_instruction_intent(cpu) or cpu.instruction_set in {"neon_fp32_fma", "sve_fp32_fma", "sve"}:
+        if self._cpu_instruction_intent(cpu) or cpu.instruction_set in {"neon_fp32_fma", "sve_fp32_fma", "sve", "avx_vnni", "avx512_vnni"}:
             selected = str(capability.get("selected_kernel_flavor") or "")
             return [selected] if selected else []
         common = set(capability.get("common_kernel_flavors") or [])
@@ -522,6 +522,16 @@ class WorkloadCpuMemoryMixin:
                 "instruction_intent_evidence",
             )
         }
+        if cpu.instruction_set in {"avx_vnni", "avx512_vnni"}:
+            execution["selection_evidence"] = {
+                "selection_basis": "explicit_specialized_isa_common_pinned_cpuid_and_compiled_support",
+                "selection_reason": f"Explicit {cpu.instruction_set}: requires all-target native capability and independent dot-product verification; physical acceptance is separate",
+                "requested_instruction_set": cpu.instruction_set,
+                "selected_kernel_flavor": kernel_flavor,
+                "software_verification_status": "required_at_execution",
+                "physical_acceptance_status": "not_inferred_from_selection",
+                "experimental_kernel_selected": True,
+            }
         if self._cpu_instruction_intent(cpu):
             execution["selection_evidence"] = dict(capability.get("instruction_intent_evidence") or {})
         return execution

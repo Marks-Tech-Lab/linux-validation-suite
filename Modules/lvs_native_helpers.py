@@ -47,8 +47,9 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
-    if source.name == "cpu_stress_helper.c" and source.with_name("cpu_sve_kernel.h").exists():
-        dependencies.append(source.with_name("cpu_sve_kernel.h"))
+    if source.name == "cpu_stress_helper.c":
+        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h")
+                            if source.with_name(name).exists())
     return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
 

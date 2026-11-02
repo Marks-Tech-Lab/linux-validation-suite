@@ -59,6 +59,8 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
             "avx": "AVX",
             "avx2": "AVX2",
             "avx512": "AVX-512",
+            "avx_vnni": "AVX-VNNI 256-bit (experimental, explicit-only)",
+            "avx512_vnni": "AVX-512 VNNI (experimental, explicit-only)",
             "neon": "NEON",
         }
         instruction = intent_names.get(

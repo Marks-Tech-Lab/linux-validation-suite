@@ -7,7 +7,8 @@ import platform
 from typing import Any, Dict
 
 
-X86_CPU_INSTRUCTION_SETS = frozenset({"sse", "avx", "avx2", "avx512"})
+VNNI_CPU_KERNELS = frozenset({"avx_vnni", "avx512_vnni"})
+X86_CPU_INSTRUCTION_SETS = frozenset({"sse", "avx", "avx2", "avx512"}) | VNNI_CPU_KERNELS
 ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon", "neon_fp32_fma", "sve", "sve_fp32_fma"})
 CPU_INSTRUCTION_INTENTS = frozenset({
     "baseline_vector",
@@ -27,7 +28,7 @@ X86_NATIVE_POWER_PROBE_KERNEL_ORDER = (
 )
 # Candidate discovery is not a hottest-workload claim. Keep existing unmeasured
 # fallback precedence; FP32/FMA may win only through a valid measured probe.
-EXPERIMENTAL_CPU_KERNELS = frozenset({"sve_fp32_fma"})
+EXPERIMENTAL_CPU_KERNELS = frozenset({"sve_fp32_fma"}) | VNNI_CPU_KERNELS
 ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma")
 # Compatibility aliases retained for existing callers and fixtures.
 X86_MAX_POWER_KERNEL_ORDER = X86_NATIVE_POWER_PROBE_KERNEL_ORDER
@@ -62,7 +63,12 @@ def cpu_native_power_probe_kernel_order(machine: str) -> tuple[str, ...]:
 def cpu_native_capability_kernel_order(machine: str) -> tuple[str, ...]:
     """Discovery includes explicit experimental kernels, not Auto approval."""
     accepted = cpu_native_power_probe_kernel_order(machine)
-    return (*accepted, "sve_fp32_fma") if normalize_cpu_architecture(machine) == "arm64" else accepted
+    architecture = normalize_cpu_architecture(machine)
+    if architecture == "arm64":
+        return (*accepted, "sve_fp32_fma")
+    if architecture == "x86_64":
+        return (*accepted, *sorted(VNNI_CPU_KERNELS))
+    return accepted
 
 
 def normalize_cpu_instruction_intent(value: str) -> str:
@@ -169,6 +175,9 @@ def cpu_instruction_set_policy(machine: str, instruction_set: str) -> Dict[str, 
     """Reject architecture-incompatible explicit CPU ISA requests before backend selection."""
     architecture = normalize_cpu_architecture(machine)
     requested = str(instruction_set or "auto").strip().lower() or "auto"
+    if requested in VNNI_CPU_KERNELS and architecture != "x86_64":
+        return {"allowed": False, "architecture": architecture, "requested_mode": requested,
+                "reason": f"CPU instruction set '{requested}' requires the x86_64 native helper"}
     if architecture == "arm64" and requested in X86_CPU_INSTRUCTION_SETS:
         return {
             "allowed": False,
