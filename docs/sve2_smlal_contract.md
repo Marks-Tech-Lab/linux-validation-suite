@@ -1,6 +1,7 @@
 # Explicit SVE2 signed widening integer multiply-accumulate
 
-The uncommitted post-VNNI development token is **`sve2_smlal`**, available through
+The post-VNNI workload token is **`sve2_smlal`**, committed in
+`9edd4e786b7277523fcc3b18ad67c7f95c2a7750` and available through
 normal CLI/TUI CPU Instruction Set selection and run-local Stage Overrides.
 It is experimental and explicit-only. Ordinary Auto, baseline_vector,
 high_throughput_vector, highest_verified_vector and Power Auto do not select it.
@@ -8,7 +9,8 @@ Runtime version and released tags/notes remain unchanged. Software validation
 and physical acceptance are separate. Both physical gates now PASS on NVIDIA
 GB10 Spark across 20/20 allowed CPUs at inherited 128-bit VL. Other SVE2
 implementations and wider VLs are not physically accepted by these results;
-Snapdragon compatibility confirmation remains a separate next validation step.
+Snapdragon X1 Plus baseline portability and unsupported-SVE2 rejection are now
+accepted as recorded below; this does not claim SVE2 execution on Snapdragon.
 
 ## Arithmetic and actual instructions
 
@@ -180,11 +182,77 @@ journal collection returned successfully but empty. This does not establish
 the absence of all kernel/hardware events.
 
 No further Spark repeat is required to close this campaign. The workload remains
-experimental and explicit-only. Wider VLs, other SVE2 hardware and Snapdragon
-baseline/non-SVE compatibility are separate boundaries. The next ARM64 validation
-step is Snapdragon X1 Plus native baseline operation and correct pre-execution
-rejection when current capability evidence lacks SVE2; Spark acceptance does
-not substitute for that portability evidence.
+experimental and explicit-only. Wider VLs and other SVE2 hardware remain separate
+acceptance boundaries. Snapdragon portability has separate evidence below;
+Spark execution alone does not establish non-SVE compatibility.
+
+## Completed Snapdragon X1 Plus portability acceptance
+
+**PASS:** target-local native compilation, scalar functional execution, NEON
+FP32/FMA functional execution, and explicit unsupported-SVE2 rejection. This
+closes portability acceptance for the committed SVE2 milestone. It does not
+accept any future specialized NEON workload or claim Snapdragon SVE2 execution.
+
+The target is the HP OmniBook X Laptop 14-fe1xxx with eight Qualcomm Oryon CPUs
+and Adreno X1-45, running Ubuntu 26.04.1 and kernel `7.0.0-38-generic`. All allowed
+CPUs 0–7 were targeted. Recorded HWCAP `0xffbfffff` and HWCAP2 `0x3b6181` expose
+FP/ASIMD but not SVE/SVE2. Optional SVE/SVE2 compiler support does not authorize
+execution on these CPUs.
+
+The November 2 evidence under local `results/` includes:
+
+| Requirement | Evidence | Outcome |
+|---|---|---|
+| Native compilation | Captures `2026-11-02_13-30-57_ARM64 SVE FP32 FMA Functional Confirmation_Diagnostics` and `2026-11-02_13-31-58_ARM64 SVE FP32 FMA Sustained Effectiveness_Diagnostics` (historical captures may reside in `results/Archived/`) | Target-local GCC build succeeded, including optional SVE/SVE2 compilation; baseline fallback was not needed. |
+| Scalar execution | `2026-11-02_13-38-19_ARM64 SVE FP32 FMA Functional Confirmation` | 121.278 seconds of native scalar execution across eight pinned CPUs; 152,096 verification/canary passes, zero errors, exit 0 and finalized PASS. |
+| NEON FP32/FMA execution | `2026-11-02_13-44-03_ARM64 SVE FP32 FMA Functional Confirmation` | 121.249 seconds across eight pinned CPUs; 1,527,028,320 independently verified blocks, initial/periodic/final verification, zero errors, exit 0 and finalized PASS. |
+| Explicit SVE2 rejection | Operator-confirmed final screenshot: effective `instruction_set=sve2_smlal`, unsupported across CPUs 0–7, preflight blocked, zero runnable stages and no runnable commands | Expected unsupported-capability rejection; no SVE2 worker or silent fallback. |
+
+The rejection row records the operator's supplied screenshot confirmation. No
+screenshot file was discoverable in the local project during this documentation
+update, so its pixels and file identity were not independently inspected. The
+available `2026-11-02_13-48-46_ARM64 SVE FP32 FMA Functional Confirmation_Diagnostics`
+capture records the original `sve_fp32_fma` template, not the effective SVE2
+request; it must not be substituted for the explicit-rejection evidence.
+Likewise the functional runs' matching diagnostics at `13-38-07` and `13-43-53`
+inspect the original template. Effective profiles, launch commands and worker
+records establish actual scalar and NEON execution.
+
+Both functional runs match the complete 365-file source fingerprint:
+
+```text
+2cee8d6061d334dedb180fc1ed4b984a54b9265f4846518ab4baa1684b53b9ca
+```
+
+Their prelaunch, running-process and post-execution executable identities agree:
+
+```text
+741cdad1a98efa457e959c73470459eaf3778bbb724d5481b1b658c2a4ad9ff2
+```
+
+The target-local helper is 74,384 bytes. Functional readiness reused that built
+helper; it did not rebuild it for each run. Captured Git metadata describes a
+modified predecessor checkout rather than an exact association with commit
+`9edd4e786b7277523fcc3b18ad67c7f95c2a7750`; the observed scoped source bytes
+nevertheless match the committed, Spark-accepted implementation.
+
+Scalar retains its established finite/checksum and independent integer-canary
+contract: it does not emit the FP32/FMA initial/periodic/final phase fields or a
+timestamped verified-block sidecar. Do not invent that evidence. NEON uses the
+independent `integer_binary32_fma_reference` contract and timestamped progress:
+approximately 12.597 million verified blocks/s with zero recorded stalls.
+Both runs completed all-thread affinity checks and normal native/parent
+lifecycles without shutdown timeouts or forced termination. Normal thread/process
+completion establishes their CPU lifecycle; Vulkan-style allocation cleanup
+fields are not applicable.
+
+CPU package power was unavailable. Kernel visibility remained limited by denied
+`dmesg` access and empty filtered journal captures; those captures do not prove
+absence of kernel events. These short functional runs establish compatibility,
+not new sustained-stress or maximum-power acceptance. No additional Snapdragon
+execution is required for this milestone. Next implementation priority is the
+unfinished specialized ARM64 work on Spark, followed by capability-appropriate
+Snapdragon validation of the resulting shared NEON implementations.
 
 ## Retained physical evaluation criteria and procedure
 

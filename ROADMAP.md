@@ -48,9 +48,11 @@ After stabilizing existing LVS functionality, follow this order:
 2. [ ] Physically validate shared, supported **NEON implementations on Snapdragon
    X1 Plus**. Preserve baseline/non-SVE operation and fail-closed rejection of
    absent SVE or specialized capabilities; Spark success does not substitute for
-   this portability evidence. For the current SVE2 milestone, the next ARM64
-   validation step is Snapdragon native baseline compatibility and correct
-   rejection of unsupported `sve2_smlal`, not an assumed SVE2 execution campaign.
+   this portability evidence. The current committed SVE2 milestone's Snapdragon
+   baseline compilation, scalar/NEON FP32/FMA execution and unsupported-SVE2
+   rejection are complete as recorded below. Future specialized NEON kernels
+   retain their own capability and acceptance gates; this priority is not yet
+   complete for those unimplemented workloads.
 3. [ ] Return to outstanding **x86-64 ISA work**: BF16/FP16 and separately gated
    AMX work. VNNI physical acceptance is now complete within the configurations
    below, and the milestone is committed in
@@ -425,7 +427,8 @@ Current ARM instruction intents resolve as follows:
   then integer NEON. Actual per-thread VL and software verification are
   established at execution; prior physical acceptance is separate evidence.
 - Explicit `neon`, `sve` and exact FP32/FMA requests retain their identities or
-  fail closed. Explicit `sve2_smlal` is implemented in uncommitted development;
+  fail closed. Explicit `sve2_smlal` is committed in
+  `9edd4e786b7277523fcc3b18ad67c7f95c2a7750`;
   it is excluded from every generic intent and physically accepted only within
   the Spark configuration recorded below.
 
@@ -444,7 +447,8 @@ The adopted ARM64 scope is deliberately finite:
 - [ ] NEON I8MM.
 - [ ] NEON BF16.
 - [x] Implement the distinct SVE2 signed widening integer workload below
-  (uncommitted `sve2_smlal`); both physical gates PASS on Spark at 128-bit VL.
+  (`sve2_smlal`, committed in `9edd4e786b7277523fcc3b18ad67c7f95c2a7750`);
+  both physical gates PASS on Spark at 128-bit VL.
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
 
@@ -462,7 +466,7 @@ assumed. Evidence must establish their incremental stress effectiveness before
 claiming a distinct sustained-stress benefit. Integrity acceptance can still be
 useful when that incremental benefit is absent or not yet established.
 
-**Implemented SVE2 integer workload (uncommitted, Spark physically accepted):**
+**Committed SVE2 integer workload (Spark physically accepted):**
 `sve2_smlal` performs independently verified signed widening integer
 multiply-accumulate in normal non-streaming SVE2, using real `SMLALB` / `SMLALT`
 even/odd halfword mappings, signed 16-bit inputs and 32-bit accumulators. This is SVE2 instruction coverage, not SME coverage.
@@ -518,10 +522,34 @@ record both completed physical gates, exact execution/diagnostic folders and
 scalability/portability boundaries. Original diagnostic captures inspect the SVE
 FP32/FMA templates; successful run-local SVE2 preflight and actual execution
 evidence are separate. Software lifecycle/scalable-VL emulation cannot accept
-other hardware or widths. No further Spark repeat is required. Next is
-Snapdragon native baseline compatibility and unsupported-SVE2 rejection;
-existing Auto, vector intents, measured Power Auto and accepted FP32/FMA/VNNI
-behavior are preserved.
+other hardware or widths. No further Spark repeat is required.
+
+- [x] Complete Snapdragon X1 Plus portability for the committed SVE2 milestone:
+  target-local compilation including optional SVE2 code, native scalar and NEON
+  FP32/FMA functional execution across all eight allowed CPUs, and expected
+  explicit `sve2_smlal` preflight rejection with no runnable commands.
+
+On November 2, the HP OmniBook X scalar run at `13-38-19` completed 121.278
+seconds with 152,096 verification/canary passes; the NEON FP32/FMA run at
+`13-44-03` completed 121.249 seconds with 1,527,028,320 independently verified
+blocks, all verification phases and zero recorded progress stalls. Both had zero
+errors, correct affinity, exit 0 and finalized PASS results. Their scoped source
+matches the Spark fingerprint above; prelaunch/process/post-execution helper
+SHA-256 is `741cdad1a98efa457e959c73470459eaf3778bbb724d5481b1b658c2a4ad9ff2`.
+Scalar retains its legacy canary/checksum contract, not the newer phase/progress
+contract. HWCAP/HWCAP2 show SVE/SVE2 unavailable. The operator confirms a final
+screenshot of the effective SVE2 request being rejected on CPUs 0–7 with zero
+runnable stages/commands. The screenshot itself was not discoverable locally at
+this update; this is operator-confirmed evidence, separate from the available
+original-template diagnostic JSON. The contract records this evidence distinction,
+exact folders, compilation evidence and limited kernel/power visibility.
+
+This closes current-helper Snapdragon portability, not future specialized NEON
+acceptance or SVE2 execution on Snapdragon. No additional physical repetition is
+required for this milestone. Next is unfinished specialized ARM64 development
+on Spark, then supported Snapdragon compatibility/acceptance. Existing Auto,
+vector intents, measured Power Auto and accepted FP32/FMA/VNNI behavior remain
+unchanged.
 
 The design target follows Arm's [SVE2 widening multiply-add example](https://documentation-service.arm.com/static/6659c722876c8d213b7870d3)
 and [ACLE instruction mappings](https://arm-software.github.io/acle/main/acle.html).
