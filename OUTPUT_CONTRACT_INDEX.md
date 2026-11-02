@@ -952,3 +952,20 @@ retain whole recognized records, including failed/incomplete evidence. Optional
 helper readiness additionally records `sve2_build_status` where collected.
 No historical result is synthesized or reclassified. See the
 [SVE2 implementation and acceptance contract](docs/sve2_smlal_contract.md).
+
+## Explicit NEON signed/unsigned byte dot products
+
+`neon_dotprod_v1` and `neon_dotprod_progress_v1` identify the explicit-only
+`neon_dotprod` native CPU workload. Operation family
+`s8_s8_and_u8_u8_dot_product_accumulate` uses the independent
+`wide_integer_dot_reference_modulo_2_32` method: eight chains (four signed and
+four unsigned), four int32 lanes, four byte products/lane and 256 rounds/block.
+Actual production execution is `aarch64_neon_dotprod_intrinsics` / `asimddp`, with
+per-thread Linux common HWCAP, affinity, phase and reconciled verified-block
+counts. Software fixtures remain explicitly labelled `test_integer_emulation`.
+Missing or conflicting evidence prevents success. Existing bounded timestamped
+progress reports derived byte products/s, not measured instructions, saturation
+or physical acceptance. Compatibility exports retain whole recognized records,
+including failures. Native readiness records `dotprod_build_status` where
+collected, separately from runtime availability and executable identity.
+See the [DotProd workload and acceptance contract](docs/neon_dotprod_contract.md).

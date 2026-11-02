@@ -443,7 +443,14 @@ inherited VL is software-validated, never thereby declared physically accepted.
 The adopted ARM64 scope is deliberately finite:
 
 - [ ] NEON FP16/FHM (`asimdhp` / `asimdfhm`), with each required subfeature gated.
-- [ ] NEON DotProd (`asimddp`).
+- [x] Implement explicit NEON DotProd (`asimddp`, token `neon_dotprod`) in
+  uncommitted post-SVE2 development: genuine signed `SDOT` and unsigned `UDOT`,
+  independent modulo-2^32 reference, per-thread affinity/capability and verified
+  progress. Software validation and physical acceptance remain separate.
+- [x] NEON DotProd Gate A physical arithmetic/integrity acceptance on Spark
+  (20 CPUs) and Snapdragon X1 Plus (8 CPUs), with current all-target eligibility.
+- [x] NEON DotProd Gate B sustained verified-stress evaluation on those targets;
+  do not assume greater power or stress effectiveness from the instruction family.
 - [ ] NEON I8MM.
 - [ ] NEON BF16.
 - [x] Implement the distinct SVE2 signed widening integer workload below
@@ -452,8 +459,9 @@ The adopted ARM64 scope is deliberately finite:
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
 
-Except for the implemented and Spark-accepted SVE2 kernel, these remain adopted
-future implementations without specialized ARM64 physical acceptance.
+Except for committed, Spark-accepted SVE2 and the uncommitted DotProd implementation,
+these remain adopted future implementations. Both DotProd physical gates PASS
+on Spark and Snapdragon; existing SVE2 and baseline acceptance remain unchanged.
 Prioritize on Spark by demonstrated capability and worthwhile
 arithmetic/execution differences, then confirm the shared supported NEON paths
 on Snapdragon X1 Plus. Require separate runtime eligibility for each family;
@@ -465,6 +473,52 @@ hardware. Neither independent pipelines nor additive thermal/power demand may be
 assumed. Evidence must establish their incremental stress effectiveness before
 claiming a distinct sustained-stress benefit. Integrity acceptance can still be
 useful when that incremental benefit is absent or not yet established.
+
+**NEON DotProd implementation (uncommitted, physically accepted):**
+The [DotProd contract](docs/neon_dotprod_contract.md) defines eight independent
+128-bit accumulator chains (four signed and four unsigned), 256 recurrence
+rounds, independent verification of all result lanes, isolated optional
+compilation, HWCAP `asimddp` gating, all-target affinity and versioned progress.
+Software validation passes **332/332 smoke tests**, all **81/81 profiles** with
+five unchanged advisories, compilation and integration imports. Both physical
+gates PASS independently on Spark and Snapdragon within the tested configurations.
+It remains experimental and explicit-only: no generic Auto/vector-intent or
+Power Auto promotion. Small fixed per-thread memory and bounded cancellation
+are independent of installed capacity and SVE VL.
+
+On November 2, Spark's 20-CPU functional execution completed 120.371 seconds and
+10,932,750,690 verified blocks; sustained execution completed 600.911 seconds and
+54,587,906,380 blocks. Snapdragon X1 Plus's eight-CPU functional execution completed
+121.276 seconds and 2,856,577,340 blocks; sustained execution completed 600.570
+seconds and 14,323,962,061 blocks. All-thread pinned eligibility, initial/periodic/
+final independent signed/unsigned verification, zero mismatches, successful
+worker exits and finalized parent PASS results establish integrity acceptance.
+Actual executed ELF helpers confirm four `SDOT` and four `UDOT` instructions each.
+
+The complete 366-file physical source fingerprint is
+`320977e5bf46a8e69a27da4874f98dc7a7fb450a28234aa2feb9a4b8377985ec`.
+Spark GCC 13.3.0 helper SHA-256 is
+`5c64b739603111995e481dc24533f86c826753a8d2378e9a8fc19b23ca8f3bf0`;
+Snapdragon GCC 15.2.0 helper SHA-256 is
+`2500602ff7d287cd07b5e3cefa1b7e01806d41199c656539f35567195054aab5`.
+Each matches its own prelaunch/process/post-execution observations. The contract
+records all four execution folders, matching original-template diagnostics and
+retained executable paths. Snapdragon evidence is independently inspected;
+the earlier missing-folder conclusion is superseded.
+
+Sustained verified throughput was approximately 90.843 million blocks/s on Spark
+and 23.856 million on Snapdragon, with zero recorded stalls and sufficient
+progress/telemetry coverage. This establishes sustained computational stress,
+not maximum power, superior effectiveness or universal hardware support. Spark
+CPU-specific temperature/power were unavailable; platform thermal zones peaked
+at 85.7/86.7 C in functional/sustained runs. Reported cpufreq values are not
+independently measured effective clocks. Snapdragon CPU-subsystem temperatures
+peaked at 84.4/89.9 C; clocks and package power were unavailable. Kernel visibility
+on both remains limited by denied `dmesg` and empty filtered journal captures.
+
+No further DotProd physical repetition is required. Next is unfinished adopted
+specialized ARM64 work on Spark, then supported Snapdragon compatibility and
+acceptance. SVE/SVE2, VNNI and generic selection behavior remain unchanged.
 
 **Committed SVE2 integer workload (Spark physically accepted):**
 `sve2_smlal` performs independently verified signed widening integer

@@ -84,6 +84,11 @@ from smoke_tests.gpu_inventory_identity_checks import run_gpu_inventory_identity
 from smoke_tests.source_provenance_checks import run_source_provenance_checks, run_source_provenance_artifact_checks
 from smoke_tests.source_review_checks import run_automatic_source_workflow_checks, run_source_git_correlation_checks
 from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
+from smoke_tests.neon_dotprod_checks import (
+    run_dotprod_reference_instruction_checks, run_dotprod_native_lifecycle_checks,
+    run_dotprod_integrity_reporting_checks, run_dotprod_selection_build_checks,
+    run_dotprod_progress_checks, run_dotprod_frontend_checks,
+)
 from smoke_tests.sve2_smlal_checks import (
     run_sve2_reference_instruction_checks, run_sve2_native_lifecycle_checks,
     run_sve2_integrity_reporting_checks, run_sve2_selection_build_checks,
@@ -29356,6 +29361,12 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_dotprod_reference_instruction_checks,
+        run_dotprod_native_lifecycle_checks,
+        run_dotprod_integrity_reporting_checks,
+        run_dotprod_selection_build_checks,
+        run_dotprod_progress_checks,
+        run_dotprod_frontend_checks,
         run_sve2_reference_instruction_checks,
         run_sve2_native_lifecycle_checks,
         run_sve2_integrity_reporting_checks,

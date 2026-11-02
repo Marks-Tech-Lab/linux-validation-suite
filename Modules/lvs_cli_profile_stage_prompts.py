@@ -11,7 +11,7 @@ class ProfileCliStagePromptMixin:
         print("CPU instruction set:")
         for idx, name in enumerate(options, start=1):
             label = "Auto" if name == "auto" else name.upper()
-            if name in {"sve_fp32_fma", "avx_vnni", "avx512_vnni", "sve2_smlal"}:
+            if name in {"sve_fp32_fma", "avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod"}:
                 label += " (experimental; runtime capability/verification checks required)"
             print(f"{idx}. {label}")
         raw = self._input(f"Choose CPU instruction set [{current}]: ").strip().lower()

@@ -61,6 +61,7 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
             "avx512": "AVX-512",
             "avx_vnni": "AVX-VNNI 256-bit (experimental, explicit-only)",
             "avx512_vnni": "AVX-512 VNNI (experimental, explicit-only)",
+            "neon_dotprod": "NEON signed/unsigned byte DotProd (experimental, explicit-only)",
             "sve2_smlal": "SVE2 signed widening integer MAC (experimental, explicit-only)",
             "neon": "NEON",
         }

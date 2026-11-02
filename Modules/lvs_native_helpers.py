@@ -48,7 +48,7 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
     if source.name == "cpu_stress_helper.c":
-        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h")
+        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h")
                             if source.with_name(name).exists())
     return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
@@ -99,6 +99,21 @@ def resolve_native_helper_status(
 
     binary.parent.mkdir(parents=True, exist_ok=True)
     cmd = native_helper_build_command(compiler, source, binary)
+    if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
+        original_builder = build_runner
+        def build_runner(command):
+            # DotProd is independent of SVE: retain whichever optional regions
+            # this compiler accepts, including DotProd on non-SVE systems.
+            try:
+                attempt = original_builder([command[0], "-DLVS_CPU_HELPER_ENABLE_DOTPROD", *command[1:]])
+                reason = str(attempt.stderr or "optional DotProd compilation failed")[-2000:]
+            except Exception as error:
+                attempt, reason = None, str(error)
+            status["dotprod_build"] = {
+                "status": "compiled" if attempt is not None and attempt.returncode == 0 else "unavailable",
+                "reason": "" if attempt is not None and attempt.returncode == 0 else reason,
+            }
+            return attempt if attempt is not None and attempt.returncode == 0 else original_builder(command)
     try:
         if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
             # SVE2 is independently optional. If it fails, retain the existing

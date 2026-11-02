@@ -185,10 +185,10 @@ def preserve_legacy_worker_evidence_contract(value: Any) -> Any:
         # inside records; legacy recursive field suppression must not erase them.
         return deepcopy(value)
     if (str(value.get("kind") or "").lower() == "cpu"
-            and (value.get("verification_contract") in ("neon_fp32_fma_v1", "sve_fp32_fma_v1", "avx_vnni_v1", "avx512_vnni_v1", "sve2_smlal_v1")
+            and (value.get("verification_contract") in ("neon_fp32_fma_v1", "sve_fp32_fma_v1", "avx_vnni_v1", "avx512_vnni_v1", "sve2_smlal_v1", "neon_dotprod_v1")
                  or value.get("kernel_flavor") == "sve_fp32_fma"
-                 or value.get("requested_kernel_flavor") in {"sve_fp32_fma", "avx_vnni", "avx512_vnni", "sve2_smlal"}
-                 or value.get("kernel_flavor") in {"avx_vnni", "avx512_vnni", "sve2_smlal"})):
+                 or value.get("requested_kernel_flavor") in {"sve_fp32_fma", "avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod"}
+                 or value.get("kernel_flavor") in {"avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod"})):
         # This versioned worker record is an indivisible evidence boundary.
         # Filtering its children loses the per-thread CPU/affinity association.
         # Preserve failed/incomplete records too; serialization must neither
