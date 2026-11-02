@@ -48,10 +48,13 @@ After stabilizing existing LVS functionality, follow this order:
 2. [ ] Physically validate shared, supported **NEON implementations on Snapdragon
    X1 Plus**. Preserve baseline/non-SVE operation and fail-closed rejection of
    absent SVE or specialized capabilities; Spark success does not substitute for
-   this portability evidence.
+   this portability evidence. For the current SVE2 milestone, the next ARM64
+   validation step is Snapdragon native baseline compatibility and correct
+   rejection of unsupported `sve2_smlal`, not an assumed SVE2 execution campaign.
 3. [ ] Return to outstanding **x86-64 ISA work**: BF16/FP16 and separately gated
    AMX work. VNNI physical acceptance is now complete within the configurations
-   below; preserve the current uncommitted VNNI milestone for commit review.
+   below, and the milestone is committed in
+   `8716340630a5e5df070957e13ddd3699cb7dda97`.
    Additional x86 development follows Spark/Snapdragon priorities.
 4. [ ] Proceed to the existing **dynamic GPU, CPU and platform stress sequence**
    after the applicable ISA prerequisites are completed or explicitly,
@@ -323,18 +326,18 @@ tile/matrix family. They are not new ordinary top-level SIMD tiers. Future
 Power Auto consideration is conditional on the separate policy and evidence
 review above, not an implemented or promised promotion.
 
-**Uncommitted post-release VNNI checkpoint:** both variants are implemented and
-software-validated in the current development tree, with **320/320 smoke tests
-passing**. They use genuine `VPDPBUSD`, independent integer verification and
-verified progress. They are not committed and are **not part of published
-v0.5.3-alpha**. Both physical acceptance decisions are complete within the
+**Committed post-release VNNI milestone:** both variants were implemented,
+software-validated (**320/320 smoke tests**) and physically accepted in commit
+`8716340630a5e5df070957e13ddd3699cb7dda97`. They use genuine `VPDPBUSD`,
+independent integer verification and verified progress. They are **not part of
+published v0.5.3-alpha**. Both physical acceptance decisions are complete within the
 tested configurations below. Ordinary Auto,
 generic vector intents and Power Auto continue to exclude these specialized modes.
 
 - [x] Implement AVX-VNNI / 256-bit VNNI with bounded independent verification
-  (uncommitted development).
+  (committed VNNI milestone).
 - [x] Implement AVX-512 VNNI with bounded independent verification
-  (uncommitted development).
+  (committed VNNI milestone).
 - [x] Software-validate VNNI arithmetic, instruction emission, selection and lifecycle.
 - [x] Physically accept AVX-VNNI / 256-bit VNNI arithmetic/integrity on Core Ultra
   9 285K (24 allowed CPUs) and Ryzen 9950X (32 allowed logical CPUs).
@@ -410,8 +413,9 @@ The adopted general SIMD work is:
   confirmation is separate from the earlier arithmetic campaigns.
 - [ ] Physically validate wider SVE vector lengths and other implementations;
   software scalable/mixed-VL fixtures do not close this gate.
-- [ ] Complete the distinct SVE2 integer workload defined below; existing SVE
-  FP32/FMA is not SVE2 coverage. Apply gates A/B separately.
+- [x] Physically accept and evaluate explicit SVE2 integer work on Spark:
+  gates A/B both PASS at inherited 128-bit VL across all 20 allowed CPUs.
+  This has separate evidence from existing SVE FP32/FMA acceptance.
 
 Current ARM instruction intents resolve as follows:
 
@@ -421,7 +425,9 @@ Current ARM instruction intents resolve as follows:
   then integer NEON. Actual per-thread VL and software verification are
   established at execution; prior physical acceptance is separate evidence.
 - Explicit `neon`, `sve` and exact FP32/FMA requests retain their identities or
-  fail closed. SVE2 remains future work, not a selectable implemented kernel.
+  fail closed. Explicit `sve2_smlal` is implemented in uncommitted development;
+  it is excluded from every generic intent and physically accepted only within
+  the Spark configuration recorded below.
 
 SVE and SVE2 must not be encoded as automatically hotter than scalar or NEON.
 The published v0.5.2-alpha policy excluded SVE from generic intents. This
@@ -437,12 +443,14 @@ The adopted ARM64 scope is deliberately finite:
 - [ ] NEON DotProd (`asimddp`).
 - [ ] NEON I8MM.
 - [ ] NEON BF16.
-- [ ] Distinct SVE2-specific integer workload, scoped below.
+- [x] Implement the distinct SVE2 signed widening integer workload below
+  (uncommitted `sve2_smlal`); both physical gates PASS on Spark at 128-bit VL.
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
 
-All remain adopted future implementations, not current specialized-kernel
-acceptance. Prioritize on Spark by demonstrated capability and worthwhile
+Except for the implemented and Spark-accepted SVE2 kernel, these remain adopted
+future implementations without specialized ARM64 physical acceptance.
+Prioritize on Spark by demonstrated capability and worthwhile
 arithmetic/execution differences, then confirm the shared supported NEON paths
 on Snapdragon X1 Plus. Require separate runtime eligibility for each family;
 Snapdragon portability includes correct rejection of unavailable capabilities.
@@ -454,25 +462,66 @@ assumed. Evidence must establish their incremental stress effectiveness before
 claiming a distinct sustained-stress benefit. Integrity acceptance can still be
 useful when that incremental benefit is absent or not yet established.
 
-**Scoped SVE2 integer design target (not implemented):** independently verified
-signed widening integer multiply-accumulate in normal non-streaming SVE2,
-using the `SMLALB` / `SMLALT` bottom/top pair, for example 16-bit inputs
-accumulating into 32-bit lanes. This is SVE2 instruction coverage, not SME coverage.
+**Implemented SVE2 integer workload (uncommitted, Spark physically accepted):**
+`sve2_smlal` performs independently verified signed widening integer
+multiply-accumulate in normal non-streaming SVE2, using real `SMLALB` / `SMLALT`
+even/odd halfword mappings, signed 16-bit inputs and 32-bit accumulators. This is SVE2 instruction coverage, not SME coverage.
 These exercise widening integer arithmetic and alternating source-element
 mapping that SVE FP32/FMA does not cover; separate physical execution resources
 or improved fault coverage are hypotheses, not established facts. Require:
 
-- [ ] Isolated SVE2 compilation, actual SVE2-only opcode emission/execution and
-  SVE2 runtime eligibility, not merely an SVE-capable binary or FP32 FMA run.
-- [ ] Independent wide-integer reference results, signed extrema, exact defined
+- [x] Isolated optional SVE2 compilation and genuine opcode emission checked
+  by cross-compiling the actual native worker; runtime HWCAP/HWCAP2 eligibility
+  and unsupported-request rejection are software-tested. This does not prove
+  target-side execution or physical acceptance.
+- [x] Independent wide-integer reference results, signed extrema, exact defined
   accumulator wraparound, both bottom/top source mappings and deterministic
   corruption detection across all active vector lanes.
-- [ ] Validated inherited per-thread VL and affinity, bounded work/progress and
+- [x] Software-validate inherited per-thread VL and affinity, bounded work/progress and
   guarded memory/tail handling; do not assume the arithmetic instructions
   themselves supply predication or memory safety.
-- [ ] Gate A physical arithmetic/integrity confirmation on suitable hardware;
-  evaluate sustained usefulness separately through gate B before adopting a
-  standalone sustained mode.
+- [x] Gate A physical arithmetic/integrity PASS on NVIDIA GB10 Spark across
+  20/20 allowed CPUs, with inherited 128-bit VL, independent initial/periodic/
+  final arithmetic verification, zero mismatches, correct affinity and successful
+  worker exits and parent finalization.
+- [x] Gate B sustained verified-stress PASS in that configuration: the
+  November 2 functional run completed 120.219 seconds and 7,575,089,813 verified
+  blocks; the sustained run completed 601.111 seconds and 37,882,653,161 blocks.
+  Its usable window is 481.111 seconds at approximately 63.024 million verified
+  blocks/s, with zero recorded progress stalls. This demonstrates sustained
+  computational activity, not maximum-power effectiveness or superiority over
+  SVE FP32/FMA.
+
+Target-local GCC 13.3.0 compilation and read-only disassembly of the actual
+executed helper confirm four `SMLALB` and four `SMLALT` instructions, with four
+bottom/top source pairs and eight distinct accumulators. The complete 365-file
+physical source fingerprint is
+`2cee8d6061d334dedb180fc1ed4b984a54b9265f4846518ab4baa1684b53b9ca`;
+prelaunch/process/post-execution helper identities match
+`92c3f3362d82daf1dceb4d1e5c8b15c2d12f40f9f5439eebe45002a615aa3137`.
+Matching executable evidence is retained locally at
+`results/cpu_stress_helper_arm64`, outside the committed inventory.
+
+CPU-specific temperature/package power were unavailable; seven platform thermal
+zones remained monitored. Kernel visibility is limited by denied `dmesg` access
+and empty filtered journal captures. Per-core cpufreq observations are not
+independently measured effective clocks. These limitations remain visible;
+Spark acceptance is confined to the actual tested 128-bit configuration.
+
+**Software checkpoint:** 326/326 complete smoke tests pass; all 81 active and
+archived profiles remain valid with five unchanged advisories. Cross-emission,
+independent reference and labelled lifecycle fixtures do not constitute physical
+SVE2 execution. No new hardware workload was run on the development host.
+
+The [SVE2 contract and Spark operator procedure](docs/sve2_smlal_contract.md)
+record both completed physical gates, exact execution/diagnostic folders and
+scalability/portability boundaries. Original diagnostic captures inspect the SVE
+FP32/FMA templates; successful run-local SVE2 preflight and actual execution
+evidence are separate. Software lifecycle/scalable-VL emulation cannot accept
+other hardware or widths. No further Spark repeat is required. Next is
+Snapdragon native baseline compatibility and unsupported-SVE2 rejection;
+existing Auto, vector intents, measured Power Auto and accepted FP32/FMA/VNNI
+behavior are preserved.
 
 The design target follows Arm's [SVE2 widening multiply-add example](https://documentation-service.arm.com/static/6659c722876c8d213b7870d3)
 and [ACLE instruction mappings](https://arm-software.github.io/acle/main/acle.html).

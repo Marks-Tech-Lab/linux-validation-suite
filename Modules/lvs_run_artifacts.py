@@ -92,6 +92,7 @@ def write_final_run_artifacts(
                 native["readiness"] = {"available": readiness.get("available"), "built": readiness.get("built"),
                     "compiler_name": Path(str(readiness.get("compiler") or "")).name,
                     "sve_build_status": (readiness.get("sve_build") or {}).get("status"),
+                    "sve2_build_status": (readiness.get("sve2_build") or {}).get("status"),
                     "basis": "recorded_readiness_not_binary_source_attestation"}
         window.analysis_evidence = evaluate_analysis_evidence(
             window,

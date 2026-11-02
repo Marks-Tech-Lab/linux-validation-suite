@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, sve_thread_geometry_valid
+from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, verified_sve2_worker, sve2_thread_geometry_valid, sve_thread_geometry_valid
 
 CONTRACT = "neon_fp32_fma_progress_v1"
 UINT64_MAX = (1 << 64) - 1
@@ -42,9 +42,10 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
     kernel = worker.get("kernel_flavor")
     sve = (kernel == "sve_fp32_fma" or worker.get("verification_contract") == "sve_fp32_fma_v1"
            or worker.get("requested_kernel_flavor") == "sve_fp32_fma")
+    sve2 = verified_sve2_worker(worker)
     vnni = verified_vnni_worker(worker)
-    contract = f"{kernel}_progress_v1" if vnni else "sve_fp32_fma_progress_v1" if sve else CONTRACT
-    operation = "u8_s8_dot_product_accumulate" if vnni else "fp32_fused_multiply_add"
+    contract = f"{kernel}_progress_v1" if vnni or sve2 else "sve_fp32_fma_progress_v1" if sve else CONTRACT
+    operation = "s16_widening_multiply_accumulate_bottom_top" if sve2 else "u8_s8_dot_product_accumulate" if vnni else "fp32_fused_multiply_add"
     result = {
         "contract": contract, "quality": "insufficient", "reasons": [],
         "window_start_monotonic_seconds": start, "window_end_monotonic_seconds": end,
@@ -101,6 +102,9 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
                   if isinstance(d, dict) and type(d.get("affinity_target_cpu")) is int}
     if sve and any(not sve_thread_geometry_valid(geometries.get(cpu, {})) for cpu in targets):
         issue("invalid or missing authoritative SVE per-thread geometry")
+        return result
+    if sve2 and any(not sve2_thread_geometry_valid(geometries.get(cpu, {})) for cpu in targets):
+        issue("invalid or missing authoritative SVE2 per-thread geometry")
         return result
     previous = None
     first_offset = None
@@ -167,6 +171,11 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
                                     or thread.get("active_fp32_lanes") != geometry.get("active_fp32_lanes")
                                     or not geometry.get("active_fp32_lanes")):
                                 raise ValueError("SVE vector length changed or differs from verified worker")
+                        if sve2 and count:
+                            geometry = geometries.get(cpu, {})
+                            if (thread.get("vector_length_bytes") != geometry.get("vector_length_bytes")
+                                    or thread.get("active_int32_lanes") != geometry.get("active_int32_lanes")):
+                                raise ValueError("SVE2 vector length changed or differs from verified worker")
                         mapping[cpu] = thread
                     if sum(_counter(t["verified_blocks"]) for t in threads) != _counter(row.get("aggregate_verified_blocks")):
                         raise ValueError("aggregate counter differs from per-thread counters")
@@ -266,7 +275,13 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
         for half in ("first_half", "second_half"):
             summary = stats[half]
             summary["blocks_per_second"] = summary["blocks"] / summary["seconds"] if summary["seconds"] else None
-        if vnni:
+        if sve2:
+            lanes = geometries[cpu]['active_int32_lanes']
+            stats['active_int32_lanes'] = lanes
+            stats['vector_length_bytes'] = geometries[cpu]['vector_length_bytes']
+            stats['derived_signed_products'] = stats['verified_block_delta'] * 8 * lanes * 256
+            stats['derived_signed_products_per_second'] = stats['blocks_per_second'] * 8 * lanes * 256 if seconds else None
+        elif vnni:
             lanes = worker.get("active_int32_lanes")
             if type(lanes) is not int or lanes != (8 if kernel == "avx_vnni" else 16):
                 issue("invalid VNNI operation geometry")
@@ -290,6 +305,8 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
         result["threads"].append(stats)
     if all(s["blocks_per_second"] is not None for s in states.values()):
         result["aggregate_blocks_per_second"] = sum(s["blocks_per_second"] for s in states.values())
+        if sve2:
+            result["derived_signed_products_per_second"] = sum(s["derived_signed_products_per_second"] for s in states.values())
         if vnni:
             result["derived_byte_products_per_second"] = sum(s["derived_byte_products_per_second"] for s in states.values())
         if sve:
@@ -308,5 +325,5 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
 
 def attach_verified_progress(window: Any) -> None:
     for worker in getattr(window, "worker_results", []):
-        if (verified_fp32_worker(worker) or verified_vnni_worker(worker)) and "verified_progress" in worker:
+        if (verified_fp32_worker(worker) or verified_vnni_worker(worker) or verified_sve2_worker(worker)) and "verified_progress" in worker:
             worker["verified_progress_analysis"] = analyze_verified_progress(worker, window)

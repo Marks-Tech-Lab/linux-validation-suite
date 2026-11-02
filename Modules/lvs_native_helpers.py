@@ -48,7 +48,7 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
     if source.name == "cpu_stress_helper.c":
-        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h")
+        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h")
                             if source.with_name(name).exists())
     return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
@@ -101,6 +101,25 @@ def resolve_native_helper_status(
     cmd = native_helper_build_command(compiler, source, binary)
     try:
         if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
+            # SVE2 is independently optional. If it fails, retain the existing
+            # SVE-only build attempt, then baseline NEON/scalar as before.
+            try:
+                completed = build_runner([*cmd[:1], "-DLVS_CPU_HELPER_ENABLE_SVE",
+                                          "-DLVS_CPU_HELPER_ENABLE_SVE2", *cmd[1:]])
+                status["sve2_build"] = {
+                    "status": "compiled" if completed.returncode == 0 else "unavailable",
+                    "reason": "" if completed.returncode == 0 else str(completed.stderr or "optional SVE2 compilation failed")[-2000:],
+                }
+            except Exception as exc:
+                status["sve2_build"] = {"status": "unavailable", "reason": str(exc)}
+                completed = None
+            if completed is not None and completed.returncode == 0:
+                status["sve_build"] = {"status": "compiled", "reason": ""}
+                if binary.exists() and os.access(binary, os.X_OK) and probe_binary():
+                    status.update(available=True, built=True)
+                    return status
+                status["reason"] = status["reason"] or "optional CPU helper build produced no executable"
+                return status
             # Optional per-function-targeted region only. Never pass a global
             # -march/+sve flag; a compiler lacking SVE retains baseline kernels.
             try:

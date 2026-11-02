@@ -26,8 +26,14 @@ def verified_vnni_worker(payload: Dict[str, Any]) -> bool:
         and payload["verification_contract"] in {f"{k}_v1" for k in VNNI_CPU_KERNELS})
 
 
+def verified_sve2_worker(payload: Dict[str, Any]) -> bool:
+    return (payload.get("kernel_flavor") == "sve2_smlal"
+            or payload.get("requested_kernel_flavor") == "sve2_smlal"
+            or payload.get("verification_contract") == "sve2_smlal_v1")
+
+
 def worker_verification_required(payload: Dict[str, Any]) -> bool:
-    if verified_fp32_worker(payload) or verified_vnni_worker(payload):
+    if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload):
         return True
     for key in ("verification_required", "VerificationRequired"):
         if key in payload:
@@ -53,6 +59,8 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
 
 
 def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
+    if verified_sve2_worker(payload) and not _verified_sve2_satisfied(payload):
+        return False
     if verified_vnni_worker(payload) and not _verified_vnni_satisfied(payload):
         return False
     if verified_fp32_worker(payload):
@@ -284,7 +292,7 @@ def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
                 value = int(payload.get(key) or 0)
                 # Invalid negative v1 counters cannot cancel the blocking
                 # verification failure (or another worker's real errors).
-                payload_error_count += max(0, value) if verified_fp32_worker(payload) or verified_vnni_worker(payload) else value
+                payload_error_count += max(0, value) if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload) else value
             except Exception:
                 continue
         status_failed = str(payload.get("status") or "").lower() in {"error", "failed", "fail"}
@@ -366,4 +374,71 @@ def _verified_vnni_satisfied(payload: Dict[str, Any]) -> bool:
                 and all(type(payload[k]) is int and payload[k] == total
                         for k in ("verification_passes", "VerificationPasses") if k in payload))
     except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+
+
+def sve2_thread_geometry_valid(row: Dict[str, Any]) -> bool:
+    vl = row.get('vector_length_bytes')
+    return (type(vl) is int and 16 <= vl <= 256 and vl % 16 == 0
+            and type(row.get('vector_length_bits')) is int and row['vector_length_bits'] == vl * 8
+            and type(row.get('active_int32_lanes')) is int and row['active_int32_lanes'] == vl // 4
+            and type(row.get('vector_length_flags')) is int and row['vector_length_flags'] >= 0
+            and row['vector_length_flags'] & 0xffff == 0
+            and type(row.get('vector_length_errno')) is int and row['vector_length_errno'] == 0)
+
+
+def _verified_sve2_satisfied(payload: Dict[str, Any]) -> bool:
+    """Authoritative SVE2 integer v1 contract, independent of FP32 semantics."""
+    try:
+        kernel = 'sve2_smlal'
+        flags = ('initial_verification_completed', 'periodic_verification_completed', 'final_verification_completed')
+        n, targets, rows = payload['requested_thread_count'], payload['target_cpu_ids'], payload['threads_detail']
+        if (payload.get('kernel_flavor') != kernel or payload.get('verification_contract') != kernel+'_v1'
+                or type(payload.get('verification_version')) is not int or payload['verification_version'] != 1
+                or payload.get('verification_required') is not True or payload.get('verification_complete') is not True
+                or payload.get('verification_method') != 'wide_integer_smlal_reference_modulo_2_32'
+                or payload.get('operation_family') != 's16_widening_multiply_accumulate_bottom_top'
+                or type(payload.get('accumulator_chains')) is not int or payload['accumulator_chains'] != 8
+                or type(payload.get('multiply_accumulate_rounds_per_block')) is not int or payload['multiply_accumulate_rounds_per_block'] != 256
+                or payload.get('bottom_top_mapping') != 'even_odd_halfwords'
+                or type(n) is not int or n <= 0
+                or type(payload.get('actual_worker_count')) is not int or payload['actual_worker_count'] != n
+                or not isinstance(targets,list) or len(targets) != n
+                or any(type(cpu) is not int or cpu < 0 for cpu in targets) or len(set(targets)) != n
+                or not isinstance(rows,list) or len(rows) != n
+                or any(payload.get(k) is not True for k in flags)
+                or any(type(payload.get(k)) is not int or payload[k] != n for k in ('affinity_attempted_count','affinity_applied_count'))
+                or not _zero_error_counter(payload.get('affinity_failed_count'))
+                or not _versioned_fp32_error_free(payload,kernel)
+                or ('observed_exit_code' in payload and not _zero_error_counter(payload['observed_exit_code']))):
+            return False
+        emulated = payload.get('execution_implementation') == 'test_integer_emulation'
+        if (payload.get('execution_implementation') != ('test_integer_emulation' if emulated else 'aarch64_sve2_intrinsics')
+                or payload.get('actual_isa') != ('test_integer_emulation' if emulated else 'sve2')
+                or payload.get('isa_capability_source') != ('test_override' if emulated else 'linux_aarch64_hwcap_common_set')
+                or payload.get('vector_length_source') != ('test_override' if emulated else 'linux_prctl_pr_sve_get_vl_per_thread')):
+            return False
+        total = 0
+        for i,row in enumerate(rows):
+            blocks = row.get('arithmetic_verified_blocks')
+            if (not sve2_thread_geometry_valid(row)
+                    or type(row.get('thread_index')) is not int or row['thread_index'] != i
+                    or type(row.get('affinity_target_cpu')) is not int or row['affinity_target_cpu'] != targets[i]
+                    or type(row.get('observed_cpu')) is not int or row['observed_cpu'] != targets[i]
+                    or any(row.get(k) is not True for k in ('affinity_applied','affinity_required',*flags))
+                    or type(blocks) is not int or not 3 <= blocks <= (1<<64)-1
+                    or type(row.get('verify_passes')) is not int or row['verify_passes'] != blocks
+                    or not _versioned_fp32_error_free(row,kernel)):
+                return False
+            h, h2 = row.get('isa_hwcap'), row.get('isa_hwcap2')
+            if (type(h) is not int or type(h2) is not int or not 0 <= h <= (1<<64)-1 or not 0 <= h2 <= (1<<64)-1
+                    or h & ((1<<22)|3) != ((1<<22)|3) or h2 & 2 == 0):
+                return False
+            total += blocks
+        return (total <= (1<<64)-1 and type(payload.get('arithmetic_verified_blocks')) is int
+                and payload['arithmetic_verified_blocks'] == total
+                and type(payload.get('verify_passes')) is int and payload['verify_passes'] == total
+                and all(type(payload[k]) is int and payload[k] == total
+                        for k in ('verification_passes','VerificationPasses') if k in payload))
+    except (KeyError,TypeError,ValueError,AttributeError):
         return False

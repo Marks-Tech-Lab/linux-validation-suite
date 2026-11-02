@@ -178,7 +178,8 @@ def run_sve_fp32_fma_checks() -> None:
         assert status["available"] and status["sve_build"]["status"] == "unavailable"
         assert resolve_cpu_instruction_intent("arm64", "highest_verified_vector",
             ["scalar", "neon", "neon_fp32_fma"])["resolved_kernel_flavor"] == "neon_fp32_fma"
-        assert len(calls) == 2 and "-march" not in " ".join(calls[0])
+        assert len(calls) == 3 and "-march" not in " ".join(calls[0])
+        assert "-DLVS_CPU_HELPER_ENABLE_SVE2" in calls[0] and "-DLVS_CPU_HELPER_ENABLE_SVE2" not in calls[1]
         header = source_copy.with_name("cpu_sve_kernel.h")
         header.write_text("changed optional region")
         os.utime(header, (output.stat().st_mtime + 1, output.stat().st_mtime + 1))

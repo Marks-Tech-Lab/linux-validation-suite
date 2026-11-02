@@ -931,3 +931,24 @@ new ordinary SIMD tier or an invented legacy AVX bucket. Reports keep selected
 kernel, actual kernel and successful versioned verification separate from prior
 physical acceptance. Missing, contradictory or incomplete verification blocks
 worker success. See [the implementation contract](docs/vnni_dot_product_contract.md).
+
+## Explicit SVE2 signed widening integer arithmetic
+
+`sve2_smlal_v1` verification and `sve2_smlal_progress_v1` progress identify the
+explicit-only `sve2_smlal` native CPU workload. Operation family
+`s16_widening_multiply_accumulate_bottom_top` and independent method
+`wide_integer_smlal_reference_modulo_2_32` are distinct from FP32/FMA and VNNI.
+Eight accumulator chains, 256 rounds, `even_odd_halfwords` mapping and per-thread
+HWCAP/HWCAP2, inherited VL, int32 lane count, affinity and verification phases
+are authoritative contract evidence. Missing or contradictory evidence blocks
+success; software emulation remains labelled `test_integer_emulation` with
+`test_override` sources. This is not physical acceptance.
+
+The existing bounded progress time base is reused with per-thread
+`vector_length_bytes` and `active_int32_lanes`. Derived signed products/s are
+arithmetic work counts, not measured instructions or saturation. Reports preserve
+selection, execution and successful verification separately; legacy exports
+retain whole recognized records, including failed/incomplete evidence. Optional
+helper readiness additionally records `sve2_build_status` where collected.
+No historical result is synthesized or reclassified. See the
+[SVE2 implementation and acceptance contract](docs/sve2_smlal_contract.md).

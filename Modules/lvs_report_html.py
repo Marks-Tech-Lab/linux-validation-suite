@@ -777,6 +777,12 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
             if evidence.get("aggregate_blocks_per_second") is not None else ""
         )
         reasons = "; ".join(str(reason) for reason in evidence.get("reasons") or [])
+        if evidence.get("contract") == "sve2_smlal_progress_v1":
+            lengths = sorted({t.get('vector_length_bytes') for t in evidence.get('threads', [])
+                              if type(t.get('vector_length_bytes')) is int})
+            rate_text += (f' SVE2 integer VL bytes {_escape(str(lengths))}; derived signed products/s '
+                          f'{_number(evidence.get("derived_signed_products_per_second"))}'
+                          ' (not measured instructions or a saturation claim).')
         if evidence.get("contract") in {"avx_vnni_progress_v1", "avx512_vnni_progress_v1"}:
             rate_text += (f' Derived byte products/s {_number(evidence.get("derived_byte_products_per_second"))}'
                           ' (not measured instructions or a saturation claim).')
