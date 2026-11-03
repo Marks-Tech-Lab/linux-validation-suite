@@ -135,10 +135,10 @@ def power_cpu_candidate_inventory(
     native_flavors = list(dict.fromkeys(str(value or "").strip().lower() for value in native_kernel_flavors if value))
     if availability.get("cpu_native_helper") and native_flavors:
         for flavor in native_flavors:
-            if flavor in {"avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm"}:
+            if flavor in {"avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16"}:
                 unavailable.append({"candidate_id": f"cpu_native_helper:{flavor}",
                                     "reason": ("specialized floating-point arithmetic is explicit-only; generic SIMD and Power Auto eligibility are not established"
-                                               if flavor in {"neon_fp16", "neon_fhm"} else
+                                               if flavor in {"neon_fp16", "neon_fhm", "neon_bf16"} else
                                                "specialized integer arithmetic is explicit-only; generic SIMD and Power Auto eligibility are not established")})
                 continue
             if flavor in EXPERIMENTAL_CPU_KERNELS:

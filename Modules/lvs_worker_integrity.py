@@ -29,6 +29,14 @@ def verified_vnni_worker(payload: Dict[str, Any]) -> bool:
 HALF_FPCR_MASK = (3<<22)|(1<<24)|(1<<19)|(1<<26)|(31<<8)|(1<<15)|3
 
 
+BF16_FPCR_MASK = HALF_FPCR_MASK | (1<<13)
+
+
+def verified_bf16_worker(payload: Dict[str, Any]) -> bool:
+    return (any(payload.get(k)=="neon_bf16" for k in ("kernel_flavor","requested_kernel_flavor"))
+            or payload.get("verification_contract")=="neon_bf16_v1")
+
+
 def verified_half_worker(payload: Dict[str, Any]) -> bool:
     kernels = {"neon_fp16", "neon_fhm"}
     return (any(isinstance(payload.get(k), str) and payload[k] in kernels
@@ -51,7 +59,7 @@ def verified_sve2_worker(payload: Dict[str, Any]) -> bool:
 
 
 def worker_verification_required(payload: Dict[str, Any]) -> bool:
-    if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload) or verified_dotprod_worker(payload) or verified_i8mm_worker(payload) or verified_half_worker(payload):
+    if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload) or verified_dotprod_worker(payload) or verified_i8mm_worker(payload) or verified_half_worker(payload) or verified_bf16_worker(payload):
         return True
     for key in ("verification_required", "VerificationRequired"):
         if key in payload:
@@ -77,6 +85,8 @@ def worker_verification_passes(payload: Dict[str, Any]) -> int:
 
 
 def worker_verification_satisfied(payload: Dict[str, Any]) -> bool:
+    if verified_bf16_worker(payload) and not _verified_bf16_satisfied(payload):
+        return False
     if verified_half_worker(payload) and not _verified_half_satisfied(payload):
         return False
     if (verified_i8mm_worker(payload) or verified_dotprod_worker(payload)) and not _verified_integer_accumulate_satisfied(payload):
@@ -314,7 +324,7 @@ def worker_integrity_error_count(worker_results: List[Dict[str, Any]]) -> int:
                 value = int(payload.get(key) or 0)
                 # Invalid negative v1 counters cannot cancel the blocking
                 # verification failure (or another worker's real errors).
-                payload_error_count += max(0, value) if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload) or verified_dotprod_worker(payload) or verified_i8mm_worker(payload) or verified_half_worker(payload) else value
+                payload_error_count += max(0, value) if verified_fp32_worker(payload) or verified_vnni_worker(payload) or verified_sve2_worker(payload) or verified_dotprod_worker(payload) or verified_i8mm_worker(payload) or verified_half_worker(payload) or verified_bf16_worker(payload) else value
             except Exception:
                 continue
         status_failed = str(payload.get("status") or "").lower() in {"error", "failed", "fail"}
@@ -369,6 +379,58 @@ def _verified_half_satisfied(p: Dict[str, Any]) -> bool:
                 or not _versioned_fp32_error_free(row,kernel)
                 or type(h) is not int or not 0<=h<1<<64 or h&(3|(1<<(23 if wide else 10)))!=(3|(1<<(23 if wide else 10)))
                 or type(fpcr) is not int or not 0<=fpcr<1<<64 or fpcr&HALF_FPCR_MASK):return False
+            total+=blocks
+        return (total<1<<64 and type(p.get("arithmetic_verified_blocks")) is int and p["arithmetic_verified_blocks"]==total
+                and all(type(p[k]) is int and p[k]==total for k in ("verify_passes","verification_passes","VerificationPasses") if k in p)
+                and "verify_passes" in p)
+    except (KeyError,TypeError,ValueError,AttributeError):return False
+
+
+def _verified_bf16_satisfied(p: Dict[str, Any]) -> bool:
+    """Standard EBF0 dot/matrix and fused widening BF16 contract; software emulation is explicitly labelled."""
+    try:
+        kernel=p["kernel_flavor"]
+        count=p["requested_thread_count"]; targets=p["target_cpu_ids"]; rows=p["threads_detail"]
+        flags=("initial_verification_completed","periodic_verification_completed","final_verification_completed")
+        expected={"verification_version":1,"accumulator_chains":8,"bf16_rounds_per_block":256,
+                  "dot_chains":2,"matrix_chains":2,"bottom_chains":2,"top_chains":2,
+                  "witness_rounds_per_block":1,"active_lanes":4,
+                  "input_bits":16,"accumulator_bits":32}
+        if (kernel not in {"neon_bf16"} or p.get("requested_kernel_flavor",kernel)!=kernel
+            or p.get("verification_contract")!=kernel+"_v1"
+            or any(type(p.get(k)) is not int or p[k]!=v for k,v in expected.items())
+            or p.get("verification_method")!="integer_dyadic_rto_ftz_and_rne_fused_reference"
+            or p.get("comparison")!="bit_exact"
+            or p.get("operation_family")!="bf16_standard_dot_matrix_and_fused_widening"
+            or p.get("bf16_mode")!="standard_ebf0"
+            or (isinstance(p.get("verified_progress"),dict) and "persistence_error" in p["verified_progress"] and p["verified_progress"]["persistence_error"] is not False)
+            or any(p.get(k) is not True for k in (*flags,"verification_required","verification_complete"))
+            or type(count) is not int or count<=0 or type(p.get("actual_worker_count")) is not int or p["actual_worker_count"]!=count
+            or not isinstance(targets,list) or len(targets)!=count or len(set(targets))!=count
+            or any(type(cpu) is not int or cpu<0 for cpu in targets)
+            or not isinstance(rows,list) or len(rows)!=count
+            or any(type(p.get(k)) is not int or p[k]!=count for k in ("affinity_attempted_count","affinity_applied_count"))
+            or type(p.get("affinity_failed_count")) is not int or p["affinity_failed_count"]!=0
+            or not _versioned_fp32_error_free(p,kernel)
+            or ("observed_exit_code" in p and (type(p["observed_exit_code"]) is not int or p["observed_exit_code"]!=0))):return False
+        emulated=p.get("execution_implementation")=="test_bf16_emulation"
+        if (p.get("execution_implementation")!=("test_bf16_emulation" if emulated else "aarch64_neon_bf16_asm")
+            or p.get("actual_isa")!=("test_bf16_emulation" if emulated else "asimdbf16")
+            or p.get("isa_capability_source")!=("test_override" if emulated else "linux_aarch64_hwcap_common_set")):return False
+        total=0
+        for i,row in enumerate(rows):
+            blocks=row.get("arithmetic_verified_blocks"); h=row.get("isa_hwcap"); h2=row.get("isa_hwcap2"); fpcr=row.get("fpcr")
+            if (type(row.get("thread_index")) is not int or row["thread_index"]!=i
+                or type(row.get("affinity_target_cpu")) is not int or row["affinity_target_cpu"]!=targets[i]
+                or type(row.get("observed_cpu")) is not int or row["observed_cpu"]!=targets[i]
+                or any(row.get(k) is not True for k in (*flags,"affinity_applied","affinity_required"))
+                or type(blocks) is not int or not 3<=blocks<1<<64
+                or type(row.get("verify_passes")) is not int or row["verify_passes"]!=blocks
+                or not _versioned_fp32_error_free(row,kernel)
+                or type(h) is not int or not 0<=h<1<<64 or h&3!=3
+                or type(h2) is not int or not 0<=h2<1<<64 or not h2&(1<<14)
+                or row.get("ebf16_available") is not bool(h2&(1<<32))
+                or type(fpcr) is not int or not 0<=fpcr<1<<64 or fpcr&BF16_FPCR_MASK):return False
             total+=blocks
         return (total<1<<64 and type(p.get("arithmetic_verified_blocks")) is int and p["arithmetic_verified_blocks"]==total
                 and all(type(p[k]) is int and p[k]==total for k in ("verify_passes","verification_passes","VerificationPasses") if k in p)

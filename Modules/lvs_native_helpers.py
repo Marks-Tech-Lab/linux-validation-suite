@@ -48,7 +48,7 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
     if source.name == "cpu_stress_helper.c":
-        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h", "cpu_i8mm_kernel.h", "cpu_half_kernel.h")
+        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h", "cpu_i8mm_kernel.h", "cpu_half_kernel.h", "cpu_bf16_kernel.h")
                             if source.with_name(name).exists())
     return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
@@ -104,9 +104,9 @@ def resolve_native_helper_status(
         def build_runner(command):
             # Fast all-regions build, then bounded incremental salvage. A new
             # unsupported region cannot discard an existing supported kernel.
-            # At most seven attempts per existing SVE tier, twenty-one total;
+            # At most eight attempts per existing SVE tier, twenty-four total;
             # successful normal builds still take one attempt. No global -march.
-            regions=("DOTPROD", "I8MM", "FP16", "FHM")
+            regions=("DOTPROD", "I8MM", "FP16", "FHM", "BF16")
             reasons={}
             def attempt(enabled):
                 try:

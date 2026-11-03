@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, verified_sve2_worker, verified_dotprod_worker, verified_i8mm_worker, verified_half_worker, sve2_thread_geometry_valid, sve_thread_geometry_valid
+from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, verified_sve2_worker, verified_dotprod_worker, verified_i8mm_worker, verified_half_worker, verified_bf16_worker, sve2_thread_geometry_valid, sve_thread_geometry_valid
 
 CONTRACT = "neon_fp32_fma_progress_v1"
 UINT64_MAX = (1 << 64) - 1
@@ -44,11 +44,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
            or worker.get("requested_kernel_flavor") == "sve_fp32_fma")
     sve2 = verified_sve2_worker(worker)
     half_float = verified_half_worker(worker)
+    bf16 = verified_bf16_worker(worker)
     matrix = verified_i8mm_worker(worker)
     dotprod = verified_dotprod_worker(worker)
     dot_product = verified_vnni_worker(worker) or dotprod or matrix
-    contract = f"{kernel}_progress_v1" if dot_product or sve2 or half_float else "sve_fp32_fma_progress_v1" if sve else CONTRACT
-    operation = ("fp16_product_fp32_fused_accumulate_low_high" if kernel=="neon_fhm" else "fp16_fused_multiply_add") if half_float else "s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2" if matrix else "s8_s8_and_u8_u8_dot_product_accumulate" if dotprod else "s16_widening_multiply_accumulate_bottom_top" if sve2 else "u8_s8_dot_product_accumulate" if dot_product else "fp32_fused_multiply_add"
+    contract = f"{kernel}_progress_v1" if dot_product or sve2 or half_float or bf16 else "sve_fp32_fma_progress_v1" if sve else CONTRACT
+    operation = "bf16_standard_dot_matrix_and_fused_widening" if bf16 else ("fp16_product_fp32_fused_accumulate_low_high" if kernel=="neon_fhm" else "fp16_fused_multiply_add") if half_float else "s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2" if matrix else "s8_s8_and_u8_u8_dot_product_accumulate" if dotprod else "s16_widening_multiply_accumulate_bottom_top" if sve2 else "u8_s8_dot_product_accumulate" if dot_product else "fp32_fused_multiply_add"
     result = {
         "contract": contract, "quality": "insufficient", "reasons": [],
         "window_start_monotonic_seconds": start, "window_end_monotonic_seconds": end,
@@ -284,6 +285,11 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             stats['vector_length_bytes'] = geometries[cpu]['vector_length_bytes']
             stats['derived_signed_products'] = stats['verified_block_delta'] * 8 * lanes * 256
             stats['derived_signed_products_per_second'] = stats['blocks_per_second'] * 8 * lanes * 256 if seconds else None
+        elif bf16:
+            if worker.get("active_lanes")!=4:
+                issue("invalid BF16 operation geometry")
+            stats["derived_stress_bf16_products_per_second"]=stats["blocks_per_second"]*64*256 if seconds else None
+            stats["derived_witness_bf16_products"]=stats["verified_block_delta"]*64
         elif half_float:
             lanes=worker.get("active_lanes")
             if type(lanes) is not int or lanes!=(4 if kernel=="neon_fhm" else 8):
@@ -318,6 +324,8 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             result["derived_signed_products_per_second"] = sum(s["derived_signed_products_per_second"] for s in states.values())
         if dot_product:
             result["derived_byte_products_per_second"] = sum(s["derived_byte_products_per_second"] for s in states.values())
+        if bf16:
+            result["derived_stress_bf16_products_per_second"] = sum(s["derived_stress_bf16_products_per_second"] for s in states.values())
         if sve or half_float:
             result["derived_stress_lane_fmas_per_second"] = sum(s["derived_stress_lane_fmas_per_second"] for s in states.values())
     if interval_rates["count"]:
@@ -334,5 +342,5 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
 
 def attach_verified_progress(window: Any) -> None:
     for worker in getattr(window, "worker_results", []):
-        if (verified_fp32_worker(worker) or verified_vnni_worker(worker) or verified_sve2_worker(worker) or verified_dotprod_worker(worker) or verified_i8mm_worker(worker) or verified_half_worker(worker)) and "verified_progress" in worker:
+        if (verified_fp32_worker(worker) or verified_vnni_worker(worker) or verified_sve2_worker(worker) or verified_dotprod_worker(worker) or verified_i8mm_worker(worker) or verified_half_worker(worker) or verified_bf16_worker(worker)) and "verified_progress" in worker:
             worker["verified_progress_analysis"] = analyze_verified_progress(worker, window)

@@ -1013,3 +1013,21 @@ saturation; complete failure records survive compatibility exports. Helper
 readiness adds `fp16_build_status` and `fhm_build_status` independently of runtime
 availability and executable identity. See the
 [FP16/FHM workload contract](docs/neon_fp16_fhm_contract.md).
+
+
+## Explicit NEON BF16
+
+`neon_bf16_v1` and `neon_bf16_progress_v1` describe experimental explicit-only
+standard-EBF0 BFDOT/BFMMLA and fused alternating BFMLALB/BFMLALT arithmetic.
+The method is `integer_dyadic_rto_ftz_and_rne_fused_reference`, comparison
+`bit_exact`, operation family `bf16_standard_dot_matrix_and_fused_widening`.
+Eight chains (two of each instruction), four FP32 lanes, 256 stress rounds and
+one witness round must all verify. Each thread records FPCR, FP/ASIMD HWCAP,
+HWCAP2_BF16, independent EBF16 capability, affinity, phase completion and counters.
+Unsupported EBF=1 or other incompatible FPCR, missing capability, mismatched
+arithmetic, persistence or lifecycle evidence prevents successful classification.
+Native identity is `aarch64_neon_bf16_asm` / `asimdbf16`; labelled
+`test_bf16_emulation` is software evidence only. Readiness preserves
+`bf16_build_status`; reports show derived BF16 products separately from measured
+instructions/power and retain full failed/incomplete compatibility evidence.
+See the [BF16 workload contract](docs/neon_bf16_contract.md).

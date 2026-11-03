@@ -44,7 +44,7 @@ def _run(binary,directory,**kwargs):
 
 
 def _check_i8mm_emission(body, *, half_kind=None):
-    """Trace emitted matrix or FP16/FHM data/control flow, not static site counts.
+    """Trace emitted matrix or FP16/FHM/BF16 data/control flow, not static site counts.
 
     A bounded symbolic interpreter follows both running and final-block paths.
     Vector values carry their input/accumulator identity and recurrence count;
@@ -64,7 +64,7 @@ def _check_i8mm_emission(body, *, half_kind=None):
             parts=line.split(None,1)
             code.append((parts[0],re.split(r',\s*(?![^\[]*\])',parts[1]) if len(parts)>1 else []))
     code=[(op,[a.strip() for a in args]) for op,args in code]
-    assert any(op==('fmlal' if half_kind=='fhm' else 'fmla' if half_kind else 'smmla') for op,_ in code)
+    assert any(op==('bfdot' if half_kind=='bf16' else 'fmlal' if half_kind=='fhm' else 'fmla' if half_kind else 'smmla') for op,_ in code)
 
     paths=[(0,1,256),(1,1,256),(1,0,256),(0,0,256)]
     if half_kind:paths.append((1,0,1))
@@ -91,15 +91,17 @@ def _check_i8mm_emission(body, *, half_kind=None):
         for step in range(30000):
             assert 0<=pc<len(code),('control flow left function',pc)
             op,args=code[pc]; pc+=1
-            if op in ('smmla','ummla','usmmla','fmla','fmlal','fmlal2'):
+            if op in ('smmla','ummla','usmmla','fmla','fmlal','fmlal2','bfdot','bfmmla','bfmlalb','bfmlalt'):
                 dest,left,right=map(vector,args)
                 chain,updates=vectors[dest]
                 assert isinstance(chain,int) and 0<=chain<8
                 if half_kind:
-                    wide=half_kind=='fhm'
-                    assert op==('fmlal2' if wide and chain%2 else 'fmlal' if wide else 'fmla')
+                    wide=half_kind in ('fhm','bf16')
+                    expected_op=(('bfdot' if chain<2 else 'bfmmla' if chain<4 else 'bfmlalt' if chain%2 else 'bfmlalb')
+                                 if half_kind=='bf16' else 'fmlal2' if wide and chain%2 else 'fmlal' if wide else 'fmla')
+                    assert op==expected_op
                     assert re.fullmatch(r'v\d+\.'+('4s' if wide else '8h'),args[0])
-                    assert all(re.fullmatch(r'v\d+\.'+('4h' if wide else '8h'),a) for a in args[1:])
+                    assert all(re.fullmatch(r'v\d+\.'+('4h' if half_kind=='fhm' else '8h'),a) for a in args[1:])
                     assert vectors[left]==('input',16*(chain//2))
                     assert vectors[right]==('input',64+16*(chain//2))
                 else:
@@ -128,7 +130,7 @@ def _check_i8mm_emission(body, *, half_kind=None):
                     if op in ('ldr','ldp'):
                         assert 0x10000<=offset<0x10180 and offset%16==0
                         offset-=0x10000
-                        initial=128 if half_kind=='fp16' else 256
+                        initial=128 if half_kind in ('fp16','bf16') else 256
                         vectors[vector(reg)]=('input',offset) if offset<initial else ((offset-initial)//16,0)
                     else:
                         assert 0x20000<=offset<(0x20100 if half_kind=="fp16" else 0x20080) and offset%16==0

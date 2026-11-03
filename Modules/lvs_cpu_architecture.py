@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 VNNI_CPU_KERNELS = frozenset({"avx_vnni", "avx512_vnni"})
 X86_CPU_INSTRUCTION_SETS = frozenset({"sse", "avx", "avx2", "avx512"}) | VNNI_CPU_KERNELS
-ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon", "neon_fp32_fma", "sve", "sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm"})
+ARM64_CPU_INSTRUCTION_SETS = frozenset({"neon", "neon_fp32_fma", "sve", "sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16"})
 CPU_INSTRUCTION_INTENTS = frozenset({
     "baseline_vector",
     "high_throughput_vector",
@@ -28,7 +28,7 @@ X86_NATIVE_POWER_PROBE_KERNEL_ORDER = (
 )
 # Candidate discovery is not a hottest-workload claim. Keep existing unmeasured
 # fallback precedence; FP32/FMA may win only through a valid measured probe.
-EXPERIMENTAL_CPU_KERNELS = frozenset({"sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm"}) | VNNI_CPU_KERNELS
+EXPERIMENTAL_CPU_KERNELS = frozenset({"sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16"}) | VNNI_CPU_KERNELS
 ARM64_NATIVE_POWER_PROBE_KERNEL_ORDER = ("neon", "scalar", "neon_fp32_fma")
 # Compatibility aliases retained for existing callers and fixtures.
 X86_MAX_POWER_KERNEL_ORDER = X86_NATIVE_POWER_PROBE_KERNEL_ORDER
@@ -65,7 +65,7 @@ def cpu_native_capability_kernel_order(machine: str) -> tuple[str, ...]:
     accepted = cpu_native_power_probe_kernel_order(machine)
     architecture = normalize_cpu_architecture(machine)
     if architecture == "arm64":
-        return (*accepted, "sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm")
+        return (*accepted, "sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16")
     if architecture == "x86_64":
         return (*accepted, *sorted(VNNI_CPU_KERNELS))
     return accepted

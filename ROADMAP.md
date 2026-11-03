@@ -443,7 +443,7 @@ inherited VL is software-validated, never thereby declared physically accepted.
 The adopted ARM64 scope is deliberately finite:
 
 - [x] Implement experimental explicit-only NEON FP16/FHM (`neon_fp16` /
-  `neon_fhm`) in the uncommitted post-I8MM tree, with independent ASIMDHP /
+  `neon_fhm`) in committed milestone `fbefdea9617beb2185348a7c6ab8f14051f1fb78`, with independent ASIMDHP /
   ASIMDFHM runtime and optional compilation gates, genuine fused instructions,
   exact independent reference verification and all-thread progress/lifecycle.
 - [x] NEON FP16 Gate A arithmetic/integrity acceptance on Spark (20 CPUs) and
@@ -466,16 +466,24 @@ The adopted ARM64 scope is deliberately finite:
 - [x] NEON I8MM Gate A physical arithmetic/integrity acceptance on Spark
   (20 CPUs) and Snapdragon X1 Plus (8 CPUs), with pinned all-target eligibility.
 - [x] NEON I8MM Gate B sustained verified-stress evaluation on both tested platforms.
-- [ ] NEON BF16.
+- [x] Implement experimental explicit-only NEON BF16 (`neon_bf16`) in the
+  uncommitted post-FP16/FHM development tree: BFDOT/BFMMLA and alternating
+  BFMLALB/BFMLALT, exact standard-EBF0 and fused widening references,
+  independent HWCAP2_BF16 gating and all-thread FPCR/affinity/progress evidence.
+- [x] NEON BF16 Gate A arithmetic/integrity acceptance independently on GB10 Spark
+  (20 allowed CPUs) and Snapdragon X1 Plus (eight allowed CPUs), FPCR=0 / EBF=0.
+- [x] NEON BF16 Gate B sustained verified-stress acceptance on both tested targets,
+  with continuous reconciled progress, zero mismatches/stalls and complete lifecycle.
 - [x] Implement the distinct SVE2 signed widening integer workload below
   (`sve2_smlal`, committed in `9edd4e786b7277523fcc3b18ad67c7f95c2a7750`);
   both physical gates PASS on Spark at 128-bit VL.
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
 
-Except for committed, accepted SVE2/DotProd/I8MM and uncommitted FP16/FHM,
-these remain adopted future implementations. Both DotProd and I8MM physical gates
-PASS on Spark and Snapdragon; existing SVE2 and baseline acceptance remain unchanged.
+Except for committed, accepted SVE2/DotProd/I8MM/FP16/FHM and the uncommitted,
+physically accepted BF16 implementation, these remain adopted future implementations.
+Both physical gates PASS on Spark and Snapdragon for DotProd, I8MM, FP16/FHM and
+BF16; existing SVE2 and baseline acceptance remain unchanged.
 Prioritize on Spark by demonstrated capability and worthwhile
 arithmetic/execution differences, then confirm the shared supported NEON paths
 on Snapdragon X1 Plus. Require separate runtime eligibility for each family;
@@ -534,7 +542,70 @@ No further DotProd physical repetition is required. Next is unfinished adopted
 specialized ARM64 work on Spark, then supported Snapdragon compatibility and
 acceptance. SVE/SVE2, VNNI and generic selection behavior remain unchanged.
 
-**NEON FP16/FHM implementation (uncommitted, physically accepted):**
+**NEON BF16 implementation (uncommitted, physically accepted):**
+The [BF16 contract](docs/neon_bf16_contract.md) defines an experimental explicit-only
+`neon_bf16` kernel with two BFDOT, two BFMMLA, two BFMLALB and two BFMLALT independent
+128-bit accumulator chains. Each credited block verifies all 32 FP32 result lanes
+through 256 rounds and a separate one-round witness. Standard dot/matrix arithmetic
+uses explicit unfused round-to-odd and denormal-flush references; widening uses
+independent fused RN-even integer references. Checked 640-bit dyadics preserve large
+exponent gaps without floating-point tolerances. HWCAP2_BF16, FP/ASIMD and pinned
+eligibility are mandatory; EBF16 capability is recorded independently, EBF=1 is
+rejected, and FPCR is validated without mutation. No SVE capability is inferred.
+
+Software validation passes **352/352 smoke tests**, including six BF16 groups and
+existing specialized ISA/selector/output-contract regressions; **81/81 profiles**
+remain valid (five unchanged advisories). All **378 Python files** compile and
+integration imports pass. AArch64 baseline, BF16-only and combined optional-feature
+assembly/object compilation pass, including actual BF16 object disassembly and
+bounded emitted data/control-flow tracing. The complete **369-file** source
+fingerprint is
+`6700ba394f55de32c7ef84a61d5eaf6df05247e1707ecf736b7e07c3ecacd79a`.
+All four physical executions recorded that complete 369-file identity at unchanged
+initial/final endpoints. The current scoped production implementation still matches;
+acceptance documentation is outside the execution-source fingerprint scope.
+
+| Tested platform | Functional native seconds / verified blocks | Sustained native seconds / verified blocks | Gate A | Gate B |
+|---|---|---|---|---|
+| GB10 Spark, 20/20 allowed CPUs | 120.189 / 6,533,938,633 | 600.989 / 32,669,799,505 | PASS | PASS |
+| Snapdragon X1 Plus, 8/8 allowed CPUs | 121.219 / 1,412,988,998 | 600.717 / 7,117,306,219 | PASS | PASS |
+
+Both retained physical helpers confirm two independent chains each of BFDOT,
+BFMMLA, BFMLALB and BFMLALT, correct 256-round recurrence, mandatory one-round
+witness and all 32 FP32 result stores. All selected CPUs passed capability and
+pinned affinity checks. Every worker recorded FPCR=0, enhanced BF16 unavailable,
+bit-exact independent arithmetic with the documented distinct rounding/accumulation
+semantics, and complete initial/periodic/final verification. No arithmetic mismatch,
+progress stall or lifecycle failure occurred. All native processes exited 0 with
+normal cleanup and completed parent PASS results; progress and terminal counters
+reconcile. No physical corruption injection is claimed.
+
+Executed helpers match their platform's prelaunch/process/post-execution identities:
+
+- Spark, GCC 13.3.0: `a3d70617fe4dd76fa1acb5a4b525f68687dee6bc1d154020ab2d9ab8cf7dd486`.
+- Snapdragon, GCC 15.2.0: `4488337d574d524e8eea0e15086644353771ac38c8c321b0b5120c8cc6c95ac6`.
+
+Spark's sustained usable window is 481.024 s at 54.360 million verified blocks/s;
+Snapdragon's is 480.729 s at 11.848 million. Per-thread progress coverage is
+99.506–99.572% / 99.587–99.639%, with zero stalls and stable first/second-half rates
+(+0.008% / +0.013%). Sustained peaks are 73.8 C in Spark platform thermal zones
+and 70.2 C in Snapdragon CPU-subsystem monitoring. CPU package power is unavailable;
+Spark lacks CPU-specific temperature and independent effective clocks, and Snapdragon
+clocks are unavailable. Denied dmesg and empty filtered journals limit kernel visibility.
+
+The original SVE-template diagnostics are distinct from the independently inspected
+run-local BF16 overrides, readiness and actual native execution on each platform.
+Exact execution/diagnostic paths and retained helper locations are in the contract;
+local physical evidence remains outside the development commit. Acceptance covers
+the tested EBF=0 hardware/compiler/finite-domain configurations, not universal
+compatibility, maximum-power effectiveness or superiority over other kernels.
+No further physical test or production correction is required. BF16 remains
+experimental and explicit-only; Auto, vector intents and Power Auto are unchanged.
+After this milestone is committed, remaining adopted specialized ARM64 work stays
+Spark-first, then independently supported Snapdragon compatibility/acceptance.
+SVE I8MM/BF16 remain later adopted work; accepted prior ISA boundaries are unchanged.
+
+**NEON FP16/FHM implementation (committed, physically accepted):**
 The [FP16/FHM contract](docs/neon_fp16_fhm_contract.md) defines two independent,
 experimental explicit-only kernels. `neon_fp16` executes eight vector FP16 FMLA
 chains (64 result lanes); `neon_fhm` executes four FMLAL/FMLAL2 low/high pairs
@@ -551,8 +622,10 @@ Python compilation/imports and output-contract checks. The complete 368-file
 source fingerprint is
 `d7fdd746fd5befb1ffe2b5e2a99331dbac82a2dbaaa9088d19acb0067e49fb4c`.
 All eight physical executions recorded that fingerprint with unchanged
-initial/final endpoints. No production code has changed since physical testing;
-acceptance documentation remains outside the scoped source identity.
+initial/final endpoints. That accepted implementation was committed in
+`fbefdea9617beb2185348a7c6ab8f14051f1fb78`. Subsequent BF16 integration adds a
+separate optional kernel; it does not change the accepted FP16/FHM arithmetic.
+Acceptance documentation remains outside the scoped source identity.
 
 | Tested platform / workload | Functional duration / verified blocks | Sustained duration / verified blocks | Gate A | Gate B |
 |---|---|---|---|---|
@@ -590,7 +663,7 @@ Acceptance covers the tested hardware, compilers, FPCR=0 and finite numerical
 domain; it does not establish maximum power or superiority of one instruction
 family. No deliberate physical corruption injection is claimed.
 
-No further FP16/FHM physical repetition is required. After closure/commit,
+No further FP16/FHM physical repetition is required. Following their commit,
 remaining adopted specialized ARM64 work remains Spark-first, then supported
 Snapdragon compatibility and acceptance. Reproduction procedures and exact
 execution/diagnostic paths remain in the contract.
