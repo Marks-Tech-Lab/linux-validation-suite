@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, verified_sve2_worker, verified_dotprod_worker, verified_i8mm_worker, sve2_thread_geometry_valid, sve_thread_geometry_valid
+from Modules.lvs_worker_integrity import worker_verification_satisfied, verified_fp32_worker, verified_vnni_worker, verified_sve2_worker, verified_dotprod_worker, verified_i8mm_worker, verified_half_worker, sve2_thread_geometry_valid, sve_thread_geometry_valid
 
 CONTRACT = "neon_fp32_fma_progress_v1"
 UINT64_MAX = (1 << 64) - 1
@@ -43,11 +43,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
     sve = (kernel == "sve_fp32_fma" or worker.get("verification_contract") == "sve_fp32_fma_v1"
            or worker.get("requested_kernel_flavor") == "sve_fp32_fma")
     sve2 = verified_sve2_worker(worker)
+    half_float = verified_half_worker(worker)
     matrix = verified_i8mm_worker(worker)
     dotprod = verified_dotprod_worker(worker)
     dot_product = verified_vnni_worker(worker) or dotprod or matrix
-    contract = f"{kernel}_progress_v1" if dot_product or sve2 else "sve_fp32_fma_progress_v1" if sve else CONTRACT
-    operation = "s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2" if matrix else "s8_s8_and_u8_u8_dot_product_accumulate" if dotprod else "s16_widening_multiply_accumulate_bottom_top" if sve2 else "u8_s8_dot_product_accumulate" if dot_product else "fp32_fused_multiply_add"
+    contract = f"{kernel}_progress_v1" if dot_product or sve2 or half_float else "sve_fp32_fma_progress_v1" if sve else CONTRACT
+    operation = ("fp16_product_fp32_fused_accumulate_low_high" if kernel=="neon_fhm" else "fp16_fused_multiply_add") if half_float else "s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2" if matrix else "s8_s8_and_u8_u8_dot_product_accumulate" if dotprod else "s16_widening_multiply_accumulate_bottom_top" if sve2 else "u8_s8_dot_product_accumulate" if dot_product else "fp32_fused_multiply_add"
     result = {
         "contract": contract, "quality": "insufficient", "reasons": [],
         "window_start_monotonic_seconds": start, "window_end_monotonic_seconds": end,
@@ -283,6 +284,12 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             stats['vector_length_bytes'] = geometries[cpu]['vector_length_bytes']
             stats['derived_signed_products'] = stats['verified_block_delta'] * 8 * lanes * 256
             stats['derived_signed_products_per_second'] = stats['blocks_per_second'] * 8 * lanes * 256 if seconds else None
+        elif half_float:
+            lanes=worker.get("active_lanes")
+            if type(lanes) is not int or lanes!=(4 if kernel=="neon_fhm" else 8):
+                issue("invalid half-precision operation geometry"); lanes=0
+            stats["derived_stress_lane_fmas_per_second"]=stats["blocks_per_second"]*8*lanes*256 if seconds else None
+            stats["derived_witness_lane_fma_count"]=stats["verified_block_delta"]*8*lanes
         elif dot_product:
             lanes = worker.get("active_int32_lanes")
             if type(lanes) is not int or lanes != (4 if matrix or dotprod else 8 if kernel == "avx_vnni" else 16):
@@ -311,7 +318,7 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
             result["derived_signed_products_per_second"] = sum(s["derived_signed_products_per_second"] for s in states.values())
         if dot_product:
             result["derived_byte_products_per_second"] = sum(s["derived_byte_products_per_second"] for s in states.values())
-        if sve:
+        if sve or half_float:
             result["derived_stress_lane_fmas_per_second"] = sum(s["derived_stress_lane_fmas_per_second"] for s in states.values())
     if interval_rates["count"]:
         result["aggregate_interval_rate"] = {
@@ -327,5 +334,5 @@ def analyze_verified_progress(worker: dict, window: Any) -> dict:
 
 def attach_verified_progress(window: Any) -> None:
     for worker in getattr(window, "worker_results", []):
-        if (verified_fp32_worker(worker) or verified_vnni_worker(worker) or verified_sve2_worker(worker) or verified_dotprod_worker(worker) or verified_i8mm_worker(worker)) and "verified_progress" in worker:
+        if (verified_fp32_worker(worker) or verified_vnni_worker(worker) or verified_sve2_worker(worker) or verified_dotprod_worker(worker) or verified_i8mm_worker(worker) or verified_half_worker(worker)) and "verified_progress" in worker:
             worker["verified_progress_analysis"] = analyze_verified_progress(worker, window)

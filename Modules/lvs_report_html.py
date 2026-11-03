@@ -792,6 +792,10 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
             rate_text += (f' SVE vector lengths {_escape(", ".join(map(str, lengths)))} bytes; '
                           f'derived active-lane FMA/s {_number(evidence.get("derived_stress_lane_fmas_per_second"))}'
                           ' (not measured instructions).')
+        if evidence.get("contract") in {"neon_fp16_progress_v1","neon_fhm_progress_v1"}:
+            rate_text += (f' Fixed 128-bit NEON; derived active-lane FMA/s '
+                          f'{_number(evidence.get("derived_stress_lane_fmas_per_second"))}'
+                          ' (not measured instructions or a saturation claim).')
         cpu_progress_text += (
             '<p class="muted compact">Verified CPU work evidence: '
             f'{_escape(evidence.get("quality", "not_assessed"))}.{rate_text} '

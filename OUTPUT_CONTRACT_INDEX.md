@@ -991,3 +991,25 @@ verification; compatibility exports retain whole recognized worker records,
 including failed/incomplete ones. Captured native readiness adds
 `i8mm_build_status` where available, separately from runtime availability and
 executable identity. See the [I8MM workload contract](docs/neon_i8mm_contract.md).
+
+
+## Explicit NEON FP16 and FHM
+
+`neon_fp16_v1` / `neon_fhm_v1` and corresponding `_progress_v1` sidecars record
+experimental explicit-only finite fused arithmetic. The method is
+`integer_significand_rne_fused_reference`, comparison `bit_exact`, with eight
+chains, 256 stress rounds, one witness round, 16-bit inputs, and 8/4 active lanes
+with 16/32-bit accumulation. Operation families are `fp16_fused_multiply_add` /
+`fp16_product_fp32_fused_accumulate_low_high`; FHM mapping is
+`paired_low_high_halfwords`, FP16 mapping `all_eight_halfwords`.
+
+Native implementations are `aarch64_neon_fp16_asm` / `aarch64_neon_fhm_asm` with
+actual ISA `asimdhp` / `asimdfhm`. Labelled `test_half_emulation` is software-only.
+Each thread records FPCR, independently required HWCAP, exact pinned CPU identity,
+all verification phases, verified/interrupted work and errors. Missing,
+incompatible or failed evidence prevents successful worker classification.
+Reports distinguish derived lane-FMAs from measured instruction retirement or
+saturation; complete failure records survive compatibility exports. Helper
+readiness adds `fp16_build_status` and `fhm_build_status` independently of runtime
+availability and executable identity. See the
+[FP16/FHM workload contract](docs/neon_fp16_fhm_contract.md).

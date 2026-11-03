@@ -92,6 +92,8 @@ def write_final_run_artifacts(
                 native["readiness"] = {"available": readiness.get("available"), "built": readiness.get("built"),
                     "compiler_name": Path(str(readiness.get("compiler") or "")).name,
                     "sve_build_status": (readiness.get("sve_build") or {}).get("status"),
+                    "fp16_build_status": (readiness.get("fp16_build") or {}).get("status"),
+                    "fhm_build_status": (readiness.get("fhm_build") or {}).get("status"),
                     "i8mm_build_status": (readiness.get("i8mm_build") or {}).get("status"),
                     "dotprod_build_status": (readiness.get("dotprod_build") or {}).get("status"),
                     "sve2_build_status": (readiness.get("sve2_build") or {}).get("status"),

@@ -442,7 +442,15 @@ inherited VL is software-validated, never thereby declared physically accepted.
 
 The adopted ARM64 scope is deliberately finite:
 
-- [ ] NEON FP16/FHM (`asimdhp` / `asimdfhm`), with each required subfeature gated.
+- [x] Implement experimental explicit-only NEON FP16/FHM (`neon_fp16` /
+  `neon_fhm`) in the uncommitted post-I8MM tree, with independent ASIMDHP /
+  ASIMDFHM runtime and optional compilation gates, genuine fused instructions,
+  exact independent reference verification and all-thread progress/lifecycle.
+- [x] NEON FP16 Gate A arithmetic/integrity acceptance on Spark (20 CPUs) and
+  Snapdragon X1 Plus (8 CPUs), with independent ASIMDHP eligibility.
+- [x] NEON FP16 Gate B sustained verified-stress acceptance on both tested platforms.
+- [x] NEON FHM Gate A on both targets, with independent ASIMDFHM eligibility.
+- [x] NEON FHM Gate B on both targets, independently of FP16 acceptance.
 - [x] Implement explicit NEON DotProd (`asimddp`, token `neon_dotprod`) in
   committed milestone `853a27db6ba96f1809ae3ac0c56035ae53228629`: genuine signed `SDOT` and unsigned `UDOT`,
   independent modulo-2^32 reference, per-thread affinity/capability and verified
@@ -452,7 +460,8 @@ The adopted ARM64 scope is deliberately finite:
 - [x] NEON DotProd Gate B sustained verified-stress evaluation on those targets;
   do not assume greater power or stress effectiveness from the instruction family.
 - [x] Implement experimental explicit-only NEON I8MM (`neon_i8mm`) in the
-  uncommitted post-DotProd tree: genuine SMMLA/UMMLA/USMMLA, independent 2×8 by
+  committed milestone `787c9ae255f81ad2aab4326b2721e740510767d3`: genuine
+  SMMLA/UMMLA/USMMLA, independent 2×8 by
   8×2 matrix verification and per-thread capability/affinity/progress evidence.
 - [x] NEON I8MM Gate A physical arithmetic/integrity acceptance on Spark
   (20 CPUs) and Snapdragon X1 Plus (8 CPUs), with pinned all-target eligibility.
@@ -464,7 +473,7 @@ The adopted ARM64 scope is deliberately finite:
 - [ ] SVE I8MM.
 - [ ] SVE BF16.
 
-Except for committed, accepted SVE2/DotProd and the uncommitted I8MM implementation,
+Except for committed, accepted SVE2/DotProd/I8MM and uncommitted FP16/FHM,
 these remain adopted future implementations. Both DotProd and I8MM physical gates
 PASS on Spark and Snapdragon; existing SVE2 and baseline acceptance remain unchanged.
 Prioritize on Spark by demonstrated capability and worthwhile
@@ -525,7 +534,74 @@ No further DotProd physical repetition is required. Next is unfinished adopted
 specialized ARM64 work on Spark, then supported Snapdragon compatibility and
 acceptance. SVE/SVE2, VNNI and generic selection behavior remain unchanged.
 
-**NEON I8MM implementation (uncommitted, physically accepted):**
+**NEON FP16/FHM implementation (uncommitted, physically accepted):**
+The [FP16/FHM contract](docs/neon_fp16_fhm_contract.md) defines two independent,
+experimental explicit-only kernels. `neon_fp16` executes eight vector FP16 FMLA
+chains (64 result lanes); `neon_fhm` executes four FMLAL/FMLAL2 low/high pairs
+with FP32 accumulation (32 lanes). Both perform 256 recurrence rounds and a
+one-round fused witness, with exact integer-significand RN-even references,
+signed/normal/subnormal cases, bounded finite results and one-bit corruption
+checks. FPCR rounding/flush/trap/alternative-mode conditions are recorded and
+validated rather than silently changed. ASIMDHP and ASIMDFHM are independently
+gated on every selected allowed CPU; no SVE or processor-model inference is used.
+
+Software validation passes **346/346 smoke tests**, **81/81 profiles** with five
+unchanged advisories, native baseline/feature-enabled AArch64 compilation,
+Python compilation/imports and output-contract checks. The complete 368-file
+source fingerprint is
+`d7fdd746fd5befb1ffe2b5e2a99331dbac82a2dbaaa9088d19acb0067e49fb4c`.
+All eight physical executions recorded that fingerprint with unchanged
+initial/final endpoints. No production code has changed since physical testing;
+acceptance documentation remains outside the scoped source identity.
+
+| Tested platform / workload | Functional duration / verified blocks | Sustained duration / verified blocks | Gate A | Gate B |
+|---|---|---|---|---|
+| GB10 Spark FP16, 20 CPUs | 120.362 s / 8,133,277,285 | 600.844 s / 40,624,592,362 | PASS | PASS |
+| GB10 Spark FHM, 20 CPUs | 120.301 s / 9,543,546,155 | 600.343 s / 47,491,560,659 | PASS | PASS |
+| Snapdragon X1 Plus FP16, 8 CPUs | 121.286 s / 2,293,577,085 | 600.565 s / 11,376,472,625 | PASS | PASS |
+| Snapdragon X1 Plus FHM, 8 CPUs | 121.115 s / 2,706,391,538 | 600.412 s / 13,409,180,224 | PASS | PASS |
+
+Both actual AArch64 helpers confirm genuine eight-chain FMLA .8H FP16
+accumulation and four FMLAL/four FMLAL2 FP32 chains, with correct low/high
+mapping, 256-round recurrence, result stores and a separate one-round witness.
+All selected CPUs pass the appropriate independent feature and pinned-affinity
+checks, with FPCR=0, bit-exact independent reference verification, complete
+initial/periodic/final phases and zero mismatches. Progress reconciles with
+terminal counters; workers exit 0, parents finalize PASS, and normal cleanup
+completes without safety interventions, timeouts or abnormal termination.
+
+Target-local compilers and matching prelaunch/process/post-execution SHA-256:
+
+- Spark, GCC 13.3.0: `78f125b808033b1807f70aee9a656bb6084d59b2f3440a8780bbc9e82c68b1f3`.
+- Snapdragon, GCC 15.2.0: `23d59bf34049529b2490e8bb1e350f300f38d8bdf0609fdecf97dfb171a093de`.
+
+Sustained verified rates are 67.613/79.116 million blocks/s for Spark FP16/FHM
+and 18.947/22.338 million for Snapdragon FP16/FHM. First/second-half rates are
+stable, per-thread progress coverage is approximately 99.56–99.76%, and all four
+sustained runs record zero stalls. Rates are not directly equivalent arithmetic
+counts: FP16 and FHM verify different lane counts and accumulation precision.
+
+Spark platform-zone thermal peaks are 83.6/85.1 C for FP16/FHM, with CPU-specific
+temperature and package power unavailable. Reported cpufreq is 2,808/3,900 MHz
+(aggregate 3,354 MHz), not independently measured effective clocks. Snapdragon
+CPU-subsystem peaks are 82.8/85.6 C; clocks and package power are unavailable.
+Denied `dmesg` and empty filtered journals limit kernel visibility on both.
+Acceptance covers the tested hardware, compilers, FPCR=0 and finite numerical
+domain; it does not establish maximum power or superiority of one instruction
+family. No deliberate physical corruption injection is claimed.
+
+No further FP16/FHM physical repetition is required. After closure/commit,
+remaining adopted specialized ARM64 work remains Spark-first, then supported
+Snapdragon compatibility and acceptance. Reproduction procedures and exact
+execution/diagnostic paths remain in the contract.
+
+Both are high-compute-demand workload candidates, not assumed maximum-power or
+higher-demand replacements for scalar, baseline NEON, SVE or other accepted
+kernels. Generic Auto, vector intents and measured Power Auto are unchanged.
+The shared CPU instruction presentation remains dynamically alphabetized with
+Auto first, including the new tokens. No further ISA family is started here.
+
+**NEON I8MM implementation (committed, physically accepted):**
 The [I8MM contract](docs/neon_i8mm_contract.md) defines three signed SMMLA,
 three unsigned UMMLA and two unsigned/signed USMMLA chains, each with four int32
 accumulators and 256 recurrence rounds. Independent wide-integer references
@@ -554,8 +630,8 @@ control/data flow and result stores rather than requiring fixed static counts.
 All four physical runs recorded the complete 367-file source fingerprint
 `d553defe2f14cafc62750d5684f05e068b9a52289edb03821274b739efe9e5e7`.
 
-The subsequent presentation-only CPU instruction ordering correction produces
-current 367-file fingerprint
+The presentation-only CPU instruction ordering correction in that accepted
+367-file milestone produced fingerprint
 `f0496662c2ea4e69a399672c602bb4657a40a96a818f94aaf4375a0e52ef4572`.
 CLI/TUI profile editing and Stage Overrides dynamically show Auto first, then
 explicit ISA tokens alphabetically (case-insensitive), preserving selection,
@@ -575,7 +651,8 @@ limited to these tested configurations and demonstrated sustained verified
 computation, not maximum power or superiority over another ISA workload.
 
 No further I8MM physical repetition is required. This milestone remains
-experimental, explicit-only and uncommitted, outside published v0.5.3-alpha.
+experimental and explicit-only, committed in
+`787c9ae255f81ad2aab4326b2721e740510767d3`, outside published v0.5.3-alpha.
 No Auto/vector-intent or measured Power Auto promotion is made. After closure,
 remaining adopted specialized ARM64 work stays Spark-first, followed by supported
 Snapdragon compatibility/acceptance; no additional ISA family is adopted here.

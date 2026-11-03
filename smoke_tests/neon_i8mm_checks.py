@@ -43,12 +43,12 @@ def _run(binary,directory,**kwargs):
     return run_integer(binary,directory,kernel=KERNEL,**kwargs)
 
 
-def _check_i8mm_emission(body):
-    """Trace emitted data/control flow, not static opcode-site counts.
+def _check_i8mm_emission(body, *, half_kind=None):
+    """Trace emitted matrix or FP16/FHM data/control flow, not static site counts.
 
     A bounded symbolic interpreter follows both running and final-block paths.
     Vector values carry their input/accumulator identity and recurrence count;
-    this verifies operand packing, independent chains, all 256 updates and every
+    this verifies operand packing, independent chains, all recurrence updates and every
     output store even when GCC peels or copies accumulators. This is software
     emission evidence, not physical execution. Unknown instructions fail closed.
     """
@@ -56,16 +56,21 @@ def _check_i8mm_emission(body):
     for line in body.splitlines():
         line=line.split('//',1)[0].strip()
         if not line:continue
-        if line.endswith(':'):
-            labels[line[:-1]]=len(code)
-        elif not line.startswith('.'):
+        if line.startswith('#'):continue  # GNU #APP/#NO_APP markers.
+        label=re.match(r'^([\w.$]+):\s*(.*)$',line)
+        if label:
+            labels.setdefault(label[1],[]).append(len(code)); line=label[2]
+        if line and not line.startswith('.'):
             parts=line.split(None,1)
             code.append((parts[0],re.split(r',\s*(?![^\[]*\])',parts[1]) if len(parts)>1 else []))
     code=[(op,[a.strip() for a in args]) for op,args in code]
-    assert any(op=='smmla' for op,_ in code)
+    assert any(op==('fmlal' if half_kind=='fhm' else 'fmla' if half_kind else 'smmla') for op,_ in code)
 
-    for final,running in [(0,1),(1,1),(1,0),(0,0)]:
+    paths=[(0,1,256),(1,1,256),(1,0,256),(0,0,256)]
+    if half_kind:paths.append((1,0,1))
+    for final,running,rounds in paths:
         regs={'x0':0x10000,'x1':0x20000,'x2':final,'sp':0x30000}
+        if half_kind:regs.update(x2=rounds,x3=final)
         vectors={}; stores={}; counts=[0]*8; compared=None; pc=0
         def scalar(reg):
             if reg in ('wzr','xzr'):return 0
@@ -75,21 +80,36 @@ def _check_i8mm_emission(body):
             return regs['x'+reg[1:] if reg.startswith('w') else reg]
         def assign(reg,value):
             regs['x'+reg[1:] if reg.startswith('w') else reg]=value & (0xffffffff if reg.startswith('w') else 0xffffffffffffffff)
-        def vector(reg):return int(re.fullmatch(r'[qv](\d+)(?:\.(?:16b|4s))?',reg)[1])
+        def destination(label):
+            local=re.fullmatch(r'(\d+)([bf])',label)
+            if local:
+                candidates=labels[local[1]]
+                return max(p for p in candidates if p<pc) if local[2]=='b' else min(p for p in candidates if p>=pc)
+            assert len(labels[label])==1
+            return labels[label][0]
+        def vector(reg):return int(re.fullmatch(r'[qv](\d+)(?:\.(?:16b|4s|8h|4h))?',reg)[1])
         for step in range(30000):
             assert 0<=pc<len(code),('control flow left function',pc)
             op,args=code[pc]; pc+=1
-            if op in ('smmla','ummla','usmmla'):
-                assert re.fullmatch(r'v\d+\.4s',args[0])
-                assert all(re.fullmatch(r'v\d+\.16b',a) for a in args[1:])
+            if op in ('smmla','ummla','usmmla','fmla','fmlal','fmlal2'):
                 dest,left,right=map(vector,args)
-                chain,rounds=vectors[dest]
+                chain,updates=vectors[dest]
                 assert isinstance(chain,int) and 0<=chain<8
-                assert op==('smmla' if chain<3 else 'ummla' if chain<6 else 'usmmla')
-                assert vectors[left]==('input',16*chain)
-                assert vectors[right]==('input',128+16*chain)
-                assert rounds<256
-                vectors[dest]=(chain,rounds+1); counts[chain]+=1
+                if half_kind:
+                    wide=half_kind=='fhm'
+                    assert op==('fmlal2' if wide and chain%2 else 'fmlal' if wide else 'fmla')
+                    assert re.fullmatch(r'v\d+\.'+('4s' if wide else '8h'),args[0])
+                    assert all(re.fullmatch(r'v\d+\.'+('4h' if wide else '8h'),a) for a in args[1:])
+                    assert vectors[left]==('input',16*(chain//2))
+                    assert vectors[right]==('input',64+16*(chain//2))
+                else:
+                    assert re.fullmatch(r'v\d+\.4s',args[0])
+                    assert all(re.fullmatch(r'v\d+\.16b',a) for a in args[1:])
+                    assert op==('smmla' if chain<3 else 'ummla' if chain<6 else 'usmmla')
+                    assert vectors[left]==('input',16*chain)
+                    assert vectors[right]==('input',128+16*chain)
+                assert updates<rounds
+                vectors[dest]=(chain,updates+1); counts[chain]+=1
             elif op in ('ldr','ldp','str','stp'):
                 # ABI callee-save stack traffic is unrelated to matrix inputs
                 # and output. All full-width matrix loads/stores are traced.
@@ -108,11 +128,19 @@ def _check_i8mm_emission(body):
                     if op in ('ldr','ldp'):
                         assert 0x10000<=offset<0x10180 and offset%16==0
                         offset-=0x10000
-                        vectors[vector(reg)]=('input',offset) if offset<256 else ((offset-256)//16,0)
+                        initial=128 if half_kind=='fp16' else 256
+                        vectors[vector(reg)]=('input',offset) if offset<initial else ((offset-initial)//16,0)
                     else:
-                        assert 0x20000<=offset<0x20080 and offset%16==0
+                        assert 0x20000<=offset<(0x20100 if half_kind=="fp16" else 0x20080) and offset%16==0
                         assert offset not in stores,('duplicate store',offset)
                         stores[offset]=vectors[vector(reg)]
+            elif op in ('ushll','ushll2','uxtl','uxtl2'):
+                assert half_kind=='fp16' and re.fullmatch(r'v\d+\.4s',args[0])
+                assert re.fullmatch(r'v\d+\.'+('8h' if op.endswith('2') else '4h'),args[1])
+                assert len(args)==2 or scalar(args[2])==0
+                chain,updates=vectors[vector(args[1])]
+                assert type(chain) is int
+                vectors[vector(args[0])]=('split',chain,updates,int(op.endswith('2')))
             elif op=='mov':
                 if args[0].startswith('v'):
                     assert all(re.fullmatch(r'v\d+\.16b',a) for a in args)
@@ -122,17 +150,20 @@ def _check_i8mm_emission(body):
             elif op in ('add','and','orr'):
                 a,b=map(scalar,args[1:])
                 assign(args[0],a+b if op=='add' else a&b if op=='and' else a|b)
+            elif op=='tst':compared=scalar(args[0])&scalar(args[1])
             elif op=='cmp':compared=scalar(args[0])-scalar(args[1])
-            elif op=='b':pc=labels[args[0]]
+            elif op=='b':pc=destination(args[0])
             elif op in ('b.eq','beq','b.ne','bne'):
                 assert compared is not None
-                if (compared==0)==(op in ('b.eq','beq')):pc=labels[args[0]]
+                if (compared==0)==(op in ('b.eq','beq')):pc=destination(args[0])
             elif op in ('cbz','cbnz'):
-                if (scalar(args[0])==0)==(op=='cbz'):pc=labels[args[1]]
+                if (scalar(args[0])==0)==(op=='cbz'):pc=destination(args[1])
             elif op=='ret':
                 if running or final:
-                    assert scalar('w0')==1 and counts==[256]*8,counts
-                    assert stores=={0x20000+16*i:(i,256) for i in range(8)},stores
+                    assert scalar('w0')==1 and counts==[rounds]*8,counts
+                    expected=({0x20000+16*i:('split',i//2,rounds,i%2) for i in range(16)}
+                              if half_kind=='fp16' else {0x20000+16*i:(i,rounds) for i in range(8)})
+                    assert stores==expected,stores
                 else:
                     assert scalar('w0')==0 and not stores
                     assert max(counts)<=1  # Speculated/peeled work gets no result credit.

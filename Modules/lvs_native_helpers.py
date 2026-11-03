@@ -48,7 +48,7 @@ def native_helper_build_command(compiler: str, source: Path, binary: Path) -> li
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
     if source.name == "cpu_stress_helper.c":
-        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h", "cpu_i8mm_kernel.h")
+        dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h", "cpu_i8mm_kernel.h", "cpu_half_kernel.h")
                             if source.with_name(name).exists())
     return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
@@ -102,30 +102,43 @@ def resolve_native_helper_status(
     if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
         original_builder = build_runner
         def build_runner(command):
-            # Independent optional regions at each existing SVE build tier.
-            # Prefer both, then retain either one, finally the baseline tier.
-            # At most four attempts per tier (twelve total), no global -march.
-            failures = {}
-            for regions in (("DOTPROD", "I8MM"), ("DOTPROD",), ("I8MM",), ()):
+            # Fast all-regions build, then bounded incremental salvage. A new
+            # unsupported region cannot discard an existing supported kernel.
+            # At most seven attempts per existing SVE tier, twenty-one total;
+            # successful normal builds still take one attempt. No global -march.
+            regions=("DOTPROD", "I8MM", "FP16", "FHM")
+            reasons={}
+            def attempt(enabled):
                 try:
-                    attempt = original_builder([command[0],
-                        *[f"-DLVS_CPU_HELPER_ENABLE_{r}" for r in regions], *command[1:]])
-                    reason = str(attempt.stderr or "optional ISA compilation failed")[-2000:]
+                    result=original_builder([command[0],
+                        *[f"-DLVS_CPU_HELPER_ENABLE_{r}" for r in enabled], *command[1:]])
+                    return result, str(result.stderr or "optional ISA compilation failed")[-2000:]
                 except Exception as error:
-                    attempt, reason = None, str(error)
+                    return None,str(error)
+            completed,reason=attempt(regions)
+            selected=list(regions) if completed is not None and completed.returncode==0 else []
+            if not selected:
+                completed,baseline_reason=attempt(())
+                if completed is None or completed.returncode!=0:
+                    if completed is None:raise RuntimeError(baseline_reason)
+                    return completed
+                restore=False
                 for region in regions:
-                    failures[region] = reason
-                if attempt is not None and attempt.returncode == 0:
-                    for region in ("DOTPROD", "I8MM"):
-                        status[region.lower()+"_build"] = {
-                            "status": "compiled" if region in regions else "unavailable",
-                            "reason": "" if region in regions else failures.get(region, "optional region unavailable"),
-                        }
-                    return attempt
-                if not regions:
-                    if attempt is None:
-                        raise RuntimeError(reason)
-                    return attempt
+                    candidate,why=attempt((*selected,region))
+                    if candidate is not None and candidate.returncode==0:
+                        selected.append(region); completed=candidate; restore=False
+                    else:
+                        reasons[region]=why; restore=True
+                if restore:
+                    completed,reason=attempt(selected)
+                    if completed is None:raise RuntimeError(reason)
+            for region in regions:
+                status[region.lower()+"_build"]={
+                    "status":"compiled" if region in selected and completed.returncode==0 else "unavailable",
+                    "reason":"" if region in selected and completed.returncode==0 else reasons.get(region,reason),
+                }
+            return completed
+
     try:
         if source.name == "cpu_stress_helper.c" and binary.name == "cpu_stress_helper_arm64":
             # SVE2 is independently optional. If it fails, retain the existing

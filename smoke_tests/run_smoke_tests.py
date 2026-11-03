@@ -87,6 +87,10 @@ from smoke_tests.native_binary_provenance_checks import run_native_binary_proven
 from smoke_tests.cpu_instruction_order_checks import (
     run_cpu_instruction_order_checks, run_tui_cpu_instruction_order_checks,
 )
+from smoke_tests.neon_half_checks import (
+    run_half_reference_checks, run_half_emission_checks, run_half_lifecycle_checks,
+    run_half_selection_build_checks, run_half_reporting_progress_checks, run_half_frontend_checks,
+)
 from smoke_tests.neon_i8mm_checks import (
     run_i8mm_reference_instruction_checks, run_i8mm_native_lifecycle_checks,
     run_i8mm_integrity_reporting_checks, run_i8mm_selection_build_checks,
@@ -29369,6 +29373,12 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_half_reference_checks,
+        run_half_emission_checks,
+        run_half_lifecycle_checks,
+        run_half_selection_build_checks,
+        run_half_reporting_progress_checks,
+        run_half_frontend_checks,
         run_cpu_instruction_order_checks,
         run_tui_cpu_instruction_order_checks,
         run_i8mm_reference_instruction_checks,
