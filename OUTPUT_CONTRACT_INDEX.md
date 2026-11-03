@@ -969,3 +969,25 @@ or physical acceptance. Compatibility exports retain whole recognized records,
 including failures. Native readiness records `dotprod_build_status` where
 collected, separately from runtime availability and executable identity.
 See the [DotProd workload and acceptance contract](docs/neon_dotprod_contract.md).
+
+## Explicit NEON I8MM matrix arithmetic
+
+`neon_i8mm_v1` and `neon_i8mm_progress_v1` identify the explicit-only native
+I8MM workload. Operation family
+`s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2` uses
+`wide_integer_matrix_reference_modulo_2_32`, distinct from DotProd groupings.
+Matrix layout is `a_row_major_b_column_major_c_row_major`; eight chains split
+3 signed / 3 unsigned / 2 mixed, four int32 lanes, eight products per lane and
+256 matrix rounds per block are authoritative metadata. Runtime implementation
+is `aarch64_neon_i8mm_intrinsics`, actual ISA `i8mm`, with per-thread common
+HWCAP/HWCAP2_I8MM and pinned affinity. All phases and counts must reconcile.
+Missing or conflicting matrix/capability/lifecycle evidence cannot establish
+success. Labelled test emulation is not physical instruction evidence.
+
+The bounded timestamped progress contract records verified work and errors;
+derived products/s are not measured retired instructions, saturation or physical
+acceptance. Reports preserve selected versus actual execution and software
+verification; compatibility exports retain whole recognized worker records,
+including failed/incomplete ones. Captured native readiness adds
+`i8mm_build_status` where available, separately from runtime availability and
+executable identity. See the [I8MM workload contract](docs/neon_i8mm_contract.md).

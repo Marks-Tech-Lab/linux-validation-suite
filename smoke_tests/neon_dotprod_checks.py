@@ -40,10 +40,10 @@ def _valid():
     return w
 
 
-def _run(binary,directory,*,fail=False,workers=1):
+def _run(binary,directory,*,fail=False,workers=1,kernel=KERNEL):
     path=Path(directory)/(str(time.monotonic_ns())+'.json')
     cpus=sorted(os.sched_getaffinity(0))[:workers]
-    proc=subprocess.Popen([str(binary),'--mode',KERNEL,'--kernel-flavor',KERNEL,'--threads',str(len(cpus)),
+    proc=subprocess.Popen([str(binary),'--mode',kernel,'--kernel-flavor',kernel,'--threads',str(len(cpus)),
         '--cpu-ids',','.join(map(str,cpus)),'--result-file',str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         if not fail:
@@ -215,6 +215,10 @@ def run_dotprod_progress_checks():
 
 
 def run_dotprod_frontend_checks():
+    _frontend_checks(KERNEL)
+
+
+def _frontend_checks(kernel):
     # Exercise the actual shared mutation, CLI adapter and command-planning paths
     # already used by SVE2. Keep family identity separate in this fixture.
     import contextlib,io
@@ -229,26 +233,26 @@ def run_dotprod_frontend_checks():
         service=Service(Path(directory));source=_source(service);before=source.read_bytes()
         setup=service.create_run_setup(source);edit=service.run_setup_stage_edit(setup)
         fields=service.stage_configuration_settings(edit,0);slot=next(i+1 for i,f in enumerate(fields) if f.key=='cpu_instruction')
-        service.apply_stage_configuration(edit,0,'cpu_instruction',KERNEL)
-        profile=service.profile_loader.load_profile(source);host=Host(service,['o','5','1',str(slot),KERNEL,'','4','u'])
+        service.apply_stage_configuration(edit,0,'cpu_instruction',kernel)
+        profile=service.profile_loader.load_profile(source);host=Host(service,['o','5','1',str(slot),kernel,'','4','u'])
         cli=RunSetupCliAdapter(host);labels=service.profile_loader.load_segment_labels(source,profile)
         setup=cli._create_run_setup_state(source,profile,labels)
         cli._run_setup_review_loop(cli._build_run_setup_review_controller(setup),setup,profile,labels)
         assert ProfileLoader.profile_payload(profile)==ProfileLoader.profile_payload(edit.profile)
-        assert profile.stages[0].modules.cpu.instruction_set==KERNEL and profile.stages[0].modules.cpu.instruction_intent==''
-        assert source.read_bytes()==before and service.create_run_setup(source).profile.stages[0].modules.cpu.instruction_set!=KERNEL
+        assert profile.stages[0].modules.cpu.instruction_set==kernel and profile.stages[0].modules.cpu.instruction_intent==''
+        assert source.read_bytes()==before and service.create_run_setup(source).profile.stages[0].modules.cpu.instruction_set!=kernel
     class Runner(WorkloadCpuMemoryMixin):
         def _cpu_machine(self):return 'arm64'
         def _cpu_helper_status(self):return dict(available=True,path='/fixture/helper')
         def _cpu_target_plan(self,cpu):return dict(target_cpu_ids=[1,17])
-        def _cpu_helper_supported_kernel_flavors(self,cpu_id=None):return ['scalar','neon',KERNEL]
+        def _cpu_helper_supported_kernel_flavors(self,cpu_id=None):return ['scalar','neon',kernel]
         def _python_runtime(self):return '/fixture/python'
-    runner=Runner();cpu=ModuleCpu(enabled=True,backend_preference='native',instruction_set=KERNEL)
-    plan=runner._cpu_capability_plan(cpu);assert plan['selected_kernel_flavor']==KERNEL
-    cmd=runner._cpu_command(cpu,backend_override='cpu_native_helper');assert cmd[cmd.index('--kernel-flavor')+1]==KERNEL
+    runner=Runner();cpu=ModuleCpu(enabled=True,backend_preference='native',instruction_set=kernel)
+    plan=runner._cpu_capability_plan(cpu);assert plan['selected_kernel_flavor']==kernel
+    cmd=runner._cpu_command(cpu,backend_override='cpu_native_helper');assert cmd[cmd.index('--kernel-flavor')+1]==kernel
     assert cmd[cmd.index('--cpu-ids')+1]=='1,17'
     runner._cpu_helper_supported_kernel_flavors=lambda cpu_id=None:['scalar','neon']
     assert not runner._cpu_capability_plan(cpu)['selected_kernel_flavor'] and runner._cpu_command(cpu,backend_override='cpu_native_helper') is None
-    viable,unavailable=power_cpu_candidate_inventory(architecture='arm64',availability={'cpu_native_helper':True},native_kernel_flavors=['scalar',KERNEL],selected_native_kernel='scalar')
-    assert all(c.get('kernel_flavor')!=KERNEL for c in viable)
-    assert any(KERNEL in c['candidate_id'] and 'explicit-only' in c['reason'] for c in unavailable)
+    viable,unavailable=power_cpu_candidate_inventory(architecture='arm64',availability={'cpu_native_helper':True},native_kernel_flavors=['scalar',kernel],selected_native_kernel='scalar')
+    assert all(c.get('kernel_flavor')!=kernel for c in viable)
+    assert any(kernel in c['candidate_id'] and 'explicit-only' in c['reason'] for c in unavailable)

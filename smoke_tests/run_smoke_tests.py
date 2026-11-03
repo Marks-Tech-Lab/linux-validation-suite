@@ -84,6 +84,14 @@ from smoke_tests.gpu_inventory_identity_checks import run_gpu_inventory_identity
 from smoke_tests.source_provenance_checks import run_source_provenance_checks, run_source_provenance_artifact_checks
 from smoke_tests.source_review_checks import run_automatic_source_workflow_checks, run_source_git_correlation_checks
 from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
+from smoke_tests.cpu_instruction_order_checks import (
+    run_cpu_instruction_order_checks, run_tui_cpu_instruction_order_checks,
+)
+from smoke_tests.neon_i8mm_checks import (
+    run_i8mm_reference_instruction_checks, run_i8mm_native_lifecycle_checks,
+    run_i8mm_integrity_reporting_checks, run_i8mm_selection_build_checks,
+    run_i8mm_progress_checks, run_i8mm_frontend_checks,
+)
 from smoke_tests.neon_dotprod_checks import (
     run_dotprod_reference_instruction_checks, run_dotprod_native_lifecycle_checks,
     run_dotprod_integrity_reporting_checks, run_dotprod_selection_build_checks,
@@ -29361,6 +29369,14 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_cpu_instruction_order_checks,
+        run_tui_cpu_instruction_order_checks,
+        run_i8mm_reference_instruction_checks,
+        run_i8mm_native_lifecycle_checks,
+        run_i8mm_integrity_reporting_checks,
+        run_i8mm_selection_build_checks,
+        run_i8mm_progress_checks,
+        run_i8mm_frontend_checks,
         run_dotprod_reference_instruction_checks,
         run_dotprod_native_lifecycle_checks,
         run_dotprod_integrity_reporting_checks,

@@ -214,7 +214,9 @@ def run_sve2_selection_build_checks():
                 if ok:binary.write_text('fixture');binary.chmod(0o700)
                 return SimpleNamespace(returncode=0 if ok else 1,stdout='',stderr='' if ok else 'optional compilation unavailable')
             result=resolve_native_helper_status(source=source,binary=binary,compiler='gcc',reason_label='CPU',build_runner=build)
-            assert result['available'] and len(calls)=={'all':1,'sve':3,'baseline':5}[succeed]
+            assert result['available'] and len(calls)<=12
+            assert ('-DLVS_CPU_HELPER_ENABLE_SVE2' in calls[-1]) == (succeed=='all')
+            assert ('-DLVS_CPU_HELPER_ENABLE_SVE' in calls[-1]) == (succeed!='baseline')
             assert result['sve2_build']['status']==('compiled' if succeed=='all' else 'unavailable')
             assert not any('-march=' in arg for cmd in calls for arg in cmd)
         header=source.with_name('cpu_sve2_kernel.h');header.write_text('changed header')

@@ -61,6 +61,7 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
             "avx512": "AVX-512",
             "avx_vnni": "AVX-VNNI 256-bit (experimental, explicit-only)",
             "avx512_vnni": "AVX-512 VNNI (experimental, explicit-only)",
+            "neon_i8mm": "NEON signed/unsigned/mixed I8MM (experimental, explicit-only)",
             "neon_dotprod": "NEON signed/unsigned byte DotProd (experimental, explicit-only)",
             "sve2_smlal": "SVE2 signed widening integer MAC (experimental, explicit-only)",
             "neon": "NEON",
@@ -394,7 +395,7 @@ class ProfileEditPresenter:
     def option_values(self, key: str) -> List[str]:
         options = {
             "gpu_target": list(self.profile_editor.GPU_TARGET_OPTIONS),
-            "cpu_instruction": list(self.profile_editor.CPU_INSTRUCTION_OPTIONS),
+            "cpu_instruction": self.profile_editor.cpu_instruction_options(),
             "cpu_instruction_intent": list(self.profile_editor.CPU_INSTRUCTION_INTENT_OPTIONS),
             "memory_instruction": list(self.profile_editor.MEMORY_INSTRUCTION_OPTIONS),
             "gpu_backend": self.profile_editor.gpu_backend_options(),

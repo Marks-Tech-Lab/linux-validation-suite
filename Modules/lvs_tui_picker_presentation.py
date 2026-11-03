@@ -58,6 +58,9 @@ def setup_picker_open_presentation(spec: Any, setup_summary: str) -> TuiPickerOp
 
 def profile_edit_picker_presentation(spec: Any, profile_summary: str) -> TuiPickerPresentation:
     labels, selected_index = picker_row_labels(getattr(spec, "options", ()), getattr(spec, "current", ""))
+    if getattr(spec, "key", "") in {"cpu_instruction", "configuration:cpu_instruction"}:
+        labels = ["Auto" + label[len(option):] if option.casefold() == "auto" else label
+                  for option, label in zip(spec.options, labels)]
     title = str(getattr(spec, "title", "") or "")
     return TuiPickerPresentation(
         key=str(getattr(spec, "key", "") or ""),

@@ -75,7 +75,7 @@ class ProfileEditor:
     user input and when to persist through ProfileLoader.
     """
 
-    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "avx_vnni", "avx512_vnni", "neon", "neon_fp32_fma", "sve_fp32_fma", "sve2_smlal", "neon_dotprod"]
+    CPU_INSTRUCTION_OPTIONS = ["auto", "scalar", "sse", "avx", "avx2", "avx512", "avx_vnni", "avx512_vnni", "neon", "neon_fp32_fma", "sve_fp32_fma", "sve2_smlal", "neon_dotprod", "neon_i8mm"]
     CPU_INSTRUCTION_INTENT_OPTIONS = ["", "baseline_vector", "high_throughput_vector", "highest_verified_vector"]
     CPU_BACKEND_OPTIONS = ["auto", "native", "stress_ng", "python_fallback"]
     CPU_MODE_OPTIONS = ["normal", "extreme"]
@@ -104,6 +104,12 @@ class ProfileEditor:
         {"key": "cpu_vram", "label": "CPU + VRAM", "stage_type": "Combined", "default_label": "CPU + VRAM"},
     ]
     TEMPLATE_ALIASES = {"sse_vram": "baseline_vram", "avx_ram": "high_throughput_ram"}
+
+    @classmethod
+    def cpu_instruction_options(cls) -> List[str]:
+        """Presentation order only; retain catalog/selection policy and token values."""
+        return sorted(cls.CPU_INSTRUCTION_OPTIONS,
+                      key=lambda token: (token.casefold() != "auto", token.casefold()))
 
     def gpu_backend_options(self) -> List[str]:
         return list(GPU_3D_PREFERENCE_CANDIDATE_MAP.keys())

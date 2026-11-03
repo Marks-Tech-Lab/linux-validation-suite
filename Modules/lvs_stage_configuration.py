@@ -49,7 +49,7 @@ def stage_settings(stage: Any, editor: Any, gpu_cards=()) -> list[StageSetting]:
     add("cpu_power_auto", "CPU Power Auto", "cpu", "power_auto", ("false", "true"))
     add("cpu_backend", "CPU backend preference", "cpu", "backend_preference", editor.CPU_BACKEND_OPTIONS)
     add("cpu_instruction_intent", "CPU Instruction Intent", "cpu", "instruction_intent", editor.CPU_INSTRUCTION_INTENT_OPTIONS)
-    add("cpu_instruction", "CPU instruction set", "cpu", "instruction_set", editor.CPU_INSTRUCTION_OPTIONS)
+    add("cpu_instruction", "CPU instruction set", "cpu", "instruction_set", editor.cpu_instruction_options())
     add("cpu_mode", "CPU workload level", "cpu", "mode", editor.CPU_MODE_OPTIONS)
     add("cpu_load", "CPU load pattern", "cpu", "load", editor.CPU_LOAD_OPTIONS)
     add("cpu_threads", "CPU threads (all or positive count)", "cpu", "threads")
@@ -74,7 +74,10 @@ def stage_settings(stage: Any, editor: Any, gpu_cards=()) -> list[StageSetting]:
     return [replace(setting,
                     options=setting.options + tuple(value for value, _ in choices),
                     option_labels=setting.options + tuple(label for _, label in choices))
-            if setting.key in {"gpu_3d_target", "vram_target"} else setting
+            if setting.key in {"gpu_3d_target", "vram_target"}
+            else replace(setting, option_labels=tuple("Auto" if value.casefold() == "auto" else value
+                                                     for value in setting.options))
+            if setting.key == "cpu_instruction" else setting
             for setting in settings]
 
 
