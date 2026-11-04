@@ -85,7 +85,10 @@ def _nvme_temperature_c(value: Any) -> Optional[float]:
 
 def _json_messages(payload: Dict[str, Any]) -> str:
     messages = []
-    for message in payload.get("messages") or []:
+    # smartctl puts diagnostics inside "smartctl"; retain older wrapper input.
+    nested = payload.get("smartctl")
+    nested = nested if isinstance(nested, dict) else {}
+    for message in [*(payload.get("messages") or []), *(nested.get("messages") or [])]:
         if isinstance(message, dict):
             text = message.get("string") or message.get("message")
         else:
@@ -480,7 +483,7 @@ class StorageHealthEnricher:
         if smartctl_path:
             command = [smartctl_path, "--json", "--info", "--health", "--attributes"]
             if transport not in {"nvme", "pcie"}:
-                command.extend(["--nocheck", "standby,now"])
+                command.extend(["--nocheck", "standby"])
             command.append(device_path)
             payload, output, returncode = self._json_command(command)
             payload_error = _clean_text(payload.get("error")) if isinstance(payload, dict) else ""
@@ -497,8 +500,8 @@ class StorageHealthEnricher:
             else:
                 status = _status_from_error(messages)
                 note = messages or f"smartctl exit status {returncode}"
-                if any(marker in messages.lower() for marker in STANDBY_MARKERS):
-                    note = "drive is in standby; health query skipped without waking it"
+                if not (returncode & 1) and any(marker in messages.lower() for marker in STANDBY_MARKERS):
+                    note = "drive reports standby; health query skipped (device autodetection may already have accessed it)"
                 health = _base_health(status, note)
                 health["smart_source"] = "smartctl"
 

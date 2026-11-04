@@ -35,6 +35,10 @@ from smoke_tests.environment_ui_checks import (
     run_environment_ui_results_checks, run_environment_ui_navigation_checks,
     run_environment_ui_details_upgrade_checks, run_environment_ui_real_terminal_checks,
 )
+from smoke_tests.storage_thermal_feasibility_checks import (
+    run_storage_smart_standby_checks, run_storage_fio_probe_contract_checks,
+    run_storage_fio_trace_audit_checks,
+)
 from smoke_tests.environment_wave1_checks import (
     run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
     run_environment_maintenance_lock_checks, run_environment_interrupted_recovery_checks,
@@ -18321,7 +18325,7 @@ def test_storage_health_helpers() -> None:
         health = query_enricher.query_health({"Name": "sda", "DevicePath": "/dev/sda"}, classification)
         assert_equal(health["query_status"], expected, f"SMART query status for {message}")
         assert_true("{\"messages\"" not in str(health["query_notes"]), "raw SMART error JSON is not retained")
-        assert_true("--nocheck" in commands[0] and "standby,now" in commands[0], "ATA query avoids waking standby disk")
+        assert_true("--nocheck" in commands[0] and "standby" in commands[0], "ATA query requests standby skip; autodetection is not guaranteed no-wake")
         assert_true("--set" not in commands[0] and "--test" not in commands[0], "SMART query remains read-only")
 
     valid_nonzero = StorageHealthEnricher(
@@ -29685,6 +29689,9 @@ def main() -> int:
         test_inventory_memory_helpers,
         test_storage_inventory_helpers,
         test_storage_health_helpers,
+        run_storage_smart_standby_checks,
+        run_storage_fio_probe_contract_checks,
+        run_storage_fio_trace_audit_checks,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,
