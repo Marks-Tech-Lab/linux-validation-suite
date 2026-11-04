@@ -3,7 +3,7 @@
 This roadmap is the project-status source for completed, deferred, and
 undecided work. Deferred or possible work is not committed release scope.
 
-## Status And Current Priority Queue — 2026-10-30
+## Status And Authoritative Development Waves — 2026-11-04
 
 `[x]` marks only the named checkpoint in its stated scope. Proposal/design,
 implementation, software validation and physical acceptance are separate gates;
@@ -37,35 +37,75 @@ acceptance. Existing historical sections retain their original release scope.
    prerelease**. Its physical acceptance campaign is closed within the recorded
    boundaries; post-release development is not retroactively part of that release.
 
-### Immediate development order — Spark first
+### Authoritative current development queue — seven waves
 
-After stabilizing existing LVS functionality, follow this order:
+This is the **single authoritative current priority queue**. ISA and dynamic-stress
+sections below retain detailed scope, gates and evidence; their local ordering
+operates within these waves, not as competing immediate priorities. Planned work
+is not implemented, software-validated or physically accepted merely because it
+has been adopted here. This roadmap edit authorizes no implementation or campaign.
 
-1. [ ] Finish the adopted, worthwhile specialized **ARM64 work on NVIDIA GB10
-   Spark**, prioritizing genuinely different arithmetic and execution behavior.
-   Use the acceptance gates below to decide integrity coverage versus sustained
-   stress value; do not implement every available ARM extension.
-2. [ ] Physically validate shared, supported **NEON implementations on Snapdragon
-   X1 Plus**. Preserve baseline/non-SVE operation and fail-closed rejection of
-   absent SVE or specialized capabilities; Spark success does not substitute for
-   this portability evidence. The current committed SVE2 milestone's Snapdragon
-   baseline compilation, scalar/NEON FP32/FMA execution and unsupported-SVE2
-   rejection are complete as recorded below. Future specialized NEON kernels
-   retain their own capability and acceptance gates; this priority is not yet
-   complete for those unimplemented workloads.
-3. [ ] Return to outstanding **x86-64 ISA work**: BF16/FP16 and separately gated
-   AMX work. VNNI physical acceptance is now complete within the configurations
-   below, and the milestone is committed in
-   `8716340630a5e5df070957e13ddd3699cb7dda97`.
-   Additional x86 development follows Spark/Snapdragon priorities.
-4. [ ] Proceed to the existing **dynamic GPU, CPU and platform stress sequence**
-   after the applicable ISA prerequisites are completed or explicitly,
-   responsibly deferred. Record each deferral's unavailable capability/hardware,
-   evidence gap, risk and reopening condition; do not label it physically accepted.
+1. [x] **Python Environment Lifecycle — complete for implementation/software scope.**
+   Implemented, software-validated and committed, including guided Python
+   upgrade/repair/rebuild, recoverable backups, a separate maintenance lock and
+   the numbered interactive UI. Commit:
+   `bde9e07c3d482f74292390c7ecaf77124c33366d`; final validation: 384/384 smoke
+   tests and 81/81 profiles valid. **Broader real-host deployment acceptance
+   remains pending**, separate from these completed software gates. See the
+   [Environment Manager contract and deployment procedure](docs/environment_manager.md).
+2. [ ] **Storage Thermal Assist — next priority; planned, not implemented or accepted.**
+   Optional, lightweight, rate-limited, **read-only** drive activity for whole-system
+   thermal validation, including high-density 4U/24-bay servers. Reuse existing
+   storage inventory, temperature monitoring and fio where suitable. Require
+   explicit selection, authoritative device identity, temperature safeguards,
+   bounded cancellation and evaluation of interference with CPU/GPU workloads.
+   Bound per-drive and aggregate activity/concurrency from actual devices and
+   available resources; a 24-bay example is not a fixed hardware assumption.
+   This is **not a storage benchmark or data-integrity test** and does not expand
+   or replace the accepted Storage Health/Storage Benchmark baselines.
+3. [ ] **ARM64 ISA completion — planned remaining implementations.**
+   Finish adopted **SVE BF16** and **SVE2 QRDMLA (`sve2_qrdmla`)**, Spark first,
+   with separate arithmetic/integrity and sustained-stress gates. Confirm current
+   capabilities and the actual tested VL on GB10 Spark, then Snapdragon shared
+   helper/baseline compatibility and supported execution or truthful negative-
+   capability rejection as appropriate. Preserve all completed ARM64 acceptance;
+   Spark's 128-bit evidence does not accept wider VLs or Snapdragon SVE execution.
+4. [ ] **x86-64 ISA completion — planned remaining implementations.**
+   AVX-512 BF16, AVX-512 FP16 and dedicated AMX INT8/BF16/FP16 work, with each AMX
+   subfeature independently capability/compiler/OS-state gated. Preserve committed,
+   physically accepted VNNI and general x86 scope. ISA availability alone does not
+   establish arithmetic acceptance, sustained effectiveness or Auto promotion.
+5. [ ] **GPU Power-Limit Control — planned separate utility.**
+   Narrowly scoped control with CLI/TUI integration, based on actual supported
+   controls, permissions, ranges and authoritative physical GPU identity. Require
+   explicit confirmation, verification of the applied value, restoration of the
+   recorded prior setting, and interruption/recovery safeguards. Do not implement
+   automatic overclocking or voltage changes. This explicit operator utility is
+   separate from dynamic workloads; it does not authorize automatic limit tuning
+   during calibration or stress runs. Existing lab guidance remains a reference,
+   not evidence that this utility is already implemented or accepted.
+6. [ ] **System Dependency Management — planned, separately gated phases.**
+   Detect **installed and functional** package managers and establish the correct
+   host-management context, including host versus container and immutable/image-
+   based systems. Neither distro identity nor a command's presence alone proves
+   a usable package manager. First implement **read-only capability/provider
+   resolution**; controlled package installation requires separate subsequent
+   approval. Preserve Wave 1's advisory-only system-package boundary until then.
+7. [ ] **Existing Dynamic-Stress Roadmap — resume the detailed sequence below.**
+   GPU **1A → 1B → 1C**, CPU **milestone 2**, coordinated platform **milestone 3**,
+   substantial storage/network review **4**, then reporting modernization **5**.
+   Keep their existing design, software and physical gates, detailed planning,
+   output compatibility and safety boundaries. Wave 2's thermal assist is a bounded
+   precursor, not adoption of the later substantial storage/network expansion.
 
-This is planning, not authorization to start workloads or a new hardware campaign.
-Optional or hardware-gated candidates are not automatic prerequisites for every
-release or an indefinite requirement to wait for unavailable hardware.
+Within waves 3/4, prioritize worthwhile arithmetic/execution differences rather
+than implementing every available extension. Spark success does not substitute
+for Snapdragon portability or separately supported execution. Existing optional
+and hardware-gated candidates do not become mandatory release prerequisites.
+Before advancing with an unmet prerequisite, explicitly record any approved
+responsible deferral: unavailable capability/hardware, evidence gap, risk and
+reopening condition. A deferral is never physical acceptance. Published releases
+and completed hardware campaigns remain closed within their documented boundaries.
 
 ## Published In v0.5.3-alpha
 
@@ -368,10 +408,10 @@ these results establish useful sustained verified activity within the tested
 configurations, not maximum power, universal stress superiority or automatic
 ISA promotion. The established VNNI durations remain intact without imposing a
 600-second campaign on every future instruction flavor. This physical campaign
-is closed; next implementation work is specialized ARM64 on Spark, followed by
-Snapdragon compatibility and physical acceptance as ordered above.
+is closed. Remaining ARM64 work follows Spark/Snapdragon ordering within wave 3;
+the seven-wave queue above determines when that work resumes.
 
-Remaining adopted specialized work, deferred behind Spark/Snapdragon priorities:
+Remaining adopted specialized x86 work is assigned to wave 4, after wave 3:
 
 - [ ] AVX-512 BF16.
 - [ ] AVX-512 FP16.
@@ -438,7 +478,7 @@ change published in v0.5.3-alpha affects only the deliberate highest-vector
 intent. Ordinary Auto stays NEON/scalar and Power Auto excludes SVE. A wider
 inherited VL is software-validated, never thereby declared physically accepted.
 
-### AArch64 specialized stress flavors — Spark-first work
+### AArch64 specialized stress flavors — wave 3, Spark first
 
 The adopted ARM64 scope is deliberately finite:
 
@@ -487,8 +527,9 @@ The adopted ARM64 scope is deliberately finite:
   evidence that recurrence does not collapse to permanently saturated constants.
 - [ ] Updated-helper Snapdragon non-SVE compatibility and explicit unsupported
   `sve2_qrdmla` rejection, with no worker launch or ISA fallback.
-- [x] Implement experimental explicit-only SVE I8MM (`sve_i8mm`) in the
-  uncommitted post-BF16 tree: scalable Z-register SMMLA/UMMLA/USMMLA, all active
+- [x] Implement experimental explicit-only SVE I8MM (`sve_i8mm`) in committed
+  milestone `90b547d15e3bedc5087730c9959b6219a0d47c4d`: scalable Z-register
+  SMMLA/UMMLA/USMMLA, all active
   128-bit segments, 256 rounds plus a one-round witness, independent modulo-2^32
   matrix reference, per-thread VL/capability/affinity/progress and lifecycle.
 - [x] SVE I8MM Gate A arithmetic/integrity acceptance on GB10 Spark at 128-bit VL.
@@ -498,9 +539,9 @@ The adopted ARM64 scope is deliberately finite:
   rejection on CPUs 0–7, with no commands, worker or fallback.
 - [ ] SVE BF16.
 
-Except for committed, accepted SVE2/DotProd/NEON I8MM/FP16/FHM/BF16 and the
-uncommitted physically accepted SVE I8MM implementation, these remain adopted future
-implementations.
+SVE2/DotProd/NEON I8MM/FP16/FHM/BF16 and SVE I8MM are committed and accepted
+within their recorded boundaries. SVE BF16 and SVE2 QRDMLA remain planned
+implementations in wave 3.
 Both physical gates PASS on Spark and Snapdragon for DotProd, I8MM, FP16/FHM and
 BF16; existing SVE2 and baseline acceptance remain unchanged.
 Prioritize on Spark by demonstrated capability and worthwhile
@@ -557,11 +598,12 @@ independently measured effective clocks. Snapdragon CPU-subsystem temperatures
 peaked at 84.4/89.9 C; clocks and package power were unavailable. Kernel visibility
 on both remains limited by denied `dmesg` and empty filtered journal captures.
 
-No further DotProd physical repetition is required. Next is unfinished adopted
-specialized ARM64 work on Spark, then supported Snapdragon compatibility and
-acceptance. SVE/SVE2, VNNI and generic selection behavior remain unchanged.
+No further DotProd physical repetition is required. Unfinished adopted ARM64
+work belongs to wave 3, Spark first, then supported Snapdragon compatibility and
+acceptance; the seven-wave queue determines its overall priority. SVE/SVE2,
+VNNI and generic selection behavior remain unchanged.
 
-**SVE I8MM implementation (uncommitted, physically accepted on Spark):**
+**SVE I8MM implementation (committed, physically accepted on Spark):**
 The [SVE I8MM contract](docs/sve_i8mm_contract.md) defines `sve_i8mm`, with three
 signed SMMLA, three unsigned UMMLA and two unsigned-by-signed USMMLA scalable
 Z-register accumulator chains. Every active 128-bit segment uses independent
@@ -618,8 +660,12 @@ checks**, **81/81 profiles** with five unchanged advisories, 380 Python compilat
 checks and 29 integration imports. Its complete 370-file source fingerprint is
 `524d9414cfac636b2ccdc45a89dcdc613f8729a65ff33daeb53ca1a9b597a470`.
 Native workloads and capability/selection/safety/lifecycle policies are unchanged.
-This snapshot is software-validated separately, not claimed as physically executed. Next adopted specialized ARM64 implementation is SVE BF16,
-Spark-first; accepted prior ISA and explicit-only boundaries remain unchanged.
+This snapshot is software-validated separately, not claimed as physically executed.
+SVE I8MM, effective-readiness persistence and the final SVE2 scope amendment are
+committed in `90b547d15e3bedc5087730c9959b6219a0d47c4d`. Within wave 3,
+SVE BF16 precedes the remaining SVE2 QRDMLA work, Spark first; this is not the
+immediate project priority ahead of wave 2. Accepted prior ISA and explicit-only
+boundaries remain unchanged.
 
 **NEON BF16 implementation (committed, physically accepted):**
 The [BF16 contract](docs/neon_bf16_contract.md) defines an experimental explicit-only
@@ -742,10 +788,10 @@ Acceptance covers the tested hardware, compilers, FPCR=0 and finite numerical
 domain; it does not establish maximum power or superiority of one instruction
 family. No deliberate physical corruption injection is claimed.
 
-No further FP16/FHM physical repetition is required. Following their commit,
-remaining adopted specialized ARM64 work remains Spark-first, then supported
-Snapdragon compatibility and acceptance. Reproduction procedures and exact
-execution/diagnostic paths remain in the contract.
+No further FP16/FHM physical repetition is required. Remaining adopted ARM64
+work belongs to wave 3, Spark first, then supported Snapdragon compatibility and
+acceptance. Reproduction procedures and exact execution/diagnostic paths remain
+in the contract.
 
 Both are high-compute-demand workload candidates, not assumed maximum-power or
 higher-demand replacements for scalar, baseline NEON, SVE or other accepted
@@ -805,9 +851,9 @@ computation, not maximum power or superiority over another ISA workload.
 No further I8MM physical repetition is required. This milestone remains
 experimental and explicit-only, committed in
 `787c9ae255f81ad2aab4326b2721e740510767d3`, outside published v0.5.3-alpha.
-No Auto/vector-intent or measured Power Auto promotion is made. After closure,
-remaining adopted specialized ARM64 work stays Spark-first, followed by supported
-Snapdragon compatibility/acceptance; no additional ISA family is adopted here.
+No Auto/vector-intent or measured Power Auto promotion is made. Remaining adopted
+ARM64 work stays Spark-first within wave 3, followed by supported Snapdragon
+compatibility/acceptance; no additional ISA family is adopted here.
 
 **Committed SVE2 integer workload (Spark physically accepted):**
 `sve2_smlal` performs independently verified signed widening integer
@@ -889,9 +935,9 @@ exact folders, compilation evidence and limited kernel/power visibility.
 
 This closes current-helper Snapdragon portability, not future specialized NEON
 acceptance or SVE2 execution on Snapdragon. No additional physical repetition is
-required for this milestone. Next is unfinished specialized ARM64 development
-on Spark, then supported Snapdragon compatibility/acceptance. Existing Auto,
-vector intents, measured Power Auto and accepted FP32/FMA/VNNI behavior remain
+required for this milestone. Unfinished specialized ARM64 development is assigned
+to wave 3, Spark first, then supported Snapdragon compatibility/acceptance.
+Existing Auto, vector intents, measured Power Auto and accepted FP32/FMA/VNNI behavior remain
 unchanged.
 
 The design target follows Arm's [SVE2 widening multiply-add example](https://documentation-service.arm.com/static/6659c722876c8d213b7870d3)
@@ -947,8 +993,8 @@ for the currently tested configurations. This is neither exhaustive SVE2 coverag
 nor physical acceptance at untested vector lengths or on other implementations.
 No dedicated SVE2 histogram, complex arithmetic, permutation, crypto,
 narrowing/packing or additional DSP-family stress workloads are planned. Existing
-accepted functionality, the pending SVE BF16 milestone, finite ARM64 scope and
-Spark-first priorities otherwise remain unchanged.
+accepted functionality, the pending SVE BF16 milestone and finite ARM64 scope
+otherwise remain unchanged; Spark-first ordering applies within wave 3.
 
 ### Exclusions and hardware-gated evaluation candidates
 
@@ -1014,13 +1060,14 @@ earlier brief GPU transient-load/spike-hammer note.
 
 ### Milestone Status And Dependencies
 
-The priority sequence is recorded; every new workload remains proposed, with
-design approval and implementation separately gated. No proposed preset below
-is an existing profile, command or menu entry.
+This detailed sequence is wave 7 of the authoritative queue above, not a competing
+immediate priority. Every new workload remains proposed, with design approval and
+implementation separately gated. No proposed preset below is an existing
+profile, command or menu entry.
 
 | Milestone | Dependency / purpose | Proposal recorded | Design approved | Implemented | Software-validated | Physically accepted |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1A — Calibrated sustained high-power GPU foundation | Close current priority queue first; establish repeatable verified high demand | [x] | [ ] | [ ] | [ ] | [ ] |
+| 1A — Calibrated sustained high-power GPU foundation | After waves 1–6 complete or approved deferrals; establish repeatable verified high demand | [x] | [ ] | [ ] | [ ] | [ ] |
 | 1B — High-amplitude GPU power transitions | Accept 1A's high-demand foundation before transitioning into/out of it | [x] | [ ] | [ ] | [ ] | [ ] |
 | 1C — GPU OC/UV and workload-diversity stability | Build on accepted 1A/1B; stepped, seeded and mixed operating-region coverage | [x] | [ ] | [ ] | [ ] | [ ] |
 | 2 — CPU core-count / burst / hotspot hammer | After milestone 1; reuse proven native ISA/verification and authoritative topology | [x] | [ ] | [ ] | [ ] | [ ] |
@@ -1128,9 +1175,11 @@ Common gates for new stress milestones (all remain outstanding):
 Design decisions still open: empirical backend/candidate choice; calibration
 confidence and sensor-poor fallback; verification cost versus phase fidelity;
 safe defaults; interrupted-run verdict presentation; and the acceptance matrix.
-Follow the Spark → Snapdragon → x86 priority order above. Agree which ISA gates
-must close and explicitly approve any justified deferrals before starting 1A;
-do not silently waive specialized ISA or wider-SVE evidence requirements. Wider
+Follow the seven-wave priority queue above; Spark → Snapdragon ordering applies
+within wave 3, followed by x86 work in wave 4 and utilities in waves 5/6. Agree
+which prerequisite gates must close and explicitly approve justified deferrals
+before starting wave 7's 1A; do not silently waive specialized ISA or wider-SVE
+evidence requirements. Wider
 VLs and other implementations remain physically unaccepted until suitable
 hardware is available; a recorded deferral is not acceptance. The published
 v0.5.3-alpha campaign stays closed, while future releases retain their own
@@ -1140,8 +1189,10 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 
 ## Deferred Hardware Modules
 
-- Additional storage testing beyond the current Storage Health and Storage
-  Benchmark baseline is deferred pending milestone 4 planning above.
+- Substantial storage/network expansion beyond the current Storage Health and
+  Storage Benchmark baselines remains deferred to wave 7's milestone 4 planning.
+  The optional read-only Storage Thermal Assist in wave 2 is a separate, bounded
+  thermal-validation aid, not a benchmark, integrity test or adoption of that expansion.
 - Broaden AArch64 OpenCL driver/loader portability through one shared resolver
   where current probing is unavailable. GB10 OpenCL compute/VRAM passed in the
   accepted campaign; Snapdragon OpenCL exposed no usable GPU. Do not generalize
@@ -1154,16 +1205,17 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 - Additional CPU architectures and platform-specific hardware support require
   separate implementation and validation; x86_64 and AArch64 are the current
   supported architecture contract.
-- NIC/network testing remains deferred candidate scope, not an adopted
-  roadmap. Reconsidering it requires deliberate planning for loopback
+- NIC/network testing implementation remains deferred candidate scope: wave 7's
+  milestone 4 adopts a review, not implementation. Reconsidering it requires
+  deliberate planning for loopback
   connectors, an operator-provided `iperf3` server or external peer, a
   known-good network path, and the time to validate execution and safety
   boundaries.
-- `Files/nvidia_persistence.md` is retained operator/lab guidance for current
-  NVIDIA persistence and power-limit procedures. A future CLI or GUI control
-  surface may be considered, but none is implemented or committed to a
-  release. If pursued, it should consider AMD and Intel GPU power/control
-  options rather than being NVIDIA-only.
+- `Files/nvidia_persistence.md` remains operator/lab guidance for current NVIDIA
+  persistence and power-limit procedures. Wave 5 now plans a separate CLI/TUI
+  GPU Power-Limit Control utility; it is not implemented or accepted. Discover
+  actual supported NVIDIA/AMD/Intel controls rather than assuming vendor support
+  or treating this lab document as an implemented feature design.
 - Other hardware-specific validation modules are TBD and are not committed
   release scope.
 
@@ -1177,5 +1229,5 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 - Existing compatibility-sensitive field names and established contract IDs.
 - Dynamic profile sidecar stage labels.
 - Raw vendor/backend property spelling inside documented raw boundaries.
-- Retain `Files/nvidia_persistence.md` as operator/lab guidance; it is not a
-  committed CLI or GUI feature design.
+- Retain `Files/nvidia_persistence.md` as operator/lab guidance. Wave 5's planned
+  utility requires its own design and gates; this file is not that design.
