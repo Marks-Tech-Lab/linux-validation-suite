@@ -1079,3 +1079,26 @@ artifacts remain available and explicitly labelled; they are not relabelled.
 
 See [SVE I8MM contract](docs/sve_i8mm_contract.md) for the original-profile versus
 operator-confirmed negative-capability evidence distinction that exposed this gap.
+
+## Environment Manager bootstrap inspection
+
+`lvs_environment_manager.py --check` emits contract
+`linux_validation_suite.environment_manager`, version 1, kind
+`python_environment_inspection`, scope `bootstrap_python_only_not_hardware_readiness`.
+It records distro/architecture/package-manager guidance, Python policy and
+interpreter/venv identity, pip consistency, direct requirement pins, actual import
+results, local/online package source and `python_baseline_ready`. Exit zero means
+inspection completed; it is not an execution PASS or hardware capability verdict.
+Google Python installation/import results remain separate from the unchanged
+uploader readiness contract and its credential/configuration/DNS limitations.
+Menu 7 delegates to the existing LVS dependency-check contract and report writer;
+no competing hardware eligibility policy is introduced. See the
+[Environment Manager guide](docs/environment_manager.md).
+
+The two-stage `setup.sh` POSIX entrypoint prints prerequisite guidance to stderr
+and delegates compatible Python to this same inspection/maintenance interface.
+It adds no readiness/installation policy of its own: minimum/tested Python values
+come from `scripts/lvs_python_policy.sh`, shared with legacy setup and the Python
+metadata reader. A missing-Python bootstrap exits without starting the manager;
+a compatible Python lacking venv/ensurepip still opens manager diagnostics after
+guidance. No OS package command is executed and no global pip is required.

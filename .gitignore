@@ -69,6 +69,8 @@ memory_stress_helper
 
 # Python/cache/test local state
 .venv/
+.venv.backup-*/
+.venv.failed-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/

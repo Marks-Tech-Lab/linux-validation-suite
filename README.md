@@ -78,14 +78,34 @@ but run the smoke tests before relying on an untested interpreter version. The
 baseline Python requirements include the established Textual dependency used by
 the TUI.
 
-From the repository root, create the ignored local virtual environment and
-install baseline dependencies:
+From the repository root, use the two-stage bootstrap for environment discovery,
+safe repair/rebuild, synchronization and optional Google dependencies. The POSIX shell starts
+without Bash, Python or pip, reports missing prerequisites, and delegates to the
+standard-library-only numbered-menu utility once a compatible Python is available:
+
+```bash
+./setup.sh
+./setup.sh --check
+# Optional explicit interpreter:
+PYTHON=/path/to/python ./setup.sh
+# Direct Python entrypoint remains available:
+python3 lvs_environment_manager.py
+```
+
+It starts without Textual, pip or a compiler. Changes require confirmation;
+normal synchronization follows the requirement pins and keeps packaging-tool
+upgrades separate. Native helper maintenance and the authoritative LVS dependency
+checker are optional menu operations. See the
+[Environment Manager guide](docs/environment_manager.md) for interpreter selection,
+offline packages, recoverable backups, limitations and immutable-system guidance.
+
+The existing noninteractive Bash workflow remains available:
 
 ```bash
 ./scripts/setup_venv.sh
 ```
 
-The script prefers `python3.14`, falls back to `python3`, and stops with a clear
+The shell setup script prefers `python3.14`, falls back to `python3`, and stops with a clear
 error if the selected interpreter is older than Python 3.10. Override
 interpreter selection when needed:
 

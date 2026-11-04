@@ -30,6 +30,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from smoke_tests.shell_bootstrap_checks import (
+    run_posix_bootstrap_discovery_checks, run_posix_bootstrap_override_checks,
+    run_posix_bootstrap_prerequisite_guidance_checks, run_posix_bootstrap_delegation_legacy_checks,
+)
+from smoke_tests.environment_manager_checks import (
+    run_environment_bootstrap_checks, run_environment_install_sync_checks,
+    run_environment_repair_identity_checks, run_environment_rebuild_preservation_checks,
+    run_environment_integration_checks, run_environment_real_venv_checks,
+)
 from smoke_tests.effective_preflight_checks import (
     run_effective_preflight_blocked_checks, run_effective_preflight_ready_checks,
     run_effective_preflight_frontend_checks, run_effective_preflight_publication_checks,
@@ -29385,6 +29394,16 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_posix_bootstrap_discovery_checks,
+        run_posix_bootstrap_override_checks,
+        run_posix_bootstrap_prerequisite_guidance_checks,
+        run_posix_bootstrap_delegation_legacy_checks,
+        run_environment_bootstrap_checks,
+        run_environment_install_sync_checks,
+        run_environment_repair_identity_checks,
+        run_environment_rebuild_preservation_checks,
+        run_environment_integration_checks,
+        run_environment_real_venv_checks,
         run_effective_preflight_blocked_checks,
         run_effective_preflight_ready_checks,
         run_effective_preflight_frontend_checks,

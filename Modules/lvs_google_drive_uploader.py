@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .lvs_python_environment import PYTHON_GROUPS
 from .lvs_core import APP_NAME, APP_VERSION, JsonStore, now_local_iso
 from .lvs_settings import DEFAULT_GOOGLE_CREDENTIALS_PATH, GlobalSettings
 
@@ -38,11 +39,7 @@ class GoogleDriveUploader:
             except Exception:
                 return False
 
-        modules = {
-            "google.oauth2.service_account": module_available("google.oauth2.service_account"),
-            "googleapiclient.discovery": module_available("googleapiclient.discovery"),
-            "googleapiclient.http": module_available("googleapiclient.http"),
-        }
+        modules = {name: module_available(name) for name in PYTHON_GROUPS["google"]["imports"]}
         dns_ok = False
         dns_error = ""
         try:
