@@ -71,6 +71,9 @@ memory_stress_helper
 .venv/
 .venv.backup-*/
 .venv.failed-*/
+.lvs-environment-maintenance.lock
+.lvs-environment-operation.json
+.lvs-environment-operation.json.*
 __pycache__/
 *.py[cod]
 .pytest_cache/

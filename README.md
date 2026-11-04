@@ -99,6 +99,15 @@ checker are optional menu operations. See the
 [Environment Manager guide](docs/environment_manager.md) for interpreter selection,
 offline packages, recoverable backups, limitations and immutable-system guidance.
 
+Inspection now gives a concise recommendation and a guided path through Python
+upgrade recovery. Manager operations use a separate venv maintenance lock;
+external pip, OS updates and the legacy installer must still be stopped first.
+Compatible patch updates can be reused after verification; minor/ABI changes
+recommend a fresh environment with retained backups. `--check` remains JSON.
+Operations use one numbered approval (**1** continues; **2/Enter** cancels).
+Results remain visible until acknowledged, with optional technical details.
+Interactive menus redraw; redirected output and `TERM=dumb` stay plain.
+
 The existing noninteractive Bash workflow remains available:
 
 ```bash

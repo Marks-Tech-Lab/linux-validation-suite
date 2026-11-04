@@ -1,4 +1,4 @@
-# LVS Environment Manager — first milestone
+# LVS Environment Manager — Wave 1
 
 Run from a normal user account:
 
@@ -63,7 +63,8 @@ supply Python tooling but do not establish host hardware/device readiness.
 ## Python maintenance interface
 
 The Python bootstrap process uses only Python's standard library and the lightweight
-`Modules/lvs_python_environment.py` metadata module. Starting the menu needs no
+`Modules/lvs_python_environment.py` metadata and `Modules/lvs_environment_ui.py`
+screen modules. Starting the menu needs no
 Textual, Google libraries, pip, compiler, activation or existing `.venv`. Older
 Python 3 interpreters can display diagnostics and select a newer installed base
 Python; LVS itself still requires Python 3.10 or newer. The bootstrap syntax is
@@ -96,20 +97,46 @@ unchanged. The published release/tag and historical acceptance evidence are unch
 
 | Choice | Operation |
 |---|---|
-| 1 | Inspect distro/kernel/architecture, installed interpreters, selected and active Python, venv/base paths, pip, direct pins, actual imports, consistency and free disk |
-| 2 | Select base Python and online/local packages; create a fresh venv or repair pip and synchronize an existing compatible venv |
-| 3 | Synchronize project pins, explicitly upgrade packaging tools, or select another Python |
-| 4 | Install/synchronize Google dependencies or inspect Python/import/uploader readiness separately |
+| 1 | Check environment health and see the recommended action |
+| 2 | Set up or repair the Python environment using suitable defaults |
+| 3 | Update installed Python packages; advanced choices select Python, package source or installation-tool updates |
+| 4 | Install/update Google Drive packages or check Python/import/uploader readiness separately |
 | 5 | Explicitly rebuild for this machine, retaining the previous environment |
 | 6 | Explicitly compile/query native CPU/memory helpers through existing LVS machinery |
 | 7 | Run the existing structured LVS dependency checker and save its normal report |
 | 8 | Exit |
 
-Actions repeat in one session. Significant changes require confirmation, default
-No. EOF exits safely; Ctrl-C interrupts the current operation and returns to the
-menu after rebuild recovery where applicable. Stop LVS and other installers before
-maintenance; this milestone does not provide coordination between multiple manager
-instances or concurrent pip operations and does not acquire LVS's runtime lock.
+Actions repeat in one session. A modifying operation displays its current status,
+recommended action, selected Python, package source and preservation/backup effects.
+Approve it once using **1**; **2 or Enter cancels**. There are no Y/N approvals.
+Suitable defaults avoid mandatory Python/package-source prompts. Where available,
+**3 at the approval screen** opens advanced settings without approving work; after
+returning, the operation is re-evaluated and still needs explicit approval.
+
+Completed, failed and interrupted operations have a results screen. **1 or Enter**
+acknowledges it and returns to the menu; **2** opens paginated technical details.
+Health results can also offer **3** to select the recommended maintenance action,
+which has its own single approval before modifications. The action selection is
+not an extra approval. Recovery restores an identified backup as one operation;
+any subsequent repair/rebuild is chosen separately. Long command output, raw
+interpreter identity and JSON stay in technical details rather than normal screens.
+In-place package failures explicitly warn that the update may be partial and has
+not been rolled back. Saved environment paths and uncertain-cleanup instructions
+remain visible on the results screen.
+
+Main menus/submenus redraw on return. Clearing uses ANSI only when both stdin and
+stdout are TTYs, `TERM` identifies a supported terminal, and `NO_COLOR` is absent.
+`TERM=dumb`, unknown terminals and redirected/noninteractive output retain a plain
+transcript with no generated terminal-control sequences. No external clear/tput,
+curses or third-party library is used. Results are not cleared before acknowledgement.
+EOF or Ctrl-C at results exits and leaves them visible; interruption during work
+still uses the accepted subprocess cleanup/recovery before presenting results.
+`--check` retains the unchanged structured JSON contract and does not draw screens.
+
+Stop LVS and external installers before maintenance. Manager-initiated venv writes
+are serialized by a separate Linux `flock` maintenance lock; it does not acquire or
+modify LVS's runtime lock. External pip, OS updates, editors and the legacy shell
+installer do not participate: do not run them concurrently with maintenance.
 
 ## Python selection and discovery
 
@@ -134,8 +161,18 @@ project. Copy source and requirements, not compiled environments between machine
 
 Successful synchronization writes `.venv/.lvs-environment.json` with project path,
 architecture, OS-release identity, hashed machine identity, base/version and selected
-optional groups. Root/architecture/OS/machine changes require rebuilding. Marker
-data is local ignored state, not published provenance or physical acceptance.
+optional groups. Wave 1 also records the actual interpreter ABI (implementation,
+SOABI, cache tag, pointer width and free-threaded mode) and base executable SHA-256.
+Recorded version/base/ABI are compared with the live venv and base interpreter.
+Root, architecture, machine, distro or incompatible interpreter changes require
+rebuilding. Python patch changes, unchanged-ABI executable replacements and path
+aliases do not alone require rebuilding: actual pins/imports and pip consistency
+must still verify. OS release metadata changes within the same distro/variant are
+warnings requiring verification, rather than automatic rebuilds. A changed minor
+version or ABI requires fresh site-packages, never a venv upgrade in place.
+Legacy markers without ABI history remain usable with an explicit limitation;
+inspection does not invent history or rewrite metadata. Marker data is local
+ignored state, not published provenance or physical acceptance.
 
 ## Pins, repair and offline packages
 
@@ -173,6 +210,10 @@ partial. The operation reports failure; inspect/check and repeat synchronization
 after resolving the cause. Normal in-place synchronization is not a package-level
 transaction and does not claim rollback. It never reports success solely because
 an interpreter exists or because unrelated hardware readiness is satisfied.
+Known optional-group intent is also retained in maintenance records before an
+installation begins, so a failed Google installation or broken interpreter does
+not silently discard that selection during a subsequent rebuild. Credentials,
+Shared Drive configuration, DNS and uploader readiness remain separate checks.
 
 ## Recoverable rebuild
 
@@ -202,6 +243,64 @@ stop LVS/manager, move the current `.venv` aside without deleting it, then resto
 the desired backup to the original `.venv` path. Check its current usability before
 running LVS. Free disk is reported; no model-specific or arbitrary allocation
 threshold is imposed on Python installation.
+
+## Maintenance locking and interrupted-operation recovery
+
+`.lvs-environment-maintenance.lock` is a persistent, ignored regular file. The
+kernel lease, not its recorded PID or existence, determines whether another
+manager is active. The file is never unlinked on normal exit; symlinked, unrelated
+and multiply linked lock paths are refused. Inspection does not create a lock or
+change the environment. Installer children inherit the open lock descriptor, so
+an active child can retain the lease after manager termination. This covers
+ordinary manager-owned subprocesses, not external installers or deliberately
+detached third-party processes.
+
+Atomic, fsynced `.lvs-environment-operation.json` records distinguish running,
+completed, failed, restored and cleanup-unconfirmed operations. They retain the
+selected groups, backup paths and directory device/inode identities. After an
+interrupted rebuild, inspection recommends recovery in the current workflow.
+Confirmed recovery retains an identified partial replacement under `.venv.failed-*`
+before restoring an identified backup, or clears an owned partial first creation
+by retaining it. It never deletes an environment. Missing/changed identities,
+unrecognized records or unconfirmed installer cleanup require manual resolution;
+the manager does not guess which directory belongs to the failed operation.
+An interrupted sync can leave installed packages partial: stop installers and
+repeat confirmed pin synchronization; there is no package-level rollback.
+
+If cleanup is unconfirmed, retain the operation record and all environments,
+stop and inspect the installer processes first, then review and move the local
+record aside before retrying. Never remove an active lock file to bypass its
+lease. A filesystem/disk failure can also prevent writing the final recovery
+status; the visible error and retained paths are authoritative, not a success
+assumption. A power failure is not a transactional filesystem guarantee.
+
+## Minimal real-host Wave 1 check
+
+Use a disposable source checkout, with no copied `.venv`, results or credentials.
+Do not modify the working installation for destructive/interruption checks.
+
+1. On Debian/Ubuntu, Fedora/Bazzite and ARM64, run `./setup.sh`, then **1**.
+   Check architecture, minimum/tested Python, available interpreters and the
+   recommended action. Missing prerequisites produce advisory-only guidance.
+2. Choose **2**, review the selected Python and package source, then approve **1**
+   for baseline creation. Recheck **1**: packages/imports and pip consistency must verify. On ARM64
+   this validates Python maintenance, not new native ISA acceptance.
+3. If needed, choose **4 → 1** to install Google dependencies, then **4 → 2**.
+   Installed/importable packages must remain distinct from absent credentials,
+   configuration, DNS or authenticated uploader access.
+4. Choose **3 → 1** to synchronize; a healthy compatible environment stays in
+   place. After a real patch update, verify reuse. With a separately installed
+   compatible minor/base interpreter, use **3 → 3** to select it, then **1**:
+   the manager should recommend a confirmed fresh rebuild and retain a backup.
+5. In the disposable checkout only, interrupt creation/install with Ctrl-C and
+   recheck **1**. Normal cancellation should finish cleanup/recovery; a hard-stop
+   fixture should show retained paths and recovery. While an operation is active,
+   another manager's modifying action must be refused. Do not run external pip
+   or the legacy installer as a concurrency test against a real installation.
+
+Conventional distro versus immutable-image guidance is unchanged; no system
+package resolution/installation is part of Wave 1. Fresh-distribution installs,
+actual OS Python upgrades and ARM64 deployment still need this host evaluation.
 
 ## Google Drive and the full checker
 
@@ -255,7 +354,7 @@ the shared version declarations and requirement files but adds interactive diagn
 explicit tool-upgrade control, optional groups and recoverable rebuilding. Do not
 run both installers concurrently. No saved profiles or runtime settings are edited.
 
-## Development validation and provenance
+## Initial milestone validation and provenance (historical)
 
 The pre-shell implementation passed **10/10 focused checks**, **368/368 smoke
 checks**, **81/81 profiles** (25 active, 56 archived; five unchanged advisories),
@@ -310,3 +409,55 @@ the file count stays unchanged.
 Dash 0.5.12 was built only in a temporary directory for compatibility review. All
 four shell-bootstrap check groups passed under Dash (23 invocations), in addition
 to the host `/bin/sh` and legacy Bash checks. No system package was installed.
+
+## Wave 1 implementation validation before the usability refinement
+
+Wave 1 follows committed baseline
+`1b5c9780d05fe2ad5cf76f5d72c8af27034fa9c1`. It passed **20/20 focused checks**,
+**378/378 complete smoke checks**, **81/81 profile validation** (five unchanged
+advisories), **385 Python compilation checks**, and **14 integration imports**.
+POSIX/Bash syntax, four Dash bootstrap groups (23 invocations), Markdown/local
+links and `git diff --check` passed. Genuine temporary venv creation/inspection
+used installed CPython **3.14.3** and **3.14.8**, without pip/network installation.
+Minor/ABI upgrades, interruptions, disk failures and restore failures use isolated
+failure/capability fixtures. Separate processes exercise lock contention and
+inherited lock lifetime. This is not evidence of an actual OS upgrade or ARM64
+manager deployment.
+
+The pre-refinement complete **375-file** `lvs_execution_source_v1` SHA-256 is
+`641b5f493a750e9b1b6da52b82089e4bdc617fe39b63690a311df7a5566cb538`.
+The manager implementation changed; the file count did not. Regression tests and
+Markdown remain outside that scope. Native workload implementation, ISA selection,
+profiles, runtime settings and existing provenance/physical evidence remain
+unchanged. No new physical workload acceptance is claimed. Online package/wheel
+availability, fresh Debian/Ubuntu/Fedora/Bazzite deployment, actual OS interpreter
+transitions and ARM64 deployment remain real-host evaluation boundaries using the
+procedure above; system-package resolution/installation is still deferred.
+
+## Usability refinement validation and current source identity
+
+The final combined tree passed **26/26 focused checks**, **384/384 complete smoke
+checks**, **81/81 profiles** (five unchanged advisories), **387 Python compilation
+checks**, and **16 integration imports**. Four Dash bootstrap groups passed across
+23 invocations, alongside POSIX/Bash syntax, Markdown/local links and
+`git diff --check`. Actual standard-library-only PTY sessions covered health-check
+navigation, cancelling setup, technical details, and returning to a redrawn menu.
+PTY/redirected tests cover `TERM=dumb`, `NO_COLOR`, empty safe choices, EOF/Ctrl-C,
+one approval per operation, and results remaining visible until acknowledged.
+Isolated redirected `--check` output remained parseable version-1 JSON with no ANSI.
+
+The complete **376-file** `lvs_execution_source_v1` SHA-256 is
+`afa4d791735645457a167c8005dd38f4d7fd6e363bcf02b9b1396e3044e66886`.
+The added required source file is the standard-library-only presentation module
+`Modules/lvs_environment_ui.py`. The refinement changes presentation and action
+navigation; accepted compatibility checks, maintenance locking, installer cleanup,
+backup restoration, requirements, backend eligibility and workload behavior remain
+in their existing implementations. Earlier Wave 1 source identities above are
+historical, not claims that this final snapshot was physically deployed.
+
+Technical output is available during the current results screen, not automatically
+saved as a new log. Use `--check` redirection for structured inspection exports.
+Unknown terminals and noninteractive streams deliberately retain a linear plain
+transcript. External-installer coordination and the real-host deployment boundaries
+listed above remain unchanged. No new runtime dependency or system-package work
+was introduced, and no physical hardware campaign was repeated.

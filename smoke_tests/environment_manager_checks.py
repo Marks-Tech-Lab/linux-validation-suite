@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Fixture:
-    def __init__(self, directory, confirm='y'):
+    def __init__(self, directory, confirm='1'):
         self.root = Path(directory)
         (self.root/'scripts').mkdir()
         for name in ['requirements.txt','requirements-google.txt','scripts/setup_venv.sh','scripts/lvs_python_policy.sh']:
@@ -43,9 +43,9 @@ class Fixture:
                                              output=self.output.append,selected=str(self.base))
 
     def seed(self):
-        v=self.root/'.venv';(v/'bin').mkdir(parents=True)
+        v=self.root/'.venv';(v/'bin').mkdir(parents=True,exist_ok=True)
         (v/'bin/python').write_text('fixture interpreter')
-        (v/'pyvenv.cfg').write_text('home = {}\ninclude-system-site-packages = false\nversion = 3.14.0\ncommand = fixture -m venv {}\n'.format(self.root,v))
+        (v/'pyvenv.cfg').write_text('home = {}\ninclude-system-site-packages = false\nversion = {}\ncommand = fixture -m venv {}\n'.format(self.root,'.'.join(map(str,self.info['version'])),v))
         return v
 
     def run(self, args, **kwargs):
@@ -269,7 +269,7 @@ def run_environment_rebuild_preservation_checks():
         assert (backups[0]/'keep.txt').read_text()=='old installation'
         assert f.manager.inspect()['valid'] and str(v) in (v/'pyvenv.cfg').read_text()
     with TemporaryDirectory() as tmp:
-        f=Fixture(tmp,confirm='n');f.seed();before=(f.manager.venv/'pyvenv.cfg').read_bytes()
+        f=Fixture(tmp,confirm='2');f.seed();before=(f.manager.venv/'pyvenv.cfg').read_bytes()
         assert f.manager.rebuild() is False and f.manager.create_or_repair() is False
         assert not any('-m' in a and a[a.index('-m')+1] in ['venv','ensurepip','pip'] and ('install' in a or 'venv' in a) for a,_ in f.calls)
         assert (f.manager.venv/'pyvenv.cfg').read_bytes()==before
@@ -296,9 +296,9 @@ def run_environment_integration_checks():
         assert 'native_cpu_helper_binary_name' in em.NATIVE and 'native_memory_helper_binary_name' in em.NATIVE
         assert '--print-resolved-mode' in em.NATIVE and '--help' in em.NATIVE
         assert 'TemporaryDirectory' in em.NATIVE # fresh-source builds, not stale existing binary acceptance
-        f.manager.ask=lambda _: 'n';count=len(f.calls);assert f.manager.bridge(em.NATIVE,'cancel?') is False
+        f.manager.ask=lambda _: '2';count=len(f.calls);assert f.manager.bridge(em.NATIVE,'cancel?') is False
         assert all('-c' in a and a[a.index('-c')+1]==em.PROBE or '-m' in a and '--version' in a for a,_ in f.calls[count:])
-        answers=iter(['invalid','8']);f.manager.ask=lambda _:next(answers);f.manager.menu()
+        answers=iter(['invalid','1','8']);f.manager.ask=lambda _:next(answers);f.manager.menu()
         assert any('1 to 8' in line for line in f.output)
         f.manager.ask=lambda _:(_ for _ in ()).throw(EOFError());f.manager.menu()
     # Real integration with the existing compiler-discovery path: no compiler,

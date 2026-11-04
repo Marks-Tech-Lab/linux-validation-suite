@@ -1102,3 +1102,17 @@ come from `scripts/lvs_python_policy.sh`, shared with legacy setup and the Pytho
 metadata reader. A missing-Python bootstrap exits without starting the manager;
 a compatible Python lacking venv/ensurepip still opens manager diagnostics after
 guidance. No OS package command is executed and no global pip is required.
+
+Wave 1 adds live ABI/base identity, selected optional groups, retained maintenance
+evidence, lock status and an actionable `recommendation`. Interactive inspection
+renders a human-readable summary; `--check` keeps the version-1 JSON contract.
+`python_selected_groups_ready` requires baseline readiness plus exact direct pins
+and actual imports for selected optional groups. Active/uninspectable maintenance
+does not grant Python readiness. Running/failed/restored maintenance records are
+local recovery evidence, never workload PASS results. OS release and compatible
+Python patch changes remain distinguishable from incompatible minor/ABI changes.
+
+The interactive screen/numbered-approval layer is presentation only. It keeps
+raw records and command output in an optional technical-details view and does
+not alter the version-1 `--check` JSON schema, readiness policy or maintenance
+recovery records. Redirected `--check` output has no terminal-control sequences.

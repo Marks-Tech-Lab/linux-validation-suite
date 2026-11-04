@@ -140,7 +140,7 @@ def run_posix_bootstrap_prerequisite_guidance_checks():
 def run_posix_bootstrap_delegation_legacy_checks():
     with TemporaryDirectory() as directory:
         root=checkout(directory);(root/'Modules').mkdir()
-        for name in ['lvs_environment_manager.py','Modules/lvs_python_environment.py','requirements.txt','requirements-google.txt']:
+        for name in ['lvs_environment_manager.py','Modules/lvs_python_environment.py','Modules/lvs_environment_ui.py','requirements.txt','requirements-google.txt']:
             shutil.copyfile(ROOT/name,root/name)
         # Real stdlib-only diagnostics in a fresh checkout: no venv/site packages,
         # Bash, pip or compiler on PATH. The explicit base Python is the sole tool.

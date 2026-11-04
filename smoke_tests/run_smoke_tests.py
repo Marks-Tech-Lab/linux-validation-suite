@@ -30,6 +30,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from smoke_tests.environment_ui_checks import (
+    run_environment_ui_terminal_checks, run_environment_ui_confirmation_checks,
+    run_environment_ui_results_checks, run_environment_ui_navigation_checks,
+    run_environment_ui_details_upgrade_checks, run_environment_ui_real_terminal_checks,
+)
+from smoke_tests.environment_wave1_checks import (
+    run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
+    run_environment_maintenance_lock_checks, run_environment_interrupted_recovery_checks,
+    run_environment_partial_sync_safety_checks, run_environment_real_upgrade_portability_checks,
+)
 from smoke_tests.shell_bootstrap_checks import (
     run_posix_bootstrap_discovery_checks, run_posix_bootstrap_override_checks,
     run_posix_bootstrap_prerequisite_guidance_checks, run_posix_bootstrap_delegation_legacy_checks,
@@ -29394,6 +29404,18 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_environment_ui_terminal_checks,
+        run_environment_ui_confirmation_checks,
+        run_environment_ui_results_checks,
+        run_environment_ui_navigation_checks,
+        run_environment_ui_details_upgrade_checks,
+        run_environment_ui_real_terminal_checks,
+        run_environment_upgrade_identity_checks,
+        run_environment_guided_workflow_checks,
+        run_environment_maintenance_lock_checks,
+        run_environment_interrupted_recovery_checks,
+        run_environment_partial_sync_safety_checks,
+        run_environment_real_upgrade_portability_checks,
         run_posix_bootstrap_discovery_checks,
         run_posix_bootstrap_override_checks,
         run_posix_bootstrap_prerequisite_guidance_checks,
