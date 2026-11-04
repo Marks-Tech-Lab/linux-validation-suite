@@ -792,6 +792,11 @@ def _stage_card(stage: Dict[str, Any], components: Dict[str, Dict[str, Any]]) ->
             rate_text += (f' SVE vector lengths {_escape(", ".join(map(str, lengths)))} bytes; '
                           f'derived active-lane FMA/s {_number(evidence.get("derived_stress_lane_fmas_per_second"))}'
                           ' (not measured instructions).')
+        if evidence.get("contract")=="sve_i8mm_progress_v1":
+            lengths=sorted({t.get('vector_length_bytes') for t in evidence.get('threads',[]) if type(t.get('vector_length_bytes')) is int})
+            rate_text += (f' SVE I8MM VL bytes {_escape(str(lengths))}; derived stress byte products/s '
+                          f'{_number(evidence.get("derived_stress_byte_products_per_second"))}'
+                          ' (all active 128-bit segments; not measured instructions or maximum power).')
         if evidence.get("contract")=="neon_bf16_progress_v1":
             rate_text += (f' Derived BF16 products/s {_number(evidence.get("derived_stress_bf16_products_per_second"))}'
                           ' (fully verified standard dot/matrix and widening work; not measured instructions or maximum power).')

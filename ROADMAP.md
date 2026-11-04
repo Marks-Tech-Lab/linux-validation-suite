@@ -467,7 +467,7 @@ The adopted ARM64 scope is deliberately finite:
   (20 CPUs) and Snapdragon X1 Plus (8 CPUs), with pinned all-target eligibility.
 - [x] NEON I8MM Gate B sustained verified-stress evaluation on both tested platforms.
 - [x] Implement experimental explicit-only NEON BF16 (`neon_bf16`) in the
-  uncommitted post-FP16/FHM development tree: BFDOT/BFMMLA and alternating
+  committed milestone `83665bc59213c8392b3d69480262b1b70b339a80`: BFDOT/BFMMLA and alternating
   BFMLALB/BFMLALT, exact standard-EBF0 and fused widening references,
   independent HWCAP2_BF16 gating and all-thread FPCR/affinity/progress evidence.
 - [x] NEON BF16 Gate A arithmetic/integrity acceptance independently on GB10 Spark
@@ -477,11 +477,30 @@ The adopted ARM64 scope is deliberately finite:
 - [x] Implement the distinct SVE2 signed widening integer workload below
   (`sve2_smlal`, committed in `9edd4e786b7277523fcc3b18ad67c7f95c2a7750`);
   both physical gates PASS on Spark at 128-bit VL.
-- [ ] SVE I8MM.
+- [ ] Implement the final adopted SVE2 workload, experimental explicit-only
+  `sve2_qrdmla`: scalable signed 16-bit and 32-bit saturating fixed-point
+  SQRDMLAH/SQRDMLSH, independent exact references and meaningful non-invariant
+  sustained recurrence. Implementation and software validation remain pending.
+- [ ] SVE2 QRDMLA Gate A arithmetic/integrity acceptance on GB10 Spark at its
+  actually tested VL, with every active lane verified.
+- [ ] SVE2 QRDMLA Gate B sustained verified-stress evaluation on Spark, including
+  evidence that recurrence does not collapse to permanently saturated constants.
+- [ ] Updated-helper Snapdragon non-SVE compatibility and explicit unsupported
+  `sve2_qrdmla` rejection, with no worker launch or ISA fallback.
+- [x] Implement experimental explicit-only SVE I8MM (`sve_i8mm`) in the
+  uncommitted post-BF16 tree: scalable Z-register SMMLA/UMMLA/USMMLA, all active
+  128-bit segments, 256 rounds plus a one-round witness, independent modulo-2^32
+  matrix reference, per-thread VL/capability/affinity/progress and lifecycle.
+- [x] SVE I8MM Gate A arithmetic/integrity acceptance on GB10 Spark at 128-bit VL.
+- [x] SVE I8MM Gate B sustained verified-stress evaluation on Spark.
+- [x] Updated helper Snapdragon portability: independently inspected scalar/NEON
+  executions and operator-confirmed screenshot of explicit unsupported-SVE-I8MM
+  rejection on CPUs 0–7, with no commands, worker or fallback.
 - [ ] SVE BF16.
 
-Except for committed, accepted SVE2/DotProd/I8MM/FP16/FHM and the uncommitted,
-physically accepted BF16 implementation, these remain adopted future implementations.
+Except for committed, accepted SVE2/DotProd/NEON I8MM/FP16/FHM/BF16 and the
+uncommitted physically accepted SVE I8MM implementation, these remain adopted future
+implementations.
 Both physical gates PASS on Spark and Snapdragon for DotProd, I8MM, FP16/FHM and
 BF16; existing SVE2 and baseline acceptance remain unchanged.
 Prioritize on Spark by demonstrated capability and worthwhile
@@ -542,7 +561,67 @@ No further DotProd physical repetition is required. Next is unfinished adopted
 specialized ARM64 work on Spark, then supported Snapdragon compatibility and
 acceptance. SVE/SVE2, VNNI and generic selection behavior remain unchanged.
 
-**NEON BF16 implementation (uncommitted, physically accepted):**
+**SVE I8MM implementation (uncommitted, physically accepted on Spark):**
+The [SVE I8MM contract](docs/sve_i8mm_contract.md) defines `sve_i8mm`, with three
+signed SMMLA, three unsigned UMMLA and two unsigned-by-signed USMMLA scalable
+Z-register accumulator chains. Every active 128-bit segment uses independent
+2×8 by 8×2 matrix verification, four int32 result lanes and modulo-2^32 accumulation.
+Each credited block must pass all lanes, guards, 256 rounds and a separate one-round
+witness. Runtime eligibility requires FP/ASIMD/SVE plus HWCAP2_SVEI8MM (bit 9),
+not an inferred NEON I8MM or SVE2 flag. Per-thread inherited VL (16–256 bytes,
+16-byte multiples) is validated against actual CNTW before loads/stores and checked
+throughout credited work. Different valid per-thread VLs remain independently
+accounted for; changed or malformed VL fails closed. Compilation is independently
+optional; baseline non-SVE startup and existing Auto/vector/Power Auto are preserved.
+
+The pre-physical software baseline passes **358/358 smoke tests**, **81/81 profiles** with five
+unchanged advisories, 379 Python compilation checks and 19 integration imports.
+The six new SVE I8MM groups include independent matrix references, genuine
+AArch64 object instruction/data-flow analysis, all 16 supported software VLs,
+capability/resource/cancellation failures and reporting/frontend parity.
+Baseline, SVE-I8MM-only and combined-feature AArch64 compilation pass.
+The complete 370-file execution-source fingerprint is
+`8d3c99476db9b4da561a6daeecd96880b9f2d1bb441757f3f7fb272b886fdb90`;
+documentation and regression files are outside that scope.
+Both Spark physical gates PASS at 128-bit VL: 20/20 CPUs, 121.310-second
+functional execution / 4,684,435,829 verified blocks and 601.922-second sustained
+execution / 23,273,347,282 blocks. The 481.950-second usable window sustains
+38.665 million verified blocks/s, stable halves and zero recorded stalls. The
+executed GCC 13.3.0 helper SHA-256 is
+`78e04ae9f9c33187dec60e5952477c072021155270a5f637083875b4753ecb55`,
+matching all executable observations. Genuine 3/3/2 signed/unsigned/mixed scalable
+matrix chains, every active lane, the one-round witness, capability/affinity/VL,
+independent arithmetic and normal lifecycle pass with zero errors. Wider VLs remain
+software-only. Spark's sustained platform thermal peak is 73.7°C; CPU-specific
+power/temperature, independent effective clocks and kernel-log visibility remain
+limited. This is sustained verified work, not proven maximum-power superiority.
+
+Snapdragon current-helper compilation and native scalar/NEON compatibility PASS
+on CPUs 0–7 (121.310/121.238 seconds, respectively; zero errors, successful exits
+and finalized results). The recorded baseline helper identity is
+`a78699f4a74ba48ae94722ba85ddb250d0121dd2eec97bd37e40e153540fb026`.
+Explicit `sve_i8mm` rejection is accepted from the operator-confirmed screenshot:
+effective token, CPUs 0–7, blocked readiness, zero runnable stages/commands and no
+worker/fallback. It is not an independently inspected machine-readable diagnostic;
+original `sve` template captures remain original. Snapdragon has no SVE I8MM
+arithmetic/stress acceptance. No physical repetition is required.
+
+All four physical runs recorded unchanged endpoints for the 370-file fingerprint
+above. Subsequent effective-readiness persistence changes alter full-source identity
+without changing native arithmetic, capability policy or execution eligibility.
+They automatically preserve CLI/TUI run-local readiness, including blocked attempts,
+as separate READY/BLOCKED preflight-only artifacts with original/effective profiles,
+overrides, targets/capabilities, commands, source/host/backend evidence and reasons.
+Original Dry Run diagnostics remain distinct; Advanced Debug is not required.
+The modified diagnostic snapshot passes **362/362 smoke tests**, **18/18 focused
+checks**, **81/81 profiles** with five unchanged advisories, 380 Python compilation
+checks and 29 integration imports. Its complete 370-file source fingerprint is
+`524d9414cfac636b2ccdc45a89dcdc613f8729a65ff33daeb53ca1a9b597a470`.
+Native workloads and capability/selection/safety/lifecycle policies are unchanged.
+This snapshot is software-validated separately, not claimed as physically executed. Next adopted specialized ARM64 implementation is SVE BF16,
+Spark-first; accepted prior ISA and explicit-only boundaries remain unchanged.
+
+**NEON BF16 implementation (committed, physically accepted):**
 The [BF16 contract](docs/neon_bf16_contract.md) defines an experimental explicit-only
 `neon_bf16` kernel with two BFDOT, two BFMMLA, two BFMLALB and two BFMLALT independent
 128-bit accumulator chains. Each credited block verifies all 32 FP32 result lanes
@@ -601,9 +680,9 @@ the tested EBF=0 hardware/compiler/finite-domain configurations, not universal
 compatibility, maximum-power effectiveness or superiority over other kernels.
 No further physical test or production correction is required. BF16 remains
 experimental and explicit-only; Auto, vector intents and Power Auto are unchanged.
-After this milestone is committed, remaining adopted specialized ARM64 work stays
-Spark-first, then independently supported Snapdragon compatibility/acceptance.
-SVE I8MM/BF16 remain later adopted work; accepted prior ISA boundaries are unchanged.
+The NEON BF16 milestone was committed in
+`83665bc59213c8392b3d69480262b1b70b339a80`. SVE I8MM Spark acceptance and Snapdragon portability are now complete;
+SVE BF16 remains later adopted work. Accepted prior ISA boundaries are unchanged.
 
 **NEON FP16/FHM implementation (committed, physically accepted):**
 The [FP16/FHM contract](docs/neon_fp16_fhm_contract.md) defines two independent,
@@ -820,14 +899,66 @@ and [ACLE instruction mappings](https://arm-software.github.io/acle/main/acle.ht
 It is one bounded stability-validation kernel, not a commitment to cover every
 SVE2 instruction or to generalize current Spark SVE acceptance.
 
+### Final adopted SVE2 workload — saturating fixed-point arithmetic
+
+**Adopted, not implemented or validated:** add `sve2_qrdmla`, then close planned
+SVE2 instruction-family expansion. This complements accepted `sve2_smlal` signed
+widening/modulo-32-bit arithmetic with rounded, saturating fixed-point behavior
+that provides a specific additional arithmetic fault-detection opportunity.
+Different semantics justify evaluating this coverage; they do not establish
+independent execution hardware, higher power demand or superior stress effectiveness.
+
+Implementation must use genuine scalable SVE2 **SQRDMLAH and SQRDMLSH** with signed
+16-bit and 32-bit accumulator chains, multiple independent accumulators and
+meaningful repeated arithmetic. Independent exact wide-integer references must
+reproduce architectural doubling, rounding, addition/subtraction and signed
+saturation in the correct order. Verify every active lane, including ties,
+negative extremes, saturation boundaries and ordinary non-saturating arithmetic.
+Use separate saturation witnesses; sustained inputs must avoid permanently
+saturated or otherwise invariant accumulators. Evidence must show evolving
+arithmetic state, not only repeated instruction execution on constant results.
+
+Preserve vector-length-agnostic operation, current all-target SVE2 eligibility,
+per-thread inherited VL validation, pinned affinity, independent verification,
+timestamped reconciled progress, executable/source provenance and normal lifecycle.
+The workload remains experimental and explicit-only. Auto, generic vector intents,
+`highest_verified_vector` and measured Power Auto retain their current policies.
+
+- **Gate A — arithmetic/integrity:** actual native instructions, bit-exact
+  independent verification, deterministic corruption-detection regressions, complete
+  active-lane coverage, capability/VL/affinity integrity and successful lifecycle.
+  Software corruption injection does not imply physical fault injection.
+- **Gate B — sustained verified stress:** meaningful sustained computation,
+  continuously reconciled verification, stable progress, non-invariant accumulator
+  activity and available operating-condition evidence, for a purpose-appropriate
+  duration. Compare observed stress characteristics with existing SVE2 integer,
+  SVE and NEON work, documenting measurement/comparability limits rather than
+  assuming distinct execution resources or greater wattage.
+
+Validate first on NVIDIA GB10 Spark at its supported, recorded physical VL;
+Spark's existing 128-bit acceptance does not pre-accept this new kernel. Confirm
+updated-helper Snapdragon non-SVE baseline compatibility and truthful explicit
+unsupported-capability rejection. Do not run an unsupported sustained SVE2 test
+or infer Snapdragon SVE2 arithmetic acceptance from rejection evidence.
+
+**Completion boundary:** once `sve2_qrdmla` passes both gates and its portability
+checks, the adopted SVE2 workload scope (`sve2_smlal` and `sve2_qrdmla`) is complete
+for the currently tested configurations. This is neither exhaustive SVE2 coverage
+nor physical acceptance at untested vector lengths or on other implementations.
+No dedicated SVE2 histogram, complex arithmetic, permutation, crypto,
+narrowing/packing or additional DSP-family stress workloads are planned. Existing
+accepted functionality, the pending SVE BF16 milestone, finite ARM64 scope and
+Spark-first priorities otherwise remain unchanged.
+
 ### Exclusions and hardware-gated evaluation candidates
 
 The following remain **outside mandatory standalone ISA stress scope**:
 
 - **x86-64:** SSE3/SSSE3/SSE4.x; AES/SHA/GFNI and related crypto operations;
   BMI/ADX; AVX-512 IFMA; VBMI and miscellaneous permutation extensions.
-- **ARM64:** AES/SHA/SM3/SM4/CRC and SVE crypto; SVE bit permutation; FCMA/RDM
-  and miscellaneous DSP extensions.
+- **ARM64:** AES/SHA/SM3/SM4/CRC and SVE crypto; SVE bit permutation; separate
+  FCMA/RDM and miscellaneous DSP workloads beyond the explicitly adopted,
+  bounded SVE2 `sve2_qrdmla` workload above.
 
 In particular, AVX-512 IFMA is not promoted merely because its arithmetic differs
 from VNNI. Different semantics alone do not prove worthwhile incremental stability

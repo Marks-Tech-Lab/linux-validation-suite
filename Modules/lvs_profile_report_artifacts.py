@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import re
+import os
+import json
+import tempfile
+from uuid import uuid4
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,6 +25,23 @@ def safe_report_name(value: str) -> str:
 
 def profile_used_payload(profile: Any, labels: List[str]) -> Dict[str, Any]:
     return {**ProfileLoader.profile_payload(profile, labels), "segment_labels": list(labels)}
+
+
+def atomic_preflight_json(path: Path, payload: Any) -> None:
+    """Publish complete readiness JSON; never leave a truncated prior decision."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w",encoding="utf-8",dir=path.parent,delete=False) as handle:
+            name = handle.name
+            json.dump(payload,handle,indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name,path)
+        name = None
+    finally:
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
 
 
 class ProfileReportArtifactWriter:
@@ -55,6 +76,7 @@ class ProfileReportArtifactWriter:
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
             "kind": "dry_run_diagnostics",
+            "diagnostic_scope": "effective_profile_dry_run" if setup is not None else "original_profile_dry_run",
             "source_provenance": collect_source_provenance(),
             "started": now_local_iso(),
             "profile_name": getattr(profile, "profile_name", profile_path.stem),
@@ -105,9 +127,12 @@ class ProfileReportArtifactWriter:
         backends: Dict[str, Any] | None = None,
         backend_details: Dict[str, Any] | None = None,
         summary_text: str = "",
+        effective_context: Dict[str, Any] | None = None,
+        report_dir: Path | None = None,
     ) -> Path:
         profile_name = safe_report_name(str(getattr(profile, "profile_name", "") or profile_path.stem))
-        report_dir = self.result_reports.new_report_dir(f"{profile_name}_Preflight")
+        suffix = f"{profile_name}_Effective_Preflight_{uuid4().hex[:8]}" if effective_context is not None else f"{profile_name}_Preflight"
+        report_dir = report_dir or self.result_reports.new_report_dir(suffix)
         payload = {
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
@@ -123,12 +148,20 @@ class ProfileReportArtifactWriter:
             "backends": backends or {},
             "backend_details": backend_details or {},
             "preflight": preflight,
-            "result": "Blocked",
+            "result": "Ready" if effective_context is not None and preflight.get("runnable") else "Blocked",
         }
-        JsonStore.write(report_dir / "preflight_report.json", payload)
-        self.write_profile_used(report_dir, profile, labels)
+        if effective_context is not None:
+            payload.update(effective_context)
+            payload.update(status="READY" if preflight.get("runnable") else "BLOCKED", ended=now_local_iso(),
+                           completion_scope="readiness_only_not_workload_execution")
+            atomic_preflight_json(report_dir / "original_profile.json",effective_context["original_profile"])
+            atomic_preflight_json(report_dir / "profile_used.json",effective_context["effective_profile"])
+            atomic_preflight_json(report_dir / "preflight_report.json",payload)
+        else:
+            JsonStore.write(report_dir / "preflight_report.json", payload)
+            self.write_profile_used(report_dir, profile, labels)
         source_text = source_identity_text(source_identity(payload["source_provenance"]))
-        (report_dir / "preflight_summary.txt").write_text((summary_text or str(preflight)) + "\n\n" + source_text + "\n", encoding="utf-8")
+        (report_dir / "preflight_summary.txt").write_text((("Effective run-setup readiness only; no workload executed.\nStatus: " + payload["status"] + "\n") if effective_context is not None else "") + (summary_text or str(preflight)) + "\n\n" + source_text + "\n", encoding="utf-8")
         return report_dir
 
     @staticmethod

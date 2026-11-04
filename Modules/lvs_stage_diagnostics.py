@@ -28,6 +28,19 @@ from .lvs_stage_gpu_diagnostics import (
 )
 
 
+def complete_cpu_diagnostic_preview(runner: Any, cpu: Any, preview: Dict[str, Any]) -> Dict[str, Any]:
+    """Retain blocked CPU target evidence, without generating/admitting commands."""
+    if not cpu.enabled or preview:
+        return preview
+    capability_reader = getattr(runner, "_cpu_capability_plan", None)
+    if callable(capability_reader):
+        try:
+            return capability_reader(cpu)
+        except Exception as exc:
+            return {"diagnostic_capability_error": str(exc)}
+    return preview
+
+
 def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict[str, Any]:
     workloads = runner._enabled_workloads(stage)
     issues: List[str] = []
@@ -711,6 +724,8 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
     issues.extend(gpu_evaluation.get("issues", []))
     warnings.extend(gpu_evaluation.get("warnings", []))
 
+    cpu_preview = complete_cpu_diagnostic_preview(runner, stage.modules.cpu, cpu_preview)
+
     payload = {
         "stage_id": stage.id,
         "label": label,
@@ -792,6 +807,8 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
                 "per_cpu_capabilities",
                 "capability_probe_failures",
                 "capability_intersection_reason",
+                "unavailable_reason",
+                "diagnostic_capability_error",
                 "instruction_intent",
                 "instruction_intent_evidence",
             )

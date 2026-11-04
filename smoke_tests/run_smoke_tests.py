@@ -30,6 +30,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from smoke_tests.effective_preflight_checks import (
+    run_effective_preflight_blocked_checks, run_effective_preflight_ready_checks,
+    run_effective_preflight_frontend_checks, run_effective_preflight_publication_checks,
+)
 from smoke_tests.module_organization_checks import (
     test_modules_cold_import_manifest,
     test_modules_compile_recursively,
@@ -86,6 +90,10 @@ from smoke_tests.source_review_checks import run_automatic_source_workflow_check
 from smoke_tests.native_binary_provenance_checks import run_native_binary_provenance_checks, run_source_endpoint_summary_checks, run_native_binary_rejection_checks
 from smoke_tests.cpu_instruction_order_checks import (
     run_cpu_instruction_order_checks, run_tui_cpu_instruction_order_checks,
+)
+from smoke_tests.sve_i8mm_checks import (
+    run_sve_i8mm_reference_checks, run_sve_i8mm_emission_checks, run_sve_i8mm_lifecycle_checks,
+    run_sve_i8mm_selection_build_checks, run_sve_i8mm_reporting_progress_checks, run_sve_i8mm_frontend_checks,
 )
 from smoke_tests.neon_bf16_checks import (
     run_bf16_reference_checks, run_bf16_emission_checks, run_bf16_lifecycle_checks,
@@ -29377,6 +29385,16 @@ def test_service_orchestrator_factory_injection() -> None:
 
 def main() -> int:
     tests = [
+        run_effective_preflight_blocked_checks,
+        run_effective_preflight_ready_checks,
+        run_effective_preflight_frontend_checks,
+        run_effective_preflight_publication_checks,
+        run_sve_i8mm_reference_checks,
+        run_sve_i8mm_emission_checks,
+        run_sve_i8mm_lifecycle_checks,
+        run_sve_i8mm_selection_build_checks,
+        run_sve_i8mm_reporting_progress_checks,
+        run_sve_i8mm_frontend_checks,
         run_bf16_reference_checks,
         run_bf16_emission_checks,
         run_bf16_lifecycle_checks,

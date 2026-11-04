@@ -1031,3 +1031,51 @@ Native identity is `aarch64_neon_bf16_asm` / `asimdbf16`; labelled
 `bf16_build_status`; reports show derived BF16 products separately from measured
 instructions/power and retain full failed/incomplete compatibility evidence.
 See the [BF16 workload contract](docs/neon_bf16_contract.md).
+
+
+## Explicit scalable SVE I8MM
+
+`sve_i8mm_v1` and `sve_i8mm_progress_v1` record experimental explicit-only SVE
+SMMLA/UMMLA/USMMLA: eight chains (3/3/2), 256 matrix rounds and one witness round,
+128-bit independent segments, eight byte products per int32 result lane, layout
+`a_row_major_b_column_major_c_row_major`, and method
+`wide_integer_segmented_matrix_reference_modulo_2_32`. Native identity is
+`aarch64_sve_i8mm_asm` / `svei8mm`; `test_integer_emulation` is software-only.
+
+Each thread records inherited VL bytes/bits/flags/errno, `active_int32_lanes`,
+`matrix_segments_per_chain`, FP/ASIMD/SVE HWCAP and HWCAP2_SVEI8MM, affinity,
+verification phases, verified/interrupted blocks and errors. All active segments
+must reconcile with progress and aggregate counters. Invalid or changed geometry,
+missing capability, arithmetic/affinity, persistence or lifecycle failure prevents
+successful classification. Derived byte-product rates use each thread's own VL;
+witness work is separate. Reports/compatibility retain complete failure evidence.
+Helper readiness adds `sve_i8mm_build_status` separately from runtime capability and
+executable identity. See the [SVE I8MM contract](docs/sve_i8mm_contract.md).
+
+## Effective Run Setup readiness artifacts
+
+`Modules/lvs_run_flow.py` automatically persists the actual CLI/TUI setup evaluation
+through `Modules/lvs_run_preflight.py` and `Modules/lvs_profile_report_artifacts.py`.
+This applies to ready and blocked attempts, including zero runnable stages, before
+worker launch and independently of Advanced Debug. Original-profile Dry Run
+artifacts remain available and explicitly labelled; they are not relabelled.
+
+- `*_Effective_Preflight_*/preflight_report.json`: `kind=preflight_only`,
+  `diagnostic_scope=effective_run_setup`, `status=READY|BLOCKED`, `result=Ready|Blocked`,
+  `execution_started=false`, `completion_scope=readiness_only_not_workload_execution`.
+- Complete `original_profile`, `effective_profile`, `original_profile_basis`,
+  `run_local_overrides` (field paths and before/after values), labels and debug flag.
+- Exact evaluated `preflight` plan, runnable/enabled counts, commands (including
+  empty lists), target CPU/capability evidence, skipped/disabled stages, errors,
+  warnings, backend/optional-compilation readiness, source and available host identity.
+- Atomic JSON publication of `original_profile.json`, effective `profile_used.json`
+  and the main report, plus a human-readable `preflight_summary.txt` and saved path
+  in Run Readiness. Publication errors are not hidden as successful persistence.
+- Repeated evaluation of the same setup/decision refreshes its artifact; a changed
+  configuration/decision preserves a separate folder. These are readiness records,
+  never completed execution PASS results. Existing result inventory/detail consumers
+  recognize the preflight artifact kind. No synthetic worker or execution manifest
+  is produced. Host identity is not a full independently collected hardware audit.
+
+See [SVE I8MM contract](docs/sve_i8mm_contract.md) for the original-profile versus
+operator-confirmed negative-capability evidence distinction that exposed this gap.

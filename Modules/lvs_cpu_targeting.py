@@ -181,6 +181,7 @@ def select_common_kernel(
         "neon_fp16": ("neon_fp16",),
         "neon_fhm": ("neon_fhm",),
         "neon_bf16": ("neon_bf16",),
+        "sve_i8mm": ("sve_i8mm",),
         "avx_vnni": ("avx_vnni",),
         "avx512_vnni": ("avx512_vnni",),
         "scalar": ("scalar",),
@@ -207,7 +208,7 @@ def select_common_kernel(
 
 def mode_for_common_kernel(flavor: str) -> str:
     value = str(flavor or "")
-    if value in {"avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16"}:
+    if value in {"avx_vnni", "avx512_vnni", "sve2_smlal", "neon_dotprod", "neon_i8mm", "neon_fp16", "neon_fhm", "neon_bf16", "sve_i8mm"}:
         return value
     if value == "sve_fp32_fma":
         return "sve"

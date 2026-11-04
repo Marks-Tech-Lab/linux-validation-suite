@@ -30,6 +30,7 @@ class RunSetupBuilderMixin:
             labels=labels,
             heatsoak_minutes=self._pending_heatsoak_value(),
             original_profile=deepcopy(profile),
+            original_labels=list(labels),
         )
         if self._feature_enabled("run_setup_history"):
             setup.metadata = self._maybe_recall_run_setup_history(setup.metadata)

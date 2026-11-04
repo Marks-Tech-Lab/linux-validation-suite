@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
+import json
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -90,6 +94,56 @@ class RunPreflightManager:
             skipped_stage_count=skipped_stage_count,
             report_dir=report_dir,
         )
+
+    def save_effective_setup_report(self, readiness: ProfileReadiness, setup: Any, report: Dict[str, Any]) -> Path:
+        """Persist the evaluated setup, never relabel an original-profile dry run."""
+        from .lvs_profile_report_artifacts import profile_used_payload
+        original = getattr(setup, "original_profile", None)
+        original_basis = "run_setup_snapshot"
+        if original is None:
+            original = self.profile_loader.load_profile(readiness.profile_path)
+            original_basis = "saved_profile_at_evaluation"
+        original_labels = getattr(setup, "original_labels", None)
+        if original_labels is None:
+            original_labels = self.profile_loader.load_segment_labels(readiness.profile_path, original)
+        original_payload = profile_used_payload(original, original_labels)
+        effective_payload = profile_used_payload(readiness.profile, readiness.labels)
+        changes = []
+        def compare(before, after, path=""):
+            if isinstance(before, dict) and isinstance(after, dict):
+                for key in sorted(before.keys() | after.keys()):
+                    compare(before.get(key), after.get(key), path+"/"+key)
+            elif isinstance(before, list) and isinstance(after, list) and len(before)==len(after):
+                for i,(a,b) in enumerate(zip(before, after)):
+                    compare(a,b,path+"/"+str(i))
+            elif before != after:
+                changes.append({"path":path,"original":deepcopy(before),"effective":deepcopy(after)})
+        compare(original_payload,effective_payload)
+        context = {"diagnostic_scope":"effective_run_setup", "original_profile_basis":original_basis,
+                   "original_profile":original_payload, "effective_profile":effective_payload,
+                   "run_local_overrides":changes,
+                   "advanced_debug_logging":bool(getattr(setup.metadata,"advanced_debug_logging",False)),
+                   "execution_started":False}
+        # Repeated display of the same decision refreshes its artifact. A changed
+        # setup/decision gets a separate folder, retaining earlier blocked evidence.
+        decision = {k:report.get(k) for k in ("runnable","validation","plan","enabled_stage_count","runnable_stage_count")}
+        key = hashlib.sha256(json.dumps([context,decision],sort_keys=True).encode()).hexdigest()
+        cache = getattr(setup,"_effective_preflight_reports",{})
+        context["hardware_identity"] = {"hostname":platform.node(), "architecture":platform.machine(),
+                                        "kernel":platform.release(), "processor":platform.processor(), "status":"host_identity_and_recorded_readiness"}
+        # Capability/target and backend evidence stays in the exact evaluated report;
+        # no second capability probe or command generation is performed for saving.
+        context["hardware_identity"]["cpu_targets"] = [deepcopy(p.get("cpu_targeting",{})) for p in report.get("plan",[])]
+        result = self.profile_reports.save_cli_preflight_report(
+            readiness.profile_path,readiness.profile,readiness.labels,report,
+            runtime_environment=report.get("runtime_environment",{}),backends=report.get("backends",{}),
+            backend_details=report.get("backend_details",{}),
+            summary_text=self.profile_reports.preflight_summary_text(report),
+            effective_context=context, report_dir=cache.get(key),
+        )
+        cache[key]=result
+        setup._effective_preflight_reports=cache
+        return result
 
     def save_preflight_report(self, readiness: ProfileReadiness, report: Dict[str, Any]) -> Path:
         workload_runner = getattr(self.orchestrator, "workload_runner", None)

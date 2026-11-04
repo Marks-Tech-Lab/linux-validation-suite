@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from copy import deepcopy
 import sys
 from typing import Any
 
@@ -256,6 +257,8 @@ class RunCliAdapter:
             if profile_decision.blocked:
                 print("Profile has blocking issues. Fix the profile or sidecar file before running.")
                 return
+        original_profile = deepcopy(profile)
+        original_labels = list(labels)
         metadata = self._run_setup_review(profile_path, profile, labels)
         if metadata is None:
             print("Run cancelled.")
@@ -266,6 +269,8 @@ class RunCliAdapter:
             profile=profile,
             labels=labels,
             heatsoak_minutes=float(self.launcher._pending_heatsoak_minutes or 0.0),
+            original_profile=original_profile,
+            original_labels=original_labels,
         )
         prepared_run = self.run_flow.prepare_setup_run(readiness, setup, save_blocked_report=True)
         preflight = prepared_run.preflight_decision.report

@@ -210,6 +210,8 @@ class ProfileReportManager:
         backends: Dict[str, Any] | None = None,
         backend_details: Dict[str, Any] | None = None,
         summary_text: str = "",
+        effective_context: Dict[str, Any] | None = None,
+        report_dir: Path | None = None,
     ) -> Path:
         return self.artifact_writer.save_cli_preflight_report(
             profile_path,
@@ -220,6 +222,7 @@ class ProfileReportManager:
             backends=backends,
             backend_details=backend_details,
             summary_text=summary_text or self.preflight_summary_text(preflight),
+            effective_context=effective_context, report_dir=report_dir,
         )
 
     def diagnostics_summary_text(self, report: Dict[str, Any]) -> str:

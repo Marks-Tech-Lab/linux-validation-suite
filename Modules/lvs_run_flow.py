@@ -135,9 +135,11 @@ class RunFlowCoordinator:
         *,
         save_blocked_report: bool = True,
     ) -> PreparedRunFlow:
-        preflight_decision = self.preflight_for_run(
-            readiness,
-            save_blocked_report=save_blocked_report,
+        # Effective setup readiness is evidence even when the first review blocks
+        # execution. The legacy flag controls non-setup preflights only.
+        preflight_decision = self.preflight_for_run(readiness, save_blocked_report=False)
+        preflight_decision.preflight.report_dir = self.preflight_manager.save_effective_setup_report(
+            readiness, setup, preflight_decision.report,
         )
         return PreparedRunFlow(
             readiness=readiness,

@@ -78,6 +78,7 @@ class RunSetupState:
     labels: List[str]
     heatsoak_minutes: float = 0.0
     original_profile: Any = None
+    original_labels: List[str] | None = None
 
 
 @dataclass

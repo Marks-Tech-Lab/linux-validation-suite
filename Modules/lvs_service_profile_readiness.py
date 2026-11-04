@@ -105,15 +105,9 @@ class SuiteProfileReadinessServiceMixin:
         *,
         save_blocked_report: bool = False,
     ) -> RunPreflightDecision:
-        readiness = self.run_preflight_manager.inspect_profile_context(
-            setup.profile_path,
-            setup.profile,
-            setup.labels,
-        )
-        return self.run_flow.preflight_for_run(
-            readiness,
-            save_blocked_report=save_blocked_report,
-        )
+        return self.prepare_setup_run_flow(
+            setup, save_blocked_report=save_blocked_report,
+        ).preflight_decision
 
     def prepare_setup_run_flow(
         self,

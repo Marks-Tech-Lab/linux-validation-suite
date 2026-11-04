@@ -62,6 +62,7 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
             "avx_vnni": "AVX-VNNI 256-bit (experimental, explicit-only)",
             "avx512_vnni": "AVX-512 VNNI (experimental, explicit-only)",
             "neon_fp16": "NEON FP16 fused arithmetic (experimental, explicit-only)",
+            "sve_i8mm": "SVE signed/unsigned/mixed I8MM (experimental, explicit-only)",
             "neon_bf16": "NEON BF16 standard dot/matrix and widening FMA (experimental, explicit-only)",
             "neon_fhm": "NEON FP16 products/FP32 accumulation (experimental, explicit-only)",
             "neon_i8mm": "NEON signed/unsigned/mixed I8MM (experimental, explicit-only)",

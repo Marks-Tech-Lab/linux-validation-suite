@@ -43,7 +43,7 @@ typedef enum {
     MODE_SVE2_SMLAL = 10,
     MODE_NEON_DOTPROD = 11,
     MODE_NEON_I8MM = 12,
-    MODE_NEON_FP16 = 13, MODE_NEON_FHM = 14, MODE_NEON_BF16 = 15
+    MODE_NEON_FP16 = 13, MODE_NEON_FHM = 14, MODE_NEON_BF16 = 15, MODE_SVE_I8MM = 16
 } stress_mode_t;
 
 typedef enum {
@@ -65,7 +65,7 @@ typedef enum {
     KERNEL_SVE2_SMLAL = 15,
     KERNEL_NEON_DOTPROD = 16,
     KERNEL_NEON_I8MM = 17,
-    KERNEL_NEON_FP16 = 18, KERNEL_NEON_FHM = 19, KERNEL_NEON_BF16 = 20
+    KERNEL_NEON_FP16 = 18, KERNEL_NEON_FHM = 19, KERNEL_NEON_BF16 = 20, KERNEL_SVE_I8MM = 21
 } kernel_flavor_t;
 
 typedef struct {
@@ -104,6 +104,7 @@ typedef struct {
     uint64_t i8mm_hwcap, i8mm_hwcap2;
     uint64_t half_hwcap;
     uint64_t bf16_hwcap, bf16_hwcap2;
+    uint64_t sve_i8mm_hwcap, sve_i8mm_hwcap2;
     uint64_t vnni_xcr0;
     uint32_t vnni_leaf7_ebx, vnni_leaf7_ecx, vnni_leaf71_eax, vnni_max_subleaf;
 } worker_stats_t;
@@ -194,6 +195,7 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
         progress_kernel == KERNEL_NEON_FP16 ? "fp16_fused_multiply_add" :
         progress_kernel == KERNEL_NEON_BF16 ? "bf16_standard_dot_matrix_and_fused_widening" :
         progress_kernel == KERNEL_NEON_FHM ? "fp16_product_fp32_fused_accumulate_low_high" :
+        progress_kernel == KERNEL_SVE_I8MM ? "sve_segmented_s8_s8_u8_u8_u8_s8_matrix_2x8_8x2" :
         progress_kernel == KERNEL_NEON_I8MM ? "s8_s8_u8_u8_u8_s8_matrix_multiply_accumulate_2x8_8x2" :
         progress_kernel == KERNEL_NEON_DOTPROD ? "s8_s8_and_u8_u8_dot_product_accumulate" :
         progress_kernel == KERNEL_SVE2_SMLAL ? "s16_widening_multiply_accumulate_bottom_top" :
@@ -218,7 +220,7 @@ static void write_progress_snapshot(const char *state, const int *cpu_ids) {
             s->affinity_applied ? "true" : "false", s->observed_cpu,
             s->interrupted_arithmetic_blocks, s->first_error_kind,
             s->first_error_lane, s->first_error_expected, s->first_error_actual);
-        if (progress_kernel == KERNEL_SVE2_SMLAL) fprintf(progress_file, ",\"vector_length_bytes\":%d,\"active_int32_lanes\":%d", s->sve_vl_bytes, s->sve_int32_lanes);
+        if (progress_kernel == KERNEL_SVE2_SMLAL || progress_kernel == KERNEL_SVE_I8MM) fprintf(progress_file, ",\"vector_length_bytes\":%d,\"active_int32_lanes\":%d", s->sve_vl_bytes, s->sve_int32_lanes);
         if (sve_progress) fprintf(progress_file, ",\"vector_length_bytes\":%d,\"active_fp32_lanes\":%d",
                                   s->sve_vl_bytes, s->sve_fp32_lanes);
         fputc('}', progress_file);
@@ -363,7 +365,7 @@ static void record_worker_error(worker_stats_t *stats, const char *kind, uint64_
 #include "cpu_i8mm_kernel.h"
 
 static int verified_arithmetic_kernel(kernel_flavor_t flavor) {
-    return flavor == KERNEL_NEON_BF16 || flavor == KERNEL_NEON_FP16 || flavor == KERNEL_NEON_FHM || verified_fp32_kernel(flavor) || vnni_kernel(flavor) || flavor == KERNEL_SVE2_SMLAL || flavor == KERNEL_NEON_DOTPROD || flavor == KERNEL_NEON_I8MM;
+    return flavor == KERNEL_SVE_I8MM || flavor == KERNEL_NEON_BF16 || flavor == KERNEL_NEON_FP16 || flavor == KERNEL_NEON_FHM || verified_fp32_kernel(flavor) || vnni_kernel(flavor) || flavor == KERNEL_SVE2_SMLAL || flavor == KERNEL_NEON_DOTPROD || flavor == KERNEL_NEON_I8MM;
 }
 
 static uint64_t mul_add_mod_u64(uint64_t a, uint64_t b, uint64_t c) {
@@ -510,6 +512,7 @@ static const char *mode_name(stress_mode_t mode) {
         case MODE_NEON_FP16: return "neon_fp16";
         case MODE_NEON_FHM: return "neon_fhm";
         case MODE_NEON_BF16: return "neon_bf16";
+        case MODE_SVE_I8MM: return "sve_i8mm";
         case MODE_NEON_I8MM: return "neon_i8mm";
         case MODE_AVX_VNNI: return "avx_vnni";
         case MODE_AVX512_VNNI: return "avx512_vnni";
@@ -540,6 +543,7 @@ static const char *kernel_flavor_name(kernel_flavor_t flavor) {
         case KERNEL_NEON_FP16: return "neon_fp16";
         case KERNEL_NEON_FHM: return "neon_fhm";
         case KERNEL_NEON_BF16: return "neon_bf16";
+        case KERNEL_SVE_I8MM: return "sve_i8mm";
         case KERNEL_NEON_I8MM: return "neon_i8mm";
         case KERNEL_AVX_VNNI: return "avx_vnni";
         case KERNEL_AVX512_VNNI: return "avx512_vnni";
@@ -1177,6 +1181,7 @@ static void run_neon_fp32_fma_loop(uint32_t seed, worker_stats_t *stats) {
 
 #include "cpu_half_kernel.h"
 #include "cpu_bf16_kernel.h"
+#include "cpu_sve_i8mm_kernel.h"
 
 static int cpu_supports_sve_fp32_fma(void) {
 #if defined(LVS_CPU_HELPER_TEST_DISABLE_FP) || defined(LVS_CPU_HELPER_TEST_DISABLE_SVE)
@@ -1225,6 +1230,12 @@ static void print_isa_capabilities(int pinned) {
 #else
     const char *bf16_compiled="false";
 #endif
+#if defined(LVS_CPU_HELPER_ENABLE_SVE_I8MM) && defined(__aarch64__) && defined(__linux__)
+    const char *sve_i8mm_compiled="true";
+#else
+    const char *sve_i8mm_compiled="false";
+#endif
+    (void)sve_i8mm_compiled;
     (void)bf16_compiled;
     (void)fp16_compiled; (void)fhm_compiled;
     (void)i8mm_compiled;
@@ -1234,7 +1245,7 @@ static void print_isa_capabilities(int pinned) {
     worker_stats_t evidence={0};
     observe_vnni_capability(&evidence);
     printf("{\"source\":\"%s\",\"hwcap\":null,\"hwcap2\":null,"
-           "\"current_vector_length_bytes\":null,\"sve_compiled\":false,\"sve2_compiled\":false,\"sve2_available\":false,\"dotprod_compiled\":false,\"dotprod_available\":false,\"i8mm_compiled\":false,\"i8mm_available\":false,\"fp16_compiled\":false,\"fp16_available\":false,\"fhm_compiled\":false,\"fhm_available\":false,\"bf16_compiled\":false,\"bf16_available\":false,\"ebf16_available\":false,\"observed_cpu\":%d,"
+           "\"current_vector_length_bytes\":null,\"sve_compiled\":false,\"sve2_compiled\":false,\"sve2_available\":false,\"dotprod_compiled\":false,\"dotprod_available\":false,\"i8mm_compiled\":false,\"i8mm_available\":false,\"fp16_compiled\":false,\"fp16_available\":false,\"fhm_compiled\":false,\"fhm_available\":false,\"bf16_compiled\":false,\"bf16_available\":false,\"ebf16_available\":false,\"sve_i8mm_compiled\":false,\"sve_i8mm_available\":false,\"observed_cpu\":%d,"
            "\"avx_vnni_compiled\":%s,\"avx512_vnni_compiled\":%s,"
            "\"avx_vnni_available\":%s,\"avx512_vnni_available\":%s,"
            "\"xcr0\":%" PRIu64 ",\"cpuid_7_0_ebx\":%u,\"cpuid_7_0_ecx\":%u,"
@@ -1273,6 +1284,8 @@ static void print_isa_capabilities(int pinned) {
 #else
     printf("\"hwcap\":null,\"hwcap2\":null,\"current_vector_length_bytes\":null,\"status\":\"unsupported_architecture\"");
 #endif
+    printf(",\"sve_i8mm_compiled\":%s,\"sve_i8mm_available\":%s",
+        sve_i8mm_compiled,cpu_supports_sve_i8mm() ? "true":"false");
     printf(",\"bf16_compiled\":%s,\"bf16_available\":%s,\"ebf16_available\":%s",
         bf16_compiled,cpu_supports_neon_bf16() ? "true":"false",
 #if defined(__aarch64__) && defined(__linux__)
@@ -1522,7 +1535,7 @@ static int cpu_supports_fma(void) {
 }
 
 static stress_mode_t resolve_mode(stress_mode_t requested) {
-    if (requested == MODE_NEON_BF16 || requested == MODE_NEON_FP16 || requested == MODE_NEON_FHM || requested == MODE_SVE2_SMLAL || requested == MODE_NEON_DOTPROD || requested == MODE_NEON_I8MM) return requested;
+    if (requested == MODE_SVE_I8MM || requested == MODE_NEON_BF16 || requested == MODE_NEON_FP16 || requested == MODE_NEON_FHM || requested == MODE_SVE2_SMLAL || requested == MODE_NEON_DOTPROD || requested == MODE_NEON_I8MM) return requested;
     if (requested == MODE_AVX_VNNI || requested == MODE_AVX512_VNNI) return requested;
 #if defined(__x86_64__) || defined(__i386__)
     if (requested == MODE_AUTO) {
@@ -1573,6 +1586,7 @@ static int requested_mode_supported(stress_mode_t requested) {
     if (requested == MODE_NEON_FP16) return cpu_supports_neon_half(0);
     if (requested == MODE_NEON_FHM) return cpu_supports_neon_half(1);
     if (requested == MODE_NEON_BF16) return cpu_supports_neon_bf16();
+    if (requested == MODE_SVE_I8MM) return cpu_supports_sve_i8mm();
     if (requested == MODE_NEON_I8MM) return cpu_supports_neon_i8mm();
     if (requested == MODE_AVX_VNNI || requested == MODE_AVX512_VNNI) return cpu_supports_vnni(requested == MODE_AVX512_VNNI);
 #if defined(__x86_64__) || defined(__i386__)
@@ -1592,6 +1606,7 @@ static kernel_flavor_t parse_kernel_flavor(const char *raw) {
     if (strcmp(raw,"neon_fp16")==0) return KERNEL_NEON_FP16;
     if (strcmp(raw,"neon_fhm")==0) return KERNEL_NEON_FHM;
     if (strcmp(raw,"neon_bf16")==0) return KERNEL_NEON_BF16;
+    if (strcmp(raw,"sve_i8mm")==0) return KERNEL_SVE_I8MM;
     if (strcmp(raw,"neon_i8mm")==0) return KERNEL_NEON_I8MM;
     if (strcmp(raw,"avx_vnni")==0) return KERNEL_AVX_VNNI;
     if (strcmp(raw,"avx512_vnni")==0) return KERNEL_AVX512_VNNI;
@@ -1638,6 +1653,7 @@ static int kernel_flavor_supported(kernel_flavor_t flavor) {
     if (flavor == KERNEL_NEON_FP16) return cpu_supports_neon_half(0);
     if (flavor == KERNEL_NEON_FHM) return cpu_supports_neon_half(1);
     if (flavor == KERNEL_NEON_BF16) return cpu_supports_neon_bf16();
+    if (flavor == KERNEL_SVE_I8MM) return cpu_supports_sve_i8mm();
     if (flavor == KERNEL_NEON_I8MM) return cpu_supports_neon_i8mm();
     if (vnni_kernel(flavor)) return cpu_supports_vnni(flavor == KERNEL_AVX512_VNNI);
     switch (flavor) {
@@ -1698,6 +1714,7 @@ static int kernel_flavor_supported(kernel_flavor_t flavor) {
 }
 
 static void report_unsupported_kernel(kernel_flavor_t flavor) {
+    if (flavor == KERNEL_SVE_I8MM) fprintf(stderr,"SVE I8MM requires optional compilation, all-target FP/ASIMD/SVE and HWCAP2_SVEI8MM, valid per-thread VL; no fallback\n");
     if (flavor == KERNEL_NEON_BF16) fprintf(stderr,"explicit BF16 requires optional compilation and all-target FP/ASIMD/HWCAP2_BF16; EBF=0 and validated FPCR; no fallback\n");
     if (flavor == KERNEL_NEON_FP16 || flavor == KERNEL_NEON_FHM) fprintf(stderr,"explicit half workload requires independent optional compilation and all-target FP/ASIMD plus ASIMDHP (FP16) or ASIMDFHM (FHM); no fallback\n");
     if (flavor == KERNEL_NEON_I8MM) fprintf(stderr,"neon_i8mm requires optional I8MM compilation, FP/ASIMD HWCAP and HWCAP2_I8MM on every target; no fallback\n");
@@ -1714,6 +1731,7 @@ static stress_mode_t mode_for_kernel_flavor(kernel_flavor_t flavor) {
     if (flavor == KERNEL_NEON_FP16) return MODE_NEON_FP16;
     if (flavor == KERNEL_NEON_FHM) return MODE_NEON_FHM;
     if (flavor == KERNEL_NEON_BF16) return MODE_NEON_BF16;
+    if (flavor == KERNEL_SVE_I8MM) return MODE_SVE_I8MM;
     if (flavor == KERNEL_NEON_I8MM) return MODE_NEON_I8MM;
     if (vnni_kernel(flavor)) return flavor == KERNEL_AVX_VNNI ? MODE_AVX_VNNI : MODE_AVX512_VNNI;
     switch (flavor) {
@@ -1747,6 +1765,7 @@ static kernel_flavor_t default_kernel_flavor(stress_mode_t requested) {
     if (requested == MODE_NEON_FP16) return KERNEL_NEON_FP16;
     if (requested == MODE_NEON_FHM) return KERNEL_NEON_FHM;
     if (requested == MODE_NEON_BF16) return KERNEL_NEON_BF16;
+    if (requested == MODE_SVE_I8MM) return KERNEL_SVE_I8MM;
     if (requested == MODE_NEON_I8MM) return KERNEL_NEON_I8MM;
     if (requested == MODE_AVX_VNNI) return KERNEL_AVX_VNNI;
     if (requested == MODE_AVX512_VNNI) return KERNEL_AVX512_VNNI;
@@ -1814,6 +1833,8 @@ static void *worker_main(void *opaque) {
     switch (flavor) {
         case KERNEL_NEON_FP16:
             run_neon_half_loop(seed,args->stats,0); break;
+        case KERNEL_SVE_I8MM:
+            run_sve_i8mm_loop(seed,args->stats); break;
         case KERNEL_NEON_BF16:
             run_neon_bf16_loop(seed,args->stats); break;
         case KERNEL_NEON_FHM:
@@ -1903,6 +1924,7 @@ static stress_mode_t parse_mode(const char *raw) {
     if (strcmp(raw,"neon_fp16")==0) return MODE_NEON_FP16;
     if (strcmp(raw,"neon_fhm")==0) return MODE_NEON_FHM;
     if (strcmp(raw,"neon_bf16")==0) return MODE_NEON_BF16;
+    if (strcmp(raw,"sve_i8mm")==0) return MODE_SVE_I8MM;
     if (strcmp(raw,"neon_i8mm")==0) return MODE_NEON_I8MM;
     if (strcmp(raw,"avx_vnni")==0) return MODE_AVX_VNNI;
     if (strcmp(raw,"avx512_vnni")==0) return MODE_AVX512_VNNI;
@@ -1936,7 +1958,7 @@ static stress_mode_t parse_mode(const char *raw) {
 static void print_usage(const char *argv0) {
     fprintf(
         stderr,
-        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|avx_vnni|avx512_vnni|neon|sve|sve2_smlal|neon_dotprod|neon_i8mm|neon_fp16|neon_fhm|neon_bf16] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma|sve_fp32_fma|avx_vnni|avx512_vnni|sve2_smlal|neon_dotprod|neon_i8mm|neon_fp16|neon_fhm|neon_bf16] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--print-isa-capabilities] [--result-file <path>]\n",
+        "Usage: %s [--mode auto|scalar|sse|avx|avx2|avx512|avx_vnni|avx512_vnni|neon|sve|sve2_smlal|neon_dotprod|neon_i8mm|neon_fp16|neon_fhm|neon_bf16|sve_i8mm] [--kernel-flavor scalar|sse2|sse2_int|avx|avx_fma|avx2|avx2_fma|avx512_fma|avx512_int|neon|neon_fp32_fma|sve_fp32_fma|avx_vnni|avx512_vnni|sve2_smlal|neon_dotprod|neon_i8mm|neon_fp16|neon_fhm|neon_bf16|sve_i8mm] [--threads N] [--cpu-ids LIST] [--probe-cpu ID] [--print-resolved-mode] [--print-kernel-flavor] [--print-supported-kernels] [--print-isa-capabilities] [--result-file <path>]\n",
         argv0
     );
 }
@@ -2093,6 +2115,8 @@ static void write_result_file(
             initial && periodic && final && !error_count ? "true":"false",
             progress_io_error ? "true":"false",progress_sequence,progress_write_seconds);
     }
+    if (kernel_flavor == KERNEL_SVE_I8MM)
+        write_sve_i8mm_result(handle,worker_stats,threads,requested_threads,error_count);
     if (kernel_flavor == KERNEL_NEON_BF16)
         write_bf16_result(handle,worker_stats,threads,requested_threads,error_count);
     if (kernel_flavor == KERNEL_NEON_FP16 || kernel_flavor == KERNEL_NEON_FHM)
@@ -2322,7 +2346,8 @@ static void write_result_file(
                  strcmp(worker_stats[index].first_error_kind, "dotprod_mismatch") == 0 ||
                  strcmp(worker_stats[index].first_error_kind, "i8mm_mismatch") == 0 ||
                  strcmp(worker_stats[index].first_error_kind, "half_fma_mismatch") == 0 ||
-                 strcmp(worker_stats[index].first_error_kind, "bf16_fma_mismatch") == 0)
+                 strcmp(worker_stats[index].first_error_kind, "bf16_fma_mismatch") == 0 ||
+                 strcmp(worker_stats[index].first_error_kind, "sve_i8mm_mismatch") == 0)
                     ? worker_stats[index].first_error_lane : -1);
             if (kernel_flavor == KERNEL_SVE_FP32_FMA) {
                 const worker_stats_t *s = &worker_stats[index];
@@ -2333,6 +2358,14 @@ static void write_result_file(
                     s->sve_vl_bytes, s->sve_vl_flags, s->sve_vl_errno, s->sve_fp32_lanes,
                     s->sve_fp32_lanes * 8, s->sve_fp32_lanes * 8 * FP32_FMA_ROUNDS);
             }
+        }
+        if (kernel_flavor == KERNEL_SVE_I8MM) {
+            const worker_stats_t *v=&worker_stats[index];
+            fprintf(handle,",\n      \"vector_length_bytes\":%d,\"vector_length_bits\":%d,"
+                "\"vector_length_flags\":%d,\"vector_length_errno\":%d,\"active_int32_lanes\":%d,"
+                "\"matrix_segments_per_chain\":%d,\"isa_hwcap\":%" PRIu64 ",\"isa_hwcap2\":%" PRIu64,
+                v->sve_vl_bytes,v->sve_vl_bytes*8,v->sve_vl_flags,v->sve_vl_errno,v->sve_int32_lanes,
+                v->sve_vl_bytes/16,v->sve_i8mm_hwcap,v->sve_i8mm_hwcap2);
         }
         if (kernel_flavor == KERNEL_NEON_BF16)
             fprintf(handle,",\n      \"isa_hwcap\":%" PRIu64 ",\"isa_hwcap2\":%" PRIu64 ",\"ebf16_available\":%s",
@@ -2564,7 +2597,7 @@ int main(int argc, char **argv) {
             KERNEL_AVX2_FMA, KERNEL_AVX2,
             KERNEL_AVX_FMA, KERNEL_AVX,
             KERNEL_SSE2, KERNEL_SSE2_INT,
-            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SVE_FP32_FMA, KERNEL_AVX_VNNI, KERNEL_AVX512_VNNI, KERNEL_SVE2_SMLAL, KERNEL_NEON_DOTPROD, KERNEL_NEON_I8MM, KERNEL_NEON_FP16, KERNEL_NEON_FHM, KERNEL_NEON_BF16, KERNEL_SCALAR
+            KERNEL_NEON, KERNEL_NEON_FP32_FMA, KERNEL_SVE_FP32_FMA, KERNEL_AVX_VNNI, KERNEL_AVX512_VNNI, KERNEL_SVE2_SMLAL, KERNEL_NEON_DOTPROD, KERNEL_NEON_I8MM, KERNEL_NEON_FP16, KERNEL_NEON_FHM, KERNEL_NEON_BF16, KERNEL_SVE_I8MM, KERNEL_SCALAR
         };
         int printed = 0;
         size_t flavor_count = sizeof(flavors) / sizeof(flavors[0]);
@@ -2635,6 +2668,7 @@ int main(int argc, char **argv) {
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_NEON_FP16) kernel_flavor=KERNEL_NEON_FP16;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_NEON_FHM) kernel_flavor=KERNEL_NEON_FHM;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_NEON_BF16) kernel_flavor=KERNEL_NEON_BF16;
+    if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_SVE_I8MM) kernel_flavor=KERNEL_SVE_I8MM;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_NEON_I8MM) kernel_flavor=KERNEL_NEON_I8MM;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_SVE2_SMLAL) kernel_flavor=KERNEL_SVE2_SMLAL;
     progress_kernel=kernel_flavor;
@@ -2666,7 +2700,7 @@ int main(int argc, char **argv) {
         worker_args[i].stats = &worker_stats[i];
         worker_stats[i].progress_index = i;
         int create_result;
-#if (defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_SVE) || defined(LVS_CPU_HELPER_TEST_SVE2) || defined(LVS_CPU_HELPER_TEST_DOTPROD) || defined(LVS_CPU_HELPER_TEST_I8MM) || defined(LVS_CPU_HELPER_TEST_HALF) || defined(LVS_CPU_HELPER_TEST_BF16)) && defined(LVS_CPU_HELPER_TEST_THREAD_START_FAILURE)
+#if (defined(LVS_CPU_HELPER_TEST_FP32_FMA) || defined(LVS_CPU_HELPER_TEST_SVE) || defined(LVS_CPU_HELPER_TEST_SVE2) || defined(LVS_CPU_HELPER_TEST_DOTPROD) || defined(LVS_CPU_HELPER_TEST_I8MM) || defined(LVS_CPU_HELPER_TEST_HALF) || defined(LVS_CPU_HELPER_TEST_BF16) || defined(LVS_CPU_HELPER_TEST_SVE_I8MM)) && defined(LVS_CPU_HELPER_TEST_THREAD_START_FAILURE)
         create_result = i == 1 ? EAGAIN : pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
 #else
         create_result = pthread_create(&workers[i], NULL, worker_main, &worker_args[i]);
@@ -2744,9 +2778,9 @@ int main(int argc, char **argv) {
         if (fclose(progress_file) != 0) progress_io_error = 1;
         progress_file = NULL;
     }
-    /* BF16 progress persistence is required terminal evidence; preserve the
+    /* BF16/SVE I8MM progress persistence is required terminal evidence; preserve the
      * successful arithmetic counters separately from this publication failure. */
-    if (resolved_flavor == KERNEL_NEON_BF16 && progress_io_error)
+    if ((resolved_flavor == KERNEL_NEON_BF16 || resolved_flavor == KERNEL_SVE_I8MM) && progress_io_error)
         total_error_count += 1ULL;
     write_result_file(result_file_path, mode_for_kernel_flavor(resolved_flavor), resolved_flavor, requested_threads, threads, total_verify_passes, total_canary_passes, total_error_count, worker_stats, target_cpu_ids);
     free(progress_slots);

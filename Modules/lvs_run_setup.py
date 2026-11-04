@@ -103,6 +103,7 @@ class RunSetupManager:
             labels=labels,
             heatsoak_minutes=0.0,
             original_profile=deepcopy(profile),
+            original_labels=list(labels),
         )
 
     def run_setup_history_entries(self) -> List[RunSetupHistoryEntry]:
