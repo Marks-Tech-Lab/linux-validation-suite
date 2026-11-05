@@ -222,7 +222,7 @@ def guest():
     print('LVS_EVIDENCE_END', flush=True)
 
 
-def host(args):
+def host(args, *, guest_script=None, verifier=verify_results):
     bundle = Path(tempfile.mkdtemp(prefix='lvs-wave2a-'))
     print(f'Retained disposable evidence: {bundle}', flush=True)
     root = bundle / 'root'; root.mkdir()
@@ -248,6 +248,9 @@ def host(args):
                       (args.strace, '/bin/strace'), ('/bin/bash', '/bin/sh'),
                       ('/usr/bin/mount', '/bin/mount'), (args.python, '/usr/bin/python3')]:
         binary(src, dest)
+    if guest_script is not None:
+        binary(args.guard, '/bin/thermal-guard')
+        copy_file(guest_script, '/foundation_probe.py')
     stdlib = subprocess.check_output([args.python, '-c', 'import sysconfig;print(sysconfig.get_path("stdlib"))'], text=True).strip()
     shutil.copytree(stdlib, root / stdlib.lstrip('/'), symlinks=False,
                     ignore=shutil.ignore_patterns('site-packages', '__pycache__', 'test', 'tests', 'tkinter', 'idlelib', 'ensurepip'))
@@ -256,7 +259,8 @@ def host(args):
     token = uuid.uuid4().hex[:12]  # virtio block serial is at most 20 bytes
     (root / 'fixture.json').write_text(json.dumps(dict(token=token)))
     copy_file(Path(__file__).resolve(), '/probe.py')
-    (root / 'init').write_text('#!/bin/sh\n/bin/mount -t proc proc /proc\n/bin/mount -t sysfs sysfs /sys\n/bin/mount -t devtmpfs devtmpfs /dev\nexec /usr/bin/python3 /probe.py --guest\n')
+    guest_entry = '/foundation_probe.py' if guest_script is not None else '/probe.py --guest'
+    (root / 'init').write_text('#!/bin/sh\n/bin/mount -t proc proc /proc\n/bin/mount -t sysfs sysfs /sys\n/bin/mount -t devtmpfs devtmpfs /dev\nexec /usr/bin/python3 ' + guest_entry + '\n')
     (root / 'init').chmod(0o755)
     for directory in ('proc', 'sys', 'dev', 'tmp'):
         (root / directory).mkdir(exist_ok=True)
@@ -287,6 +291,8 @@ def host(args):
             f'virtio-blk-pci,drive=fixture,serial=LVS-{token},logical_block_size=512,physical_block_size=4096']
     manifest = dict(command=argv, image_before=digest(disk), tools={
         str(p): digest(p) for p in (args.kernel, args.fio, args.old_fio, args.strace, args.python)})
+    if guest_script is not None:
+        manifest['tools'].update({str(args.guard): digest(args.guard), str(guest_script): digest(guest_script)})
     (bundle / 'host.json').write_text(json.dumps(manifest, indent=2))
     with (bundle / 'console.log').open('wb') as console:
         p = subprocess.Popen(argv, stdout=console, stderr=subprocess.STDOUT, start_new_session=True)
@@ -305,7 +311,7 @@ def host(args):
         tar.extractall(bundle, filter='data')
     require(manifest['image_before'] == manifest['image_after'], 'synthetic contents changed')
     require(p.returncode == 0, 'unexpected QEMU exit')
-    verify_results(json.loads((bundle / 'evidence/results.json').read_text()))
+    verifier(json.loads((bundle / 'evidence/results.json').read_text()))
     print((bundle / 'evidence/results.json').read_text())
 
 

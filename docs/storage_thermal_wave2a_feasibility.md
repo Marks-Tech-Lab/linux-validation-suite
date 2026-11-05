@@ -325,8 +325,13 @@ The complete 376-file `lvs_execution_source_v1` fingerprint is
 `8a95d444da227a106ca590f87b5256788c5eb2ea08d91628eef41890b9996052`.
 Its change from the baseline is the Storage Health correction. This established
 scope excludes Markdown, smoke tests and Python files under `scripts/`; it must
-not be presented as an identity of the entire research bundle. The current
-research probe SHA-256 is
+not be presented as an identity of the entire research bundle. The Wave 2A reviewed
+research probe SHA-256 was
 `0775835952b2b4d6dd3af1ea395cbc7ead54fc01c36a526b02f18541a60c0122`;
 the executed copy retained in the final bundle's `root/probe.py` is
 `7965b805d40968da6372c01fc0f17db58f1ff93d7fd67f02306c295aded65e83`.
+
+Stage 2B-1 subsequently adds optional guest/verifier hooks to reuse the builder;
+the default Wave 2A experiment remains unchanged. See the separate
+[backend foundation contract](storage_thermal_backend_contract.md) for that
+implementation and its independent synthetic evidence.

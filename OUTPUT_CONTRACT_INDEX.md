@@ -10,6 +10,14 @@ breaking change even when the producing module is internal.
 
 ## Contract Classes
 
+The Stage 2B-1 `lvs.storage_thermal.config`, `.readiness`, `.result` and `.guard`
+version-1 contracts use snake_case. They distinguish selection, blocked/candidate
+eligibility, actual activity, terminal lifecycle and unmeasured thermal coverage.
+Foundation readiness remains BLOCKED with no runnable commands because the
+standalone runner is not implemented. Guard evidence does not establish physical
+eligibility or heating. No existing report/export schema changes in this stage.
+See [the backend contract and provisional policy](docs/storage_thermal_backend_contract.md).
+
 The parent-owned `linux_validation_suite.vulkan_compute_shutdown` v1 snake_case
 contract is attached as `shutdown_evidence` in normalized WorkerResults and
 preserved intact as additive `ShutdownEvidence` in compatibility GPU details

@@ -39,6 +39,11 @@ from smoke_tests.storage_thermal_feasibility_checks import (
     run_storage_smart_standby_checks, run_storage_fio_probe_contract_checks,
     run_storage_fio_trace_audit_checks,
 )
+from smoke_tests.storage_thermal_foundation_checks import (
+    run_storage_thermal_schema_checks, run_storage_thermal_pilot_policy_checks,
+    run_storage_thermal_terminal_checks, run_storage_thermal_capability_checks,
+    run_storage_thermal_native_guard_checks, run_storage_thermal_descriptor_binding_checks,
+)
 from smoke_tests.environment_wave1_checks import (
     run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
     run_environment_maintenance_lock_checks, run_environment_interrupted_recovery_checks,
@@ -29692,6 +29697,12 @@ def main() -> int:
         run_storage_smart_standby_checks,
         run_storage_fio_probe_contract_checks,
         run_storage_fio_trace_audit_checks,
+        run_storage_thermal_schema_checks,
+        run_storage_thermal_pilot_policy_checks,
+        run_storage_thermal_terminal_checks,
+        run_storage_thermal_capability_checks,
+        run_storage_thermal_native_guard_checks,
+        run_storage_thermal_descriptor_binding_checks,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,

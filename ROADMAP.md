@@ -53,7 +53,11 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    tests and 81/81 profiles valid. **Broader real-host deployment acceptance
    remains pending**, separate from these completed software gates. See the
    [Environment Manager contract and deployment procedure](docs/environment_manager.md).
-2. [ ] **Storage Thermal Assist — next priority; planned, not implemented or accepted.**
+2. [ ] **Storage Thermal Assist — next priority; full workload and physical acceptance pending.**
+   Wave 2A descriptor feasibility/SMART correction is committed. Stage 2B-1
+   contracts and constrained launch foundation are software/synthetic-validated
+   and awaiting approval in the development tree; Stage 2B-2 is not implemented.
+   See [the backend foundation contract](docs/storage_thermal_backend_contract.md).
    Optional, lightweight, rate-limited, **read-only** drive activity for whole-system
    thermal validation, including high-density 4U/24-bay servers. Reuse existing
    storage inventory, temperature monitoring and fio where suitable. Require
