@@ -44,6 +44,12 @@ from smoke_tests.storage_thermal_foundation_checks import (
     run_storage_thermal_terminal_checks, run_storage_thermal_capability_checks,
     run_storage_thermal_native_guard_checks, run_storage_thermal_descriptor_binding_checks,
 )
+from smoke_tests.storage_thermal_runner_checks import (
+    run_thermal_target_discovery_checks, run_thermal_exclusive_open_checks,
+    run_thermal_supervisor_completion_checks, run_thermal_monitoring_and_approval_checks,
+    run_thermal_cancellation_and_race_checks, run_thermal_persistence_and_ui_checks,
+    run_thermal_io_and_cleanup_failure_checks, run_thermal_reporting_and_resource_checks,
+)
 from smoke_tests.environment_wave1_checks import (
     run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
     run_environment_maintenance_lock_checks, run_environment_interrupted_recovery_checks,
@@ -29703,6 +29709,14 @@ def main() -> int:
         run_storage_thermal_capability_checks,
         run_storage_thermal_native_guard_checks,
         run_storage_thermal_descriptor_binding_checks,
+        run_thermal_target_discovery_checks,
+        run_thermal_exclusive_open_checks,
+        run_thermal_supervisor_completion_checks,
+        run_thermal_monitoring_and_approval_checks,
+        run_thermal_cancellation_and_race_checks,
+        run_thermal_persistence_and_ui_checks,
+        run_thermal_io_and_cleanup_failure_checks,
+        run_thermal_reporting_and_resource_checks,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,

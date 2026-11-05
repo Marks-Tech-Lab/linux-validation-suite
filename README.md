@@ -245,6 +245,12 @@ Benchmark utility at **Run Tests > Run Storage Benchmark**. The TUI supports
 profile selection, editing, readiness review, run execution, and result review;
 Storage Benchmark is available there as a completion-based profile module.
 
+The separate development entrypoint `python3 lvs_storage_thermal_assist.py`
+provides numbered-menu, guarded read-only activity on eligible inactive HDDs.
+It needs no Textual dependency and does not change validation profiles or run
+alongside CPU/GPU stages yet. Active/system/array and SSD/NVMe execution remain
+blocked. See [standalone setup, safety and result instructions](docs/storage_thermal_assist.md).
+
 ### Profile editing and one-off run configuration
 
 In the TUI, **Save As** and **Copy** validate and save the named profile when

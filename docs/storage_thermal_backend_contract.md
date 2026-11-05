@@ -1,9 +1,10 @@
 # Storage Thermal Assist: Stage 2B-1
 
-Implemented: versioned contracts and a constrained fio launch foundation,
-software-validated with synthetic devices. **No standalone runner, profile/UI
-integration, physical thermal acceptance or active-storage execution.** Stage
-2B-2 requires separate approval. Preserve the
+Historical Stage 2B-1 scope: versioned contracts and a constrained fio launch
+foundation, software-validated with synthetic devices. It did not implement a
+standalone runner, profile/UI integration, physical thermal acceptance or active
+storage. The subsequently authorized [Stage 2B-2 standalone runner](storage_thermal_assist.md)
+is separate from the foundation observations below. Preserve the
 [Wave 2A evidence and revised plan](storage_thermal_wave2a_feasibility.md).
 
 ## Contracts and provisional policy
@@ -186,6 +187,79 @@ CLI/TUI/O integration, physical pilots, system/mounted drives, ZFS, mdraid,
 device-mapper and hardware RAID require separate approvals/proofs. Logical reads
 never imply independent member heating. Storage Benchmark commands, preparation
 writes, capability policy and execution remain unchanged.
+
+## Stage 2B-3: standard-profile integration requirement
+
+Approved future integration scope, verified read-only at commit
+`412cd151a4d42990e52cc43c17380ae13d8e1a5f`:
+
+| Active profile | Stages to request Thermal Assist |
+| --- | ---: |
+| `profiles/PL Validation.json` | 4 |
+| `profiles/PL Validation 4hr.json` | 4 |
+| `profiles/PL Validation 6hr.json` | 4 |
+| `profiles/PL Validation 12hr.json` | 8 |
+| `profiles/PL Validation 24hr.json` | 16 |
+| `profiles/QA System Test Short v2.json` | 4 |
+| `profiles/Power Test 5hr.json` | 1 |
+| **Total** | **41** |
+
+Do not edit these profiles until the standalone runner and concurrent stage
+execution are implemented and software-validated. Stage 2B-1's blocked foundation
+does not satisfy that prerequisite. Then request Thermal Assist in all 41 stages
+alongside their existing workloads, with:
+
+- All Eligible Internal Drives; 50% ordinary and 25% internal boot/system intent.
+- USB, virtual, loop and logical devices excluded from automatic groups, without
+  bypassing any physical-identity, active-device, backend or monitoring restriction.
+- Duration inherited from the existing stage, without truncating it or extending
+  another workload. The current foundation's 120-second configuration default is
+  not an override of a profile's stage duration.
+- Automatic scheduling that resolves to ordinary Linux scheduling, shared
+  supervision, rate limits and staggered startup, prioritizing low CPU/GPU
+  interference. No automatic core reservation or complex affinity balancing.
+- Existing monitoring safeguards retained, especially for unattended runs.
+
+Profile/stage editing and shared run-local CLI/TUI Stage Overrides, including
+the TUI O workflow, must expose adjustment and disabling. An operator must be able
+to run controlled storage-off comparisons without modifying the saved profile.
+Persist the original request, effective overrides and actual storage coverage.
+
+If no eligible target or supported backend exists, show requested storage as
+blocked/unavailable with specific reasons. Offer an explicit choice to continue
+the original CPU/GPU test without Thermal Assist, or cancel. Do not silently skip
+storage, fabricate thermal coverage, or classify missing auxiliary support as a
+CPU/GPU hardware failure. Persist the operator's continuation decision and scope;
+unattended execution must have an explicit preauthorized auxiliary-failure policy,
+otherwise remain blocked. Do not hide actual I/O or safety failures as missing
+capability or use this choice to weaken emergency-stop behavior.
+
+Short unmonitored approval must be bounded to its approved duration and device/
+configuration scope. It must not renew at stage boundaries or automatically
+authorize an entire multi-hour profile. A longer unmonitored run needs its own
+explicit bounded approval; it still cannot claim monitored thermal safety.
+
+Investigate worker retention across adjacent stages rather than promising it.
+Reuse requires unchanged resolved physical identities, compatible effective
+configuration, valid backend/ownership evidence, continuing monitoring and
+unexpired approval. Revalidate at every boundary; stop/restart if compatibility
+cannot be established. Do not simply extend fio runtime or drop duration bounds.
+Retention needs bounded supervision plus per-stage counter snapshots, telemetry,
+readiness, original/effective settings, start/end timestamps and completed-activity
+reconciliation, with no double credit or inter-stage activity hidden from reports.
+Reused-worker stage completion must remain distinct from final process exit and
+cleanup. Cancellation and safety stops must work during boundary transitions.
+Measure startup interference before accepting added retention complexity.
+
+Stage 2B-3 regressions must verify the seven exact active paths and all 41 stages,
+load/validation/replay, inherited durations, settings, shared overrides and
+storage-off comparisons, requested-versus-executed reporting, missing-backend
+continuation decisions and unmonitored expiry across stages. Compare each profile
+with its pre-integration configuration to prove unchanged identity, stage order,
+durations, CPU/GPU/memory/VRAM settings, normalization and thresholds. Test worker
+reuse/restart boundaries and terminal accounting if retention is adopted. Archived
+and historically retained profiles must remain unchanged. These are acceptance
+requirements, not implementation or test results from Stage 2B-1.
 
 ## Final software validation and provenance
 

@@ -29,7 +29,7 @@ def executable_identity(path: str) -> dict:
                 modified_ns=observed['modified_time_ns'], changed_ns=observed['changed_time_ns'])
 
 
-def capability(fio: str, guard: str, *, run=subprocess.run) -> dict:
+def capability(fio: str, guard: str, *, run=subprocess.run, uid: int | None = None, gid: int | None = None) -> dict:
     """No device access, privilege escalation, package install or compiler activity."""
     evidence = dict(status='unavailable', backend='descriptor_fio_psync_v1', reasons=[],
                     fixture_proof_required=True, active_storage_supported=False)
@@ -57,15 +57,19 @@ def capability(fio: str, guard: str, *, run=subprocess.run) -> dict:
         if version.stdout.strip() != 'fio-3.42':
             evidence.update(status='untested', reasons=['capabilities present but this fio behavior family lacks fixture qualification; no automatic substitution'])
             return evidence
-        if os.getuid() == 0 or os.getgid() == 0:
-            raise ValueError('runtime guard proof requires an explicit non-root operator session')
+        uid = os.getuid() if uid is None else uid
+        gid = os.getgid() if gid is None else gid
+        integer(uid, 1, 2**32-2, 'explicit non-root operator uid')
+        integer(gid, 1, 2**32-2, 'explicit non-root operator gid')
+        if os.getuid() != 0 and (uid != os.getuid() or gid != os.getgid()):
+            raise ValueError('unprivileged callers cannot change operator identity')
         # Kernel policy proof uses only a private regular file, never a device.
         # It complements, and does not replace, synthetic block-device acceptance.
         with tempfile.TemporaryDirectory(prefix='lvs-thermal-policy-') as directory:
             path = Path(directory)/'readonly-fixture'; path.write_bytes(bytes(4096))
             fd = os.open(path, os.O_RDONLY | os.O_DIRECT | os.O_CLOEXEC)
             try:
-                proof = run([guard, '--policy-test', str(os.getuid()), str(os.getgid()),
+                proof = run([guard, '--policy-test', str(uid), str(gid),
                              '0', '0', '4096', '4096', '1', '1'], stdin=fd,
                             capture_output=True, text=True, timeout=10, check=False, env=env)
             finally:

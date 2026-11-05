@@ -222,7 +222,7 @@ def guest():
     print('LVS_EVIDENCE_END', flush=True)
 
 
-def host(args, *, guest_script=None, verifier=verify_results):
+def host(args, *, guest_script=None, verifier=verify_results, extra_files=None):
     bundle = Path(tempfile.mkdtemp(prefix='lvs-wave2a-'))
     print(f'Retained disposable evidence: {bundle}', flush=True)
     root = bundle / 'root'; root.mkdir()
@@ -251,6 +251,8 @@ def host(args, *, guest_script=None, verifier=verify_results):
     if guest_script is not None:
         binary(args.guard, '/bin/thermal-guard')
         copy_file(guest_script, '/foundation_probe.py')
+    for source,destination in extra_files or []:
+        copy_file(source,destination)
     stdlib = subprocess.check_output([args.python, '-c', 'import sysconfig;print(sysconfig.get_path("stdlib"))'], text=True).strip()
     shutil.copytree(stdlib, root / stdlib.lstrip('/'), symlinks=False,
                     ignore=shutil.ignore_patterns('site-packages', '__pycache__', 'test', 'tests', 'tkinter', 'idlelib', 'ensurepip'))

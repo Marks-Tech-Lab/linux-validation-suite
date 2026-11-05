@@ -1,7 +1,7 @@
-"""Version-1 thermal contracts and pure pilot planning. No discovery or execution.
+"""Version-1 thermal contracts and pure pilot planning.
 
 These provisional activity ceilings are NOT hardware/thermal acceptance. The
-standalone runner and active-stack providers are intentionally not implemented.
+active-stack providers are intentionally not implemented.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ class ThermalConfig:
     monitoring: str = 'required'
     unmonitored_approval: str = ''
     temperature_limit_c: float | None = None
+    temperature_warning_c: float | None = None
     scheduling: str = 'normal'
     queue_depth: int = 1
     policy: str = POLICY
@@ -82,6 +83,10 @@ class ThermalConfig:
         if self.temperature_limit_c is not None and (type(self.temperature_limit_c) not in (int, float)
                 or not math.isfinite(self.temperature_limit_c) or not 0 < self.temperature_limit_c < 200):
             raise ValueError('invalid temperature limit; no default safety threshold is assumed')
+        if self.temperature_warning_c is not None and (type(self.temperature_warning_c) not in (int, float)
+                or not math.isfinite(self.temperature_warning_c) or not 0 < self.temperature_warning_c < 200
+                or self.temperature_limit_c is not None and self.temperature_warning_c >= self.temperature_limit_c):
+            raise ValueError('warning threshold must be finite and below the configured stop threshold')
 
     def to_dict(self):
         return asdict(self)
@@ -136,7 +141,8 @@ class ThermalDevice:
 
 
 def readiness(config: ThermalConfig, devices: list[ThermalDevice], backend: dict,
-              *, source_provenance: dict | None = None, hardware_identity: dict | None = None) -> dict:
+              *, source_provenance: dict | None = None, hardware_identity: dict | None = None,
+              launch_implemented: bool = False, commands: list | None = None) -> dict:
     """Serialize a caller's resolved evidence; never discovers or authorizes devices."""
     ThermalConfig(**config.to_dict())
     for device in devices:
@@ -147,13 +153,14 @@ def readiness(config: ThermalConfig, devices: list[ThermalDevice], backend: dict
     blocked = [d.device_id for d in devices if d.selected and d.state == 'blocked']
     ok = bool(runnable) and not blocked and backend.get('status') == 'available'
     return dict(contract_id='lvs.storage_thermal.readiness', contract_version=VERSION,
-                status='BLOCKED', eligibility_status='ELIGIBLE' if ok else 'BLOCKED',
+                status='READY' if ok and launch_implemented and commands else 'BLOCKED',
+                eligibility_status='ELIGIBLE' if ok else 'BLOCKED',
                 completion_scope='readiness_only_not_execution',
                 configuration=config.to_dict(), devices=[asdict(d) for d in devices], backend=backend,
                 source_provenance=source_provenance or {}, hardware_identity=hardware_identity or {},
-                candidate_devices=runnable if ok else [], runnable_devices=[], blocked_devices=blocked,
-                commands=[], launch_implemented=False,
-                reasons=['standalone runner not implemented in Stage 2B-1'])
+                candidate_devices=runnable if ok else [], runnable_devices=runnable if ok and launch_implemented and commands else [],
+                blocked_devices=blocked, commands=commands or [], launch_implemented=launch_implemented,
+                reasons=[] if ok and launch_implemented and commands else ['no approved runnable workload in this readiness decision'])
 
 
 @dataclass
