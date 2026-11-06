@@ -273,6 +273,17 @@ class RunCliAdapter:
             original_labels=original_labels,
         )
         prepared_run = self.run_flow.prepare_setup_run(readiness, setup, save_blocked_report=True)
+        from .lvs_storage_thermal_stage import consent_requests, consent_text, record_unmonitored_decision
+        requests = consent_requests(prepared_run.preflight_decision.report, profile)
+        if requests:
+            print(consent_text(requests))
+            print("1. Approve the listed bounded unmonitored activity\n2. Run primary validation without unmonitored Thermal Assist\n3. Cancel run")
+            choice=self._input("Choose [2]: ").strip() or "2"
+            if choice not in {"1", "2"}:
+                print("Run cancelled; profile unchanged.")
+                return
+            record_unmonitored_decision(profile, requests, choice=="1")
+            prepared_run = self.run_flow.prepare_setup_run(readiness, setup, save_blocked_report=True)
         preflight = prepared_run.preflight_decision.report
         preflight_action = prepared_run.preflight_action
         print("")

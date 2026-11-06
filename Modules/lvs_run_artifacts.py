@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -139,6 +142,30 @@ def write_final_run_artifacts(
             initial_source.get("digest") != end_source.get("digest")
             if initial_source.get("status") == end_source.get("status") == "complete" else None
         )
+    from .lvs_storage_thermal_results import summarize_run, publish_run_summary, reporting_error
+    # Validate only auxiliary-owned fields before primary dataclass/JSON export.
+    # Never catch primary finalization, parsing or exporter failures here.
+    auxiliary_fault = None
+    for window in stage_windows:
+        try: window.storage_thermal_summary = json.loads(json.dumps(window.storage_thermal_summary, allow_nan=False))
+        except Exception as exc:
+            window.storage_thermal_summary = reporting_error('stage auxiliary serialization', exc)
+            auxiliary_fault = window.storage_thermal_summary
+    for item in executed_plan:
+        for key in ('storage_thermal', 'storage_thermal_result'):
+            if key not in item: continue
+            try: item[key] = json.loads(json.dumps(item[key], allow_nan=False))
+            except Exception as exc:
+                item[key] = reporting_error('plan auxiliary serialization', exc)
+                auxiliary_fault = item[key]
+    try:
+        thermal_summary = auxiliary_fault or summarize_run(stage_windows)
+        thermal_summary = json.loads(json.dumps(thermal_summary, allow_nan=False))
+        thermal_summary = publish_run_summary(run_dir, thermal_summary)
+        thermal_summary = json.loads(json.dumps(thermal_summary, allow_nan=False))
+    except Exception as exc:
+        thermal_summary = reporting_error('auxiliary aggregation/publication', exc)
+    manifest_payload["storage_thermal_summary"] = thermal_summary
     manifest_payload["ended"] = ended_iso
     manifest_payload["elapsed_seconds"] = round(total_elapsed, 2)
     manifest_payload["executed_plan"] = executed_plan
@@ -159,7 +186,8 @@ def write_final_run_artifacts(
         contract_id=RUN_MANIFEST_CONTRACT_ID,
         kind=RUN_MANIFEST_KIND,
     )
-    JsonStore.write(run_dir / "run_manifest.json", manifest_payload)
+    from .lvs_profile_report_artifacts import atomic_preflight_json
+    atomic_preflight_json(run_dir / "run_manifest.json", manifest_payload)
 
     if keep_raw_telemetry:
         telemetry.write_csv(run_dir / "raw_telemetry.csv")
@@ -190,11 +218,15 @@ def write_final_run_artifacts(
         skipped_stages,
     )
     compat = with_completion(preserve_legacy_worker_evidence_contract(compatibility_payload), completion)
+    compat["StorageThermalSummary"] = thermal_summary
     if "source_provenance" in manifest_payload:
         # Preserve actual endpoints in compatibility output so every later
         # summary writer can render them without consulting today's checkout.
         compat["source_provenance_end"] = manifest_payload.get("source_provenance_end")
         compat["source_changed_during_run"] = manifest_payload.get("source_changed_during_run")
+
+    if "profile_configurations" in manifest_payload:
+        compat["ProfileConfigurations"] = manifest_payload["profile_configurations"]
 
     normalized_hardware_evidence: Dict[str, Any] = {}
     if export_extended_json:
@@ -202,12 +234,28 @@ def write_final_run_artifacts(
         if callable(normalized_hardware_evidence_method):
             normalized_hardware_evidence = normalized_hardware_evidence_method()
 
+    # Render before exporting compatibility JSON: auxiliary rendering may replace
+    # its own summary with an ERROR fallback. Primary rendering errors propagate.
+    summary_text = summary_exporter.build(compat)
+    if compat.get("StorageThermalSummary") is not thermal_summary:
+        thermal_summary = compat["StorageThermalSummary"]
+        manifest_payload["storage_thermal_summary"] = thermal_summary
+        atomic_preflight_json(run_dir / "run_manifest.json", manifest_payload)
     if export_compatibility_json:
         JsonStore.write(run_dir / "parsed_results_custom.json", compat)
-    (run_dir / "run_summary.txt").write_text(
-        summary_exporter.build(compat),
-        encoding="utf-8",
-    )
+    # Atomic replacement preserves the previous complete primary summary on
+    # publication failure; genuine primary I/O failures remain visible.
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=run_dir, delete=False) as stream:
+            name = stream.name
+            stream.write(summary_text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, run_dir / "run_summary.txt")
+        name = None
+    finally:
+        if name is not None: Path(name).unlink(missing_ok=True)
     if export_extended_json:
         JsonStore.write(
             run_dir / "parsed_results_extended.json",
@@ -219,6 +267,9 @@ def write_final_run_artifacts(
                     "source_changed_during_run": manifest_payload.get("source_changed_during_run")}
                    if "source_provenance" in manifest_payload else {}),
                 "profile": ProfileLoader.profile_payload(profile),
+                "storage_thermal_summary": thermal_summary,
+                **({"profile_configurations": manifest_payload["profile_configurations"]}
+                   if "profile_configurations" in manifest_payload else {}),
                 "run_metadata": asdict(metadata),
                 "stage_windows": [asdict(w) for w in stage_windows],
                 "memory_allocation_plans": [

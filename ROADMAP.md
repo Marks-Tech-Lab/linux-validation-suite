@@ -55,9 +55,16 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    [Environment Manager contract and deployment procedure](docs/environment_manager.md).
 2. [ ] **Storage Thermal Assist — next priority; full workload and physical acceptance pending.**
    Wave 2A and Stage 2B-1 are committed, including guarded descriptor proofs.
-   Stage 2B-2 standalone inactive-HDD execution is implemented in the development
-   tree under software/synthetic review; physical acceptance remains pending.
-   Profile/concurrent-stage integration and active-storage paths are not enabled.
+   Stage 2B-2 standalone inactive-HDD execution is committed. Stage 2B-3 shared
+   CLI/TUI configuration, concurrent timed-stage adapter and seven-profile/41-stage
+   integration are implemented in the development tree under software review.
+   Thermal Assist is auxiliary/non-gating: independent outcomes never determine
+   CPU/GPU/RAM PASS/FAIL. Unavailable storage continues automatically; unsafe or
+   unapproved unmonitored execution stays blocked. Stage 2B-4 first prioritizes
+   separately validated active boot-drive read-only support (25% system intent),
+   then other active-storage compatibility proofs.
+   Physical thermal/interference acceptance and active-storage paths remain pending.
+   See [stage integration and acceptance boundaries](docs/storage_thermal_stage_integration.md).
    See [the backend foundation contract](docs/storage_thermal_backend_contract.md).
    Optional, lightweight, rate-limited, **read-only** drive activity for whole-system
    thermal validation, including high-density 4U/24-bay servers. Reuse existing

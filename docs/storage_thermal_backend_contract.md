@@ -62,6 +62,22 @@ virtual, loop and logical devices. Individual selection never bypasses identity,
 topology or safety. System devices remain visible at 25% and blocked. This stage
 defines configuration, not inventory selection or a UI.
 
+## Subsequent Stage 2B-3 admission extension
+
+The original standalone guard protocol and restrictions below remain supported.
+The stage adapter additionally requires `lvs-storage-thermal-stage-admission-v2`:
+a descriptor-free exec bootstrap, PID registration before ownership permission,
+private Unix descriptor handoff, and native admission bound to the primary-created kernel lease identity and serialized
+against shared revocation. Each participant independently opens an OFD on the
+pinned original inode; descriptor duplication is lifetime support, not lock-owner
+independence. A valid native monotonic sample under the verified original OFD lock is
+the commit point. Already-committed work is explicitly tracked and cancelled;
+there is no promise of instantaneous cessation of in-flight kernel I/O. Old guards
+fail closed for this stage path without changing standalone execution. The
+[stage contract](storage_thermal_stage_integration.md) defines ordering, evidence,
+limits and synthetic acceptance. This extension is software-validated only; the
+historical foundation observations below do not claim it was physically tested.
+
 ## Narrow native launch guard
 
 [storage_thermal_guard.c](../native/storage_thermal_guard.c) is justified by the
@@ -187,6 +203,24 @@ CLI/TUI/O integration, physical pilots, system/mounted drives, ZFS, mdraid,
 device-mapper and hardware RAID require separate approvals/proofs. Logical reads
 never imply independent member heating. Storage Benchmark commands, preparation
 writes, capability policy and execution remain unchanged.
+
+## Current Stage 2B-3 development status
+
+The [shared stage integration](storage_thermal_stage_integration.md) now reuses
+the standalone supervisor for concurrent timed validation. Shared CLI/TUI profile
+editing and run-local overrides, automatic non-gating coverage handling, bounded
+unmonitored consent, per-stage shutdown/restart and independent activity evidence
+are implemented in
+the uncommitted development tree. The seven approved profiles request the module
+in 41 stages. Physical heating/interference and active-storage proofs remain
+pending. The requirements below are retained verbatim as a **historical baseline**.
+The subsequent operator clarification supersedes mandatory reduced-coverage
+confirmation and auxiliary-to-primary verdict gating: Thermal Assist is
+non-gating, ordinary unavailable/partial coverage continues automatically,
+unmonitored execution still needs bounded consent, and auxiliary outcomes are
+reported independently. See the current integration contract linked above.
+Stage 2B-4 prioritizes a separately proved active boot-drive read-only path;
+Stage 2B-3 retains the 25% intent and all current active-drive restrictions.
 
 ## Stage 2B-3: standard-profile integration requirement
 

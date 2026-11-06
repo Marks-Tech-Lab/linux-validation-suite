@@ -13,7 +13,17 @@ from .lvs_analysis_quality import planned_analysis_evidence
 
 
 def build_stage_diagnostics(runner: Any, stage: Any, label: str) -> Dict[str, Any]:
-    return build_stage_diagnostics_payload(runner, stage, label)
+    payload = build_stage_diagnostics_payload(runner, stage, label)
+    from .lvs_storage_thermal_stage import preview
+    thermal = preview(stage)
+    if thermal is not None:
+        payload['storage_thermal'] = thermal
+        if thermal['status'] == 'READY':
+            import sys
+            thermal['stage_adapter_command'] = [sys.executable, '-m', 'Modules.lvs_storage_thermal_stage',
+                                                '--channel', '<inherited-stage-lease-fd>']
+        # Auxiliary planning never supplies or removes primary workload commands.
+    return payload
 
 
 def build_dry_run_plan(runner: Any, profile: Any, labels: List[str]) -> List[Dict[str, Any]]:
@@ -21,6 +31,8 @@ def build_dry_run_plan(runner: Any, profile: Any, labels: List[str]) -> List[Dic
     for index, stage in enumerate(profile.stages):
         label = labels[index] if index < len(labels) else stage.name
         plan.append(build_stage_diagnostics(runner, stage, label))
+    from .lvs_storage_thermal_stage import apply_profile_decisions
+    apply_profile_decisions(profile, plan)
     return plan
 
 

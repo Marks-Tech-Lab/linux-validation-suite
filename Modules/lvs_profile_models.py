@@ -98,12 +98,32 @@ class ModuleStorageBenchmark:
 
 
 @dataclass
+class ModuleStorageThermal:
+    """Stage duration is authoritative; approvals never belong to saved profiles."""
+    enabled: bool = False
+    selection: str = "all_internal"
+    device_ids: List[str] = field(default_factory=list)
+    intensity_percent: int = 50
+    system_intensity_percent: int = 25
+    per_device_percent: dict = field(default_factory=dict)
+    block_size: int = 65536
+    rate_mode: str = "percent"
+    iops: Optional[int] = None
+    bandwidth_bytes_per_second: Optional[int] = None
+    monitoring: str = "required"
+    temperature_limit_c: Optional[float] = None
+    temperature_warning_c: Optional[float] = None
+    scheduling: str = "normal"
+
+
+@dataclass
 class StageModules:
     cpu: ModuleCpu = field(default_factory=ModuleCpu)
     memory: ModuleMemory = field(default_factory=ModuleMemory)
     gpu_3d: ModuleGpu3D = field(default_factory=ModuleGpu3D)
     vram: ModuleVram = field(default_factory=ModuleVram)
     storage_benchmark: ModuleStorageBenchmark = field(default_factory=ModuleStorageBenchmark)
+    storage_thermal: ModuleStorageThermal = field(default_factory=ModuleStorageThermal)
 
 
 @dataclass
@@ -145,7 +165,7 @@ def timed_module_names(stage: StageConfig) -> List[str]:
     modules = getattr(stage, "modules", None)
     if modules is None:
         return names
-    for name in ("cpu", "memory", "gpu_3d", "vram"):
+    for name in ("cpu", "memory", "gpu_3d", "vram", "storage_thermal"):
         module = getattr(modules, name, None)
         if bool(module and getattr(module, "enabled", False)):
             names.append(name)

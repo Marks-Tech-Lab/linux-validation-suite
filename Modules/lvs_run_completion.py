@@ -93,6 +93,11 @@ def complete_validation_run(
             run_timing.finish(total_elapsed, lifecycle="aborted", remaining_status="aborted")
         else:
             run_timing.finish(total_elapsed, lifecycle="completed")
+    auxiliary = manifest_payload.get("storage_thermal_summary")
+    if isinstance(auxiliary, dict):
+        from .lvs_run_progress import progress_line
+        print(progress_line(ended_iso, "storage-thermal-summary",
+            auxiliary_outcome=auxiliary.get("auxiliary_outcome", "NOT_RUN"), primary_validation_gating="false"))
     run_events.run_end(ended_iso, total_elapsed, overall_verdict, len(skipped_stages))
     run_events.run_complete(run_dir)
     return RunCompletionResult(

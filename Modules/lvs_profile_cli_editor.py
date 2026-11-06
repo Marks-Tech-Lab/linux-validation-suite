@@ -21,7 +21,7 @@ from .lvs_profile_edit_view import (
 from .lvs_profile_editor import format_profile_duration, parse_profile_duration
 from .lvs_profile_models import ModuleStorageBenchmark, StageConfig, StageModules, ValidationProfile
 from .lvs_service_models import ProfileEditState
-from .lvs_stage_configuration import stage_settings, apply_stage_setting, effective_stage_text, configuration_gpu_cards
+from .lvs_stage_configuration import stage_settings, apply_stage_setting, effective_stage_text, configuration_gpu_cards, setting_value_text
 from .lvs_cli_compat import BackRequested
 
 
@@ -657,7 +657,7 @@ class ProfileCliEditor:
             print(f"\nStage {stage_index + 1} workload settings — "
                   + ("this run only; profile file unchanged" if run_only else "unsaved profile edits"))
             for index, field in enumerate(fields, 1):
-                print(f"{index}. {field.label}: {str(field.value) or '(none)'}")
+                print(f"{index}. {field.label}: {setting_value_text(field.value) or '(none)'}")
             print("\n".join(effective_stage_text(stage)))
             try:
                 raw = host._input("Setting number [Enter/B back]: ").strip()

@@ -62,7 +62,7 @@ def apply_completed_stage_bookkeeping(
             executed_plan[-1]["failure_reasons"] = stage_window.failure_reasons
             executed_plan[-1]["verdict"] = stage_window.verdict
 
-    should_break_run = stage_window.verdict == "aborted" and (operator_stop_requested or abort_run_on_stage_abort)
+    should_break_run = bool(stage_plan.get("system_wide_safety_interruption")) or (stage_window.verdict == "aborted" and (operator_stop_requested or abort_run_on_stage_abort))
     if should_break_run:
         run_aborted = True
 

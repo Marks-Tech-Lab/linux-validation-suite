@@ -17,6 +17,7 @@ from .lvs_profile_models import (
     ModuleGpu3D,
     ModuleMemory,
     ModuleStorageBenchmark,
+    ModuleStorageThermal,
     ModuleVram,
     ProfileDefaults,
     StageConfig,
@@ -136,6 +137,7 @@ class ProfileLoader:
                 gpu_3d=ModuleGpu3D(**modules_raw.get("gpu_3d", {})),
                 vram=ModuleVram(**modules_raw.get("vram", {})),
                 storage_benchmark=ModuleStorageBenchmark(**modules_raw.get("storage_benchmark", {})),
+                storage_thermal=ModuleStorageThermal(**modules_raw.get("storage_thermal", {})),
             )
             analysis = None
             if "analysis" in stage_raw:

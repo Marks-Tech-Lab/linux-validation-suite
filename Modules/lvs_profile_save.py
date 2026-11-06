@@ -74,7 +74,7 @@ class ProfileSaveController:
         return ProfileSavePreparation(
             profile=profile,
             labels=normalized_labels,
-            errors=[str(item) for item in list(validation.get("errors") or [])],
+            errors=[str(item) for item in list(validation.get("errors") or []) + list(validation.get("auxiliary_errors") or [])],
             warnings=[str(item) for item in list(validation.get("warnings") or [])],
         )
 

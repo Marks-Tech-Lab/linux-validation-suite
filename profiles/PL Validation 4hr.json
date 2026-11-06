@@ -15,6 +15,12 @@
       "duration_seconds": 3600,
       "enabled": true,
       "modules": {
+        "storage_thermal": {
+          "enabled": true,
+          "selection": "all_internal",
+          "intensity_percent": 50,
+          "system_intensity_percent": 25
+        },
         "cpu": {
           "enabled": true,
           "mode": "extreme",
@@ -63,6 +69,12 @@
       "duration_seconds": 3600,
       "enabled": true,
       "modules": {
+        "storage_thermal": {
+          "enabled": true,
+          "selection": "all_internal",
+          "intensity_percent": 50,
+          "system_intensity_percent": 25
+        },
         "cpu": {
           "enabled": true,
           "mode": "normal",
@@ -111,6 +123,12 @@
       "duration_seconds": 3600,
       "enabled": true,
       "modules": {
+        "storage_thermal": {
+          "enabled": true,
+          "selection": "all_internal",
+          "intensity_percent": 50,
+          "system_intensity_percent": 25
+        },
         "cpu": {
           "enabled": true,
           "mode": "normal",
@@ -159,6 +177,12 @@
       "duration_seconds": 3600,
       "enabled": true,
       "modules": {
+        "storage_thermal": {
+          "enabled": true,
+          "selection": "all_internal",
+          "intensity_percent": 50,
+          "system_intensity_percent": 25
+        },
         "cpu": {
           "enabled": false,
           "mode": "normal",

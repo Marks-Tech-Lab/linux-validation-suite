@@ -40,6 +40,11 @@ def execute_validation_run(
     if not preflight["runnable"]:
         raise RuntimeError("preflight failed; fix diagnostics before running")
 
+    # The evaluated plan retains its exact consent evidence for this execution.
+    # A later run from the same setup must obtain a fresh run-local decision.
+    if hasattr(profile, "_thermal_consents"):
+        profile._thermal_consents = {}
+
     run_dir = Path(run_dir) if run_dir is not None else orchestrator.make_run_dir(profile.profile_name)
     abort_on_worker_error = bool(orchestrator.settings.abort_on_worker_error)
     abort_on_system_fault = bool(orchestrator.settings.abort_on_system_fault)

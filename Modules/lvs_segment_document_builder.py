@@ -88,6 +88,7 @@ class SegmentDocumentBuilder:
             "error_events": window.error_events,
             "system_faults": window.system_faults,
             "worker_results": window.worker_results,
+            "storage_thermal": getattr(window, "storage_thermal_summary", None),
             "intel_gpu_top_sidecar": window.intel_gpu_top_sidecar,
             "cpu_backend": window.cpu_backend,
             "cpu_instruction_intent": window.cpu_instruction_intent,
@@ -140,6 +141,7 @@ class SegmentDocumentBuilder:
             "ErrorEvents": window.error_events,
             "SystemFaults": window.system_faults,
             "WorkerResults": window.worker_results,
+            "StorageThermal": getattr(window, "storage_thermal_summary", None),
             "IntelGpuTopSidecar": window.intel_gpu_top_sidecar,
             "CpuInstructionSet": {
                 "Backend": window.cpu_backend or "",

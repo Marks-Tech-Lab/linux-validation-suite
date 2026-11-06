@@ -70,6 +70,26 @@ class SummaryTextBuilder:
                 f"coverage {detail.get('VerificationCoverage')}; "
                 f"physical committed bytes {detail.get('PhysicalCommittedBytes')} (None = unavailable)."
             )
+        # Only the auxiliary renderer is contained. Primary summary errors still
+        # propagate to the caller rather than fabricating a valid primary report.
+        auxiliary_lines = []
+        try:
+            for segment in result.get("Segments", []):
+                thermal = segment.get("StorageThermal") if isinstance(segment, dict) else None
+                if thermal:
+                    auxiliary_lines.append(f"Storage Thermal Assist {segment.get('Label', '-')}: {thermal.get('auxiliary_outcome', 'NOT_RUN')}; "
+                                 f"executed {len(thermal.get('executed_devices', []))} drive(s); "
+                                 "heating effectiveness not accepted; see separate storage evidence.")
+            auxiliary = result.get("StorageThermalSummary")
+            if isinstance(auxiliary, dict):
+                from .lvs_storage_thermal_results import summary_text as thermal_summary_text
+                auxiliary_lines.append(thermal_summary_text(auxiliary))
+        except Exception as exc:
+            from .lvs_storage_thermal_results import reporting_error, reporting_error_text
+            auxiliary = reporting_error('combined auxiliary summary rendering', exc)
+            result['StorageThermalSummary'] = auxiliary
+            auxiliary_lines = [reporting_error_text(auxiliary)]
+        lines.extend(auxiliary_lines)
         self._append_stage_summaries(lines, report)
         self._append_action_items(lines, report)
         self._append_export_contract(lines, result)

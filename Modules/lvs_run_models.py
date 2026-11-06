@@ -51,6 +51,7 @@ class StageWindow:
     analysis_evidence: Dict[str, Any] = field(default_factory=dict)
     gpu_evaluation_requirements: Dict[str, Any] = field(default_factory=dict)
     gpu_evaluation_evidence: Dict[str, Any] = field(default_factory=dict)
+    storage_thermal_summary: Optional[Dict[str, Any]] = None
     storage_benchmark_summary: Optional[Dict[str, Any]] = None
 
     @property

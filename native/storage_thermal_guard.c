@@ -24,6 +24,10 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <time.h>
 
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "Thermal guard ABI proof currently requires little endian"
@@ -154,11 +158,124 @@ static void policy_test(void) {
     puts("{\"policy_test\":\"PASS\",\"ioctl_denials\":17,\"alias_tested\":true}");
 }
 
+/* Stage-only admission v2. The primary supplies dev/inode while retaining a
+ * live original pin. Each process reopens that memfd to obtain an independent
+ * OFD; dup/inherited descriptions must NOT be used as competing lock owners.
+ * Private pins are local to this single-threaded native function and are never
+ * closed/duplicated/unlocked by another code path during admission. Default
+ * terminating signals abort the process; no asynchronous close handler exists.
+ */
+static uint64_t monotonic_ns(void) {
+    struct timespec t; if(clock_gettime(CLOCK_MONOTONIC,&t)) fail("stage clock");
+    return (uint64_t)t.tv_sec*1000000000ULL+(uint64_t)t.tv_nsec;
+}
+static void lease_identity(int fd,uint64_t dev,uint64_t ino) {
+    struct stat st; int flags=fcntl(fd,F_GETFL);
+    need(fstat(fd,&st)==0 && S_ISREG(st.st_mode) && st.st_size==6 &&
+         (uint64_t)st.st_dev==dev && (uint64_t)st.st_ino==ino &&
+         flags>=0 && (flags&O_ACCMODE)==O_RDWR,"authoritative lease identity mismatch");
+}
+static int stage_open(int anchor,int pin,uint64_t dev,uint64_t ino,uint64_t deadline,pid_t parent) {
+    lease_identity(anchor,dev,ino);lease_identity(pin,dev,ino);
+    char state[6];
+    return getppid()==parent && pread(pin,state,6,0)==6 &&
+        !memcmp(state,"LVS1OO",6) && monotonic_ns()<deadline;
+}
+static void stage_wait(int channel,int anchor,int pin,uint64_t dev,uint64_t ino,uint64_t deadline,pid_t parent) {
+    for(;;) {
+        need(stage_open(anchor,pin,dev,ino,deadline,parent),"stage admission closed/expired");
+        struct pollfd p={.fd=channel,.events=POLLIN};
+        int rc=poll(&p,1,20);
+        if(rc<0 && errno==EINTR) continue;
+        if(rc<0) fail("stage poll");
+        if(rc && (p.revents&(POLLIN|POLLHUP|POLLERR))) return;
+    }
+}
+static void stage_lock_owned(int anchor,int pin,uint64_t dev,uint64_t ino) {
+    lease_identity(anchor,dev,ino);lease_identity(pin,dev,ino);
+    /* The transport anchor never owns the native pin's lock. GETLK on its
+     * separate OFD must see the exclusive lock; SETLK on the private pin must
+     * remain compatible with that lock. No competing owner can satisfy both.
+     */
+    struct flock probe={.l_type=F_WRLCK,.l_whence=SEEK_SET,.l_start=0,.l_len=0};
+    need(fcntl(anchor,F_OFD_GETLK,&probe)==0 && probe.l_type==F_WRLCK &&
+         probe.l_pid==-1 && probe.l_start==0 && probe.l_len==0,"native OFD lock lost/ambiguous");
+    struct flock owned={.l_type=F_WRLCK,.l_whence=SEEK_SET,.l_start=0,.l_len=0};
+    need(fcntl(pin,F_OFD_SETLK,&owned)==0,"native OFD lock ownership changed");
+}
+static int stage_target(int channel,int lease,uint64_t deadline,pid_t parent,uint64_t dev,uint64_t ino) {
+    struct stat st; int domain=0,type=0; socklen_t len=sizeof(int);
+    lease_identity(lease,dev,ino);
+    char path[64];snprintf(path,sizeof(path),"/proc/self/fd/%d",lease);
+    int pin=open(path,O_RDWR|O_CLOEXEC);need(pin>=3,"independent stage OFD required");
+    lease_identity(pin,dev,ino);lease_identity(lease,dev,ino);
+    /* A private alias pins this exact OFD even if the working descriptor is
+     * unexpectedly closed/reused. It is lifetime support, NOT a contender. */
+    int reference=fcntl(pin,F_DUPFD_CLOEXEC,3);need(reference>=3,"stage OFD lifetime pin");
+    need(getsockopt(channel,SOL_SOCKET,SO_DOMAIN,&domain,&len)==0 && domain==AF_UNIX,"local stage channel required");
+    len=sizeof(int);
+    need(getsockopt(channel,SOL_SOCKET,SO_TYPE,&type,&len)==0 && type==SOCK_SEQPACKET,"stage packet channel required");
+    need(getppid()==parent && prctl(PR_SET_PDEATHSIG,SIGKILL)==0 && getppid()==parent,"stage owner gone");
+    /* Never inherit a target on stdin in this mode. */
+    need(fstat(0,&st)==0 && !S_ISBLK(st.st_mode) && !S_ISREG(st.st_mode),"stage bootstrap target forbidden");
+    stage_wait(channel,lease,pin,dev,ino,deadline,parent);
+    char owner[4]; need(recv(channel,owner,sizeof(owner),MSG_DONTWAIT)==3 && !memcmp(owner,"OWN",3),"stage ownership missing");
+    need(stage_open(lease,pin,dev,ino,deadline,parent),"stage revoked before ownership");
+    need(setsid()>=0,"stage worker group");
+    need(send(channel,"R",1,MSG_DONTWAIT|MSG_NOSIGNAL)==1,"stage ready");
+    stage_wait(channel,lease,pin,dev,ino,deadline,parent);
+    struct flock lock={.l_type=F_WRLCK,.l_whence=SEEK_SET,.l_start=0,.l_len=0};
+    while(fcntl(pin,F_OFD_SETLK,&lock)<0) {
+        if(errno!=EAGAIN && errno!=EACCES) fail("stage admission lock");
+        need(stage_open(lease,pin,dev,ino,deadline,parent),"stage revoked waiting for lock");
+        struct timespec pause={0,1000000}; nanosleep(&pause,NULL);
+    }
+    stage_lock_owned(lease,pin,dev,ino);
+    need(stage_open(lease,pin,dev,ino,deadline,parent),"stage revoked before descriptor receipt");
+    char byte=0; struct iovec vector={.iov_base=&byte,.iov_len=1};
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } control;
+    memset(&control,0,sizeof(control));
+    struct msghdr message={.msg_iov=&vector,.msg_iovlen=1,.msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
+    need(recvmsg(channel,&message,MSG_DONTWAIT|MSG_CMSG_CLOEXEC)==1 && byte=='F' &&
+         !(message.msg_flags&(MSG_CTRUNC|MSG_TRUNC)),"stage descriptor packet");
+    struct cmsghdr *c=CMSG_FIRSTHDR(&message);
+    need(c && c->cmsg_level==SOL_SOCKET && c->cmsg_type==SCM_RIGHTS &&
+         c->cmsg_len==CMSG_LEN(sizeof(int)) && !CMSG_NXTHDR(&message,c),"one stage target required");
+    int target; memcpy(&target,CMSG_DATA(c),sizeof(target));
+    stage_lock_owned(lease,pin,dev,ino);
+    char state[6]; need(pread(pin,state,6,0)==6 && !memcmp(state,"LVS1OO",6),"stage closed at commit");
+    /* LINEARIZATION: this successful monotonic sample under the exclusive lock
+     * admits the owned worker. A later clock tick/cancellation cannot undo an
+     * in-flight commit; its registered owner must terminate and reap it.
+     * No target inspection, read or fio exec occurs before this point.
+     */
+    uint64_t committed=monotonic_ns();
+    stage_lock_owned(lease,pin,dev,ino);
+    need(pread(pin,state,6,0)==6 && !memcmp(state,"LVS1OO",6),"stage closed before commit acknowledgement");
+    need(committed<deadline && getppid()==parent,"stage deadline at commit");
+    lock.l_type=F_UNLCK; if(fcntl(pin,F_OFD_SETLK,&lock)) fail("stage unlock");
+    char ack[64]; int n=snprintf(ack,sizeof(ack),"A:%"PRIu64,committed);
+    need(send(channel,ack,(size_t)n,MSG_DONTWAIT|MSG_NOSIGNAL)==n,"stage admission ack");
+    fprintf(stderr,"{\"stage_admission\":\"COMMITTED\",\"pid\":%ld,\"protocol\":2,\"lease_device\":%"PRIu64",\"lease_inode\":%"PRIu64",\"monotonic_ns\":%"PRIu64"}\n",(long)getpid(),dev,ino,committed);
+    close(reference);close(pin);return target;
+}
+
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--version")) { puts("lvs-storage-thermal-guard-v1"); return 0; }
-    int test=argc>1 && !strcmp(argv[1],"--policy-test");
-    need((test && argc==10) || (argc==11 && !strcmp(argv[1],"--fio-fd")),"invalid fixed guard protocol");
-    int start=test?2:3;
+    if(argc==2 && !strcmp(argv[1],"--stage-admission-version")) { puts("lvs-storage-thermal-stage-admission-v2"); return 0; }
+    int stage=argc>1 && (!strcmp(argv[1],"--stage-fio-fd") || !strcmp(argv[1],"--stage-policy-test"));
+    int test=argc>1 && (!strcmp(argv[1],"--policy-test") || !strcmp(argv[1],"--stage-policy-test"));
+    need((stage && argc==17) || (!stage && test && argc==10) || (argc==11 && !strcmp(argv[1],"--fio-fd")),"invalid fixed guard protocol");
+    pid_t owner=0;
+    if(stage) {
+        uint64_t channel=number(argv[3]),lease=number(argv[4]),parent=number(argv[6]);
+        need(channel>=3 && channel<=INT32_MAX && lease>=3 && lease<=INT32_MAX && parent>0 && parent<=INT32_MAX,"stage handles");
+        owner=(pid_t)parent;
+        int target=stage_target((int)channel,(int)lease,number(argv[5]),owner,number(argv[7]),number(argv[8]));
+        if(dup2(target,0)<0) fail("stage target install");
+        close(target);close((int)channel);close((int)lease);
+    }
+    int start=stage?9:test?2:3;
     uint64_t values[8]; for(int i=0;i<8;i++) values[i]=number(argv[start+i]);
     need(values[0]<UINT32_MAX && values[1]<UINT32_MAX && values[2]<=UINT32_MAX && values[3]<=UINT32_MAX,"identity overflow");
     uid_t uid=values[0]; gid_t gid=values[1]; uint64_t size=values[4], bs=values[5],rate=values[6],seconds=values[7];
@@ -187,6 +304,7 @@ int main(int argc,char **argv) {
     int closed=close_extra(executable);
     drop_privileges(uid,gid);
     restrict_operations();
+    if(stage) need(prctl(PR_SET_PDEATHSIG,SIGKILL)==0 && getppid()==owner,"stage owner lost during privilege drop");
     fprintf(stderr,"{\"contract_id\":\"lvs.storage_thermal.guard\",\"contract_version\":1,\"pid\":%ld,\"uid\":%lu,\"gid\":%lu,\"supplementary_groups\":%d,\"extra_fds_closed\":%d,\"no_new_privs\":1,\"seccomp\":2,\"capabilities\":0,\"readonly_direct\":true}\n",(long)getpid(),(unsigned long)getuid(),(unsigned long)getgid(),getgroups(0,NULL),closed);
     if(test) { policy_test(); return 0; }
     char block_arg[64],rate_arg[64],time_arg[64];

@@ -456,6 +456,18 @@ class TuiEventAdapterMixin:
         if not self.pending_input_field:
             return
         input_widget = self.query_one("#setup-input")
+        if self.pending_input_field == "__thermal_coverage":
+            value = input_widget.value.strip()
+            self._clear_setup_input(focus_items=True)
+            self.confirm_run = False
+            if value in {"", "1", "2"}:
+                from .lvs_storage_thermal_stage import record_unmonitored_decision
+                record_unmonitored_decision(self.run_setup.profile, self._thermal_pending_requests, value=="1")
+                self._thermal_pending_requests = []
+                self.action_run_selected()
+            else:
+                self._set_detail("Run cancelled. Saved profile unchanged.")
+            return
         route = pending_input_route(self.pending_input_field)
         if route == "post_wall_wattage":
             if self.last_run_dir is not None and self.last_run_metadata is not None:

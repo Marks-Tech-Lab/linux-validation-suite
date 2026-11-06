@@ -247,9 +247,13 @@ Storage Benchmark is available there as a completion-based profile module.
 
 The separate development entrypoint `python3 lvs_storage_thermal_assist.py`
 provides numbered-menu, guarded read-only activity on eligible inactive HDDs.
-It needs no Textual dependency and does not change validation profiles or run
-alongside CPU/GPU stages yet. Active/system/array and SSD/NVMe execution remain
-blocked. See [standalone setup, safety and result instructions](docs/storage_thermal_assist.md).
+It needs no Textual dependency. The development stage integration also exposes
+Thermal Assist through shared CLI/TUI profile settings and run-local Stage Overrides,
+including an OFF comparison. It is auxiliary and non-gating: unavailable storage
+continues as NOT_RUN, and independent storage outcomes do not determine CPU/GPU/RAM
+PASS/FAIL. Active/system/array and SSD/NVMe execution remain
+blocked. See [standalone instructions](docs/storage_thermal_assist.md) and
+[stage integration, coverage consent and evidence](docs/storage_thermal_stage_integration.md).
 
 ### Profile editing and one-off run configuration
 

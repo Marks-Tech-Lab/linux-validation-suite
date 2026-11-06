@@ -134,6 +134,8 @@ def prepared_run_readiness_text(prepared: Any) -> str:
         lines.append(f"  [error] {message}")
     for message in list(getattr(preflight_action, "warnings", []) or [])[:5]:
         lines.append(f"  [warn] {message}")
+    from .lvs_storage_thermal_results import readiness_lines
+    lines.extend(readiness_lines(report))
     if blocked:
         lines.append("Run blocked: fix the preflight/profile issues above before starting.")
     report_dir = getattr(preflight_action, "report_dir", None)

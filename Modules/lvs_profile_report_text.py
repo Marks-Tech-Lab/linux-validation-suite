@@ -461,6 +461,8 @@ def diagnostics_summary_text(report: Dict[str, Any]) -> str:
                 detail = metrics.get(name) or {}
                 lines.append(f"    {name}: {detail.get('source')}")
     lines.append("")
+    from .lvs_storage_thermal_results import readiness_lines
+    lines.extend(readiness_lines(report))
     lines.append("Full details: diagnostics.json")
     return "\n".join(lines) + "\n"
 

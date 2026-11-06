@@ -175,6 +175,7 @@ def complete_stage_record(
         gpu_workers_final=gpu_workers_final,
         worker_results=stage_worker_results,
     )
+    stage_window.storage_thermal_summary = stage_plan.get("storage_thermal_result")
     stage_window.cpu_backend = cpu_backend
     stage_window.cpu_instruction_intent = cpu_instruction_intent
     stage_window.cpu_mode_requested = cpu_mode_requested

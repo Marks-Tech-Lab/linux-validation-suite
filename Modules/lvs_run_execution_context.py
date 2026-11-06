@@ -59,6 +59,10 @@ def build_profile_run_context(
 ) -> ProfileRunContext:
     profile = setup.profile if setup is not None else profile_loader.load_profile(profile_path)
     labels = setup.labels if setup is not None else profile_loader.load_segment_labels(profile_path, profile)
+    if setup is not None and getattr(setup, "original_profile", None) is not None:
+        profile._run_original_profile = profile_loader.profile_payload(
+            setup.original_profile, getattr(setup, "original_labels", None) or labels,
+        )
     run_metadata = metadata or default_run_metadata(profile_path)
     if not str(run_metadata.case_sku or "").strip():
         run_metadata.case_sku = "Unknown"

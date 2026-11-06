@@ -22,6 +22,38 @@ does not establish physical eligibility or heating. Existing profile/compatibili
 exports are not changed; see the [standalone evidence contract](docs/storage_thermal_assist.md).
 See [the backend contract and provisional policy](docs/storage_thermal_backend_contract.md).
 
+The Stage 2B-3 timed-stage adapter adds `storage_thermal` readiness and
+`storage_thermal_result` to plans, `storage_thermal_summary` to stage windows,
+and segment `storage_thermal` / compatibility `StorageThermal`. These are
+auxiliary activity/coverage evidence, never CPU/GPU arithmetic verification or
+physical heating acceptance. The independent `auxiliary_outcome` is COMPLETED, COMPLETED_WITH_WARNINGS,
+NOT_RUN, STOPPED or ERROR. None gates primary validation. Manifest/extended
+`storage_thermal_summary`, compatibility `StorageThermalSummary` and separate
+auxiliary summaries aggregate these outcomes without modifying primary error
+collections. Only unmonitored consent is explicit, scoped, expiring and
+excluded from saved profiles. Original/effective runtime snapshots are retained
+in `profile_original.json` / `profile_used.json`, manifest/extended
+`profile_configurations`, and compatibility `ProfileConfigurations`. After I/O
+admission, the adapter's atomic `completion.json` references the authoritative
+runner result; missing/invalid completion remains ERROR/INCOMPLETE. Disabled,
+blocked or expired pre-admission sessions use `adapter_result.json` with NOT_RUN
+only after confirming initializer cleanup (or when no process was started).
+Auxiliary startup has a per-stage monotonic deadline and revocable control
+channel. `initializer_permission_granted` records only permission to initialize.
+Native I/O uses the stage-only v2 guard protocol with primary-captured kernel
+lease identity, independent OFD locks on the pinned original inode, and descriptor
+handoff after PID registration. Replacement handles cannot establish authority. `stage_launch_ownership` /
+`launch_ownership.json` retain launch phases, PIDs/groups, descriptor offers,
+commit timestamps, expected lease identity and cleanup. `io_admission_granted`, `io_admission_state` and
+`stage_deadline_monotonic` distinguish committed, unconfirmed and unadmitted work.
+An already-committed launch is owned in-flight work subject to termination/reaping;
+a later uncommitted bootstrap cannot pass authoritative closure. These admission
+fields are separate from actual achieved read activity.
+Auxiliary aggregation/rendering/serialization errors preserve primary artifacts
+with an independent ERROR and `publication_integrity=false`; they do not create
+primary failure reasons. Primary manifest and text summary replacement is atomic.
+See [stage settings, lifecycle and reporting](docs/storage_thermal_stage_integration.md).
+
 The parent-owned `linux_validation_suite.vulkan_compute_shutdown` v1 snake_case
 contract is attached as `shutdown_evidence` in normalized WorkerResults and
 preserved intact as additive `ShutdownEvidence` in compatibility GPU details

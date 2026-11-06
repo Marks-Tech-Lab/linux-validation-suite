@@ -29,11 +29,15 @@ class TuiStageConfigurationMixin:
         self.stage_configuration_fields = self.service.stage_configuration_settings(edit, index)
         rows = ["Back"]
         original = getattr(self.run_setup, "original_profile", None) if self.stage_configuration_for_run else None
+        from .lvs_stage_configuration import setting_value_text
         for setting in self.stage_configuration_fields:
-            value = str(setting.value).lower() if isinstance(setting.value, bool) else setting.value
+            value = setting_value_text(setting.value)
             suffix = ""
             if original is not None:
                 old = getattr(getattr(original.stages[index].modules, setting.module), setting.attribute)
+                if setting.key == "thermal_rates":
+                    module = original.stages[index].modules.storage_thermal
+                    old = {key:getattr(module,key) for key in setting.value}
                 if old != setting.value:
                     suffix = f" (profile default: {old!r}; overridden)"
             rows.append(f"{setting.label}: {value or '(none)'}{suffix}")
@@ -68,7 +72,8 @@ class TuiStageConfigurationMixin:
                                  for value, label in zip(setting.options, setting.option_labels))))
             await self._apply_profile_edit_picker_open_presentation(presentation)
         else:
-            self._apply_input_state(tui_input_state("__profile_configuration_value", value=str(setting.value),
+            from .lvs_stage_configuration import setting_value_text
+            self._apply_input_state(tui_input_state("__profile_configuration_value", value=setting_value_text(setting.value),
                 placeholder=setting.label, detail=f"{setting.label}. Enter a valid value; Esc cancels."))
 
     async def _commit_stage_configuration(self, value: str) -> None:

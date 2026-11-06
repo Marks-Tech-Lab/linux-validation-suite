@@ -103,11 +103,18 @@ class TuiRunExecutionAdapterMixin:
         if not self.confirm_run:
             try:
                 prepared_flow = self._prepare_run_confirmation_flow(save_blocked_report=False)
+                from .lvs_storage_thermal_stage import consent_requests, consent_text
+                requests = consent_requests(prepared_flow.preflight_decision.report, self.run_setup.profile)
+                if requests:
+                    self._thermal_pending_requests = requests
+                    self._apply_input_state(tui_input_state("__thermal_coverage", placeholder="1 approve; Enter/2 primary only; 3 cancel run",
+                        detail=consent_text(requests)+"\n\n1. Approve bounded unmonitored activity\n2. Run primary validation without it [default]\n3. Cancel run", enabled=True, focus=True))
+                    return
                 readiness_text = self._prepared_run_readiness_text(prepared_flow)
                 can_run = not bool(getattr(getattr(prepared_flow, "preflight_action", None), "blocked", False))
             except Exception:
                 readiness_text = self._run_confirmation_readiness_text()
-                can_run = True
+                can_run = False
             self.confirm_run = can_run
             presentation = run_confirmation_presentation(
                 profile_name=self.selected_profile.name,

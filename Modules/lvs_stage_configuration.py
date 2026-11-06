@@ -70,6 +70,8 @@ def stage_settings(stage: Any, editor: Any, gpu_cards=()) -> list[StageSetting]:
         add("gpu_allocation", "3D stateful-memory allocation percent", "gpu_3d", "allocation_percent", minimum=0, maximum=95)
     add("vram_backend", "VRAM backend preference", "vram", "backend_preference", editor.VRAM_BACKEND_OPTIONS)
     add("vram_allocation", "VRAM allocation percent", "vram", "allocation_percent", minimum=1, maximum=95)
+    from .lvs_storage_thermal_stage import thermal_settings
+    settings.extend(thermal_settings(stage, StageSetting))
     choices = physical_gpu_choices(list(gpu_cards))
     return [replace(setting,
                     options=setting.options + tuple(value for value, _ in choices),
@@ -89,6 +91,14 @@ def apply_stage_setting(edit: Any, index: int, key: str, raw: str, controller: A
     if setting is None:
         raise ValueError("This setting is not applicable to the selected stage/backend.")
     value: Any = str(raw).strip()
+    if key.startswith("thermal_"):
+        from .lvs_storage_thermal_stage import set_thermal_setting
+        result = set_thermal_setting(stage, key, value)
+        errors = validator.validate(candidate.profile, candidate.labels)["errors"]
+        if errors:
+            raise ValueError("; ".join(errors))
+        edit.profile, edit.labels, edit.dirty = candidate.profile, candidate.labels, True
+        return result
     if key in {"gpu_3d_target", "vram_target"} and value.startswith("slots:"):
         cards = physical_slot_targets(value, list(gpu_cards))
         value = "slots:" + ",".join(str(card["slot"]).lower() for card in cards)
@@ -122,3 +132,11 @@ def effective_stage_text(stage: Any) -> list[str]:
     from dataclasses import asdict
     return [f"  {name}: " + ", ".join(f"{key}={value}" for key, value in asdict(module).items() if key != "enabled")
             for name, module in vars(stage.modules).items() if module.enabled]
+
+
+def setting_value_text(value: Any) -> str:
+    """Use editable JSON for compound/nullable values in both frontends."""
+    if value is None or isinstance(value, (bool, list, dict)):
+        import json
+        return json.dumps(value, sort_keys=True)
+    return str(value)

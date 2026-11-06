@@ -18,6 +18,7 @@ class StageLiveLoopResult:
     stage_verdict: str
     stage_aborted: bool
     stage_abort_reason: str
+    system_safety_interruption: bool = False
 
 
 def _runtime_memory_guard_context(stage_processes: List[Any]) -> tuple[Dict[str, Any] | None, List[str]]:
@@ -67,15 +68,30 @@ def run_stage_live_loop(
     format_duration_hms: Callable[[float], str],
     print_progress: Callable[[str], None],
     cancel_check: Callable[[], bool] | None = None,
+    thermal_poll: Callable[[], Dict[str, Any] | None] | None = None,
     memory_snapshot_reader: Callable[[], Dict[str, Any]] = read_linux_memory_snapshot,
 ) -> StageLiveLoopResult:
     next_progress = stage_start + min(progress_interval_seconds, max(telemetry_interval_seconds, 1.0))
     next_gpu_tune = stage_start + 20.0
     runtime_memory_plan, runtime_memory_workers = _runtime_memory_guard_context(stage_processes)
     memory_warning_event_emitted = False
+    system_safety_interruption = False
     while True:
         if cancel_check is not None and cancel_check():
             raise KeyboardInterrupt
+        if thermal_poll is not None:
+            emergency = thermal_poll()
+            # Ordinary auxiliary errors/drive stops never enter primary verdicts.
+            # Only an explicit, evidenced system-wide safety event interrupts it.
+            if (isinstance(emergency, dict) and emergency.get("system_wide_safety_emergency") is True
+                    and emergency.get("reason") and emergency.get("evidence")):
+                stage_verdict, stage_aborted = "aborted", True
+                stage_abort_reason = str(emergency["reason"])
+                system_safety_interruption = True
+                stage_error_events.append(dict(timestamp=now_local_iso(), category="system_safety_interruption",
+                    severity="warning", stage=display_name, source="system_safety", message=stage_abort_reason,
+                    details=emergency["evidence"]))
+                break
         elapsed = monotonic() - stage_start
         if elapsed >= stage.duration_seconds:
             break
@@ -204,4 +220,5 @@ def run_stage_live_loop(
         stage_verdict=stage_verdict,
         stage_aborted=stage_aborted,
         stage_abort_reason=stage_abort_reason,
+        system_safety_interruption=system_safety_interruption,
     )

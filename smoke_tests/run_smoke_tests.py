@@ -50,6 +50,24 @@ from smoke_tests.storage_thermal_runner_checks import (
     run_thermal_cancellation_and_race_checks, run_thermal_persistence_and_ui_checks,
     run_thermal_io_and_cleanup_failure_checks, run_thermal_reporting_and_resource_checks,
 )
+from smoke_tests.storage_thermal_stage_checks import (
+    run_thermal_stage_settings_checks, run_thermal_stage_persistence_checks,
+    run_thermal_stage_consent_checks, run_thermal_stage_blocked_session_checks,
+    run_thermal_stage_worker_reuse_checks, run_thermal_stage_session_cleanup_checks,
+    run_thermal_stage_safety_propagation_checks, run_thermal_stage_concurrent_runtime_checks,
+    run_thermal_stage_profile_inventory_checks, run_thermal_stage_frontend_parity_checks,
+    run_thermal_stage_unmonitored_scope_checks, run_thermal_stage_readiness_and_terminal_checks,
+    run_thermal_stage_one_run_consent_checks, run_thermal_stage_tui_consent_checks,
+    run_thermal_stage_auxiliary_reporting_checks,
+    run_thermal_stage_startup_isolation_checks,
+    run_thermal_stage_publication_isolation_checks,
+    run_thermal_stage_admission_race_checks,
+    run_thermal_stage_native_admission_checks,
+    run_thermal_stage_launch_timeout_checks,
+    run_thermal_stage_lease_identity_checks,
+    run_thermal_stage_ofd_kernel_checks,
+    run_thermal_stage_native_identity_fault_checks,
+)
 from smoke_tests.environment_wave1_checks import (
     run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
     run_environment_maintenance_lock_checks, run_environment_interrupted_recovery_checks,
@@ -2997,7 +3015,7 @@ def test_tui_run_execution_adapter_helpers() -> None:
             self.selected_profile = SimpleNamespace(name="Blocked Profile", path=Path("/tmp/profile.json"))
             self.run_in_progress = False
             self.confirm_run = confirm
-            self.run_setup = SimpleNamespace(profile_path=Path("/tmp/profile.json"), heatsoak_minutes=0.0)
+            self.run_setup = SimpleNamespace(profile_path=Path("/tmp/profile.json"), heatsoak_minutes=0.0, profile=SimpleNamespace())
             self.service = FakeRunService()
             self.detail = ""
             self.prepare_calls = []
@@ -3015,7 +3033,8 @@ def test_tui_run_execution_adapter_helpers() -> None:
 
         def _prepare_run_confirmation_flow(self, *, save_blocked_report: bool = False):
             self.prepare_calls.append(save_blocked_report)
-            return SimpleNamespace(preflight_action=SimpleNamespace(blocked=self.blocked))
+            return SimpleNamespace(preflight_action=SimpleNamespace(blocked=self.blocked),
+                                   preflight_decision=SimpleNamespace(report={"plan": []}))
 
         def _prepared_run_readiness_text(self, prepared_flow) -> str:
             return "Status: blocked" if self.blocked else "Status: ready"
@@ -29717,6 +29736,29 @@ def main() -> int:
         run_thermal_persistence_and_ui_checks,
         run_thermal_io_and_cleanup_failure_checks,
         run_thermal_reporting_and_resource_checks,
+        run_thermal_stage_settings_checks,
+        run_thermal_stage_persistence_checks,
+        run_thermal_stage_consent_checks,
+        run_thermal_stage_blocked_session_checks,
+        run_thermal_stage_worker_reuse_checks,
+        run_thermal_stage_session_cleanup_checks,
+        run_thermal_stage_safety_propagation_checks,
+        run_thermal_stage_concurrent_runtime_checks,
+        run_thermal_stage_profile_inventory_checks,
+        run_thermal_stage_frontend_parity_checks,
+        run_thermal_stage_unmonitored_scope_checks,
+        run_thermal_stage_readiness_and_terminal_checks,
+        run_thermal_stage_one_run_consent_checks,
+        run_thermal_stage_tui_consent_checks,
+        run_thermal_stage_auxiliary_reporting_checks,
+        run_thermal_stage_startup_isolation_checks,
+        run_thermal_stage_publication_isolation_checks,
+        run_thermal_stage_admission_race_checks,
+        run_thermal_stage_native_admission_checks,
+        run_thermal_stage_launch_timeout_checks,
+        run_thermal_stage_lease_identity_checks,
+        run_thermal_stage_ofd_kernel_checks,
+        run_thermal_stage_native_identity_fault_checks,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,

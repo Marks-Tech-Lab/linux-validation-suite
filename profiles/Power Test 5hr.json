@@ -15,6 +15,12 @@
       "duration_seconds": 18000,
       "enabled": true,
       "modules": {
+        "storage_thermal": {
+          "enabled": true,
+          "selection": "all_internal",
+          "intensity_percent": 50,
+          "system_intensity_percent": 25
+        },
         "cpu": {
           "enabled": true,
           "power_auto": true,

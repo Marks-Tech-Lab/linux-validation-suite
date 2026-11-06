@@ -116,7 +116,49 @@ def execute_stage_runtime(
         # the backend selected by the normal CPU policy.
         stage_processes = launch_stage_processes(stage, cpu_kernel_flavor, run_dir)
     intel_gpu_top_sidecar_summary: Optional[Dict[str, Any]] = None
+    thermal_session = None
+    from .lvs_storage_thermal_results import normalize as normalize_thermal, not_run as thermal_not_run, error_result as thermal_error
+    thermal_result = thermal_not_run("Thermal Assist disabled", requested=False)
+    auxiliary_error = ""
+    primary_end = None
+    primary_ended_iso = None
     try:
+        if getattr(getattr(stage_modules, "storage_thermal", None), "enabled", False):
+            try:
+                from .lvs_storage_thermal_stage import ThermalStageSession
+                if not stage_plan.get("storage_thermal"):
+                    raise RuntimeError("Storage Thermal Assist stage readiness is missing")
+                thermal_session = ThermalStageSession(stage, stage_plan["storage_thermal"], run_dir,
+                    stage_deadline=stage_start+stage.duration_seconds, clock=monotonic)
+                thermal_session.start()
+            except Exception as exc:
+                auxiliary_error = str(exc)
+                thermal_result = thermal_error(auxiliary_error, readiness=stage_plan.get("storage_thermal"))
+                if thermal_session is not None:
+                    try:thermal_session.request_stop(auxiliary_error)
+                    except Exception:pass
+
+        def poll_auxiliary():
+            nonlocal auxiliary_error
+            try:return thermal_session.poll() if thermal_session is not None else None
+            except Exception as exc:
+                auxiliary_error = str(exc)
+                if thermal_session is not None:
+                    try:thermal_session.request_stop(auxiliary_error)
+                    except Exception:pass
+                return None
+
+        def print_auxiliary_progress(line):
+            nonlocal auxiliary_error
+            suffix = ""
+            try:
+                if thermal_session is not None:suffix=thermal_session.live_summary()
+            except Exception as exc:
+                auxiliary_error=str(exc)
+                try:thermal_session.request_stop(auxiliary_error)
+                except Exception:pass
+            print_progress(line+suffix)
+
         live_loop_result = run_stage_live_loop(
             stage_window_cls=stage_window_cls,
             stage=stage,
@@ -144,13 +186,17 @@ def execute_stage_runtime(
             monotonic=monotonic,
             sleep=sleep,
             format_duration_hms=format_duration_hms,
-            print_progress=print_progress,
+            print_progress=print_auxiliary_progress,
             cancel_check=cancel_check,
+            thermal_poll=poll_auxiliary if thermal_session is not None else None,
         )
         stage_processes = live_loop_result.stage_processes
         stage_verdict = live_loop_result.stage_verdict
         stage_aborted = live_loop_result.stage_aborted
         stage_abort_reason = live_loop_result.stage_abort_reason
+        if getattr(live_loop_result, "system_safety_interruption", False):
+            run_aborted = True
+            stage_plan["system_wide_safety_interruption"] = True
     except KeyboardInterrupt:
         operator_stop_requested = True
         stage_verdict = "aborted"
@@ -174,15 +220,40 @@ def execute_stage_runtime(
         stage_failure_reasons.append(stage_abort_reason)
         on_operator_stop(stop_event)
     finally:
-        stop_stage_processes(stage_processes)
+        try:
+            stop_stage_processes(stage_processes)
+        finally:
+            if thermal_session is not None:
+                # Auxiliary reconciliation may outlast the primary timed work.
+                # Do not dilute CPU/GPU metrics with that post-workload tail.
+                primary_end, primary_ended_iso = monotonic(), now_local_iso()
+                try:
+                    thermal_result = normalize_thermal(thermal_session.finish(cancelled=stage_aborted or operator_stop_requested))
+                    if auxiliary_error:
+                        thermal_result["adapter_error"] = auxiliary_error
+                        if not thermal_result.get("failure"):thermal_result["failure"] = auxiliary_error
+                        thermal_result = normalize_thermal(thermal_result)
+                except Exception as exc:
+                    thermal_result = thermal_error(str(exc),readiness=stage_plan.get("storage_thermal"),cleanup_confirmed=False)
+                    try:
+                        thermal_session.request_stop(str(exc))
+                        thermal_session._latch_cleanup(str(exc))
+                    except Exception:pass
+                thermal_result["primary_window_ended_monotonic"] = primary_end
+                thermal_result["post_primary_shutdown_seconds"] = max(0.0, monotonic()-primary_end)
+                stage_plan["storage_thermal_result"] = thermal_result
         intel_gpu_top_sidecar_summary = stop_stage_lifecycle(
             stage_lifecycle,
             stop_intel_gpu_top_sidecar=stop_intel_gpu_top_sidecar,
             clear_gpu_safety_marker=clear_gpu_safety_marker,
         )
 
-    stage_ended_iso = now_local_iso()
-    stage_end = monotonic()
+    # Auxiliary outcomes are stored separately and never change primary verdict,
+    # failure reasons, worker errors or CPU/GPU/RAM evaluation.
+    stage_plan["storage_thermal_result"] = thermal_result
+
+    stage_ended_iso = primary_ended_iso if primary_ended_iso is not None else now_local_iso()
+    stage_end = primary_end if primary_end is not None else monotonic()
     stage_elapsed = stage_end - stage_start
     stage_evaluation = evaluate_completed_stage(
         stage_window_cls=stage_window_cls,

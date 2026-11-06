@@ -48,6 +48,8 @@ def compact_cli_preflight_summary(
         lines.extend(f"  [warn] {message}" for message in warnings[:4])
         if len(warnings) > 4:
             lines.append(f"  ... {len(warnings) - 4} more warning(s)")
+    from .lvs_storage_thermal_results import readiness_lines
+    lines.extend(readiness_lines(report))
     if report_dir is not None:
         lines.append(f"Full blocked-preflight details: {report_dir}")
     else:

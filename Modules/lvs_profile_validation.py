@@ -20,6 +20,7 @@ class ProfileValidator:
     def validate(self, profile: ValidationProfile, labels: List[str]) -> Dict[str, List[str]]:
         errors: List[str] = []
         warnings: List[str] = []
+        auxiliary_errors: List[str] = []
 
         if not profile.profile_name.strip():
             errors.append("profile_name is required")
@@ -43,6 +44,16 @@ class ProfileValidator:
                 )
             elif execution_mode == "duration" and (stage.duration_seconds is None or stage.duration_seconds <= 0):
                 errors.append(f"{stage_ref} has invalid duration_seconds={stage.duration_seconds}")
+
+            thermal = getattr(stage.modules, "storage_thermal", None)
+            if thermal is not None:
+                try:
+                    from .lvs_storage_thermal_stage import stage_config
+                    if type(thermal.enabled) is not bool:
+                        raise ValueError("enabled must be a boolean")
+                    stage_config(stage)
+                except (TypeError, ValueError) as exc:
+                    auxiliary_errors.append(f"{stage_ref} invalid storage_thermal: {exc}")
 
             trim_start = stage.normalization.trim_start_seconds
             trim_end = stage.normalization.trim_end_seconds
@@ -259,7 +270,7 @@ class ProfileValidator:
                 f"telemetry_interval_seconds is high ({profile.defaults.telemetry_interval_seconds}); short stages may have sparse samples"
             )
 
-        return {"errors": errors, "warnings": warnings}
+        return {"errors": errors, "warnings": warnings, **({"auxiliary_errors": auxiliary_errors} if auxiliary_errors else {})}
 
     def _enabled_module_names(self, stage: StageConfig) -> List[str]:
         names: List[str] = []
@@ -273,4 +284,6 @@ class ProfileValidator:
             names.append("vram")
         if stage.modules.storage_benchmark.enabled:
             names.append("storage_benchmark")
+        if stage.modules.storage_thermal.enabled:
+            names.append("storage_thermal")
         return names
