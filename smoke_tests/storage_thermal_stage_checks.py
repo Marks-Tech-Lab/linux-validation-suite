@@ -25,6 +25,10 @@ from Modules.lvs_storage_thermal_stage import (stage_config, preview, decision_k
     approve_coverage, consent_valid, apply_profile_decisions, ThermalStageSession, worker, record_unmonitored_decision, StageLease, StageLeaseExpired, LeaseTargets, StageChannel, SharedAdmission, StageLaunches, inspect_stage, ofd_lock)
 from smoke_tests.storage_thermal_runner_checks import RunnerFixture
 
+from Modules.lvs_storage_thermal_launch import prepare as prepare_owned_launch, provenance as owned_provenance
+_LAUNCH_FIXTURE=tempfile.TemporaryDirectory(prefix='lvs-owned-launch-tests-')
+prepare_owned_launch(_LAUNCH_FIXTURE.name)
+
 ROOT=Path(__file__).resolve().parents[1]
 PROFILES={'PL Validation.json':4,'PL Validation 4hr.json':4,'PL Validation 6hr.json':4,
           'PL Validation 12hr.json':8,'PL Validation 24hr.json':16,'QA System Test Short v2.json':4,'Power Test 5hr.json':1}
@@ -148,9 +152,18 @@ def fixture_stage_worker(directory, fixture):
     The real cross-process/native transport has dedicated regressions below.
     """
     class FixtureLaunches:
-        def __init__(self,runner,*args):self.launch=runner.popen;self.cleanup_confirmed=True;self.publication_error='';self.owned=[]
-        def finish(self):pass
-        def snapshot(self):return dict(test_fixture=True,workers=[],cleanup_confirmed=True)
+        def __init__(self,runner,*args):
+            self.original=runner.popen;self.cleanup_confirmed=True;self.publication_error='';self.owned=[]
+        def authority(self,p):return p
+        def launch(self,*args,**kwargs):
+            p=self.original(*args,**kwargs)
+            self.owned.append(dict(process=p,pid=p.pid,phase='committed',group_ready=True,
+                descriptor_offered=True,io_admission='committed',committed_monotonic_ns=int(fixture.clock()*1e9)))
+            return p
+        def finish(self):
+            for row in self.owned:
+                code=row['process'].poll();row.update(exit_code=code,reaped=code is not None,cleanup_confirmed=code is not None)
+        def snapshot(self):return dict(protocol='lvs-storage-thermal-stage-admission-v2',test_fixture=True,workers=[{k:v for k,v in row.items() if k!='process'} for row in self.owned],cleanup_confirmed=True)
     with patch('Modules.lvs_storage_thermal_stage.StageLaunches',FixtureLaunches):
         return worker(directory,gate=lambda:True,lease=StageLease(100,os.getppid(),clock=fixture.clock))
 
@@ -159,19 +172,20 @@ def run_thermal_stage_worker_reuse_checks():
     # The adapter delegates to the real supervisor using only mock temp files.
     with tempfile.TemporaryDirectory() as root:
         f=RunnerFixture(root);s=stage();s.duration_seconds=1
-        plan=f.plan(stage_config(s));plan['backend']=dict(plan['backend'],stage_admission_protocol='v2');plan.update(requires_consent=False,decision_key=decision_key(plan))
+        plan=f.plan(stage_config(s));plan['backend']=dict(plan['backend'],stage_admission_protocol='v2',owned_launcher=owned_provenance());plan.update(requires_consent=False,decision_key=decision_key(plan))
         directory=Path(root)/'stage';directory.mkdir();(directory/'request.json').write_text(json.dumps(dict(plan,supervisor_parent_pid=os.getppid(),recovery_marker=str(Path(root)/"recovery.json"))))
         with patch('Modules.lvs_storage_thermal_stage.default_runner',return_value=f.runner),patch('Modules.lvs_storage_thermal_runner.capability',return_value=f.backend),f.context():
             assert fixture_stage_worker(directory,f)==0
         result=json.loads((directory/'completion.json').read_text())
         assert result['verdict']=='PASS' and result['devices'][0]['cleanup_confirmed']
         assert result['configuration']['duration_seconds']==1
+        assert (directory/'stage_monitoring.jsonl').is_file()
     with tempfile.TemporaryDirectory() as root:
         f=RunnerFixture(root);s=stage();s.duration_seconds=1
         c=replace(stage_config(s),monitoring='approved_unmonitored',unmonitored_approval='pending')
         from Modules.lvs_storage_thermal_runner import approve_unmonitored
         c=approve_unmonitored(c,[f.rows[0]['device_id']],'fixture approval')
-        plan=f.plan(c);plan['backend']=dict(plan['backend'],stage_admission_protocol='v2');plan.update(requires_consent=True,decision_key=decision_key(plan))
+        plan=f.plan(c);plan['backend']=dict(plan['backend'],stage_admission_protocol='v2',owned_launcher=owned_provenance());plan.update(requires_consent=True,decision_key=decision_key(plan))
         directory=Path(root)/'unapproved';directory.mkdir();(directory/'request.json').write_text(json.dumps(dict(plan,supervisor_parent_pid=os.getppid(),recovery_marker=str(Path(root)/"recovery.json"))))
         with patch('Modules.lvs_storage_thermal_stage.default_runner',return_value=f.runner):
             assert fixture_stage_worker(directory,f)==1
@@ -186,7 +200,7 @@ def run_thermal_stage_worker_reuse_checks():
     with tempfile.TemporaryDirectory() as root:
         f=RunnerFixture(root,2);s=stage();s.duration_seconds=1
         f.rows[1].update(eligible=False,reasons=['active system disk'])
-        plan=f.plan(stage_config(s));plan['backend']=dict(plan['backend'],stage_admission_protocol='v2');plan.update(requires_consent=False,decision_key=decision_key(plan))
+        plan=f.plan(stage_config(s));plan['backend']=dict(plan['backend'],stage_admission_protocol='v2',owned_launcher=owned_provenance());plan.update(requires_consent=False,decision_key=decision_key(plan))
         directory=Path(root)/'partial';directory.mkdir()
         (directory/'request.json').write_text(json.dumps(dict(plan,supervisor_parent_pid=os.getppid(),recovery_marker=str(Path(root)/'recovery.json'))))
         with patch('Modules.lvs_storage_thermal_stage.default_runner',return_value=f.runner),patch('Modules.lvs_storage_thermal_runner.capability',return_value=f.backend),f.context():
@@ -206,25 +220,27 @@ def run_thermal_stage_session_cleanup_checks():
         def __init__(self):self.signals=[]
         def poll(self):return self.returncode
         def send_signal(self,sig):self.signals.append(sig)
+        def group_cleanup_confirmed(self):return True
+        def kill(self):self.send_signal(signal.SIGKILL)
         def wait(self,timeout=None):self.returncode=1;return 1
     with tempfile.TemporaryDirectory() as root,patch('Modules.lvs_storage_thermal_stage.preview',return_value=plan):
-        proc=Process();session=ThermalStageSession(s,plan,root,recovery_marker=Path(root)/'recovery.json',popen=lambda *a,**k:proc,signal_group=lambda pid,sig:proc.send_signal(sig),group_reaped=lambda pid:True)
-        session.start();result=session.finish(cancelled=True)
+        proc=Process();session=ThermalStageSession(s,plan,root,recovery_marker=Path(root)/'recovery.json',signal_group=lambda pid,sig:proc.send_signal(sig),group_reaped=lambda pid:True)
+        with patch('Modules.lvs_storage_thermal_launch.OwnedProcess',return_value=proc):session.start()
+        result=session.finish(cancelled=True)
         assert proc.signals and result['auxiliary_outcome']=='NOT_RUN'
     class Stuck(Process):
+        def group_cleanup_confirmed(self):return False
         def wait(self,timeout=None):raise subprocess.TimeoutExpired('fixture',timeout)
     with tempfile.TemporaryDirectory() as root,patch('Modules.lvs_storage_thermal_stage.preview',return_value=plan):
-        session=ThermalStageSession(s,plan,root,recovery_marker=Path(root)/'recovery.json',popen=lambda *a,**k:Stuck(),signal_group=lambda *a:None,group_reaped=lambda pid:False)
-        session.start();result=session.finish()
+        session=ThermalStageSession(s,plan,root,recovery_marker=Path(root)/'recovery.json',signal_group=lambda *a:None,group_reaped=lambda pid:False)
+        with patch('Modules.lvs_storage_thermal_launch.OwnedProcess',return_value=Stuck()):session.start()
+        result=session.finish()
         assert result['auxiliary_outcome']=='ERROR' and not result['cleanup_confirmed']
         marker=Path(root)/'recovery.json';assert marker.exists()
-        retry=ThermalStageSession(s,plan,root,recovery_marker=marker,popen=lambda *a,**k:(_ for _ in ()).throw(AssertionError('unsafe subsequent storage launch')))
-        retry.start();assert retry.finish()['auxiliary_outcome']=='NOT_RUN'
-        # Persistent marker still blocks a fresh manager process with no latch.
-        from Modules.lvs_storage_thermal_stage import _UNCONFIRMED
+        from Modules.lvs_storage_thermal_stage import recovery_blocker,_UNCONFIRMED
+        assert recovery_blocker(marker)
         _UNCONFIRMED.pop(str(marker),None)
-        retry=ThermalStageSession(s,plan,root,recovery_marker=marker)
-        retry.start();assert retry.finish()['auxiliary_outcome']=='NOT_RUN'
+        assert recovery_blocker(marker)  # fresh process does not need Python latch
 
 
 def run_thermal_stage_safety_propagation_checks():
@@ -291,6 +307,7 @@ def _run_primary_with_aux(payload, fault=None, emergency=None, session_factory=N
             if fault=='poll':raise OSError('injected auxiliary monitor failure')
             return emergency
         def live_summary(self):return ' | storage fixture'
+        def revoke_admission(self):calls.append('storage_admission_revoked')
         def request_stop(self,reason):calls.append('storage_stop_requested')
         def _latch_cleanup(self,reason):calls.append('storage_recovery_required')
         def finish(self,cancelled=False):
@@ -320,11 +337,21 @@ def _run_primary_with_aux(payload, fault=None, emergency=None, session_factory=N
 
 def _auxiliary_cases():
     from Modules.lvs_storage_thermal_results import not_run
-    drive=dict(device_id='fixture',state='completed',read_ios=15,read_bytes=15*65536,
-        started_monotonic=.1,ended_monotonic=1.1,errors=0,stop_reason='',cleanup_confirmed=True,
-        terminal_published=True,temperature_status='monitored')
-    complete=dict(contract_id='lvs.storage_thermal.manifest',contract_version=1,verdict='PASS',status='completed',
-        parent_finalization_complete=True,requested=True,executed_devices=['fixture'],devices=[drive])
+    from Modules.lvs_storage_thermal import ThermalResult,ThermalConfig,pilot_rate
+    config=ThermalConfig(duration_seconds=2).to_dict();source={'source':{'status':'complete','digest':'fixture'}}
+    rate=pilot_rate(ThermalConfig(**config),'fixture','hdd')
+    drive=ThermalResult('fixture',{'stable':'fixture'},state='completed',source_provenance=source,
+        executable_provenance={'fio':'fixture'},effective_rate=rate,
+        started_monotonic=.1,ended_monotonic=2.1,duration_completed=True,cleanup_confirmed=True,
+        terminal_published=True,identity_unchanged=True,guard_confirmed=True,provenance_confirmed=True,
+        exit_code=0,read_ios=15,read_bytes=15*65536,temperature_status='monitored').to_dict()
+    drive.update(fio_activity={'active_seconds':2},configured_duration_seconds=2,pid=12345,
+        guard_evidence=dict(contract_id='lvs.storage_thermal.guard',contract_version=1,pid=12345,
+            readonly_direct=True,seccomp=2,capabilities=0,no_new_privs=1,uid=1000,gid=1000))
+    readiness={'source_provenance':source,'configuration':config,'devices':[dict(device_id='fixture',identity=drive['identity'],selected=True,state='ready',rate=rate)]}
+    complete=dict(configuration=config,source_provenance=source,contract_id='lvs.storage_thermal.manifest',contract_version=1,verdict='PASS',status='completed',
+        parent_finalization_complete=True,requested=True,execution_started=True,cleanup_confirmed=True,terminal_published=True,requested_devices=['fixture'],readiness=readiness,
+        executed_devices=['fixture'],devices=[drive])
     warnings=deepcopy(complete);warnings['verdict']='WARN'
     stopped=deepcopy(complete);stopped['verdict']='FAIL';stopped['devices'][0].update(state='failed',safety_stop=True,stop_reason='temperature stop limit reached')
     error=deepcopy(complete);error['verdict']='FAIL';error['devices'][0].update(state='failed',errors=5,stop_reason='I/O error')
@@ -523,7 +550,8 @@ def run_thermal_stage_auxiliary_reporting_checks():
         windows.append(window)
     assert combine_run_verdict(w.verdict for w in windows)=='pass'
     summary=summarize_run(windows)
-    assert summary['auxiliary_outcome']=='ERROR' and all(summary['stage_outcome_counts'][k]==1 for k in _auxiliary_cases())
+    assert summary['auxiliary_outcome']=='ERROR' and summary['stage_outcome_counts']['NOT_RUN']==1
+    assert summary['stage_outcome_counts']['ERROR']==4  # unregistered windows cannot authorize run coverage
     assert 'independent auxiliary' in summary_text(summary)
     assert all('source_provenance' not in d['execution'] for s in summary['stages'] for d in s['result']['drive_outcomes'])
     with tempfile.TemporaryDirectory() as root:
@@ -579,7 +607,7 @@ if b and json.loads(b)['run']:open(sys.argv[2],'w').write('unexpected late I/O')
             def popen(argv,**options):
                 return subprocess.Popen([sys.executable,'-c',code,argv[-1],str(escaped)],**options)
             session=ThermalStageSession(s,dict(status='READY',requires_consent=False),root,
-                recovery_marker=marker,popen=popen,**kwargs)
+                recovery_marker=marker,launch_args=[sys.executable,'-c',code,'{channel}',str(escaped)],**kwargs)
             sessions.append(session);return session
         started=time.monotonic()
         result,args,calls=_run_primary_with_aux(None,session_factory=factory,real_clock=True)
@@ -628,17 +656,18 @@ if b and json.loads(b)['run']:open(sys.argv[2],'w').write('unexpected late I/O')
             pid=200000002;returncode=1
             def poll(self):return 1
             def wait(self,timeout=None):return 1
+            def group_cleanup_confirmed(self):return True
         finished=ThermalStageSession(stage(),{'status':'READY'},root,recovery_marker=marker,
             group_reaped=lambda pid:True)
         finished.directory.mkdir(parents=True)
-        (finished.directory/'completion.json').write_text(json.dumps(not_run('readiness changed; device replaced')))
+        (finished.directory/'completion.json').write_text(json.dumps(dict(not_run('readiness changed; device replaced'),execution_context=finished.context)))
         finished.process=Exited()
         final=finished.finish()
         assert final['auxiliary_outcome']=='NOT_RUN' and final['reasons']==['readiness changed; device replaced']
     print('  isolation evidence: primary 2s, >=2 real telemetry samples; 10s initializer reaped without admission')
 
 
-def _primary_publication_fixture(root, payload, *, summary=None, exporter=None):
+def _primary_publication_fixture(root, payload, *, summary=None, exporter=None, registration=None):
     from Modules.lvs_run_artifacts import write_final_run_artifacts
     from Modules.lvs_run_models import StageWindow
     from Modules.lvs_summary_text import SummaryTextBuilder
@@ -646,6 +675,9 @@ def _primary_publication_fixture(root, payload, *, summary=None, exporter=None):
         started_iso='2026-11-05T00:00:00',ended_iso='2026-11-05T00:00:02',
         started_monotonic=0,ended_monotonic=2,duration_seconds=2,trim_start_seconds=0,trim_end_seconds=0,verdict='pass')
     window.storage_thermal_summary=payload
+    if registration is not None:
+        from Modules.lvs_storage_thermal_results import register_stage
+        register_stage(window,registration)
     parser=SimpleNamespace(summarize=lambda *a:dict(Segments=[dict(Label='Primary CPU',StorageThermal=window.storage_thermal_summary)]))
     default_exporter=SimpleNamespace(build=lambda *a:dict(Result='PASS',Segments=a[5]['Segments']))
     return write_final_run_artifacts(run_dir=root,manifest_payload={},app_name='LVS',app_version='test',
@@ -725,10 +757,13 @@ class NativeAdmissionFixture:
             # The production gate is unchanged; its target proof is restricted
             # to a regular file and existing mutating-syscall negative controls.
             argv[1]='--stage-policy-test'
-            p=subprocess.Popen(argv,**kwargs);self.processes.append(p)
+            from Modules.lvs_storage_thermal_launch import OwnedProcess
+            p=OwnedProcess(argv,**kwargs);self.processes.append(p)
             self.after_spawn(p)
             return p
-        self.launches=StageLaunches(SimpleNamespace(popen=spawn),self.lease,self.root)
+        from Modules.lvs_storage_thermal_launch import prepare
+        prepare(self.root/"bootstrap")
+        self.launches=StageLaunches(SimpleNamespace(popen=spawn),self.lease,self.root,owned_launch=spawn)
         uid=os.getuid() or 65534;gid=os.getgid() or 65534
         self.argv=[str(guard),'--fio-fd',str(self.executable),*map(str,(uid,gid,0,0,4096,4096,1,1))]
     def launch(self):
@@ -858,7 +893,7 @@ def run_thermal_stage_native_admission_checks():
         marker=directory/'recovery.json'
         program="import sys;import Modules.lvs_storage_thermal_stage as m;defect=lambda *a,**k:(_ for _ in ()).throw(RuntimeError('injected finalization failure'));m.worker=defect;raise SystemExit(m.channel_worker(sys.argv[1]))"
         def failing_worker(argv,**options):return subprocess.Popen([sys.executable,'-c',program,argv[-1]],**options)
-        session=ThermalStageSession(stage(),dict(status='READY'),directory,recovery_marker=marker,popen=failing_worker)
+        session=ThermalStageSession(stage(),dict(status='READY'),directory,recovery_marker=marker,launch_args=[sys.executable,'-c',program,'{channel}'])
         try:
             session.start()
             until=time.monotonic()+3
@@ -946,14 +981,14 @@ d=Path(request['directory']);d.mkdir(parents=True)
 data=d/'fixture';data.write_bytes(bytes(4096));fd=os.open(data,os.O_RDONLY|os.O_DIRECT);exe=os.open('/bin/true',os.O_RDONLY)
 lease=StageLease(request['stage_deadline'],os.getppid(),admission=SharedAdmission(request['admission_fd'],request['admission_identity']))
 def stalled(*a,**k):time.sleep(30);raise AssertionError('launcher should be cancelled before returning')
-l=StageLaunches(SimpleNamespace(popen=stalled),lease,d)
+l=StageLaunches(SimpleNamespace(popen=stalled),lease,d,owned_launch=stalled)
 uid=os.getuid() or 65534;gid=os.getgid() or 65534
 l.launch([sys.argv[2],'--fio-fd',str(exe),*map(str,(uid,gid,0,0,4096,4096,1,1))],stdin=fd,pass_fds=(exe,),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 '''
         def factory(s,plan,run_dir,**kwargs):
             def spawn(argv,**options):return subprocess.Popen([sys.executable,'-c',code,argv[-1],str(guard)],**options)
             session=ThermalStageSession(s,dict(status='READY',requires_consent=False),root,
-                recovery_marker=marker,popen=spawn,**kwargs);sessions.append(session);return session
+                recovery_marker=marker,launch_args=[sys.executable,'-c',code,'{channel}',str(guard)],**kwargs);sessions.append(session);return session
         try:
             result,args,calls=_run_primary_with_aux(None,session_factory=factory,real_clock=True,telemetry_interval=.1)
             summary=result.stage_completion.stage_window.storage_thermal_summary
@@ -1300,3 +1335,161 @@ def run_thermal_stage_native_identity_fault_checks():
                 if process is not None and process.poll() is None:process.kill();process.wait(timeout=2)
                 f.close()
     print('  native critical-section evidence: transport/private-pin replacement, lost/failed/ambiguous locks REJECTED; both alias closures preserve kernel OFD ownership')
+
+
+def _fresh_recovery_blocker(marker):
+    reply=subprocess.run([sys.executable,'-B','-c',
+        'import sys;from Modules.lvs_storage_thermal_recovery import blocker;print(blocker(sys.argv[1]))',str(marker)],
+        capture_output=True,text=True,check=True,timeout=5)
+    return reply.stdout.strip()
+
+
+def run_thermal_production_lease_journal_checks():
+    """Actual worker entrypoint, genuine kernel lease; no target access permitted."""
+    from Modules.lvs_storage_thermal import canonical_lease_identity
+    from Modules.lvs_storage_thermal_recovery import RecoveryScope,read_state
+    with tempfile.TemporaryDirectory() as work:
+        root=Path(work);state=SharedAdmission.create()
+        try:
+            expected=list(state.identity)
+            for bad in ([],[1],[1,2,3],[True,2],[1,False],[-1,2],[1,-1],['1',2],{'dev':1,'ino':2},[1,2**64]):
+                try:canonical_lease_identity(bad)
+                except ValueError:pass
+                else:raise AssertionError(('invalid identity accepted',bad))
+            for kind,value in [('tuple',state.identity),('list',list(state.identity))]:
+                marker=root/kind/'intent';scope=RecoveryScope(marker)
+                scope.enter(lease_identity=value,admission=state)
+                assert read_state(marker)['lease_identity']==expected
+                assert read_state(marker)['state']=='ARMED' and _fresh_recovery_blocker(marker)
+                scope.resolve(cleanup_confirmed=True);scope.close()
+                assert read_state(marker)['state']=='CLEAN' and not _fresh_recovery_blocker(marker)
+                scope=RecoveryScope(marker).enter(lease_identity=value,admission=state)
+                scope.resolve(cleanup_confirmed=True);scope.close()
+            marker=root/'mismatch'/'intent'
+            try:RecoveryScope(marker).enter(lease_identity=[expected[0],expected[1]+1],admission=state)
+            except ValueError:pass
+            else:raise AssertionError('substituted authority accepted')
+            assert not marker.exists()
+            # Actual production worker receives tuple identity from SharedAdmission.
+            # The synthetic runner checks durable protection before returning; target
+            # opening is forbidden. Native admission itself is separately exercised
+            # by NativeAdmissionFixture using the unchanged policy-test gate.
+            for uncertain in (False,True):
+                base=root/('uncertain' if uncertain else 'normal');base.mkdir()
+                f=RunnerFixture(base);st=stage();st.duration_seconds=2
+                lease=StageLease(10,os.getppid(),clock=f.clock,admission=state)
+                directory=base/'worker';directory.mkdir();marker=base/'intent';calls=[]
+                def gate():
+                    assert read_state(marker)['state']=='ARMED'
+                    calls.append('authorized');return True
+                def synthetic_run(config,plan,output,**kwargs):
+                    assert calls==['authorized'] and read_state(marker)['lease_identity']==expected
+                    assert _fresh_recovery_blocker(marker)
+                    if uncertain:f.runner.unconfirmed.append('synthetic unresolved ownership')
+                    return output,dict(verdict='WARN',devices=[],executed_devices=[],cleanup_confirmed=not uncertain)
+                with patch('Modules.lvs_storage_thermal_stage.default_runner',return_value=f.runner),patch.object(f.runner,'run',side_effect=synthetic_run),patch.object(f.targets,'open',side_effect=AssertionError('target open')),patch('Modules.lvs_storage_thermal_runner.capability',return_value=f.backend):
+                    plan=inspect_stage(f.runner,stage_config(st));plan['decision_key']=decision_key(plan)
+                    (directory/'request.json').write_text(json.dumps(dict(plan,supervisor_parent_pid=os.getppid(),recovery_marker=str(marker))))
+                    assert worker(directory,gate=gate,lease=lease)==0
+                assert calls==['authorized'] and not f.fd_open
+                assert read_state(marker)['state']==('ARMED' if uncertain else 'CLEAN')
+                assert bool(_fresh_recovery_blocker(marker))==uncertain
+                # Each worker finalizes/revokes its lease; next case gets fresh authority.
+                state.close();state=SharedAdmission.create();expected=list(state.identity)
+        finally:state.close()
+    print('  production lease: tuple/list ARMED read-back, actual worker gate, CLEAN/reentry and independent unresolved inspection PASS')
+
+
+def run_thermal_native_registry_authority_checks():
+    """Real children, both pidfd and sole-reaper fallback; never target devices."""
+    from contextlib import nullcontext
+    from Modules.lvs_storage_thermal_launch import OwnedProcess
+    from Modules.lvs_storage_thermal_recovery import RecoveryScope,read_state
+    with tempfile.TemporaryDirectory() as work:
+        root=Path(work)
+        for fallback in (False,True):
+            for mode in ('public_pid','public_handle','pidfd_loss'):
+                if mode=='pidfd_loss' and fallback:continue
+                base=root/f'{fallback}-{mode}';base.mkdir();state=SharedAdmission.create()
+                registry=StageLaunches(None,StageLease(time.monotonic()+10,os.getppid(),admission=state),base)
+                marker=base/'intent';scope=RecoveryScope(marker).enter(lease_identity=state.identity,admission=state)
+                victim=subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(30)'])
+                row=dict(process=None,pid=None,phase='creation',cleanup_confirmed=False)
+                registry.owned.append(row);process=None;held=None
+                class Registration:
+                    @property
+                    def process(self):return row['process']
+                    @process.setter
+                    def process(self,p):registry._register(row,p)
+                context=patch('os.pidfd_open',side_effect=OSError('forced fallback')) if fallback and hasattr(os,'pidfd_open') else nullcontext()
+                try:
+                    with context:
+                        process=OwnedProcess([sys.executable,'-B','-c','import time;time.sleep(30)'],stage_bootstrap=True,start_new_session=False,owner=Registration())
+                    real=process.authority_pid
+                    assert row['pid']==real and real!=victim.pid
+                    if mode=='public_pid':process.pid=victim.pid
+                    elif mode=='public_handle':row['process']=victim
+                    elif process.pidfd is not None:
+                        held=process.pidfd;process.pidfd=None
+                    else:continue
+                    registry.stop(row,signal.SIGTERM)
+                    if held is not None:
+                        assert process.returncode is None and not registry._reconcile(row)
+                        assert victim.poll() is None and _fresh_recovery_blocker(marker)
+                        process.pidfd=held;held=None
+                        registry.stop(row,signal.SIGTERM)
+                    process.wait(timeout=3)
+                    assert victim.poll() is None,'unrelated child signaled or reaped'
+                    clean=registry._reconcile(row)
+                    assert clean==(mode!='public_handle'),registry.snapshot()
+                    if clean:
+                        scope.resolve(cleanup_confirmed=True)
+                    scope.close()
+                    assert read_state(marker)['state']==('CLEAN' if clean else 'ARMED')
+                    assert bool(_fresh_recovery_blocker(marker))!=clean
+                    if mode=='public_handle':
+                        # Explicit reconciliation can use the original private handle,
+                        # but ambiguity is monotonic for this session's certificate.
+                        row['process']=process
+                        assert not registry._reconcile(row)
+                    # Repeated cancellation after reap cannot affect the victim.
+                    registry.stop(row,signal.SIGKILL);assert victim.poll() is None
+                finally:
+                    if process is not None:
+                        if held is not None:process.pidfd=held
+                        process.kill();process.wait(timeout=3)
+                    victim.terminate();victim.wait(timeout=3)
+                    if scope.fd is not None:scope.close()
+                    state.close()
+    print('  native registry: correct child signaled/reaped on pidfd/fallback, handle/pidfd loss stays ARMED, victim untouched PASS')
+
+
+def run_thermal_native_registry_commit_checks():
+    """The actual native policy-test bootstrap retains stable identity after OWN."""
+    from contextlib import nullcontext
+    from smoke_tests.storage_thermal_foundation_checks import compile_guard
+    from Modules.lvs_storage_thermal_recovery import RecoveryScope,read_state
+    with tempfile.TemporaryDirectory() as work:
+        root=Path(work);guard=compile_guard(root)
+        for fallback in (False,True):
+            f=NativeAdmissionFixture(root/str(fallback),guard,seconds=8)
+            victim=subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(30)'])
+            marker=f.root/'intent';scope=RecoveryScope(marker).enter(lease_identity=f.state.identity,admission=f.state)
+            try:
+                # Substitution occurs at creation, before OWN, native setsid,
+                # descriptor offer, admission and native policy-test execution.
+                f.after_spawn=lambda p:setattr(p,'pid',victim.pid)
+                context=patch('os.pidfd_open',side_effect=OSError('fallback')) if fallback and hasattr(os,'pidfd_open') else nullcontext()
+                with context:p=f.launch()
+                assert p.authority_pid!=p.pid and p.pid==victim.pid
+                assert p.wait(timeout=3)==0 and 'COMMITTED' in f.text()
+                f.launches.finish()
+                assert f.launches.cleanup_confirmed and victim.poll() is None,f.launches.snapshot()
+                assert f.launches.snapshot()['workers'][0]['pid']==p.authority_pid
+                scope.resolve(cleanup_confirmed=f.launches.cleanup_confirmed);scope.close()
+                assert read_state(marker)['state']=='CLEAN' and not _fresh_recovery_blocker(marker)
+            finally:
+                victim.terminate();victim.wait(timeout=3)
+                if scope.fd is not None:scope.close()
+                f.close()
+    print('  native OWN/R/COMMITTED policy-test: public PID substitution cannot redirect child/group actions or reap; durable CLEAN is genuine PASS')

@@ -159,6 +159,18 @@ def execute_stage_runtime(
                 except Exception:pass
             print_progress(line+suffix)
 
+        def revoke_auxiliary_admission():
+            nonlocal auxiliary_error
+            if thermal_session is not None:
+                try:thermal_session.revoke_admission()
+                except Exception as exc:
+                    auxiliary_error = 'Admission revocation failed: '+str(exc)
+
+        def cancel_and_revoke():
+            cancelled = cancel_check is not None and cancel_check()
+            if cancelled:revoke_auxiliary_admission()
+            return cancelled
+
         live_loop_result = run_stage_live_loop(
             stage_window_cls=stage_window_cls,
             stage=stage,
@@ -187,9 +199,10 @@ def execute_stage_runtime(
             sleep=sleep,
             format_duration_hms=format_duration_hms,
             print_progress=print_auxiliary_progress,
-            cancel_check=cancel_check,
+            cancel_check=cancel_and_revoke,
             thermal_poll=poll_auxiliary if thermal_session is not None else None,
         )
+        revoke_auxiliary_admission()
         stage_processes = live_loop_result.stage_processes
         stage_verdict = live_loop_result.stage_verdict
         stage_aborted = live_loop_result.stage_aborted
@@ -198,6 +211,9 @@ def execute_stage_runtime(
             run_aborted = True
             stage_plan["system_wide_safety_interruption"] = True
     except KeyboardInterrupt:
+        if thermal_session is not None:
+            try:thermal_session.revoke_admission()
+            except Exception as exc:auxiliary_error = 'Admission revocation failed: '+str(exc)
         operator_stop_requested = True
         stage_verdict = "aborted"
         stage_aborted = True
@@ -220,6 +236,9 @@ def execute_stage_runtime(
         stage_failure_reasons.append(stage_abort_reason)
         on_operator_stop(stop_event)
     finally:
+        if thermal_session is not None:
+            try:thermal_session.revoke_admission()
+            except Exception as exc:auxiliary_error = 'Admission revocation failed: '+str(exc)
         try:
             stop_stage_processes(stage_processes)
         finally:
@@ -228,6 +247,7 @@ def execute_stage_runtime(
                 # Do not dilute CPU/GPU metrics with that post-workload tail.
                 primary_end, primary_ended_iso = monotonic(), now_local_iso()
                 try:
+                    thermal_session.primary_end_ns=int(primary_end*1e9)
                     thermal_result = normalize_thermal(thermal_session.finish(cancelled=stage_aborted or operator_stop_requested))
                     if auxiliary_error:
                         thermal_result["adapter_error"] = auxiliary_error
@@ -331,6 +351,16 @@ def execute_stage_runtime(
     stage_completion.stage_window.gpu_evaluation_evidence = dict(
         stage_evaluation.gpu_evaluation_evidence
     )
+    if thermal_session is not None:
+        try:
+            from .lvs_storage_thermal_results import register_stage
+            register_stage(stage_completion.stage_window,thermal_session)
+            thermal_result=stage_completion.stage_window.storage_thermal_summary
+            stage_plan["storage_thermal_result"]=thermal_result
+        except Exception as exc:
+            # Registration is auxiliary evidence, never primary evaluation.
+            thermal_result=dict(thermal_result,session_errors=['Primary auxiliary registration failed: '+str(exc)])
+            stage_completion.stage_window.storage_thermal_summary=normalize_thermal(thermal_result)
     return StageExecutionResult(
         stage_completion=stage_completion,
         stage_processes=stage_processes,

@@ -81,6 +81,7 @@ def run_storage_thermal_terminal_checks():
     result.update(state='completed', exit_code=0, read_ios=30, read_bytes=1966080,
                   duration_completed=True, cleanup_confirmed=True, terminal_published=True,
                   identity_unchanged=True, guard_confirmed=True, provenance_confirmed=True,
+                  fio_activity={'active_seconds':120}, configured_duration_seconds=120,
                   effective_rate={'block_size':65536}, started_monotonic=1, ended_monotonic=121,
                   source_provenance={'scope':'fixture'}, executable_provenance={'identity':'fixture'})
     assert result_successful(result)

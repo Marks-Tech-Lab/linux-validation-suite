@@ -159,7 +159,7 @@ def write_final_run_artifacts(
                 item[key] = reporting_error('plan auxiliary serialization', exc)
                 auxiliary_fault = item[key]
     try:
-        thermal_summary = auxiliary_fault or summarize_run(stage_windows)
+        thermal_summary = auxiliary_fault or summarize_run(stage_windows,run_dir=run_dir)
         thermal_summary = json.loads(json.dumps(thermal_summary, allow_nan=False))
         thermal_summary = publish_run_summary(run_dir, thermal_summary)
         thermal_summary = json.loads(json.dumps(thermal_summary, allow_nan=False))

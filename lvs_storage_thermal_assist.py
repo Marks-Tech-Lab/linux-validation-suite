@@ -59,10 +59,11 @@ def build_guard():
 
 
 class ThermalMenu:
-    def __init__(self,runner,config,output_root,screens=None):
+    def __init__(self,runner,config,output_root,screens=None,*,recovery_marker=None):
         self.runner,self.config,self.output_root=runner,config,Path(output_root)
         self.ui=screens or EnvironmentScreens();self.last_print=0;self.cancel_input=''
         self.closed=False
+        self.recovery_marker=Path(recovery_marker) if recovery_marker is not None else ROOT/'build/storage_thermal_recovery_required.json'
 
     def results(self,*args):
         self.closed=self.ui.results(*args)=='exit'
@@ -153,7 +154,18 @@ class ThermalMenu:
                 raise ValueError('drive selection/identity changed during confirmation; preview again')
             plan=updated
         self.ui.write('During activity: 0 + Enter stops all; s NUMBER + Enter stops one drive; e + Enter is emergency stop. Ctrl-C also stops the run.')
-        directory,result=self.runner.run(config,plan,self.output_root,allow_partial=True,control=self.controls,observe=self.observe)
+        from Modules.lvs_storage_thermal_launch import prepare
+        prepare()  # standalone setup, before any target claim or activity
+        # Standalone and profile entrypoints share one durable ownership scope.
+        from Modules.lvs_storage_thermal_recovery import RecoveryScope
+        self.runner.targets.output_safe(self.recovery_marker.parent,[r for r in plan['targets'] if r['state']=='ready'])
+        scope=RecoveryScope(self.recovery_marker).enter(evidence_directory=self.output_root)
+        try:
+            directory,result=self.runner.run(config,plan,self.output_root,allow_partial=True,control=self.controls,observe=self.observe)
+            if (not self.runner.unconfirmed and result.get('parent_finalization_complete') is True
+                    and all(d.get('cleanup_confirmed') and d.get('terminal_published') for d in result.get('devices',[]))):
+                scope.resolve(cleanup_confirmed=True)
+        finally:scope.close()
         self.results('Run finished',self.runner.summary(result).splitlines()+[f'Results: {directory}'],json.dumps(result,indent=2))
 
     def run(self):

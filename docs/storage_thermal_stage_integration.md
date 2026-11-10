@@ -232,27 +232,17 @@ existing bounded group cleanup. A parent PID is supplied at launch: an already-
 exited parent blocks startup, and disappearance during activity stops storage.
 Unconfirmed cleanup stays ERROR and prohibits subsequent storage launches, while
 primary stages may continue. The adapter retains a process-local recovery latch
-and writes `build/storage_thermal_recovery_required.json` for later processes.
+and uses the durable execution-intent journal described below for later processes.
 A missing or unreadable terminal record is not proof of descendant cleanup.
 
-Recovery markers are never automatically removed. An operator must inspect the
-recorded supervisor/native PIDs and process groups and retained evidence, establish that processes
-and exclusive claims are gone, then explicitly remove the recovery marker and
-restart LVS. Do not remove a marker merely to bypass an unknown live process.
-If marker publication fails, the in-process latch remains authoritative and the
-publication failure is reported; cross-process persistence cannot be promised
-on an unwritable filesystem. Separate external or malicious administrative
-processes remain outside this narrowly constrained guard's security assumptions.
-
-Workers are **not retained across stages**. Confirmed shutdown and separate
-per-stage counters, monitoring and completion take priority over retention
-complexity. New I/O admission expires with the primary stage; in-flight I/O and
-bounded shutdown may outlast it. The primary metric window ends before auxiliary
-reconciliation. Its separate shutdown tail contributes to total run elapsed but
-cannot dilute CPU/GPU utilization or integrity analysis. No overlapped or extra
-activity is credited to another stage. Parent-session time, stage deadline,
-admission state and time to the first native worker are recorded when available.
-Physical startup interference and safe retention benefits remain unmeasured.
+Neither the journal nor its scope anchor is automatically removed. Manual recovery
+must establish that the recorded supervisor/native processes, descendants and
+exclusive claims are gone, then publish a confirmed CLEAN record while holding
+the original scope lock. Deleting a marker alone is not recovery; missing state
+beside the permanent anchor remains blocked. Failure to establish durable intent
+prevents admission, so later publication failures cannot erase an existing
+ownership obligation. External deletion/rollback and malicious administrative
+processes remain outside this constrained protocol's security assumptions.
 
 ## Result contract and standard profiles
 
@@ -484,3 +474,350 @@ Modules/lvs_storage_thermal_stage.py
 docs/storage_thermal_stage_integration.md
 smoke_tests/storage_thermal_stage_checks.py
 ```
+
+## Adversarial-audit corrections: monitoring, recovery and terminal evidence
+
+The primary timed loop consumes bounded, nonblocking status messages over the
+existing supervisor pipe. It performs no auxiliary evidence-file reads, appends,
+recovery-journal inspection or path resolution. Status production is limited to
+one update per second, with safety-stop updates bounded by the supervisor's
+100 ms loop; at most one pending packet is retained, with a 30 KiB
+summary budget and explicit omitted-device count. The primary consumes at most
+64 KiB per poll and limits its printed suffix to 512 characters. Absent or stale
+status never establishes activity. Full per-drive observations remain in the
+supervisor's evidence files. The supervisor also owns `stage_monitoring.jsonl`,
+with at most 1,024 interval observations plus a safety-transition observation
+per activity window; no primary-thread append is needed. File publication failures stop the auxiliary runner;
+they do not delay primary telemetry or enter primary failure reasons.
+
+Terminal-file reading, recovery-latch publication, adapter publication and
+whole-run auxiliary file publication run in separately supervised, descriptor-free
+Python helpers after the primary metric endpoint. Each has a two-second deadline
+and a bounded post-KILL observation window. An unkillable helper remains tracked;
+further evidence-helper launches are refused until it is reaped. This cannot
+provide an instantaneous-stop guarantee for uninterruptible kernel I/O. Such a
+helper receives no device descriptor and cannot perform thermal I/O. Missing or
+failed terminal/publication evidence remains an independent auxiliary ERROR.
+
+The [recovery journal](../Modules/lvs_storage_thermal_recovery.py) uses a permanent
+`storage_thermal_recovery_required.json.scope` flock anchor and a versioned JSON
+journal beside it. All production LVS stage supervisors and the standalone entrypoint use the
+same scope. The standalone menu uses the same journal around its unchanged
+authoritative runner; it cannot bypass unresolved stage ownership.
+The independently owned flock is held throughout startup, target acquisition,
+execution and cleanup. Before initializer permission or any native launch, the
+supervisor publishes and verifies an ARMED execution intent containing its PID,
+unique token, evidence directory and primary lease identity. Journal file contents,
+replacement directory entry, anchor and newly created directory entries are
+fsynced before admission. Failure to establish that protection refuses auxiliary
+execution; CPU/GPU/RAM validation continues.
+
+SIGKILL releases the flock but leaves ARMED ownership unresolved. A missing or
+corrupt journal beside the anchor, an orphan journal, inaccessible state, an active
+owner, legacy recovery marker or unresolved intent blocks future storage work.
+Only confirmed native cleanup, no retained runner claims, and successful terminal
+publication permit CLEAN publication. CLEAN is an explicit cleanup certificate,
+not deletion: neither anchor nor journal is automatically removed. A later clean
+run may acquire the same scope and arm a new token. A failure before replacing
+ARMED leaves the obligation intact. If a directory fsync fails after CLEAN has
+become visible, cleanup was already confirmed; the operation still reports its
+publication failure. No unsafe ownership is cleared merely to hide an error.
+
+These guarantees require local Linux flock/fsync/atomic-rename semantics, a
+filesystem honoring durability requests, and trusted ownership of the journal
+path. First deployment has neither file and must initialize both before I/O.
+External deletion of both files, storage rollback, malicious administrators and
+filesystems that dishonestly acknowledge durability are outside this protocol.
+The journal does not grant any device capability and cannot enable active-drive
+execution. Intent is armed only after checking that its destination is not a
+selected target. Manual recovery must independently establish that all old
+workers and exclusive descriptors are gone; stale PIDs alone never clear ARMED.
+
+Successful stage and whole-run outcomes now use the standalone strict device
+success contract. Every executed identity must uniquely match a requested,
+selected, eligible readiness identity and a successful terminal record. Reads,
+duration, identity, provenance, guard, cleanup and terminal publication must all
+be supported. Contradictory PASS/WARN records retain their raw evidence and gain
+explicit `evidence_errors` plus auxiliary ERROR. Legitimate blocked coverage can
+produce COMPLETED_WITH_WARNINGS when the eligible subset succeeds; zero-rate
+skips and disabled/unavailable work do not invent executed devices. Primary
+hardware-validation verdicts remain independent. Established analysis-intent and
+telemetry-quality requirements continue to determine whether primary performance
+claims have sufficient evidence; no blanket sample threshold is introduced.
+
+New regressions exercise blocked three-second reads/publication/persistence
+against two-second primary stages with real telemetry callbacks, cancellation,
+malformed/stale snapshots, ENOSPC, independent process contention/restart,
+SIGKILL after native policy-test admission, missing/corrupt state and contradictory
+terminal success. These are software/synthetic checks, not physical thermal,
+interference, active-storage or 28-drive scalability acceptance.
+
+### Six-finding follow-up: process creation, channel and authority boundaries
+
+The optional [owned launch bootstrap](../native/storage_thermal_launch.c), wrapped
+by [the Python owner](../Modules/lvs_storage_thermal_launch.py), is prepared and
+provenance-recorded during readiness, outside primary timing. It supports Linux
+x86-64 and AArch64. Unsupported or unavailable preparation has no synchronous
+Popen fallback. The native parent returns an owned PID without waiting for the
+child's exec/error pipe, filesystem setup, interpreter loader or startup. The
+child closes unapproved descriptors, establishes an isolated process group and
+waits on an ownership gate before continuing. Python registers the PID before
+releasing that gate. A parent-death signal, native monotonic deadline and bounded
+TERM/KILL/reap supervision cover partial startup. Exceptions retain any created
+PID. The bootstrap receives no target device descriptor; the existing native v2
+admission and guarded fio path remain the sole device-access authority.
+
+This removes the demonstrated pre-exec delay from primary execution and includes
+helper creation in the evidence-operation deadline. It does not promise hard
+real-time kernel process creation, instantaneous termination of uninterruptible
+I/O, or progress on a wedged host. Failed/unreapable helpers remain tracked and
+prohibit subsequent helper launches. No background Python thread is abandoned.
+Preparation requires the existing compiler machinery; the launch bootstrap does
+not grant privileges or change the standalone storage I/O engine.
+
+Both pipe descriptors now have kernel O_NONBLOCK set. Partial writes, EAGAIN,
+EINTR and EPIPE have explicit handling. Live status keeps one pending packet of
+at most 30 KiB and records dropped updates, partial writes and peer closure.
+Critical ownership, completion and cleanup records use the separately supervised
+file-publication path. Primary polling reads at most 64 KiB, processes at most
+32 packets and retains at most 64 KiB of incomplete input. Initial configuration
+is bounded at 8 MiB. READY is single-shot: a duplicate is a protocol fault, closes
+admission and stops that auxiliary peer; it cannot append repeated RUN responses.
+
+Recovery ownership is held by a private flock-bearing open file description and
+a duplicated lifetime reference. The public transport descriptor and the probe
+are independently opened descriptions, not lock owners. Identity is checked
+against the original anchor inode, but is not treated as proof of lock ownership.
+Before ARMED, admission checks and CLEAN, independent nonblocking probes must
+conflict and both private references must prove compatible ownership. Public
+same-inode close/reuse therefore cannot release the real lock. Replacement of a
+private working description or explicit lock loss rejects authority without
+reacquisition. Ambiguous references are retained, not closed as though cleanup
+were proven. Inherited Python scope objects reject use in another process.
+CLEAN additionally requires an explicit confirmed-cleanup certificate; it never
+means that arithmetic or activity evidence passed. These are trusted-process
+capabilities, not protection against arbitrary code closing/unlocking all private
+references or an administrator replacing the recovery directory.
+
+Each active stage completion must match the primary's execution context: unique
+session ID, run directory, stage ID, timing bounds and original lease identity.
+Current readiness and effective configuration are authoritative; embedded old
+readiness cannot authorize another device. Device PIDs must reconcile with the
+current committed ownership records and their admission timestamps. Stale or
+contradictory evidence is retained under `rejected_terminal_evidence`, marked
+with `session_errors`, and reported as auxiliary ERROR. Its claimed activity
+cannot prove current exercised coverage or current cleanup. Matching, independently
+confirmed current ownership cleanup can still resolve recovery after an evidence
+error; workload success and resource cleanup remain distinct.
+
+Observed process IDs, exits, reads, guard records and native ownership take
+precedence over aggregate `requested=false`, BLOCKED or `execution_started=false`.
+Such declarations cannot erase a failed execution as NOT_RUN. This rule applies
+through device, stage and whole-run auxiliary reporting, without changing primary
+hardware verdicts. The six new regression groups use disposable files, pipes and
+independent processes, including the exact descriptor-reuse attack and delayed
+creation. No physical-drive, heating, interference or active-storage acceptance
+is established by these tests.
+
+### Authoritative terminal acceptance and run registration
+
+`validate_terminal` in the shared result module is the common acceptance policy
+for the active session, normalization and whole-run export. It retains the strict
+per-device success contract and adds timing, registry and current-run binding.
+Validation errors remain auxiliary ERROR with raw observations and detailed
+reasons; primary hardware verdicts and artifact publication remain independent.
+
+Each successful device needs measured fio `active_seconds`, its configured
+duration, finite ordered worker timestamps, successful terminal flags and activity.
+The configured duration cannot exceed current authorization. fio runtime must
+complete that effective duration; a boolean `duration_completed` is insufficient.
+A 100 ms allowance covers parent observation/rounding, not missing fio runtime.
+Reported active work must fit the authorized window, including primary-observed
+revocation. Process completion may include the existing five-second exit allowance,
+but that allowance does not authorize five more seconds of claimed read activity.
+The parent terminal-observation time rejects future completion timestamps.
+Shortened authorized work must explicitly report reduced coverage and produces
+COMPLETED_WITH_WARNINGS; consistent early cancellation remains STOPPED. The
+existing primary metrics, thresholds and normalization are unchanged.
+
+Native ownership is reconciled for every bootstrap: unique PID, commitment phase,
+descriptor offer, process group readiness, guard PID, exit code, reaping and cleanup.
+A failed extra bootstrap cannot vanish behind successful devices. Device/native
+exit disagreement rejects success. The independently published final ownership
+file is read alongside terminal evidence by the bounded evidence helper and must
+match the terminal registry. Matching failed device/worker records can truthfully
+report partial execution: aggregate ERROR with individual successful work retained.
+Confirmed cleanup remains separate from successful activity.
+
+The primary creates an in-memory run authority with a fresh UUID before execution,
+using a context-local scope. Each actual StageWindow is registered once with its
+primary-established session context, readiness and terminal observation. Export
+uses those registrations, the current run directory, stage timeline and session
+identity; supplied JSON is never a registration authority. Several earlier stages
+of the same run remain valid. Repeated windows/sessions, previous runs (even at the
+same directory), missing registrations and changed configurations become auxiliary
+ERROR. Raw rejected payloads remain available. Scope teardown drops registrations;
+restart/offline data cannot self-authorize as a new current run. This adds no
+recovery database and does not change the durable ARMED/CLEAN or native v2 lease
+protocols. Registration and validation occur outside primary timed polling.
+
+Owned-process signaling now excludes concurrent signaling/reaping without waiting
+on a contested lifecycle lock. A reaped owner never signals its old PID/PGID.
+Where supported, pidfds identify the original child and pidfd-based wait inspection
+detects foreign reaping. Group signals require a still-owned, unreaped child, whose
+PID remains reserved. The fallback requires the owner API to be the sole reaper;
+external numeric-PID reaping is unsupported. Lost or ambiguous ownership refuses
+signaling and retains existing uncertain-cleanup protection. Tests simulate numeric
+PID replacement with a disposable child; they do not claim a real kernel PID-reuse
+exploit or physical-device acceptance.
+
+Reporting-error fallbacks are monotonic: explicit auxiliary ERROR or failed
+publication integrity cannot normalize into NOT_RUN merely because worker data
+is absent. This applies to whole-run fallback records as well as normal terminals.
+
+`launch_requested_monotonic` records the supervisor's timestamp immediately
+before launch; `started_monotonic` remains its later observation of the returned
+worker. A delayed ownership publication can separate those observations while
+fio is already running. Runtime reconciliation therefore uses the launch interval
+and, for stage work, the independently published native commit as the earliest
+possible read start. It does not shift primary timestamps or pretend the parent
+observation was the actual first I/O. fio runtime, native admission, end observation
+and the bounded authorized interval must still agree.
+
+The pidfd branch also binds its handle to the child's kernel identity. It uses
+pidfds only when repeated opens for the child have a stable identity distinct
+from the parent; otherwise the sole-reaper fallback applies. Signal/reap operations
+hold a private duplicate, validate it against the creation identity and use that
+same reference for pidfd syscalls. A reused public descriptor cannot redirect the
+signal. Regression coverage uses a separate installed pidfd-capable interpreter
+when the main test interpreter lacks those APIs, including substitution before
+and during the operation. This does not authorize unrelated descriptor closers or
+foreign reapers inside the owner's private critical sections.
+Run-directory bindings use the same lexical absolute-path normalization as the
+primary session, including `..` components; registration does not add filesystem
+resolution or symlink walks to primary timed execution.
+
+### Adversarial evidence and cancellation hardening
+
+Cancellation recognition closes the original native admission lease before
+operator callbacks or primary-worker shutdown. This fast barrier performs no
+worker waits, reaping, journal publication, or auxiliary filesystem work.
+Already committed admission remains owned and is reconciled during bounded
+auxiliary shutdown. The native v2 OFD synchronization and deadline remain the
+admission authority; requesting closure does not retroactively revoke an
+already committed launch.
+
+Terminal acceptance reconciles the independently published native ownership
+registry with the current primary-owned session registration. Missing terminal
+rows cannot establish NOT_RUN when the independent registry proves execution.
+Rejected child evidence cannot certify cleanup: cleanup requires consistent,
+reaped independent ownership evidence and no observed recovery blocker.
+Uncertain cleanup retains the recovery obligation.
+
+Terminal and whole-run acceptance share root contract/type validation,
+configuration and duration reconciliation, native protocol checks, raw guard
+witness checks, and source endpoint comparison. Explicit ERROR and STOPPED
+outcomes cannot become successful completion. Verification booleans cannot
+supersede contradictory guard witnesses. These are evidence checks, not claims
+that child-produced assertions independently prove kernel enforcement.
+Whole-run submission must account for every registered stage; an omitted
+registered window is retained as auxiliary ERROR with its historical evidence.
+
+Owned auxiliary processes retain a frozen creation PID/group identity separately
+from the public diagnostic PID. Signaling pins and validates the pidfd when
+available, and reaping uses `waitid(P_PIDFD)` where supported. Group signaling
+uses only the creation group while the original child is verified unreaped.
+The older-runtime fallback requires sole-reaper ownership under a nonblocking
+lifecycle exclusion; lost reaping or pidfd authority fails closed. No group
+signal is issued after confirmed reap. Arbitrary external reaping is outside
+this ownership contract and is detected as lost authority, not repaired by
+signaling an uncertain numeric PID.
+
+Synthetic regressions replay the original 94 contradiction cases, add omitted
+independent ownership and contract-header cases, exercise actual primary
+manifest publication, and reproduce cancellation during delayed primary
+shutdown. These checks establish software behavior only; physical heating,
+power-loss durability and active-storage support remain unaccepted.
+
+### Final-disposition and workload-authority correction
+
+All coordinator signals, including pre-RUN cancellation and timeout escalation,
+use the owned-process lifecycle. The diagnostic `pid` and legacy numeric-group
+hooks confer no authority. Post-window group-cleanup observation uses the frozen
+creation group; a potentially reused group can cause conservative uncertainty,
+never an unverified signal. Lost pidfd/reaping authority keeps recovery protection.
+
+Primary registration now snapshots a final disposition generation, the validated
+auxiliary result and its material finalization evidence. This includes parent
+errors, publication integrity, interruption, ownership, cleanup and persistent
+recovery observations. Whole-run publication reconciles supplied summaries against
+that snapshot. Replaying an earlier same-stage success cannot erase a later parent
+ERROR or cleanup obligation. Rejected submissions remain diagnostic evidence;
+repeated publication does not recursively wrap the same rejected record.
+Missing/duplicated final dispositions fail closed. Valid STOPPED, partial-coverage
+and multi-stage results retain their distinct outcomes.
+
+The shared device validator binds the effective read size and complete resolved
+`thermal_pilot_v1` rate record to primary-owned readiness. Recorded guard/fio
+arguments, when expected by readiness, must agree with those settings and worker
+identity. Configured IOPS/bandwidth are limits, not required achieved performance:
+slower successful reads remain valid. V1 has no child-authorized adaptive-rate
+protocol. A reduced intensity/rate must be authorized in the effective plan before
+admission, including existing per-drive and run-local overrides. Shortening the
+remaining stage duration preserves its authorized read size and rate.
+
+Readiness captures the complete execution-source identity outside primary timing;
+changes before execution invalidate readiness. Successful terminal records require
+matching parent/readiness, root-initial and device source identities. The redundant
+root endpoint is optional for v1 derived records; when present it must reconcile
+with the same authority. Omitting it never excuses a contradictory initial source.
+Git metadata, build timestamps and optional source metadata are not required to
+exist; supplied scope/algorithm/file-count identities must not conflict. Source-tree
+hashes are distinct from fio and guard executable hashes, which remain separately
+bound to readiness and their recorded native witnesses.
+
+Synthetic tests reproduce both coordinator wrong-target paths, finalization ERROR
+replacement through the real publisher, unauthorized read sizes/rates and source
+contradictions. They retain all prior matrix cases and native admission/recovery
+checks. They do not establish physical heating, power-loss durability, active-drive
+support, actual kernel PID reuse, or 28-drive platform acceptance.
+
+### Production lease round-trip and native-worker ownership
+
+The kernel lease identity has one JSON representation: a two-element list of
+nonnegative, unsigned 64-bit integers, in `(st_dev, st_ino)` order. The primary's
+immutable tuple and an equivalent JSON list normalize to those exact integers;
+booleans, strings, wrong lengths and out-of-range values are rejected. Recovery
+read-back verifies this canonical record. In the stage worker, the record is also
+bound to the live `SharedAdmission` authority, including its private original-inode
+reference; a different well-formed identity cannot substitute for that authority.
+The native v2 admission lock and identity protocol are unchanged.
+
+Native workers now use the same `OwnedProcess` lifecycle as their coordinator.
+Creation registers the private owned handle before releasing the native launch
+bootstrap. A native-stage launch initially remains in the supervisor group so the
+existing guard can perform its required `setsid()` after OWN. Before descriptor
+offer, its R acknowledgement must reconcile with the live, unreaped creation PID
+and isolated group. Before that acknowledgement, cancellation signals only the
+owned child, never the supervisor group. Afterwards group actions remain bound to
+the unreaped immutable leader. pidfd-backed signal/reap operations are used when
+available; the documented sole-reaper fallback retains the original child identity.
+No group signal is issued after the leader has been reaped.
+
+The registry keeps an independent private handle for every created native worker,
+including failed registration and failed admission. Mutable public PID diagnostics,
+caller-replaced handles, cached public status and omitted public rows cannot prove
+cleanup. The runner delegates native polling, termination, PID reporting and group
+cleanup to that registry. Ambiguous ownership preserves the exclusive target claim
+and ARMED obligation. CLEAN requires confirmed owned-worker/descendant cleanup,
+confirmed lease revocation, and the existing durable publication/read-back checks.
+A lost authority may conservatively require recovery intervention; no guessed PID
+is used to clear it. Standalone execution retains its existing process policy.
+
+Production-entrypoint regressions use a genuine lease and synthetic eligible
+readiness, forbid all target opens, verify durable ARMED before the admission gate,
+and inspect CLEAN or unresolved ARMED from independent fresh processes. Separate
+native policy-test fixtures use disposable regular files and exercise OWN/R,
+admission, read-only restrictions and public-PID substitution on pidfd/fallback
+paths. These establish software behavior, not physical-device acceptance, actual
+kernel PID reuse or power-loss durability on every filesystem.

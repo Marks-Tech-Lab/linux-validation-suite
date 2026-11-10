@@ -54,6 +54,9 @@ def execute_validation_run(
     started_monotonic = time.monotonic()
     run_timing = RunTimingController(started_monotonic, publish=live_timing_callback)
     telemetry = None
+    from .lvs_storage_thermal_results import evidence_run
+    thermal_run_scope=evidence_run(run_dir)
+    thermal_run_scope.__enter__()
     try:
         telemetry = TelemetryCollector(
             interval_seconds=profile.defaults.telemetry_interval_seconds,
@@ -106,6 +109,7 @@ def execute_validation_run(
             pass
         raise
     finally:
+        thermal_run_scope.__exit__(None,None,None)
         close_telemetry = getattr(telemetry, "close", None) if telemetry is not None else None
         if callable(close_telemetry):
             close_telemetry()

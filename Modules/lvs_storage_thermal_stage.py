@@ -26,7 +26,7 @@ import sys
 import time
 from uuid import uuid4
 
-from .lvs_storage_thermal import ThermalConfig, GROUPS
+from .lvs_storage_thermal import ThermalConfig, GROUPS, canonical_lease_identity
 from .lvs_storage_thermal_runner import ThermalRunner, approve_unmonitored, group_gone
 from .lvs_profile_report_artifacts import atomic_preflight_json
 from .lvs_storage_thermal_results import normalize, not_run, error_result
@@ -101,6 +101,17 @@ def inspect_stage(runner, config):
     if result.get('backend',{}).get('status')=='available':
         probe_error=''
         try:
+            from .lvs_storage_thermal_launch import prepare,provenance
+            prepare()
+            result['backend']=dict(result['backend'],owned_launcher=provenance())
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:
+            result.update(status='BLOCKED',commands=[],runnable_devices=[])
+            reason='Owned launcher unavailable: '+str(exc)
+            result['reasons']=list(result.get('reasons') or [])+[reason]
+            for row in result.get('devices',[])+result.get('targets',[]):
+                if row.get('state')=='ready':row.update(state='blocked',reasons=list(row.get('reasons') or [])+[reason])
+            return result
+        try:
             proof=subprocess.run([str(runner.guard),'--stage-admission-version'],
                 stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=2,check=False)
             available=proof.returncode==0 and proof.stdout.strip()=='lvs-storage-thermal-stage-admission-v2'
@@ -156,7 +167,7 @@ def decision_key(plan):
     payload = dict(configuration=configuration, status=plan['status'], schedule_scope=plan.get('schedule_scope'),
                    devices=[{k:d.get(k) for k in ('device_id','identity','selected','state','system_drive','reasons','rate')}
                             for d in plan.get('devices',[]) if d.get('selected')],
-                   backend=plan.get('backend'), reasons=plan.get('reasons',[]),
+                   backend=plan.get('backend'),source=(plan.get('source_provenance') or {}).get('source'), reasons=plan.get('reasons',[]),
                    monitoring=[dict(device_id=r['device_id'], sensors=r.get('sensors',[]),
                       policy={k:r.get('initial_temperature',{}).get(k) for k in
                               ('critical_c','warning_c','low_critical_c','complete')})
@@ -233,8 +244,8 @@ def recovery_blocker(marker):
     try:
         if str(marker) in _UNCONFIRMED:
             return 'Previous storage cleanup is unconfirmed; further storage execution prohibited pending manual recovery'
-        marker.lstat()
-        return 'Persistent storage recovery marker present; further storage execution prohibited pending manual recovery'
+        from .lvs_storage_thermal_recovery import blocker
+        return blocker(marker)
     except FileNotFoundError:pass
     except OSError as exc:return 'Storage recovery state unavailable: '+str(exc)
     return ''
@@ -253,8 +264,12 @@ class StageChannel:
         parent_read, child_write = os.pipe()
         return cls(parent_read,parent_write), cls(child_read,child_write)
 
-    def setblocking(self, blocking): self.timeout = None if blocking else 0
-    def settimeout(self, seconds): self.timeout = seconds
+    def setblocking(self, blocking):
+        os.set_blocking(self.read_fd,False);os.set_blocking(self.write_fd,False)
+        self.timeout = None if blocking else 0
+    def settimeout(self, seconds):
+        os.set_blocking(self.read_fd,False);os.set_blocking(self.write_fd,False)
+        self.timeout = seconds
     def recv(self, size, peek=False):
         if self.peeked:
             value = self.peeked[:size]
@@ -273,7 +288,13 @@ class StageChannel:
         # Nonblocking writes keep a large readiness payload off the timed path.
         return os.write(self.write_fd,data)
     def sendall(self, data):
-        while data: data = data[self.send(data):]
+        until=time.monotonic()+self.timeout if self.timeout is not None else None
+        while data:
+            if until is not None and time.monotonic()>=until:raise TimeoutError('Control send deadline expired')
+            try:data=data[self.send(data):]
+            except (BlockingIOError,InterruptedError):
+                if self.timeout==0:raise
+
     def close(self):
         for fd in (self.read_fd,self.write_fd):
             try: os.close(fd)
@@ -301,9 +322,8 @@ class SharedAdmission:
     another same-file alias cannot release that operation's OFD lock.
     """
     def __init__(self, fd, identity):
-        if (not isinstance(identity,(tuple,list)) or len(identity)!=2 or
-                any(type(v) is not int or v<0 for v in identity)):
-            raise OSError('Primary-established lease identity required')
+        try:identity=canonical_lease_identity(identity)
+        except ValueError as exc:raise OSError('Primary-established lease identity required') from exc
         self.fd=fd;self._identity=tuple(identity);self._pid=os.getpid()
         self._validate(fd)
         # Reopen the memfd, not a device pathname. dup() would share OFD locks.
@@ -313,6 +333,11 @@ class SharedAdmission:
 
     @property
     def identity(self):return self._identity
+
+    def verified_identity(self):
+        with self._operation() as pin:
+            self._validate(pin);self._validate(self.fd)
+            return canonical_lease_identity(self._identity)
 
     def _validate(self, fd):
         info=os.fstat(fd)
@@ -398,21 +423,52 @@ class StageLaunches:
     The standalone ThermalRunner still owns normal execution and read evidence.
     This registry additionally owns every bootstrap before its OWN message.
     """
-    def __init__(self, runner, lease, directory):
+    def __init__(self, runner, lease, directory, *, owned_launch=None):
         if lease.admission is None: raise ValueError('Shared native admission gate required')
-        self.original = runner.popen
+        from .lvs_storage_thermal_launch import OwnedProcess
+        self._spawn = owned_launch or OwnedProcess
+        self._processes = {}
         self.lease, self.directory = lease, directory
         self.owned = []
         self.publication_error = ''
         self.revocation_error = ''
         self.cleanup_confirmed = True
 
+    def _rows(self):
+        rows=list(self.owned)
+        for row,p in self._processes.values():
+            if not any(r is row for r in rows):
+                row['ownership_error']='Owned worker omitted from public registry'
+                rows.append(row)
+        return rows
+
+    def _register(self,row,p):
+        from .lvs_storage_thermal_launch import OwnedProcess
+        if not isinstance(p,OwnedProcess):raise OSError('Native bootstrap requires owned creation authority')
+        old=self._processes.get(id(row))
+        if old is not None and old[1] is not p:raise OSError('Native process ownership cannot be replaced')
+        self._processes[id(row)]=(row,p)
+        self.cleanup_confirmed=False
+        row.update(process=p,pid=p.authority_pid)
+        if not p._native_stage:raise OSError('Native bootstrap must remain in supervisor group until OWN')
+
+    def authority(self,p):
+        for row,actual in self._processes.values():
+            if actual is p:
+                if row.get('process') is not actual or row.get('pid')!=actual.authority_pid:
+                    row['ownership_error']='Native process handle/registration substituted'
+                    raise OSError(row['ownership_error'])
+                return actual
+        raise OSError('Process does not belong to this native registry')
+
+    def identity(self,p):return self.authority(p).authority_pid
+
     def snapshot(self):
         return dict(protocol='lvs-storage-thermal-stage-admission-v2',
             lease_identity=list(self.lease.admission.identity),
             cleanup_confirmed=self.cleanup_confirmed, publication_error=self.publication_error,
             revocation_error=self.revocation_error,
-            workers=[{k:v for k,v in row.items() if k!='process'} for row in self.owned])
+            workers=[{k:v for k,v in row.items() if k!='process'} for row in self._rows()])
 
     def publish(self):
         try: atomic_preflight_json(self.directory/'launch_ownership.json', self.snapshot())
@@ -430,50 +486,53 @@ class StageLaunches:
             except socket.timeout: pass
 
     def stop(self, row, sig):
-        p = row['process']
-        if p is None:return
+        entry=self._processes.get(id(row))
+        if entry is None:
+            row['cleanup_error']='Native creation authority missing';return
+        p=entry[1]
         try:
-            if row.get('group_ready'): os.killpg(p.pid, sig)
-            else: p.send_signal(sig)
-        except ProcessLookupError: pass
+            self.authority(p)
+        except OSError as exc:
+            row['ownership_error']=str(exc)
+            # The independent private handle still owns the intended child.
+            # Clean that child only, but never certify ambiguous public evidence.
+        try:p.send_signal(sig)
         except OSError as exc:row['cleanup_error']=str(exc)
 
+    def _reconcile(self,row):
+        entry=self._processes.get(id(row))
+        if entry is None:row['cleanup_confirmed']=False;return False
+        p=entry[1]
+        try:
+            self.authority(p)
+            code=p.poll();gone=p.group_cleanup_confirmed()
+            row.update(exit_code=code,reaped=code is not None,
+                       cleanup_confirmed=gone and not row.get('ownership_error'))
+        except OSError as exc:
+            row.update(cleanup_confirmed=False,cleanup_error=str(exc))
+        return row['cleanup_confirmed']
+
     def finish(self):
-        # Broadcast first, then one bounded reconciliation window, not N waits.
+        # One broadcast and bounded shared windows; never N per-drive waits.
         try:self.lease.admission.revoke()
         except OSError as exc:self.revocation_error=str(exc)
-        for row in self.owned:
-            if row['process'] is not None and row['process'].poll() is None: self.stop(row, signal.SIGTERM)
-        until = time.monotonic()+2
+        rows=self._rows()
+        for row in rows:self.stop(row,signal.SIGTERM)
+        until=time.monotonic()+2
         while True:
-            outstanding=[]
-            for row in self.owned:
-                p=row['process']
-                if p is None:
-                    row['cleanup_confirmed']=False
-                    continue
-                code=p.poll()
-                gone=code is not None and (not row.get('group_ready') or group_gone(p.pid))
-                row.update(exit_code=code,cleanup_confirmed=gone)
-                if not gone: outstanding.append(row)
-            if not outstanding: break
+            outstanding=[row for row in rows if not self._reconcile(row)]
+            if not outstanding:break
             if time.monotonic()>=until:
                 for row in outstanding:self.stop(row,signal.SIGKILL)
                 break
             time.sleep(.02)
-        # One additional bounded window after KILL; retain unknown ownership.
         until=time.monotonic()+1
-        while any(not r['cleanup_confirmed'] for r in self.owned) and time.monotonic()<until:
-            for row in self.owned:
-                p=row['process']
-                if p is None:continue
-                code=p.poll()
-                row.update(exit_code=code,cleanup_confirmed=code is not None and
-                    (not row.get('group_ready') or group_gone(p.pid)))
+        while any(not r['cleanup_confirmed'] for r in rows) and time.monotonic()<until:
+            for row in rows:self._reconcile(row)
             time.sleep(.02)
         try:revoked=self.lease.admission.revoke()
         except OSError as exc:revoked=False;self.revocation_error=str(exc)
-        self.cleanup_confirmed=all(r['cleanup_confirmed'] for r in self.owned) and revoked
+        self.cleanup_confirmed=all(r['cleanup_confirmed'] for r in rows) and revoked
         try:self.publish()
         except OSError:pass
 
@@ -500,16 +559,25 @@ class StageLaunches:
             row=dict(process=None,pid=None,phase='bootstrap_launch_pending',group_ready=False,
                 supervisor_pgid=os.getpgrp(),descriptor_offered=False,io_admission='not_requested',cleanup_confirmed=False)
             self.owned.append(row)
+            self.cleanup_confirmed=False
             self.publish()
-            process=self.original(command,**options)
+            registry=self
+            class Registration:
+                @property
+                def process(self):return registry._processes.get(id(row),(None,None))[1]
+                @process.setter
+                def process(self,p):registry._register(row,p)
+            process=self._spawn(command,**options,stage_bootstrap=True,owner=Registration(),deadline=self.lease.deadline)
+            if self.authority(process) is not process:raise OSError('Native launch authority unavailable')
             # Register before any observation/publication/OWN permission. Until
             # OWN the child has no target and remains in the supervisor's group.
-            row.update(process=process,pid=process.pid,phase='created')
+            row.update(phase='created')
             child.close()
             self.publish()
             self.lease.check(1)
             parent.sendall(b'OWN')
             if self.receive(parent)!=b'R':raise ValueError('Native ownership acknowledgement invalid')
+            process.confirm_native_group()
             row.update(phase='owned',group_ready=True)
             self.publish()
             self.lease.check(1)
@@ -526,8 +594,14 @@ class StageLaunches:
             self.publish()
             self.lease.check()
             return process
-        except BaseException:
+        except BaseException as exc:
             if row is not None:
+                orphan=getattr(exc,'owned_process',None)
+                if id(row) not in self._processes and orphan is not None:
+                    from .lvs_storage_thermal_launch import OwnedProcess
+                    if isinstance(orphan,OwnedProcess):
+                        self._processes[id(row)]=(row,orphan)
+                        row.update(process=orphan,pid=orphan.authority_pid,ownership_error='Creation registration failed')
                 row['launch_failed']=True
                 self.stop(row,signal.SIGTERM)
                 # Runner's job does not yet contain this process. Keep ownership
@@ -575,39 +649,47 @@ class LeaseTargets:
 
 class ThermalStageSession:
     """Non-gating stage adapter. Only the authoritative ThermalRunner performs I/O."""
-    def __init__(self, stage, plan, run_dir, popen=subprocess.Popen, *, recovery_marker=None,
-                 stage_deadline=None, clock=time.monotonic, signal_group=os.killpg, group_reaped=group_gone):
+    def __init__(self, stage, plan, run_dir, popen=None, *, recovery_marker=None,
+                 launch_args=None, launch_delay_ms=0,
+                 stage_deadline=None, clock=time.monotonic, signal_group=None, group_reaped=None):
         self.stage, self.plan = stage, plan
         self.directory = Path(run_dir)/'storage_thermal'/uuid4().hex
         self.process = None
-        self.popen = popen
+        self.popen = popen  # obsolete synchronous factories fail closed
+        self.launch_args=launch_args;self.launch_delay_ms=launch_delay_ms
         self.handles = []
         self.last_live = None
         self.clock=clock
         self.started = clock()
         self.deadline=stage_deadline if stage_deadline is not None else self.started+stage.duration_seconds
-        self.signal_group,self.group_reaped=signal_group,group_reaped
+        # Legacy injectable numeric-group hooks confer no process authority.
+        # Every sensitive operation belongs to the OwnedProcess instance.
         self.channel=None;self.pending=b'';self.incoming=b''
+        self.closed_ns=None;self.primary_end_ns=None
+        self.ready_seen=False
         self.admitted=False;self.stopping=False;self.expired_before_admission=False
         self.lease_id=uuid4().hex
+        from .lvs_storage_thermal_results import run_identity
+        self.terminal_observation={}
+        self.context=dict(version=1,run_id=run_identity(run_dir),session_id=self.lease_id,stage_id=stage.id,run_directory=os.path.abspath(run_dir),
+            started_ns=int((self.deadline-stage.duration_seconds if stage_deadline is not None else self.started)*1e9),deadline_ns=int(self.deadline*1e9),lease_identity=None)
         self.admission=None;self.admission_identity=None;self.revocation_confirmed=False;self.revocation_error=''
         self.supervisor_forced_kill=False
         self.marker = Path(recovery_marker) if recovery_marker is not None else RECOVERY_MARKER
         self.fault = ''
         self.terminal_read = False
+        self.recovery_observation = ''
         self.evidence = not_run('Storage execution has not started', readiness=plan)
 
     def _latch_cleanup(self, reason):
         _UNCONFIRMED[str(self.marker)] = self
         self.evidence['cleanup_confirmed'] = False
+        self.recovery_observation='Storage ownership recovery required: '+str(reason)
         try:
-            if self.marker.parent.is_symlink() or self.marker.is_symlink():
-                raise OSError('recovery marker path is a symlink')
-            atomic_preflight_json(self.marker,dict(contract_id='lvs.storage_thermal.recovery',
-                recovery_required=True,reason=reason,supervisor_pid=getattr(self.process,"pid",None),
-                evidence_directory=str(self.directory),admission_lease_identity=self.admission_identity))
+            from .lvs_storage_thermal_recovery import evidence_operation
+            evidence_operation('--retain',self.marker,reason[:2000])
             self.evidence['recovery_marker'] = str(self.marker)
-        except OSError as exc:
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:
             self.evidence['recovery_publication_error'] = str(exc)
 
     def request_stop(self, reason):
@@ -623,27 +705,34 @@ class ThermalStageSession:
             self.evidence=not_run('No eligible runnable storage; see readiness reasons',readiness=self.plan);return
         if self.plan.get('requires_consent') and not consent_valid(self.plan,{decision_key(self.plan):self.plan.get('coverage_consent') or {}}):
             self.evidence=not_run('Bounded unmonitored consent missing/declined/expired',readiness=self.plan);return
-        blocker=recovery_blocker(self.marker)
-        if blocker:
-            self.evidence=not_run(blocker,readiness=self.plan);return
+        if str(self.marker) in _UNCONFIRMED:
+            self.evidence=not_run('Previous auxiliary cleanup remains unconfirmed',readiness=self.plan);return
+        # Recovery filesystem inspection/locking belongs to the supervisor.
+        if self.popen is not None:
+            self.evidence=not_run('Synchronous auxiliary process factories are unsupported',readiness=self.plan);return
         self.admission=SharedAdmission.create()
         self.admission_identity=self.admission.identity
+        self.context['lease_identity']=list(self.admission.identity)
         parent,child=StageChannel.pair()
         os.set_blocking(parent.write_fd,False)
         parent.setblocking(False)
         self.channel=parent
-        payload=dict(plan=self.plan,directory=str(self.directory.resolve()),supervisor_parent_pid=os.getpid(),
+        payload=dict(plan=self.plan,execution_context=self.context,directory=os.path.abspath(self.directory),supervisor_parent_pid=os.getpid(),
                      recovery_marker=str(self.marker),stage_deadline=self.deadline,stage_lease_id=self.lease_id,
                      admission_fd=self.admission.fd,admission_identity=self.admission.identity)
         try:
             self.pending=(json.dumps(payload)+'\n').encode()
             if len(self.pending)>8*1024**2:raise ValueError('Auxiliary bootstrap exceeds bounded IPC evidence budget')
-            self.process=self.popen([sys.executable,'-m','Modules.lvs_storage_thermal_stage','--channel',f'{child.read_fd}:{child.write_fd}'],
+            from .lvs_storage_thermal_launch import OwnedProcess
+            argv=self.launch_args or [sys.executable,'-m','Modules.lvs_storage_thermal_stage','--channel','{channel}']
+            argv=[str(v).replace('{channel}',f'{child.read_fd}:{child.write_fd}') for v in argv]
+            self.process=OwnedProcess(argv,delay_ms=self.launch_delay_ms,owner=self,deadline=self.deadline,
                 cwd=ROOT,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                 pass_fds=(child.read_fd,child.write_fd,self.admission.fd),start_new_session=True)
             self.evidence=not_run('Auxiliary initialization pending; no I/O admission yet',readiness=self.plan)
             self._channel_poll()
-        except BaseException:
+        except BaseException as exc:
+            if getattr(exc,'owned_process',None) is not None:self.process=exc.owned_process
             parent.close();self.channel=None
             raise
         finally:child.close()
@@ -657,15 +746,27 @@ class ThermalStageSession:
                 try:
                     sent=self.channel.send(self.pending);self.pending=self.pending[sent:]
                 except BlockingIOError:pass
-            while True:
+            # One bounded read per primary poll; never drain an unbounded producer.
+            for _ in range(1):
                 try:data=self.channel.recv(65536)
                 except BlockingIOError:break
                 if not data:break
                 self.incoming+=data
-                if len(self.incoming)>1024*1024:raise ValueError('Auxiliary control evidence exceeded bound')
+                if len(self.incoming)>65536:raise ValueError('Auxiliary control evidence exceeded bound')
+                packets=0
                 while b'\n' in self.incoming:
+                    packets+=1
+                    if packets>32:raise ValueError('Control packet rate exceeds per-poll budget')
                     line,self.incoming=self.incoming.split(b'\n',1);message=json.loads(line)
+                    if not isinstance(message,dict):raise ValueError('Control packet must be an object')
+                    if message.get('snapshot') and message.get('lease')==self.lease_id:
+                        snapshot=message['snapshot']
+                        if not isinstance(snapshot,dict) or not isinstance(snapshot.get('devices'),list):
+                            raise ValueError('Malformed auxiliary snapshot')
+                        self.last_live=snapshot
                     if message.get('ready') and message.get('lease')==self.lease_id:
+                        if self.ready_seen:raise ValueError('Duplicate READY after single-shot authorization')
+                        self.ready_seen=True
                         if self.stopping or self.deadline-self.clock()<1:
                             self.end_stage();return
                         # Mark conservative ownership BEFORE sending permission.
@@ -677,21 +778,25 @@ class ThermalStageSession:
                 except BlockingIOError:pass
         except (OSError,ValueError) as exc:self.request_stop('Auxiliary startup IPC failed: '+str(exc))
 
-    def end_stage(self):
-        """Revoke the stage before waiting for cleanup; no late ready can run."""
+    def revoke_admission(self):
+        """Fast admission barrier only: no process polling, signaling or persistence."""
+        if self.closed_ns is None:self.closed_ns=int(self.clock()*1e9)
         if self.admission is not None:
             try:self.revocation_confirmed=self.admission.revoke()
             except OSError as exc:
                 self.revocation_confirmed=False;self.revocation_error=str(exc)
                 self.fault=self.fault or 'Native admission revocation failed: '+str(exc)
+
+    def end_stage(self):
+        """Post-window shutdown; revoke before touching process lifecycle."""
+        self.revoke_admission()
         if self.stopping:return
         self.stopping=True
         self.expired_before_admission=not self.admitted
         if self.channel is not None:self.channel.close();self.channel=None
-        if self.process is not None and self.process.poll() is None:
+        if self.process is not None:
             try:
-                if self.admitted:self.process.send_signal(signal.SIGTERM)
-                else:self.signal_group(self.process.pid,signal.SIGTERM)
+                if self.process.poll() is None:self.process.send_signal(signal.SIGTERM)
             except ProcessLookupError:pass
             except OSError as exc:self.fault=self.fault or str(exc)
 
@@ -699,42 +804,64 @@ class ThermalStageSession:
         """Contain storage faults. A drive-level stop is never a primary event."""
         if self.process is None:return None
         self._channel_poll()
-        try:
-            live=self.directory/'live.json'
-            if live.exists():
-                data=json.loads(live.read_text())
-                if data!=self.last_live:
-                    with (self.directory/'stage_monitoring.jsonl').open('a') as stream:stream.write(json.dumps(data)+'\n')
-                    self.last_live=data
-                # The runner already stops its workers for local safety events.
-            path=self.directory/'completion.json'
-            if path.exists():
-                result=json.loads(path.read_text())
-                if (not isinstance(result,dict) or result.get('contract_id') not in ('lvs.storage_thermal.manifest','lvs.storage_thermal.auxiliary_stage')
-                        or result.get('contract_version')!=1):
-                    raise ValueError('Unrecognized storage completion contract')
-                if result.get('contract_id')=='lvs.storage_thermal.manifest' and not result.get('parent_finalization_complete'):
-                    raise ValueError('Storage supervisor finalization is incomplete')
-                if result.get('verdict') in ('PASS','WARN') and (
-                    not result.get('parent_finalization_complete') or not result.get('executed_devices') or
-                    not result.get('devices') or any(not d.get('cleanup_confirmed') or not d.get('terminal_published') for d in result.get('devices',[]))):
-                    raise ValueError('Storage completion evidence is inconsistent')
-                self.evidence=normalize(result,readiness=self.plan)
-                self.terminal_read=True
-                if self.evidence['auxiliary_outcome']=='ERROR':self.request_stop('Storage execution or evidence failure')
-            elif self.process.poll() is not None and not (self.stopping and not self.admitted):
-                self.request_stop('Storage supervisor exited without atomic completion evidence')
-        except (OSError,ValueError,TypeError,AttributeError) as exc:
-            self.request_stop('Storage observation/evidence error: '+str(exc))
+        # Live status arrives through the bounded nonblocking control pipe.
+        # No stat/open/read/parse-publication retry on the primary timed path.
         return None
 
     def live_summary(self):
         if self.process is None:return ' | storage='+self.evidence['auxiliary_outcome']
+        if (self.last_live or {}).get('auxiliary_outcome'):
+            return (' | storage='+self.last_live['auxiliary_outcome']+' '+str(self.last_live.get('reason','')))[:512]
         devices=(self.last_live or {}).get('devices',[])
-        if not devices:return ' | storage='+('stopping' if self.stopping else 'initializing' if not self.admitted else 'starting')
-        return ' | storage=' + '; '.join(
-            f"{d['device_id']} {d.get('state','unknown')} temp={(d.get('observation') or {}).get('temperature',{}).get('value_c')}C reads={(d.get('observation') or {}).get('device_read_ios_since_launch','unavailable')}"
-            for d in devices)
+        if not devices:return ' | storage='+('stopping' if self.stopping else 'status unavailable; no activity inferred')
+        age=self.clock()-(self.last_live or {}).get('monotonic',0)
+        prefix=' | storage='+('STALE observation; ' if age>3 else '')
+        text='; '.join(
+            f"{d['device_id'][:80]} {d.get('state','unknown')} temp={(d.get('observation') or {}).get('temperature',{}).get('value_c')}C reads={(d.get('observation') or {}).get('device_read_ios_since_launch','unavailable')}"
+            for d in devices[:3])
+        return (prefix+text+f"; {len(devices)} shown in snapshot; {(self.last_live or {}).get('omitted_devices',0)} omitted")[:512]
+
+    def _read_terminal(self):
+        """Post-primary reconciliation, with filesystem latency in a killable child."""
+        result=None
+        try:
+            from .lvs_storage_thermal_recovery import evidence_operation
+            observed=evidence_operation('--read-terminal',self.directory,self.marker)
+            if observed.get('recovery_blocker'):
+                self.recovery_observation=observed['recovery_blocker']
+            result=observed['result']
+            if result is None and observed.get('ownership') is not None:
+                result=error_result('Terminal record missing despite independent launch registry',readiness=self.plan,cleanup_confirmed=False)
+                result['execution_context']=dict(self.context)
+            if result is None:
+                if self.process.poll() is not None and not (self.stopping and not self.admitted):
+                    self.request_stop('Storage supervisor exited without completion evidence')
+                return
+            if (not isinstance(result,dict) or result.get('contract_id') not in
+                    ('lvs.storage_thermal.manifest','lvs.storage_thermal.auxiliary_stage') or result.get('contract_version')!=1):
+                raise ValueError('Unrecognized storage completion contract')
+            if result.get('contract_id')=='lvs.storage_thermal.manifest' and not result.get('parent_finalization_complete'):
+                raise ValueError('Storage supervisor finalization is incomplete')
+            from .lvs_storage_thermal_results import session_errors
+            self.terminal_observation=dict(ownership=observed.get('ownership'),observed_ns=int(self.clock()*1e9),closed_ns=self.closed_ns,primary_end_ns=self.primary_end_ns)
+            errors=session_errors(result,self.plan,self.context,self.terminal_observation)
+            if errors:
+                ownership=observed.get('ownership') or {}
+                context_ok=result.get('execution_context')==self.context
+                owned_cleanup=(ownership.get('lease_identity')==self.context.get('lease_identity') and
+                    ownership.get('cleanup_confirmed') is True and
+                    all(w.get('cleanup_confirmed') is True and w.get('reaped') is True for w in ownership.get('workers',[])))
+                from .lvs_storage_thermal_results import execution_facts
+                cleanup=context_ok and owned_cleanup and ownership==result.get('stage_launch_ownership') and result.get('cleanup_confirmed') is not False and not observed.get('recovery_blocker')
+                result=dict(result,session_errors=errors,cleanup_confirmed=cleanup,independent_launch_ownership=ownership,rejected_terminal_evidence=result)
+            self.evidence=normalize(result,readiness=self.plan)
+            self.terminal_read=True
+            if self.evidence['auxiliary_outcome']=='ERROR':self.request_stop('Storage execution or evidence failure')
+        except (OSError,ValueError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
+            self.evidence=error_result('Rejected terminal evidence: '+str(exc),readiness=self.plan,cleanup_confirmed=False)
+            if result is not None:self.evidence['rejected_terminal_evidence']=result
+            self.terminal_read=result is not None
+            self.request_stop('Storage terminal observation failed: '+str(exc))
 
     def finish(self, cancelled=False):
         if self.process is not None:
@@ -749,13 +876,14 @@ class ThermalStageSession:
                     # Unowned bootstraps remain in this group. Committed native
                     # leaders have registered PIDs/groups and parent-death KILL.
                     # Forced owner death still requires recovery verification.
-                    self.signal_group(self.process.pid,signal.SIGKILL)
+                    self.process.kill()
                     self.process.wait(timeout=2)
-                self.poll()
+                self._read_terminal()
                 if self.supervisor_forced_kill:self._latch_cleanup('Forced supervisor shutdown; descendant cleanup unconfirmed')
-                if not self.admitted and self.group_reaped(self.process.pid):
+                if not self.admitted and self.process.group_cleanup_confirmed():
                     if self.expired_before_admission and not self.fault and not self.terminal_read:
                         self.evidence=not_run('Stage ended/cancelled during auxiliary initialization; no I/O admission',readiness=self.plan)
+                        self.evidence['execution_context']=dict(self.context)
                         self.terminal_read=True
                     elif not self.terminal_read:
                         self.evidence=error_result(self.fault or 'Auxiliary initializer exited without completion',readiness=self.plan)
@@ -783,39 +911,50 @@ class ThermalStageSession:
             if not self.revocation_confirmed:self._latch_cleanup('Native admission revocation lock unconfirmed')
             if self.evidence.get('cleanup_confirmed') is not False:
                 self.admission.close();self.admission=None
+        if not self.terminal_read and not self.evidence.get('rejected_terminal_evidence'):
+            self.evidence.setdefault('execution_context',dict(self.context))
         self.evidence=normalize(self.evidence,readiness=self.plan)
         self.evidence['admission_lease_identity']=self.admission_identity
         self.evidence['supervisor_forced_kill']=self.supervisor_forced_kill
         self.evidence['admission_revocation_confirmed']=self.revocation_confirmed
         if self.revocation_error:self.evidence['admission_revocation_error']=self.revocation_error
+        self.evidence['persistent_recovery_required']=bool(self.recovery_observation)
+        if self.recovery_observation:self.evidence['recovery_reason']=self.recovery_observation
+        self.evidence['live_snapshot_received']=self.last_live is not None
+        self.evidence['last_live_snapshot_monotonic']=(self.last_live or {}).get('monotonic')
         self.evidence['stage_session_seconds']=self.clock()-self.started
         self.evidence['parent_session_start_monotonic']=self.started
         self.evidence['stage_deadline_monotonic']=self.deadline
         self.evidence['initializer_permission_granted']=self.admitted
         ownership=self.evidence.get('stage_launch_ownership') or {}
         workers=ownership.get('workers') or []
-        committed=any(r.get('io_admission')=='committed' for r in workers)
+        trusted=not self.evidence.get('session_errors') and not self.evidence.get('rejected_terminal_evidence')
+        committed=trusted and any(r.get('io_admission')=='committed' for r in workers)
         uncertain=any(r.get('descriptor_offered') for r in workers) or (self.admitted and not self.terminal_read) or (bool(self.evidence.get('executed_devices')) and not workers)
         self.evidence['io_admission_granted']=committed
-        self.evidence['io_admission_state']='committed' if committed else 'unconfirmed' if uncertain else 'not_admitted'
+        self.evidence['io_admission_state']='committed' if committed else 'unconfirmed' if uncertain or not trusted else 'not_admitted'
         starts=[d.get('started_monotonic') for d in self.evidence.get('devices',[]) if d.get('started_monotonic') is not None]
         self.evidence['startup_seconds_to_first_worker']=max(0,min(starts)-self.started) if starts else None
         self.evidence['evidence_directory']=str(self.directory)
         try:
-            atomic_preflight_json(self.directory/'adapter_result.json',self.evidence)
-        except OSError as exc:
+            from .lvs_storage_thermal_recovery import evidence_operation
+            evidence_operation('--publish-json',self.directory/'adapter_result.json',payload=self.evidence)
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:
             self.evidence.update(failure='Storage adapter publication failed: '+str(exc),terminal_published=False)
             self.evidence=normalize(self.evidence,readiness=self.plan)
         return self.evidence
 
 
-def worker(directory, *, gate=None, lease=None):
+def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=None):
     plan=json.loads((directory/'request.json').read_text())
     parent_pid=plan.get('supervisor_parent_pid')
     runner=default_runner()
+    saved_runner=(runner.targets,runner.popen,runner.temperature,runner.native_processes)
+    saved_check=lease.check if lease is not None else None
     config=ThermalConfig(**plan['configuration'])
     attempted=False
     launches=None
+    recovery=None
     result=None
     code=1
     try:
@@ -837,6 +976,12 @@ def worker(directory, *, gate=None, lease=None):
         fresh['schedule_scope'] = plan.get('schedule_scope')
         if decision_key(fresh)!=plan['decision_key']:
             raise ValueError('Storage readiness changed after confirmation; no fallback execution')
+        # No native admission or target descriptor opening before durable intent.
+        runner.targets.output_safe(Path(plan.get('recovery_marker') or RECOVERY_MARKER).parent,
+                                   [r for r in fresh.get('targets',[]) if r.get('state')=='ready'])
+        from .lvs_storage_thermal_recovery import RecoveryScope
+        recovery=RecoveryScope(Path(plan.get('recovery_marker') or RECOVERY_MARKER))
+        recovery.enter(evidence_directory=directory,lease_identity=lease.admission.identity if lease.admission else None,admission=lease.admission)
         if not gate():raise StageLeaseExpired('Stage permission absent/expired before execution')
         lease.check(1)
         requested_configuration=config.to_dict()
@@ -844,10 +989,15 @@ def worker(directory, *, gate=None, lease=None):
         config=replace(config,duration_seconds=available)
         if config.monitoring=='approved_unmonitored':
             config=approve_unmonitored(config,plan['selected_devices'],'bounded to remaining approved stage window')
+        original_check=lease.check
+        def owned_check(*args):
+            recovery._authority();return original_check(*args)
+        lease.check=owned_check
         original_targets=runner.targets
         runner.targets=LeaseTargets(original_targets,lease)
         launches=StageLaunches(runner,lease,directory)
         runner.popen=launches.launch
+        runner.native_processes=launches
         original_temperature=runner.temperature
         def bounded_temperature(row):
             lease.check()
@@ -855,15 +1005,21 @@ def worker(directory, *, gate=None, lease=None):
         runner.temperature=bounded_temperature
         fresh=inspect_stage(runner,config)
         lease.check(1)
-        last_publish=[0.0]
+        last_publish=[0.0];last_timeline=[0.0];timeline_count=[0];safety_recorded=[False]
         def observe(jobs):
             now=time.monotonic()
             safety=any(j['result'].safety_stop for j in jobs)
             if now-last_publish[0]>=1 or safety:
-                atomic_preflight_json(directory/'live.json',dict(monotonic=now,
+                observation=dict(monotonic=now,
                     safety_stop=safety,devices=[dict(device_id=j['row']['device_id'],
                     state=j['result'].state,observation=j.get('last_snapshot'),
-                    stop_reason=j['result'].stop_reason) for j in jobs]))
+                    stop_reason=j['result'].stop_reason) for j in jobs])
+                if snapshot:snapshot(observation)
+                atomic_preflight_json(directory/'live.json',observation)
+                if (timeline_count[0]<1024 and now-last_timeline[0]>=max(1,config.duration_seconds/1024)) or (safety and not safety_recorded[0]):
+                    with (directory/'stage_monitoring.jsonl').open('a') as stream:
+                        stream.write(json.dumps(observation)+'\n')
+                    last_timeline[0]=now;timeline_count[0]+=1;safety_recorded[0]=safety
                 last_publish[0]=now
         attempted=True
         directory_used,result=runner.run(config,fresh,directory/'activity',allow_partial=True,observe=observe,
@@ -887,7 +1043,24 @@ def worker(directory, *, gate=None, lease=None):
             elif launches.publication_error or any(r.get('launch_failed') for r in launches.owned):
                 result.update(failure=launches.publication_error or 'Stage native admission/launch failed; see ownership evidence')
                 code=1
-        atomic_preflight_json(directory/'completion.json',result)
+        try:
+            result['execution_context']=plan.get('execution_context')
+            if snapshot_stats is not None:result['live_status_transport']=dict(snapshot_stats)
+            atomic_preflight_json(directory/'completion.json',result)
+            if recovery is not None and recovery.fd is not None and not runner.unconfirmed and (launches is None or launches.cleanup_confirmed):
+                if all(d.get('cleanup_confirmed') is True and not d.get('outstanding_descriptors') for d in result.get('devices',[])):
+                    recovery.resolve(cleanup_confirmed=True)
+            if snapshot:
+                terminal=normalize(result)
+                snapshot(dict(monotonic=time.monotonic(),safety_stop=False,devices=[],
+                    auxiliary_outcome=terminal['auxiliary_outcome'],
+                    reason=str(terminal.get('failure') or '; '.join(terminal.get('reasons') or terminal.get('evidence_errors') or []))[:1000]))
+        finally:
+            try:
+                if recovery is not None:recovery.close()
+            finally:
+                runner.targets,runner.popen,runner.temperature,runner.native_processes=saved_runner
+                if lease is not None and saved_check is not None:lease.check=saved_check
     return code
 
 
@@ -917,7 +1090,7 @@ def channel_worker(fd):
         lease=StageLease(deadline,parent,cancelled,admission=SharedAdmission(request['admission_fd'],request['admission_identity']))
         lease.check()
         directory.mkdir(parents=True,exist_ok=False)
-        plan=dict(request['plan'],supervisor_parent_pid=parent,recovery_marker=request['recovery_marker'],
+        plan=dict(request['plan'],execution_context=request['execution_context'],supervisor_parent_pid=parent,recovery_marker=request['recovery_marker'],
                   admission_lease_identity=request['admission_identity'])
         atomic_preflight_json(directory/'request.json',plan)
         def grant():
@@ -936,12 +1109,38 @@ def channel_worker(fd):
             lease.check(1)
             return permission.get('run') is True and permission.get('lease')==token
         worker_entered=True
-        return worker(directory,gate=grant,lease=lease)
+        pending_snapshot=b''
+        snapshot_stats=dict(dropped_updates=0,partial_writes=0,closed=False)
+        def snapshot(value):
+            nonlocal pending_snapshot
+            channel.setblocking(False)
+            if snapshot_stats['closed']:
+                snapshot_stats['dropped_updates']+=1;return
+            if pending_snapshot:snapshot_stats['dropped_updates']+=1
+            if not pending_snapshot:
+                # Summary-only IPC is bounded even on very large inventories.
+                compact=dict(monotonic=value['monotonic'],safety_stop=value['safety_stop'],devices=[])
+                for row in value['devices']:
+                    compact['devices'].append(row)
+                    if len(json.dumps(compact).encode())>30000:
+                        compact['devices'].pop();break
+                compact['omitted_devices']=len(value['devices'])-len(compact['devices'])
+                if value.get('auxiliary_outcome'):
+                    compact.update(auxiliary_outcome=value['auxiliary_outcome'],reason=value.get('reason',''))
+                pending_snapshot=(json.dumps(dict(snapshot=compact,lease=token))+'\n').encode()
+            try:
+                written=channel.send(pending_snapshot)
+                if written<len(pending_snapshot):snapshot_stats['partial_writes']+=1
+                pending_snapshot=pending_snapshot[written:]
+            except (BlockingIOError,InterruptedError):pass  # retain at most one packet; no producer wait
+            except OSError:
+                pending_snapshot=b'';snapshot_stats['closed']=True
+        return worker(directory,gate=grant,lease=lease,snapshot=snapshot,snapshot_stats=snapshot_stats)
     except BaseException as exc:
         if directory is not None:
             try:atomic_preflight_json(directory/'completion.json',
-                error_result('Stage worker/finalization exception: '+str(exc),cleanup_confirmed=False)
-                if worker_entered else not_run(str(exc)))
+                dict(error_result('Stage worker/finalization exception: '+str(exc),cleanup_confirmed=False)
+                if worker_entered else not_run(str(exc)),execution_context=request.get('execution_context')))
             except OSError:pass
         return 1
     finally:channel.close()

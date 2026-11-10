@@ -140,6 +140,10 @@ class RunnerFixture:
         class Process:
             returncode=None
             def __init__(self):self.pid=pid
+            @property
+            def authority_pid(self):return pid
+            def send_signal(self,sig):fixture.kill(pid,sig)
+            def group_cleanup_confirmed(self):return self.poll() is not None
             def poll(self):
                 if self.returncode is None and fixture.clock()-start>=seconds+.2:self.returncode=0
                 return self.returncode
@@ -148,7 +152,7 @@ class RunnerFixture:
                 if value is None:raise subprocess.TimeoutExpired(args,timeout)
                 return value
         p=Process();self.children[pid]=p
-        guard=dict(contract_id='lvs.storage_thermal.guard',pid=pid,uid=os.getuid(),gid=os.getgid(),capabilities=0,seccomp=2,no_new_privs=1,readonly_direct=True)
+        guard=dict(contract_id='lvs.storage_thermal.guard',contract_version=1,pid=pid,uid=os.getuid(),gid=os.getgid(),capabilities=0,seccomp=2,no_new_privs=1,readonly_direct=True)
         kwargs['stderr'].write((json.dumps(guard,separators=(',',':'))+'\n').encode());kwargs['stderr'].flush()
         job=dict(read=dict(total_ios=seconds*iops,io_bytes=seconds*iops*65536,runtime=seconds*1000),
                  write=dict(total_ios=0),trim=dict(total_ios=0),error=0,usr_cpu=.1,sys_cpu=.1)
@@ -275,7 +279,7 @@ assert result['verdict']=='INCOMPLETE' and result['devices'][0]['cleanup_confirm
         f=RunnerFixture(directory);prompts=[];outputs=[]
         def cancel(prompt):prompts.append(prompt);return ''
         menu=ThermalMenu(f.runner,ThermalConfig(duration_seconds=1),Path(directory)/'ui',
-                         EnvironmentScreens(ask=cancel,output=outputs.append,stdin=io.StringIO(),stdout=io.StringIO()))
+                         EnvironmentScreens(ask=cancel,output=outputs.append,stdin=io.StringIO(),stdout=io.StringIO()),recovery_marker=Path(directory)/'recovery')
         with patch('Modules.lvs_storage_thermal_runner.capability',return_value=f.backend):menu.start()
         assert prompts==['Choose [2]: '] and not f.children
         answers=iter(['1','1']);prompts.clear()

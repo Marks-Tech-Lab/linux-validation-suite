@@ -24,6 +24,15 @@ def integer(value: Any, low: int, high: int, name: str) -> None:
         raise ValueError(f'{name} must be an integer between {low} and {high}')
 
 
+def canonical_lease_identity(value, *, optional=False):
+    """JSON representation of the exact kernel (st_dev, st_ino), never coercion."""
+    if value is None and optional:return None
+    if (not isinstance(value,(tuple,list)) or len(value)!=2 or
+            any(type(v) is not int or not 0<=v<=2**64-1 for v in value)):
+        raise ValueError('Expected two nonnegative uint64 kernel lease identity integers')
+    return list(value)
+
+
 @dataclass(frozen=True)
 class ThermalConfig:
     contract_id: str = 'lvs.storage_thermal.config'
@@ -176,6 +185,7 @@ class ThermalResult:
     effective_rate: dict = field(default_factory=dict)
     started_monotonic: float | None = None
     ended_monotonic: float | None = None
+    launch_requested_monotonic: float | None = None
     duration_completed: bool = False
     cleanup_confirmed: bool = False
     terminal_published: bool = False
@@ -203,6 +213,45 @@ class ThermalResult:
         return asdict(self)
 
 
+# fio reports millisecond runtime; parent sampling is 100 ms. This allowance
+# covers observation/rounding only, never missing configured fio runtime.
+TIMING_OBSERVATION_TOLERANCE = 0.1
+SUCCESSFUL_EXIT_GRACE = 5.0  # existing runner completion timeout
+
+
+def device_timing_errors(record, configured_seconds=None, context=None, observed_ns=None, closed_ns=None, admission_ns=None):
+    errors=[]
+    def finite(v):return type(v) in (int,float) and math.isfinite(v)
+    start,end=record.get('started_monotonic'),record.get('ended_monotonic')
+    activity=record.get('fio_activity') or {}
+    active=activity.get('active_seconds') if isinstance(activity,dict) else None
+    if not finite(start) or not finite(end) or end<start:
+        return ['Missing or impossible worker timestamps']
+    launched=record.get('launch_requested_monotonic')
+    earliest=start if launched is None else launched
+    if not finite(earliest) or earliest>start:return ['Invalid launch-request timestamp']
+    if admission_ns is not None:
+        if type(admission_ns) is not int:return ['Invalid native admission timestamp']
+        if launched is not None and earliest>admission_ns/1e9+TIMING_OBSERVATION_TOLERANCE:return ['Launch request postdates native admission']
+        earliest=max(earliest,admission_ns/1e9)
+    if not finite(active) or active<=0:errors.append('Missing or invalid independent fio runtime')
+    else:
+        if active>end-earliest+TIMING_OBSERVATION_TOLERANCE:errors.append('fio runtime exceeds observed worker lifetime')
+        if configured_seconds is not None and (not finite(configured_seconds) or active<configured_seconds):
+            errors.append('fio runtime does not complete effective configured duration')
+    if record.get('duration_completed') is not True:errors.append('Duration completion not established')
+    if context is not None:
+        low,high=context['started_ns']/1e9,context['deadline_ns']/1e9
+        if not low<=earliest<=start<high:errors.append('Worker start outside authorized window')
+        if closed_ns is not None:high=min(high,closed_ns/1e9)
+        if finite(active) and earliest+active>high+TIMING_OBSERVATION_TOLERANCE+1e-6:
+            errors.append('Reported activity extends beyond authorized read window')
+        if end>high+SUCCESSFUL_EXIT_GRACE:errors.append('Worker completion exceeds authorized shutdown allowance')
+    if observed_ns is not None and end>observed_ns/1e9+TIMING_OBSERVATION_TOLERANCE:
+        errors.append('Worker completion lies after primary terminal observation')
+    return errors
+
+
 def result_successful(record: dict) -> bool:
     """Strict terminal contract; arithmetic/integrity verification is not claimed."""
     if not isinstance(record, dict):
@@ -221,6 +270,7 @@ def result_successful(record: dict) -> bool:
     return (record.get('contract_id') == 'lvs.storage_thermal.result'
             and type(record.get('contract_version')) is int and record['contract_version'] == VERSION
             and record.get('state') == 'completed'
+            and not device_timing_errors(record,record.get('configured_duration_seconds'))
             and isinstance(record.get('device_id'), str) and bool(record['device_id'].strip())
             and isinstance(record.get('identity'), dict) and bool(record['identity'])
             and all(isinstance(record.get(k), dict) and bool(record[k]) for k in

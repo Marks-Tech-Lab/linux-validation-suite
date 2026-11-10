@@ -50,6 +50,27 @@ from smoke_tests.storage_thermal_runner_checks import (
     run_thermal_cancellation_and_race_checks, run_thermal_persistence_and_ui_checks,
     run_thermal_io_and_cleanup_failure_checks, run_thermal_reporting_and_resource_checks,
 )
+from smoke_tests.storage_thermal_audit_matrix_checks import (
+    run_thermal_audit_matrix_checks, run_thermal_audit_registration_checks,
+    run_thermal_audit_creation_identity_checks, run_thermal_audit_cancel_barrier_checks,
+    run_thermal_audit_missing_evidence_checks,
+    run_thermal_final_disposition_checks, run_thermal_coordinator_authority_checks,
+)
+from smoke_tests.storage_thermal_acceptance_checks import (
+    run_thermal_authoritative_duration_checks, run_thermal_authoritative_ownership_checks,
+    run_thermal_authoritative_run_checks, run_thermal_reaped_signal_checks,
+)
+from smoke_tests.storage_thermal_six_checks import (
+    run_thermal_owned_creation_checks, run_thermal_kernel_backpressure_checks,
+    run_thermal_ready_flood_checks, run_thermal_recovery_authority_checks,
+    run_thermal_session_binding_checks, run_thermal_execution_fact_checks,
+)
+from smoke_tests.storage_thermal_adversarial_checks import (
+    run_thermal_adversarial_monitor_isolation_checks, run_thermal_snapshot_failure_checks,
+    run_thermal_durable_intent_checks, run_thermal_recovery_crash_and_concurrency_checks,
+    run_thermal_strict_terminal_checks, run_thermal_auxiliary_publication_latency_checks,
+    run_thermal_shared_entrypoint_scope_checks,
+)
 from smoke_tests.storage_thermal_stage_checks import (
     run_thermal_stage_settings_checks, run_thermal_stage_persistence_checks,
     run_thermal_stage_consent_checks, run_thermal_stage_blocked_session_checks,
@@ -67,6 +88,9 @@ from smoke_tests.storage_thermal_stage_checks import (
     run_thermal_stage_lease_identity_checks,
     run_thermal_stage_ofd_kernel_checks,
     run_thermal_stage_native_identity_fault_checks,
+    run_thermal_production_lease_journal_checks,
+    run_thermal_native_registry_authority_checks,
+    run_thermal_native_registry_commit_checks,
 )
 from smoke_tests.environment_wave1_checks import (
     run_environment_upgrade_identity_checks, run_environment_guided_workflow_checks,
@@ -29736,6 +29760,30 @@ def main() -> int:
         run_thermal_persistence_and_ui_checks,
         run_thermal_io_and_cleanup_failure_checks,
         run_thermal_reporting_and_resource_checks,
+        run_thermal_audit_matrix_checks,
+        run_thermal_audit_registration_checks,
+        run_thermal_final_disposition_checks,
+        run_thermal_coordinator_authority_checks,
+        run_thermal_audit_missing_evidence_checks,
+        run_thermal_audit_creation_identity_checks,
+        run_thermal_audit_cancel_barrier_checks,
+        run_thermal_authoritative_duration_checks,
+        run_thermal_authoritative_ownership_checks,
+        run_thermal_authoritative_run_checks,
+        run_thermal_reaped_signal_checks,
+        run_thermal_owned_creation_checks,
+        run_thermal_kernel_backpressure_checks,
+        run_thermal_ready_flood_checks,
+        run_thermal_recovery_authority_checks,
+        run_thermal_session_binding_checks,
+        run_thermal_execution_fact_checks,
+        run_thermal_adversarial_monitor_isolation_checks,
+        run_thermal_snapshot_failure_checks,
+        run_thermal_durable_intent_checks,
+        run_thermal_recovery_crash_and_concurrency_checks,
+        run_thermal_strict_terminal_checks,
+        run_thermal_auxiliary_publication_latency_checks,
+        run_thermal_shared_entrypoint_scope_checks,
         run_thermal_stage_settings_checks,
         run_thermal_stage_persistence_checks,
         run_thermal_stage_consent_checks,
@@ -29759,6 +29807,9 @@ def main() -> int:
         run_thermal_stage_lease_identity_checks,
         run_thermal_stage_ofd_kernel_checks,
         run_thermal_stage_native_identity_fault_checks,
+        run_thermal_production_lease_journal_checks,
+        run_thermal_native_registry_authority_checks,
+        run_thermal_native_registry_commit_checks,
         test_system_info_gpu_pcie_attribution,
         test_system_identity_helpers,
         test_cpu_power_limit_helpers,

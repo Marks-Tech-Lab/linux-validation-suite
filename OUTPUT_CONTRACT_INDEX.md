@@ -52,6 +52,24 @@ fields are separate from actual achieved read activity.
 Auxiliary aggregation/rendering/serialization errors preserve primary artifacts
 with an independent ERROR and `publication_integrity=false`; they do not create
 primary failure reasons. Primary manifest and text summary replacement is atomic.
+Storage success is reconciled against the strict per-device terminal contract;
+contradictory aggregates retain their observations and add `evidence_errors` with
+auxiliary ERROR. Live status uses bounded nonblocking supervisor snapshots;
+primary timed polling performs no auxiliary filesystem I/O. Before storage
+admission the supervisor durably arms `lvs.storage_thermal.execution_intent` v1
+in `build/storage_thermal_recovery_required.json`, serialized by its permanent
+`.scope` flock anchor. Confirmed cleanup publishes CLEAN; missing/corrupt or ARMED
+state remains a blocker across process restarts. These internal ownership records
+are distinct from physical acceptance and from LVS's runtime lock.
+Active terminal acceptance additionally requires `execution_context` (session,
+run directory, stage, timing bounds and original lease), current readiness,
+configuration and committed PID reconciliation. Rejected raw records remain in
+`rejected_terminal_evidence` with `session_errors`; claimed coverage cannot
+self-authorize. Observed execution failures override contradictory NOT_RUN flags.
+`owned_launcher` records the optional native bootstrap provenance; status-channel
+accounting records dropped updates, partial writes and closure. Critical terminal
+and cleanup publication is independent of lossy live updates. Recovery uses private
+lock-bearing and lifetime references, not public-descriptor identity alone.
 See [stage settings, lifecycle and reporting](docs/storage_thermal_stage_integration.md).
 
 The parent-owned `linux_validation_suite.vulkan_compute_shutdown` v1 snake_case
@@ -1160,3 +1178,17 @@ The interactive screen/numbered-approval layer is presentation only. It keeps
 raw records and command output in an optional technical-details view and does
 not alter the version-1 `--check` JSON schema, readiness policy or maintenance
 recovery records. Redirected `--check` output has no terminal-control sequences.
+
+Storage Thermal Assist terminal acceptance additionally reconciles
+`configured_duration_seconds`, `fio_activity.active_seconds`, primary-observed
+closure, terminal observation time, native exit/reaping records and independent
+ownership publication. `execution_context.run_id` is primary-created; current-run
+StageWindow registrations are in-memory authority, not reconstructed from child
+JSON. Whole-run export rejects missing, repeated or mismatched registrations and
+preserves rejected evidence. Historical records remain inspectable but cannot
+self-authorize a new run's successful coverage. See the
+[stage acceptance policy](docs/storage_thermal_stage_integration.md).
+`launch_requested_monotonic` distinguishes pre-launch observation from the later
+returned-worker observation; native commitment further bounds the earliest stage
+I/O. Explicit auxiliary ERROR/publication failure remains ERROR through fallback
+normalization even without device records.

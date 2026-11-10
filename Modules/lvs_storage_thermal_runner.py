@@ -96,7 +96,25 @@ class ThermalRunner:
         self.uid=os.getuid() if uid is None else uid;self.gid=os.getgid() if gid is None else gid
         self.clock,self.sleep,self.popen,self.publish,self.source=clock,sleep,popen,publish,source
         self.budget,self.temperature,self.activity=budget,temperature_reader,activity
+        self.native_processes=None
         self.unconfirmed=[]  # retain exclusive descriptors if cleanup cannot be proven
+
+    def _process(self,p):
+        return self.native_processes.authority(p) if self.native_processes is not None else p
+
+    def _process_pid(self,p):
+        p=self._process(p)
+        return p.authority_pid if self.native_processes is not None else p.pid
+
+    def _signal_process(self,p,sig):
+        p=self._process(p)
+        if self.native_processes is not None:p.send_signal(sig)
+        else:os.killpg(p.pid,sig)  # established standalone process policy
+
+    def _clean_process(self,p):
+        p=self._process(p)
+        if self.native_processes is not None:return p.group_cleanup_confirmed()
+        return p.poll() is not None and group_gone(p.pid)
 
     def inspect(self,config):
         rows=self.targets.discover();backend=capability(self.fio,self.guard,uid=self.uid,gid=self.gid)
@@ -146,7 +164,7 @@ class ThermalRunner:
                        fio_arguments=dict(rw='randread',readonly=True,direct=True,invalidate=0,
                                           block_size=config.block_size,iops=d.rate['effective_iops'],seconds=config.duration_seconds))
                   for d in devices if d.state=='ready']
-        decision=readiness(config,devices,backend,launch_implemented=True,commands=commands)
+        decision=readiness(config,devices,backend,source_provenance=self.source(),launch_implemented=True,commands=commands)
         if commands and not issues and backend.get('status')=='available':
             decision.update(status='READY',runnable_devices=[c['device_id'] for c in commands],
                             reasons=['blocked members require explicit eligible-subset confirmation'] if any(d.state=='blocked' and d.selected for d in devices) else [])
@@ -170,10 +188,14 @@ class ThermalRunner:
         fresh=self.inspect(config)
         if fresh['status']!='READY' or fresh['runnable_devices']!=plan['runnable_devices']:
             raise ValueError('readiness changed; preview and confirm again')
+        if (plan.get('source_provenance') or {}).get('source',{}).get('digest')!=(fresh.get('source_provenance') or {}).get('source',{}).get('digest'):
+            raise ValueError('source identity changed after preview')
         for before,after in zip(plan['targets'],fresh['targets']):
             if before['identity']!=after['identity']:raise ValueError('target changed after preview')
         plan=fresh
         provenance=self.source()
+        if provenance.get('source',{}).get('digest')!=(plan.get('source_provenance') or {}).get('source',{}).get('digest'):
+            raise ValueError('source identity changed after readiness')
         if provenance.get('source',{}).get('status')!='complete':raise ValueError('complete source provenance required')
         candidates=[r for r in plan['targets'] if r['state']=='ready']
         self.targets.output_safe(Path(output_root),candidates)
@@ -221,8 +243,9 @@ class ThermalRunner:
             r=job['result']
             if not job.get('stopping'):
                 job['stopping']=self.clock();r.stop_reason=reason;r.safety_stop=safety
-                try:os.killpg(job['process'].pid,signal.SIGTERM)
+                try:self._signal_process(job['process'],signal.SIGTERM)
                 except ProcessLookupError:pass
+                except OSError as exc:r.state='incomplete';r.stop_reason='Owned process authority lost: '+str(exc)
         try:
             while pending or any(not j.get('done') for j in jobs):
                 now=self.clock()
@@ -262,6 +285,7 @@ class ThermalRunner:
                                            block_size=config.block_size,iops=row['rate']['effective_iops'],seconds=config.duration_seconds)
                         out=(directory/'worker_logs'/f'{index}.stdout').open('wb');err=(directory/'worker_logs'/f'{index}.stderr').open('wb')
                         job.update(stdout=out,stderr=err,command=argv)
+                        result.launch_requested_monotonic=self.clock()
                         p=self.popen(argv,stdin=fd,pass_fds=(exe,),stdout=out,stderr=err,
                                      start_new_session=True,env=guard_environment())
                         job['process']=p  # register ownership before any further observation
@@ -313,7 +337,7 @@ class ThermalRunner:
                             stop(job,'worker log exceeded bound',True)
                         snapshot=dict(monotonic=now,device_id=row['device_id'],temperature=reading,
                                       temperature_warning=value is not None and warning is not None and value>=warning,
-                                      block_counters=counters,process=process_observation(p.pid))
+                                      block_counters=counters,process=process_observation(self._process_pid(p)))
                         if counters is not None and baseline is not None:
                             snapshot['device_read_ios_since_launch']=max(0,counters[0]-baseline[0])
                             snapshot['device_read_bytes_since_launch']=max(0,counters[2]-baseline[2])*512
@@ -326,19 +350,19 @@ class ThermalRunner:
                     next_monitor=now+1
                 for job in jobs:
                     if job.get('done'):continue
-                    p=job['process'];r=job['result']
+                    p=self._process(job['process']);r=job['result']
                     if p.poll() is None and now-job['started']>config.duration_seconds+5:
                         r.shutdown_timed_out=True;stop(job,'worker completion deadline expired')
-                    if job.get('stopping') is not None and not group_gone(p.pid) and now-job['stopping']>=2 and not job.get('kill_at'):
+                    if job.get('stopping') is not None and not self._clean_process(p) and now-job['stopping']>=2 and not job.get('kill_at'):
                         r.forced_kill=True;job['kill_at']=now
-                        try:os.killpg(p.pid,signal.SIGKILL)
+                        try:self._signal_process(p,signal.SIGKILL)
                         except ProcessLookupError:pass
                     if p.poll() is not None:
                         p.wait();r.exit_code=p.returncode;r.ended_monotonic=self.clock()
                         if not job.get('evidence_finished'):
                             self._finish(job,config);job['evidence_finished']=True
                             if r.state=='failed':emergency=True;stop_all=True
-                        if group_gone(p.pid):
+                        if self._clean_process(p):
                             os.close(job['fd']);job.pop('fd');r.cleanup_confirmed=True
                         else:
                             stop(job,'descendant cleanup unconfirmed');
@@ -356,13 +380,14 @@ class ThermalRunner:
                 if j.get('process') and not j.get('done'):stop(j,'supervisor failure',True)
             for j in jobs:
                 if j.get('process') and not j.get('done'):
-                    try:j['process'].wait(timeout=2)
+                    try:self._process(j['process']).wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         j['result'].forced_kill=True
-                        try:os.killpg(j['process'].pid,signal.SIGKILL)
-                        except ProcessLookupError:pass
-                        try:j['process'].wait(timeout=2)
-                        except subprocess.TimeoutExpired:pass
+                        try:self._signal_process(j['process'],signal.SIGKILL)
+                        except OSError:pass
+                        try:self._process(j['process']).wait(timeout=2)
+                        except (subprocess.TimeoutExpired,OSError):pass
+                    except OSError:pass
                     j['result'].state='incomplete';j['result'].stop_reason=failure
         finally:
             progress.close()
@@ -371,7 +396,9 @@ class ThermalRunner:
             for job in jobs:
                 p=job.get('process');r=job['result']
                 if 'fd' in job:
-                    if p and p.poll() is not None and group_gone(p.pid):os.close(job.pop('fd'));r.cleanup_confirmed=True
+                    try:clean=bool(p) and self._clean_process(p)
+                    except OSError:clean=False;job['authority_lost']=True
+                    if clean:os.close(job.pop('fd'));r.cleanup_confirmed=True
                     else:self.unconfirmed.append(job);r.outstanding_descriptors=1;r.state='incomplete'
                 for name in ('stdout','stderr'):
                     if name in job:job[name].close()
@@ -381,7 +408,8 @@ class ThermalRunner:
         records=[]
         for job in jobs:
             r=job['result'];r.provenance_confirmed=r.provenance_confirmed and source_unchanged;payload=r.to_dict()
-            payload.update(pid=job['process'].pid if job.get('process') else None,
+            payload.update(configured_duration_seconds=config.duration_seconds,
+                           pid=self._process_pid(job['process']) if job.get('process') and not job.get('authority_lost') else None,
                            temperature_start_c=job['initial'],temperature_peak_c=job['peak'],
                            temperature_end_c=job.get('temperature_end'),temperature_warning=job.get('temperature_warning',False),
                            last_observation=job.get('last_snapshot'),guard_evidence=job.get('guard'),command=job.get('command'),
@@ -398,7 +426,9 @@ class ThermalRunner:
                  'WARN' if plan['partial_coverage'] or any(r['temperature_status']!='monitored' or r['temperature_warning'] for r in records) else 'PASS')
         ended=self.clock();children=resource.getrusage(resource.RUSAGE_CHILDREN)
         result=dict(contract_id='lvs.storage_thermal.manifest',contract_version=1,kind='storage_thermal',status='completed' if verdict in ('PASS','WARN') else verdict.lower(),
-                    verdict=verdict,configuration=config.to_dict(),requested_devices=plan['selected_devices'],
+                    verdict=verdict,requested=True,execution_started=bool(executed),
+                    cleanup_confirmed=all(r.get('cleanup_confirmed') is True for r in records),
+                    terminal_published=True,configuration=config.to_dict(),requested_devices=plan['selected_devices'],
                     executed_devices=sorted(executed),unexecuted_devices=sorted(missing),devices=records,
                     blocked_devices=plan['blocked_devices'],source_provenance=provenance,
                     elapsed_seconds=ended-started,supervisor_cpu_seconds=time.process_time()-cpu_start,
@@ -420,7 +450,7 @@ class ThermalRunner:
             stderr=Path(job['stderr'].name).read_text()
             guard=next(json.loads(line) for line in stderr.splitlines() if line.startswith('{') and '"contract_id":"lvs.storage_thermal.guard"' in line)
             job['guard']=guard
-            r.guard_confirmed=(guard['pid']==job['process'].pid and guard['uid']==self.uid and guard['gid']==self.gid
+            r.guard_confirmed=(guard['pid']==self._process_pid(job['process']) and guard['uid']==self.uid and guard['gid']==self.gid
                                and guard['capabilities']==0 and guard['seccomp']==2 and guard['no_new_privs']==1 and guard['readonly_direct'] is True)
             output=Path(job['stdout'].name).read_text();payload=json.loads(output[output.index('{'):]);fio=payload['jobs'][0]
             for value in (fio['read']['total_ios'],fio['read']['io_bytes'],fio['write']['total_ios'],fio['trim']['total_ios'],fio['error']):
