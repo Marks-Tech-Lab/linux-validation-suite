@@ -222,7 +222,8 @@ def guest():
     print('LVS_EVIDENCE_END', flush=True)
 
 
-def host(args, *, guest_script=None, verifier=verify_results, extra_files=None):
+def host(args, *, guest_script=None, verifier=verify_results, extra_files=None,
+         fixture_builder=None):
     bundle = Path(tempfile.mkdtemp(prefix='lvs-wave2a-'))
     print(f'Retained disposable evidence: {bundle}', flush=True)
     root = bundle / 'root'; root.mkdir()
@@ -266,6 +267,9 @@ def host(args, *, guest_script=None, verifier=verify_results, extra_files=None):
     (root / 'init').chmod(0o755)
     for directory in ('proc', 'sys', 'dev', 'tmp'):
         (root / directory).mkdir(exist_ok=True)
+    # Research-only extension: a builder may populate mounted, writable images
+    # and replace /init. Production device discovery/opening is never involved.
+    layout = fixture_builder(bundle, root, token, args) if fixture_builder else None
     # newc supports synthetic device nodes without host mknod privileges.
     archive = bytearray()
 
@@ -280,30 +284,39 @@ def host(args, *, guest_script=None, verifier=verify_results, extra_files=None):
     entry('dev/null', stat.S_IFCHR | 0o666, major=1, minor=3)
     entry('TRAILER!!!', 0)
     initrd = bundle / 'initrd.gz'; initrd.write_bytes(gzip.compress(archive, compresslevel=1))
-    disk = bundle / 'synthetic.raw'
-    # Deliberately nonzero fixture; never reads a host device to seed it.
-    with disk.open('wb') as stream:
-        for number in range(SIZE // BS):
-            stream.write(hashlib.sha256(str(number).encode()).digest() * (BS // 32))
+    disk = layout['images'][0] if layout else bundle / 'synthetic.raw'
+    if not layout:
+        # Deliberately nonzero fixture; never reads a host device to seed it.
+        with disk.open('wb') as stream:
+            for number in range(SIZE // BS):
+                stream.write(hashlib.sha256(str(number).encode()).digest() * (BS // 32))
     argv = ['qemu-system-x86_64', '-no-user-config', '-nodefaults', '-accel', 'tcg,thread=single',
-            '-machine', 'q35', '-m', '512', '-smp', '1', '-display', 'none', '-monitor', 'none',
+            '-machine', 'q35', '-m', '1024' if layout else '512', '-smp', '1', '-display', 'none', '-monitor', 'none',
             '-serial', 'stdio', '-nic', 'none', '-no-reboot', '-kernel', args.kernel, '-initrd', str(initrd),
             '-append', f'console=ttyS0 panic=1 rdinit=/init lvs_fixture={token}',
             '-drive', f'file={disk},format=raw,if=none,id=fixture', '-device',
             f'virtio-blk-pci,drive=fixture,serial=LVS-{token},logical_block_size=512,physical_block_size=4096']
+    if layout:
+        argv = argv[:argv.index('-drive')] + layout['drive_args']
     manifest = dict(command=argv, image_before=digest(disk), tools={
         str(p): digest(p) for p in (args.kernel, args.fio, args.old_fio, args.strace, args.python)})
     if guest_script is not None:
         manifest['tools'].update({str(args.guard): digest(args.guard), str(guest_script): digest(guest_script)})
+    if layout:
+        manifest.update(image_hash_policy='mounted OS writes permitted; no equality claim',
+                        images_before={str(p):digest(p) for p in layout['images']},
+                        fixture_layout=layout['description'])
     (bundle / 'host.json').write_text(json.dumps(manifest, indent=2))
     with (bundle / 'console.log').open('wb') as console:
         p = subprocess.Popen(argv, stdout=console, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            p.wait(timeout=150)
+            p.wait(timeout=300 if layout else 150)
         except BaseException:
             os.killpg(p.pid, signal.SIGKILL); p.wait(timeout=10)
             raise
     manifest.update(qemu_returncode=p.returncode, image_after=digest(disk))
+    if layout:
+        manifest['images_after']={str(p):digest(p) for p in layout['images']}
     (bundle / 'host.json').write_text(json.dumps(manifest, indent=2))
     console = (bundle / 'console.log').read_text(errors='replace')
     require('LVS_EVIDENCE_BEGIN\n' in console and 'LVS_EVIDENCE_END' in console,
@@ -311,7 +324,8 @@ def host(args, *, guest_script=None, verifier=verify_results, extra_files=None):
     encoded = console.split('LVS_EVIDENCE_BEGIN\n', 1)[1].split('LVS_EVIDENCE_END', 1)[0]
     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(encoded)), mode='r:gz') as tar:
         tar.extractall(bundle, filter='data')
-    require(manifest['image_before'] == manifest['image_after'], 'synthetic contents changed')
+    if not layout:
+        require(manifest['image_before'] == manifest['image_after'], 'synthetic contents changed')
     require(p.returncode == 0, 'unexpected QEMU exit')
     verifier(json.loads((bundle / 'evidence/results.json').read_text()))
     print((bundle / 'evidence/results.json').read_text())

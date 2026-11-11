@@ -35,6 +35,9 @@ from smoke_tests.environment_ui_checks import (
     run_environment_ui_results_checks, run_environment_ui_navigation_checks,
     run_environment_ui_details_upgrade_checks, run_environment_ui_real_terminal_checks,
 )
+from smoke_tests.profile_thermal_summary_checks import run_profile_thermal_summary_checks
+from smoke_tests.storage_thermal_active_checks import (run_active_probe_fixture_checks, run_active_probe_evidence_checks, run_active_probe_production_boundary_checks, run_active_causal_trace_checks, run_active_targeted_contract_checks)
+
 from smoke_tests.storage_thermal_feasibility_checks import (
     run_storage_smart_standby_checks, run_storage_fio_probe_contract_checks,
     run_storage_fio_trace_audit_checks,
@@ -29745,6 +29748,12 @@ def main() -> int:
         test_storage_health_helpers,
         run_storage_smart_standby_checks,
         run_storage_fio_probe_contract_checks,
+        run_active_probe_fixture_checks,
+        run_active_probe_evidence_checks,
+        run_active_probe_production_boundary_checks,
+        run_active_causal_trace_checks,
+        run_active_targeted_contract_checks,
+        run_profile_thermal_summary_checks,
         run_storage_fio_trace_audit_checks,
         run_storage_thermal_schema_checks,
         run_storage_thermal_pilot_policy_checks,

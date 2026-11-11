@@ -1,9 +1,23 @@
 # Storage Thermal Assist in timed validation stages — Stage 2B-3
 
-This development milestone integrates the [standalone runner](storage_thermal_assist.md)
+This committed milestone integrates the [standalone runner](storage_thermal_assist.md)
 with the shared profile-stage execution path. It is software/synthetic validation,
 not physical heating, interference or active-storage acceptance. The existing
 completion-based Storage Benchmark remains separate.
+
+## Current accepted software status
+
+Stage 2B-3 is committed and independently software-validated, not physically
+accepted. Integration commit `1d874371614cb29a62876a2dc596c6e516ceed8a` is
+followed by accepted hardening `8b514e6fba44fb1fcff0617a24fc611bcab27e0e`.
+The latter passed 451/451 smoke checks, 64/64 focused thermal groups, the
+112-case evidence matrix, 81/81 profiles (five unchanged advisories), 407 Python
+compilation checks and 32 integration imports. Its 387-file execution-source
+fingerprint is `52322da3875035aecd44deeba4e5c1c46121e02f22a40800bef2a924b7402ca5`.
+Subsequent sections preserve earlier implementation and audit checkpoints;
+their historical hashes and counts are not the current accepted source identity.
+[Gate 2B-4A research](storage_thermal_active_access_research.md) does not change
+production eligibility, the guard, profile settings or stage lifecycle.
 
 ## Configuration and operator workflow
 
@@ -310,7 +324,7 @@ No real drive, active storage stack or production server is exercised by this
 milestone's tests. Active-storage proof remains Stage 2B-4; physical thermal and
 interference acceptance remains Stage 2B-5.
 
-## Development source provenance
+## Historical development source-provenance checkpoint
 
 Complete scoped development identity: **384 files**, SHA-256
 `72815511afc23fb9a0356fefaa323c12279d332a3ad26bf670d6f526e7cea741`.
@@ -321,7 +335,7 @@ profile requests remain unchanged. The guard gains only the stage admission
 protocol; standalone runner and CPU/GPU workload sources are unchanged. Markdown and smoke tests remain outside the
 execution-source scope. No new snapshot is claimed as physically executed.
 
-## Final non-gating validation
+## Historical non-gating validation checkpoint
 
 - **37/37 focused thermal groups PASS**, including 23 stage/auxiliary groups.
 - **424/424 complete smoke checks PASS** on the final frozen implementation.
@@ -340,8 +354,9 @@ execution-source scope. No new snapshot is claimed as physically executed.
 
 The earlier gating Stage 2B-3 validation is superseded by these checks. Physical
 storage acceptance remains pending. The standalone runner and accepted CPU/GPU
-workload implementations remain unchanged; the guard extension is stage-only. Everything stays
-unstaged/uncommitted for review.
+workload implementations remained unchanged at that checkpoint; the guard extension
+was stage-only. Those changes were then unstaged/uncommitted for review; the
+current committed status is recorded above.
 
 
 ## Auxiliary isolation corrections
@@ -821,3 +836,10 @@ native policy-test fixtures use disposable regular files and exercise OWN/R,
 admission, read-only restrictions and public-PID substitution on pidfd/fallback
 paths. These establish software behavior, not physical-device acceptance, actual
 kernel PID reuse or power-loss durability on every filesystem.
+
+Automatic profile presentation uses the same requested-activity description in
+CLI workload lists and TUI stage summaries. It includes the drive group and
+ordinary/system intensity, and preserves a disabled stage's separate status.
+Configured activity supplies no execution or eligibility assertion. Authored
+menu descriptions, names and display labels remain operator metadata. Rendering
+does not rewrite profiles or change readiness, overrides or execution policy.

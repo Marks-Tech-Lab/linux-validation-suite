@@ -204,14 +204,14 @@ device-mapper and hardware RAID require separate approvals/proofs. Logical reads
 never imply independent member heating. Storage Benchmark commands, preparation
 writes, capability policy and execution remain unchanged.
 
-## Current Stage 2B-3 development status
+## Current Stage 2B-3 committed status
 
 The [shared stage integration](storage_thermal_stage_integration.md) now reuses
 the standalone supervisor for concurrent timed validation. Shared CLI/TUI profile
 editing and run-local overrides, automatic non-gating coverage handling, bounded
 unmonitored consent, per-stage shutdown/restart and independent activity evidence
-are implemented in
-the uncommitted development tree. The seven approved profiles request the module
+are committed and independently software-validated, including hardening commit
+`8b514e6fba44fb1fcff0617a24fc611bcab27e0e`. The seven approved profiles request the module
 in 41 stages. Physical heating/interference and active-storage proofs remain
 pending. The requirements below are retained verbatim as a **historical baseline**.
 The subsequent operator clarification supersedes mandatory reduced-coverage
@@ -221,6 +221,8 @@ unmonitored execution still needs bounded consent, and auxiliary outcomes are
 reported independently. See the current integration contract linked above.
 Stage 2B-4 prioritizes a separately proved active boot-drive read-only path;
 Stage 2B-3 retains the 25% intent and all current active-drive restrictions.
+The [Gate 2B-4A mounted-device experiment](storage_thermal_active_access_research.md)
+adds research evidence only. It does not qualify or enable an active provider.
 
 ## Stage 2B-3: standard-profile integration requirement
 

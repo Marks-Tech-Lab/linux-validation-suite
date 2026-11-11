@@ -7,6 +7,34 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+def storage_thermal_request_text(config: Any) -> str:
+    """Describe configured activity without asserting readiness or execution."""
+    selection = {
+        "all_internal": "All Eligible Internal Drives",
+        "sata_sas": "SATA/SAS",
+        "nvme": "NVMe",
+        "hdd": "HDD",
+        "ssd": "SSD",
+        "individual": "individual drives",
+    }.get(config.selection, str(config.selection))
+    detail = (
+        f"{selection}; ordinary {config.intensity_percent}%, "
+        f"system {config.system_intensity_percent}%"
+    )
+    if config.selection == "individual":
+        detail += f"; {len(config.device_ids)} selected"
+    if config.per_device_percent:
+        detail += f"; {len(config.per_device_percent)} per-drive overrides"
+    if config.rate_mode == "advanced":
+        rates = []
+        if config.iops is not None:
+            rates.append(f"{config.iops} IOPS")
+        if config.bandwidth_bytes_per_second is not None:
+            rates.append(f"{config.bandwidth_bytes_per_second} B/s")
+        detail += "; advanced limits " + ", ".join(rates)
+    return f"Storage Thermal Assist requested ({detail})"
+
+
 def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], menu_group_label: Any) -> str:
     lines: List[str] = [
         f"Profile: {profile.profile_name}",
@@ -49,6 +77,8 @@ def profile_summary_text(profile_path: Path, profile: Any, labels: List[str], me
             workloads.append(
                 f"StorageBenchmark/{storage.target_mode}/{storage.drive_execution}/{storage.test_size_gib}GiB/{storage.runs}runs"
             )
+        if stage.modules.storage_thermal.enabled:
+            workloads.append(storage_thermal_request_text(stage.modules.storage_thermal))
         state = "enabled" if stage.enabled else "disabled"
         execution = "completion-based" if stage.modules.storage_benchmark.enabled else f"{stage.duration_seconds}s"
         lines.append(

@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List
 
 from .lvs_profile_metadata import derive_legacy_bucket_category
+from .lvs_profile_report_text import storage_thermal_request_text
 
 from .lvs_profile_editor import ProfileEditor, format_profile_duration
 from .lvs_strict_threshold_policy import optional_bool
@@ -37,6 +38,8 @@ def stage_enabled_module_names(stage: Any) -> List[str]:
         names.append("vram")
     if stage.modules.storage_benchmark.enabled:
         names.append("storage_benchmark")
+    if stage.modules.storage_thermal.enabled:
+        names.append("storage_thermal")
     return names
 
 
@@ -91,6 +94,8 @@ def profile_stage_summary_lines(stage: Any, label: str, index: int) -> List[str]
         lines.append(f"   GPU: {intensity}, {target}")
     if stage.modules.vram.enabled:
         lines.append(f"   VRAM: {stage.modules.vram.allocation_percent}%")
+    if stage.modules.storage_thermal.enabled:
+        lines.append("   " + storage_thermal_request_text(stage.modules.storage_thermal))
     analysis = getattr(stage, "analysis", None)
     if analysis is not None:
         minimum = getattr(analysis, "minimum_usable_seconds", None)
