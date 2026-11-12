@@ -286,3 +286,5 @@ Shared experimental status and aggregate requested rates appear in generated
 summaries/readiness, independently of actual completed activity. Multiple selected
 drives require a reviewed aggregate budget; insufficient budget blocks storage
 without fabricating a primary hardware failure.
+
+Conventional LUKS data drives use the separately reviewed [non-target deployment and encrypted-topology procedure](storage_thermal_encrypted_deployment.md). Native privileged readiness and target-specific approval are still required before any physical workload.

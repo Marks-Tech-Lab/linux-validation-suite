@@ -24,7 +24,7 @@ ROOT=Path(__file__).resolve().parent
 
 def drive_lines(rows):
     return [f"{i}. {r['model']} | {r['device_id']} | {r['transport']} / {r['drive_class']}"
-            f"{' [SYSTEM: blocked]' if r['system_drive'] else ''}\n   "
+            f"{' [SYSTEM: blocked]' if r['system_drive'] else ' [TOPOLOGY INCOMPLETE: blocked]' if r.get('classification_status')=='incomplete' else ''}\n   "
             + ('Eligible candidate under selected access contract' if r['eligible'] else 'Blocked: '+'; '.join(r['reasons']))
             for i,r in enumerate(rows,1)]
 
@@ -224,7 +224,7 @@ class ThermalMenu:
                 self.results('Operation did not complete',[str(error),f"Evidence location: {getattr(self.runner,'last_output','no execution folder created')}"])
 
 
-def main(argv=None):
+def main(argv=None, *, recovery_marker=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true',help='passive inventory JSON only; no drive reads/workload')
     parser.add_argument('--plan',action='store_true',help='JSON readiness, including temperature reads which may access/wake drives; no workload')
@@ -250,7 +250,7 @@ def main(argv=None):
     if args.check:print(json.dumps(runner.discover(config),indent=2));return 0
     if args.plan:print(json.dumps(runner.inspect(config),indent=2));return 0
     if not sys.stdin.isatty():parser.error('interactive terminal required; use --check or --plan for plain JSON diagnostics')
-    ThermalMenu(runner,config,args.output_root).run();return 0
+    ThermalMenu(runner,config,args.output_root,recovery_marker=recovery_marker).run();return 0
 
 
 if __name__=='__main__':

@@ -48,12 +48,14 @@ reads complete. Heating, hardware safety and physical acceptance remain unproven
 | Local PCIe NVMe SSD, one namespace/controller, data-only | Blocked | Software path available |
 | Single-device conventional filesystem, including single-device Btrfs | Mounted excluded | Filesystem name alone does not exclude; physical mapping must resolve |
 | Root/boot/system/swap drive | Blocked | Blocked: system-specific compatibility remains separate |
-| RAID/ZFS/LVM/dm-crypt/multipath, multi-device filesystem | Blocked | Blocked or unresolved: separate ownership/mapping/controller qualification required |
+| RAID/ZFS/LVM/multipath, multi-device filesystem | Blocked | Blocked or unresolved: separate ownership/mapping/controller qualification required |
 | NVMe fabrics, multiple namespaces, virtual/controller RAID volume | Blocked | Blocked: local independent physical-drive budgeting not established |
 | External/USB | Excluded | Still blocked; future explicit external opt-in is a roadmap requirement |
 | Missing identity, permissions, sensor/threshold, direct-I/O capability or backend | Blocked | Blocked with exact reasons; no weaker access fallback |
 
-System classification includes system-directory submounts and swap, not just the
+Conventional directly backed LUKS mappings are covered by the [encrypted-data qualification and deployment workflow](storage_thermal_encrypted_deployment.md).
+
+System classification resolves essential OS mount ancestry and swap, not broad data-directory prefixes or just the
 root mount. Known container/namespace visibility problems and unresolvable active
 storage remain blockers. The existing SAS end-device proof is retained. NVMe must
 have a real local PCIe controller ancestor and a single namespace; an nvme-shaped

@@ -14,6 +14,8 @@ import re
 import stat
 import struct
 
+from .lvs_storage_thermal_crypt import crypt_status
+
 from .lvs_storage_inventory import build_storage_device_entry, clean_storage_value
 from .lvs_storage_benchmark_target import parse_mountinfo, StorageTargetResolver
 from .lvs_telemetry_storage_sources import looks_like_storage_hwmon, sensor_label
@@ -48,13 +50,18 @@ class ThermalTargets:
     def topology(self) -> tuple[set[str],set[str],list[str]]:
         active, system, problems = set(), set(), []
         self.complex_mount_members=set()
+        self.topology_complete=False
         try:
             # Refuse known containers; mount visibility plus O_EXCL is required.
             if Path('/.dockerenv').exists() or Path('/run/.containerenv').exists():
                 problems.append('container host-storage visibility is not proven')
-            if (self.proc/'self/ns/mnt').stat().st_ino != (self.proc/'1/ns/mnt').stat().st_ino:
-                problems.append('mount namespace differs from PID 1')
-            mounts = parse_mountinfo((self.proc/'self/mountinfo').read_text())
+            try:
+                if (self.proc/'self/ns/mnt').stat().st_ino != (self.proc/'1/ns/mnt').stat().st_ino:
+                    problems.append('mount namespace differs from PID 1')
+            except OSError:
+                problems.append('mount namespace proof unavailable; authorized native-host discovery required')
+            raw_mounts=(self.proc/'self/mountinfo').read_text()
+            mounts = parse_mountinfo(raw_mounts)
             pools=self.proc/'spl/kstat/zfs'
             if pools.is_dir() and any(p.is_dir() for p in pools.iterdir()):
                 problems.append('active ZFS pool physical membership has no approved provider')
@@ -64,12 +71,50 @@ class ThermalTargets:
             memory_fs = {'proc','sysfs','devtmpfs','devpts','tmpfs','ramfs','rootfs','cgroup','cgroup2',
                          'securityfs','debugfs','tracefs','pstore','configfs','mqueue','hugetlbfs','fusectl',
                          'bpf','autofs','efivarfs','rpc_pipefs','binfmt_misc'}
+            # Protect mounts containing essential paths AND mounts inside OS-only
+            # trees. /var itself is exact-only: ordinary /var/home data is allowed.
+            protected={Path(p) for p in ('/boot','/usr','/etc','/bin','/sbin','/lib','/lib64','/sysroot',
+                                        '/var/lib','/var/log','/var/cache','/var/spool','/var/tmp')}
+            essential=protected|{Path('/'),Path('/var')}
+            try:
+                protected |= {p.resolve(strict=False) for p in protected}-{Path('/')}
+                essential |= {p.resolve(strict=False) for p in essential}
+            except RuntimeError as error:
+                raise ValueError('essential system path alias unresolved') from error
+            essential_mounts={max((m for m in mounts if p==m.mount_point or m.mount_point in p.parents),key=lambda m:len(m.mount_point.parts)).mount_point for p in essential}
             for mount in mounts:
                 if mount.filesystem in memory_fs:
                     continue
-                if mount.filesystem=='btrfs':
+                if mount.filesystem=='overlay':
+                    # Atomic-host root overlays must expose every backing directory.
+                    line=next(line for line in raw_mounts.splitlines() if parse_mountinfo(line)[0]==mount)
+                    options=line.split(' - ',1)[1].split()[2].split(',')
+                    paths=[]
+                    for option in options:
+                        if option.startswith(('lowerdir=','upperdir=','workdir=')):
+                            paths.extend(option.split('=',1)[1].split(':'))
+                    if not paths or any(not p.startswith('/') or '\\' in p for p in paths):
+                        raise ValueError('overlay backing directories unresolved')
+                    members=set()
+                    for p in map(Path,paths):
+                        p=p.resolve(strict=True)
+                        candidates=[m for m in mounts if m!=mount and (p==m.mount_point or m.mount_point in p.parents)]
+                        if not candidates:raise ValueError('overlay backing mount unresolved')
+                        backing=max(candidates,key=lambda m:len(m.mount_point.parts))
+                        resolver=StorageTargetResolver(sys_class_block=self.sys_class,sys_fs_btrfs=self.sys_fs_btrfs)
+                        if backing.filesystem=='btrfs':members |= resolver._mount_leaves_with_source(backing)[0]
+                        else:
+                            backing_name=bydev.get(backing.major_minor)
+                            if not backing_name:raise ValueError('overlay backing physical device unresolved')
+                            members |= self.leaves(backing_name)
+                elif mount.filesystem=='btrfs':
                     resolver=StorageTargetResolver(sys_class_block=self.sys_class,sys_fs_btrfs=self.sys_fs_btrfs)
                     members=resolver._mount_leaves_with_source(mount)[0]
+                    source_block=resolver._mount_block_name(mount)[0]
+                    device_sets=[list((fs/'devices').iterdir()) for fs in self.sys_fs_btrfs.iterdir()
+                                 if (fs/'devices'/source_block).exists()]
+                    if len(device_sets)!=1:raise ValueError('Btrfs membership changed during discovery')
+                    if len(device_sets[0])!=1:self.complex_mount_members |= members
                 else:
                     name = bydev.get(mount.major_minor)
                     members=self.leaves(name) if name else None
@@ -81,7 +126,7 @@ class ThermalTargets:
                 active |= members
                 if len(members)>1:self.complex_mount_members |= members
                 point=str(mount.mount_point)
-                if point=='/' or any(point==prefix or point.startswith(prefix+'/') for prefix in ('/boot','/usr','/var','/etc','/bin','/sbin','/lib','/lib64')):
+                if mount.mount_point in essential_mounts or any(p==mount.mount_point or p in mount.mount_point.parents for p in protected):
                     system |= members
             swaps = (self.proc/'swaps').read_text().splitlines()
             for row in swaps[1:]:
@@ -96,7 +141,28 @@ class ThermalTargets:
                 active |= self.leaves(bydev[key]); system |= self.leaves(bydev[key])
         except (OSError, ValueError) as error:
             problems.append(str(error))
+        self.topology_complete=not problems
         return active, system, problems
+
+    def shared_holders(self, node: Path) -> list[dict]:
+        """Allow only one-to-one crypt holders directly above this disk/partition."""
+        related=[node]+[c for c in self.sys_class.iterdir() if (c/'partition').exists() and c.resolve().parent==node.resolve()]
+        proofs=[]
+        for base in related:
+            if (base/'slaves').exists() and list((base/'slaves').iterdir()):raise ValueError('aggregated storage dependency')
+            for holder in sorted((base/'holders').iterdir()):
+                mapped=self.sys_class/holder.name
+                slaves=list((mapped/'slaves').iterdir())
+                if (len(slaves)!=1 or slaves[0].name!=base.name or list((mapped/'holders').iterdir())
+                        or not holder.name.startswith('dm-')):
+                    raise ValueError('unsupported or ambiguous storage holder')
+                before=text(mapped/'dm/uuid')
+                proof=crypt_status(mapped)
+                if text(mapped/'dm/uuid')!=before or proof['uuid']!=before:
+                    raise ValueError('crypt mapping changed during discovery')
+                if self.leaves(mapped.name)!={node.name}:raise ValueError('crypt physical ancestry mismatch')
+                proofs.append(dict(mapping=holder.name,backing=base.name,**proof))
+        return proofs
 
     def sensors(self, node: Path) -> list[dict]:
         result = []
@@ -168,9 +234,13 @@ class ThermalTargets:
                     nvme_direct=(resolved in node.resolve().parents and text(resolved/'transport')=='pcie' and len(namespaces)==1)
                 if not nvme_direct:reasons.append('single-namespace local PCIe NVMe controller mapping not proven')
             if not (direct or shared and nvme_direct and not virtual and not usb): reasons.append('independent physical ATA/SAS end-device path not proven')
+            holder_proofs=[]
             try:
                 related = [node]+[c for c in self.sys_class.iterdir() if (c/'partition').exists() and c.resolve().parent==node.resolve()]
-                if any(list((c/'holders').iterdir()) or ((c/'slaves').is_dir() and list((c/'slaves').iterdir())) for c in related):
+                if shared and not virtual and not usb:
+                    try:holder_proofs=self.shared_holders(node)
+                    except (OSError,ValueError) as error:reasons.append('storage ownership unqualified: '+str(error))
+                elif any(list((c/'holders').iterdir()) or ((c/'slaves').is_dir() and list((c/'slaves').iterdir())) for c in related):
                     reasons.append('active or aggregated storage ownership')
                 if (node/'device/raid_level').exists() or (node/'device/raid_component').exists():
                     reasons.append('controller RAID member/volume backend is not approved')
@@ -197,9 +267,9 @@ class ThermalTargets:
                 try:
                     endpoint=os.lstat(path);identity.update(node_device=endpoint.st_dev,node_inode=endpoint.st_ino)
                 except OSError:reasons.append('shared canonical device endpoint unavailable')
-            records.append(dict(access_mode=access_mode,mounted_or_active=name in active,device_id=identity['device_id'], identity=identity, model=entry['Model'],
+            records.append(dict(access_mode=access_mode,mounted_or_active=True if name in active else False if self.topology_complete else None,device_id=identity['device_id'], identity=identity, model=entry['Model'],
                                 transport=transport, drive_class=drive_class, internal=removable=='0' and not usb and not virtual,
-                                excluded_automatic=usb or virtual, system_drive=name in system,
+                                excluded_automatic=usb or virtual, system_drive=True if name in system else False if self.topology_complete else None, topology_complete=self.topology_complete, classification_status='confirmed' if self.topology_complete else 'incomplete', holder_proofs=holder_proofs,
                                 eligible=not reasons, reasons=reasons, sensors=self.sensors(node)))
         duplicates = Counter(r['device_id'] for r in records)
         for row in records:
@@ -211,7 +281,7 @@ class ThermalTargets:
         mode=expected.get('access_mode','exclusive')
         rows=self.discover(access_mode=mode) if mode!='exclusive' else self.discover()
         matches = [r for r in rows if r['device_id']==expected['device_id']]
-        if len(matches)!=1 or not matches[0]['eligible'] or matches[0]['identity'] != expected['identity']:
+        if len(matches)!=1 or not matches[0]['eligible'] or matches[0]['identity'] != expected['identity'] or matches[0].get('holder_proofs',[])!=expected.get('holder_proofs',[]):
             raise ValueError('device identity, permissions or active topology changed')
         return matches[0]
 

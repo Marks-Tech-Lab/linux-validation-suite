@@ -66,7 +66,9 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    1. Ordinary internal non-system HDD/SSD/NVMe data drives, mounted or unmounted.
    2. Practical physical screening on available supported hardware.
    3. Internal boot/system-drive support, retaining 25% system intensity intent.
-   4. Complex RAID/ZFS/LVM/encrypted/multipath storage with authoritative mapping.
+   4. Complex RAID/ZFS/LVM/integrity/cache/multipath storage with authoritative mapping.
+      Conventional directly backed LUKS data mappings now have experimental software qualification; physical acceptance remains pending.
+      Initial physical qualification may use a separately reviewed deployment; routine use must integrate existing dependency/native-build/privilege and CLI/TUI lifecycles without manual deployment promotion.
    5. Explicit operator-selected external drives; excluded from automatic groups.
    The initial [shared read-only opt-in](docs/storage_thermal_shared_data.md) reuses
    guarded fio and the accepted lifecycle. Default exclusive HDD behavior and all
