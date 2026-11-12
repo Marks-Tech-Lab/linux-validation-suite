@@ -105,6 +105,8 @@ def _rate_errors(row,configuration,planned,plan):
     V1 has no child-authorized adaptive rate protocol. A different rate needs a
     newly authorized effective plan before launch. Shortened duration keeps rates.
     """
+    mode=(configuration or {}).get('access_mode','exclusive')
+    if row.get('access_mode','exclusive')!=mode:return ['Device access contract differs from authoritative configuration']
     actual=row.get('effective_rate');expected=planned.get('rate')
     if not isinstance(expected,dict) or not expected:
         return ['Authoritative resolved rate missing: '+row['device_id']]
@@ -381,7 +383,7 @@ def normalize(payload, *, requested=None, readiness=None):
         row = next((d for d in rows if d['device_id']==identity), {})
         if drive:
             drive_result=dict(devices=[drive],executed_devices=[identity],verdict='PASS' if drive.get('state')=='completed' else 'INCOMPLETE')
-            if (drive.get('temperature_status')!='monitored' or drive.get('temperature_warning')) and drive_result['verdict']=='PASS':drive_result['verdict']='WARN'
+            if (drive.get('access_mode','exclusive')!='exclusive' or drive.get('temperature_status')!='monitored' or drive.get('temperature_warning')) and drive_result['verdict']=='PASS':drive_result['verdict']='WARN'
             device_errors=device_completion_errors(drive,result.get('configuration'),plan) if drive.get('state')=='completed' else []
             outcome='ERROR' if result.get('session_errors') or device_errors else _outcome(drive_result, True, device=True)
         else:outcome='NOT_RUN';device_errors=[]

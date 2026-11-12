@@ -60,8 +60,8 @@ def thermal_settings(stage, setting_type):
                            'enabled', obj.enabled, ('false', 'true'))]
     if not obj.enabled:
         return fields
-    options = dict(selection=GROUPS, rate_mode=('percent', 'advanced'), monitoring=('required', 'approved_unmonitored'), scheduling=('normal',))
-    labels = dict(device_ids='Individual stable IDs (JSON list)', per_device_percent='Per-drive intensity (JSON object)',
+    options = dict(access_mode=('exclusive','shared_readonly_opt_in'), selection=GROUPS, rate_mode=('percent', 'advanced'), monitoring=('required', 'approved_unmonitored'), scheduling=('normal',))
+    labels = dict(access_mode='Access contract (shared is experimental explicit opt-in)', aggregate_iops_limit='Aggregate IOPS budget (JSON integer/null)', aggregate_bps_limit='Aggregate bytes/s budget (JSON integer/null)',device_ids='Individual stable IDs (comma-separated or JSON list)', per_device_percent='Per-drive intensity (JSON object)',
                   intensity_percent='Ordinary activity %', system_intensity_percent='System activity % (active drives blocked)',
                   block_size='Read size bytes', iops='Advanced IOPS (JSON integer/null)',
                   bandwidth_bytes_per_second='Advanced bytes/s (JSON integer/null)',
@@ -88,7 +88,9 @@ def set_thermal_setting(stage, key, raw):
         return values
     if name not in asdict(stage.modules.storage_thermal):
         raise ValueError('Unknown thermal setting')
-    value = raw if name in ('selection','rate_mode','monitoring','scheduling') else json.loads(raw)
+    if name=='device_ids' and not raw.strip().startswith('['):
+        value=[part.strip() for part in raw.split(',') if part.strip()]
+    else:value = raw if name in ('access_mode','selection','rate_mode','monitoring','scheduling') else json.loads(raw)
     setattr(stage.modules.storage_thermal, name, value)
     stage_config(stage)  # same validation as standalone; caller owns transaction
     if type(stage.modules.storage_thermal.enabled) is not bool:
@@ -635,8 +637,8 @@ class LeaseTargets:
     """Delegate every identity/open decision; check lifetime around blocking work."""
     def __init__(self, targets, lease):self.targets,self.lease=targets,lease
     def __getattr__(self,key):return getattr(self.targets,key)
-    def discover(self):
-        self.lease.check();result=self.targets.discover();self.lease.check();return result
+    def discover(self,**kwargs):
+        self.lease.check();result=self.targets.discover(**kwargs);self.lease.check();return result
     def revalidate(self,row):
         self.lease.check();result=self.targets.revalidate(row);self.lease.check();return result
     def output_safe(self,*args):

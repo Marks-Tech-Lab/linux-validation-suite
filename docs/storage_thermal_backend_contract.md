@@ -325,3 +325,15 @@ Python-3.11-only hashing API, not a claimed Python 3.10 host deployment.
 References: [seccomp](https://man7.org/linux/man-pages/man2/seccomp.2.html),
 [no_new_privs](https://man7.org/linux/man-pages/man2/PR_SET_NO_NEW_PRIVS.2const.html),
 [fio descriptor implementation](https://github.com/axboe/fio/blob/fio-3.42/filesetup.c).
+
+## Revised experimental shared-data contract
+
+The [shared internal data-drive mode](storage_thermal_shared_data.md) is an
+explicit opt-in extension. The accepted exclusive opener, native guard, native
+v2 admission and historical NO-GO findings retain their scope. Shared mode allows
+mounted/unmounted non-system SATA/SAS HDD/SSD and positively mapped local
+single-namespace NVMe candidates, with required monitoring and explicit aggregate
+fio-request budgets. It permits incidental kernel persistence/background I/O and
+records it separately from prohibited workload mutations. It does not guarantee
+zero writeback, hard bounds on OS/initialization traffic, prompt return of every
+submitted read, or physical acceptance. Automatic profiles remain unchanged.

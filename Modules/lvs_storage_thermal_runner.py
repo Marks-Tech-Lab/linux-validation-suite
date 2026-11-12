@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from .lvs_storage_thermal import ThermalConfig, ThermalDevice, ThermalResult, pilot_rate, readiness, result_successful
 from .lvs_storage_thermal_backend import capability, guard_command, guard_environment, executable_identity
+from .lvs_storage_thermal_launch import OwnedProcess, group_gone
 from .lvs_storage_thermal_targets import ThermalTargets, selected, temperature
 from .lvs_profile_report_artifacts import atomic_preflight_json
 from .lvs_source_provenance import collect_source_provenance
@@ -72,12 +73,6 @@ def disk_activity(proc=Path('/proc')):
     return result
 
 
-def group_gone(pgid):
-    try:os.killpg(pgid,0);return False
-    except ProcessLookupError:return True
-    except PermissionError:return False
-
-
 def process_observation(pid):
     try:
         fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
@@ -99,29 +94,34 @@ class ThermalRunner:
         self.native_processes=None
         self.unconfirmed=[]  # retain exclusive descriptors if cleanup cannot be proven
 
+    def discover(self,config):
+        return self.targets.discover(access_mode=config.access_mode) if config.access_mode!='exclusive' else self.targets.discover()
+
     def _process(self,p):
         return self.native_processes.authority(p) if self.native_processes is not None else p
 
     def _process_pid(self,p):
         p=self._process(p)
-        return p.authority_pid if self.native_processes is not None else p.pid
+        return p.authority_pid if self.native_processes is not None or isinstance(p,OwnedProcess) else p.pid
 
     def _signal_process(self,p,sig):
         p=self._process(p)
-        if self.native_processes is not None:p.send_signal(sig)
+        if self.native_processes is not None or isinstance(p,OwnedProcess):p.send_signal(sig)
         else:os.killpg(p.pid,sig)  # established standalone process policy
 
     def _clean_process(self,p):
         p=self._process(p)
-        if self.native_processes is not None:return p.group_cleanup_confirmed()
+        if self.native_processes is not None or isinstance(p,OwnedProcess):return p.group_cleanup_confirmed()
         return p.poll() is not None and group_gone(p.pid)
 
     def inspect(self,config):
-        rows=self.targets.discover();backend=capability(self.fio,self.guard,uid=self.uid,gid=self.gid)
+        rows=self.discover(config);backend=capability(self.fio,self.guard,uid=self.uid,gid=self.gid)
         return self.plan(config,rows,backend)
 
     def plan(self,config,rows,backend):
         ThermalConfig(**config.to_dict())
+        if config.access_mode!='exclusive':
+            backend=dict(backend,active_storage_supported=True,system_storage_supported=False,physical_acceptance=False,shared_access='experimental_opt_in')
         ids=list(config.device_ids) if config.selection=='individual' else [r['device_id'] for r in rows if selected(r,config)]
         approved=approval_valid(config,ids)
         devices=[];planned=[]
@@ -151,6 +151,9 @@ class ThermalRunner:
         capacity=self.budget();running=sum(d.state=='ready' for d in devices)
         requested_memory=running*(16*1024**2+config.block_size)  # conservative provisional overhead reserve, recorded
         issues=[]
+        rates=[d.rate for d in devices if d.state=='ready']
+        if config.aggregate_iops_limit is not None and sum(r['effective_iops'] for r in rates)>config.aggregate_iops_limit:issues.append('aggregate IOPS budget exceeded; reduce selection/intensities or explicitly revise budget')
+        if config.aggregate_bps_limit is not None and sum(r['effective_bps'] for r in rates)>config.aggregate_bps_limit:issues.append('aggregate bandwidth budget exceeded; reduce selection/intensities or explicitly revise budget')
         if requested_memory>capacity['memory_budget']:issues.append('insufficient available memory after existing LVS safety reserve')
         if running*4+32>capacity['fd_limit']:issues.append('insufficient file-descriptor budget')
         if issues:
@@ -168,7 +171,10 @@ class ThermalRunner:
         if commands and not issues and backend.get('status')=='available':
             decision.update(status='READY',runnable_devices=[c['device_id'] for c in commands],
                             reasons=['blocked members require explicit eligible-subset confirmation'] if any(d.state=='blocked' and d.selected for d in devices) else [])
-        decision.update(selected_devices=ids,partial_coverage=any(d.state=='blocked' and d.selected for d in devices),
+        decision.update(shared_access_experimental=config.access_mode!='exclusive',
+                        access_contract=('shared_readonly_v1' if config.access_mode!='exclusive' else 'exclusive_inactive_v1'),
+                        aggregate_scope='LVS requested workload limits, not kernel/background/initialization I/O or other applications',
+                        selected_devices=ids,partial_coverage=any(d.state=='blocked' and d.selected for d in devices),
                         resources=dict(capacity,estimated_worker_memory=requested_memory,estimate_provisional=True),
                         targets=planned)
         return decision
@@ -207,7 +213,7 @@ class ThermalRunner:
         except BaseException as error:
             for fd in claims.values():os.close(fd)
             self.last_preflight={**plan,'status':'BLOCKED','commands':[],'runnable_devices':[],
-                                 'reasons':[f'exclusive acquisition failed; no worker started: {error}']}
+                                 'reasons':[f'{config.access_mode} acquisition failed; no worker started: {error}']}
             try:
                 self.targets.output_safe(Path(output_root),candidates)
                 blocked=Path(output_root)/f'Storage_Thermal_Assist_Blocked_{uuid4().hex[:8]}'
@@ -218,7 +224,7 @@ class ThermalRunner:
         try:
             directory.mkdir(parents=True,exist_ok=False,mode=0o700);self.last_output=directory
             (directory/'worker_results').mkdir();(directory/'worker_logs').mkdir()
-            plan['source_provenance']=provenance;plan['exclusive_claims_acquired']=True
+            plan['source_provenance']=provenance;plan['exclusive_claims_acquired']=config.access_mode=='exclusive';plan['shared_claims_acquired']=config.access_mode!='exclusive'
             self._write(directory/'effective_preflight.json',plan)
             self._write(directory/'configuration.json',config.to_dict())
             manifest=dict(contract_id='lvs.storage_thermal.manifest',contract_version=1,status='running',verdict='INCOMPLETE',
@@ -265,7 +271,7 @@ class ThermalRunner:
                         if not j.get('done'):stop(j,'group emergency stop' if emergency else 'operator cancelled run',emergency)
                 if pending and now>=next_launch:
                     row=pending.pop(0);index=len(jobs)+1;fd=None;out=None;err=None;exe=None
-                    result=ThermalResult(row['device_id'],row['identity'],state='running',activity_scope='physical_drive_reads',
+                    result=ThermalResult(row['device_id'],row['identity'],state='running',activity_scope='physical_drive_reads',access_mode=config.access_mode,
                                          source_provenance=provenance,executable_provenance=plan['backend'],effective_rate=row['rate'])
                     job=dict(row=row,result=result,index=index,started=now,samples=[],peak=None,initial=None)
                     jobs.append(job)
@@ -286,7 +292,10 @@ class ThermalRunner:
                         out=(directory/'worker_logs'/f'{index}.stdout').open('wb');err=(directory/'worker_logs'/f'{index}.stderr').open('wb')
                         job.update(stdout=out,stderr=err,command=argv)
                         result.launch_requested_monotonic=self.clock()
-                        p=self.popen(argv,stdin=fd,pass_fds=(exe,),stdout=out,stderr=err,
+                        launcher=self.popen
+                        if config.access_mode!='exclusive' and self.native_processes is None and launcher is subprocess.Popen:
+                            launcher=OwnedProcess
+                        p=launcher(argv,stdin=fd,pass_fds=(exe,),stdout=out,stderr=err,
                                      start_new_session=True,env=guard_environment())
                         job['process']=p  # register ownership before any further observation
                         result.started_monotonic=self.clock();job['started']=result.started_monotonic
@@ -304,13 +313,13 @@ class ThermalRunner:
                         emergency=True;stop_all=True
                     finally:
                         if exe is not None:os.close(exe)
-                    next_launch=self.clock()+.1
+                    next_launch=self.clock()+(1 if config.access_mode!='exclusive' else .1)
                 if now>=next_monitor:
                     activity=self.activity()
                     # One shared snapshot for all identities, not N discovery processes.
                     current=None
                     if now>=next_identity:
-                        current={r['device_id']:r for r in self.targets.discover()};next_identity=now+5
+                        current={r['device_id']:r for r in self.discover(config)};next_identity=now+5
                     capacity=self.budget()
                     if capacity['memory_budget']<=0:
                         emergency=True;stop_all=True
@@ -331,7 +340,7 @@ class ThermalRunner:
                         baseline=job.get('baseline')
                         if counters is None or baseline is None or len(counters)!=len(baseline) or any(a<b for i,(a,b) in enumerate(zip(counters,baseline)) if i!=8):
                             stop(job,'device activity evidence missing/reset',True)
-                        elif any(counters[k]>baseline[k] for k in (4,6,11,13,15) if k<len(counters)):
+                        elif config.access_mode=='exclusive' and any(counters[k]>baseline[k] for k in (4,6,11,13,15) if k<len(counters)):
                             stop(job,'unexpected write/discard/flush activity on inactive target',True);emergency=True;stop_all=True
                         if any(h.tell()>2*1024**2 for h in (job['stdout'],job['stderr'])):
                             stop(job,'worker log exceeded bound',True)
@@ -343,6 +352,10 @@ class ThermalRunner:
                             snapshot['device_read_bytes_since_launch']=max(0,counters[2]-baseline[2])*512
                             snapshot['device_iops_since_launch']=snapshot['device_read_ios_since_launch']/max(.001,now-job['started'])
                             snapshot['activity_attribution']='device counters, not exclusive fio attribution'
+                            snapshot['access_mode']=config.access_mode
+                            snapshot['background_write_ios_since_launch']=max(0,counters[4]-baseline[4])
+                            snapshot['background_discards_since_launch']=max(0,counters[11]-baseline[11]) if len(counters)>11 else None
+                            snapshot['background_flushes_since_launch']=max(0,counters[15]-baseline[15]) if len(counters)>15 else None
                         job['temperature_warning']=job.get('temperature_warning',False) or snapshot['temperature_warning']
                         job['last_snapshot']=snapshot
                         if now>=next_progress:progress.write(json.dumps(snapshot)+'\n')
@@ -423,7 +436,7 @@ class ThermalRunner:
         verdict=('INCOMPLETE' if failure or any(not r['cleanup_confirmed'] or not r['terminal_published'] or r['state'] in ('incomplete','cancelled') for r in records)
                  else 'FAIL' if any(not result_successful(r) for r in records) else
                  'INCOMPLETE' if missing else
-                 'WARN' if plan['partial_coverage'] or any(r['temperature_status']!='monitored' or r['temperature_warning'] for r in records) else 'PASS')
+                 'WARN' if config.access_mode!='exclusive' or plan['partial_coverage'] or any(r['temperature_status']!='monitored' or r['temperature_warning'] for r in records) else 'PASS')
         ended=self.clock();children=resource.getrusage(resource.RUSAGE_CHILDREN)
         result=dict(contract_id='lvs.storage_thermal.manifest',contract_version=1,kind='storage_thermal',status='completed' if verdict in ('PASS','WARN') else verdict.lower(),
                     verdict=verdict,requested=True,execution_started=bool(executed),

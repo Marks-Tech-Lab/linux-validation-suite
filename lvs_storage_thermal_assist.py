@@ -25,13 +25,18 @@ ROOT=Path(__file__).resolve().parent
 def drive_lines(rows):
     return [f"{i}. {r['model']} | {r['device_id']} | {r['transport']} / {r['drive_class']}"
             f"{' [SYSTEM: blocked]' if r['system_drive'] else ''}\n   "
-            + ('Eligible inactive HDD candidate' if r['eligible'] else 'Blocked: '+'; '.join(r['reasons']))
+            + ('Eligible candidate under selected access contract' if r['eligible'] else 'Blocked: '+'; '.join(r['reasons']))
             for i,r in enumerate(rows,1)]
 
 
 def plan_lines(plan):
     lines=[f"Readiness: {plan['status']}; backend: {plan['backend']['status']}",
            '50%/25% refers to provisional activity limits, not rated performance or guaranteed heating.']
+    if plan['configuration'].get('access_mode','exclusive')!='exclusive':
+        lines.insert(1,'EXPERIMENTAL shared read-only: physical acceptance pending; kernel/background/initialization I/O is outside fio limits.')
+    if plan['configuration'].get('access_mode','exclusive')!='exclusive':
+        rates=[d['rate'] for d in plan['devices'] if d['state']=='ready']
+        lines.append(f"Aggregate fio plan: {sum(r['effective_iops'] for r in rates)}/{plan['configuration']['aggregate_iops_limit']} IOPS; {sum(r['effective_bps'] for r in rates)}/{plan['configuration']['aggregate_bps_limit']} B/s.")
     for d in plan['devices']:
         if not d['selected']:continue
         rate=d['rate'];lines.append(f"{d['device_id']}: {d['state']}; "
@@ -75,7 +80,7 @@ class ThermalMenu:
         return value
 
     def advanced(self):
-        self.ui.write('1. Read size\n2. Advanced IOPS/bandwidth\n3. Temperature policy\n4. Per-drive intensity\n5. Build native guard\n0. Back')
+        self.ui.write('1. Read size\n2. Advanced IOPS/bandwidth\n3. Temperature policy\n4. Per-drive intensity\n5. Build native guard\n6. Access contract and aggregate budgets\n0. Back')
         choice=self.ui.ask('Choose [0]: ').strip() or '0'
         if choice=='1':self.config=replace(self.config,block_size=self.number('Read size in bytes (power of two)',4096,1048576,self.config.block_size))
         elif choice=='2':
@@ -95,11 +100,20 @@ class ThermalMenu:
                 self.config=replace(self.config,monitoring='required' if mode=='1' else 'approved_unmonitored',
                                     unmonitored_approval='' if mode=='1' else 'pending explicit run confirmation',temperature_limit_c=stop)
         elif choice=='4':
-            rows=self.runner.targets.discover();self.ui.write('\n'.join(drive_lines(rows)))
+            rows=self.runner.discover(self.config);self.ui.write('\n'.join(drive_lines(rows)))
             index=self.number('Drive number (0 returns)',0,len(rows),0)
             if index:
                 value=self.number('Override activity percent',0,100,50)
                 self.config=replace(self.config,per_device_percent={**self.config.per_device_percent,rows[index-1]['device_id']:value})
+        elif choice=='6':
+            self.ui.write('1. Exclusive inactive-HDD contract (default)\n2. Experimental shared read-only internal data drives\nShared permits kernel/background writes and delayed kernel completion; fio budgets do not cap OS/startup I/O. Required monitoring; system/complex/external paths remain blocked.')
+            mode=self.ui.ask('Access contract [0 returns]: ').strip()
+            if mode=='1':self.config=replace(self.config,access_mode='exclusive')
+            elif mode=='2':
+                iops=self.number('Aggregate fio IOPS budget (one-drive starting example: 128)',1,2**40,self.config.aggregate_iops_limit or 128)
+                bps=self.number('Aggregate fio bytes/s budget (8 MiB/s = 8388608)',1,2**40,self.config.aggregate_bps_limit or 8388608)
+                self.config=replace(self.config,access_mode='shared_readonly_opt_in',aggregate_iops_limit=iops,
+                                    aggregate_bps_limit=bps,monitoring='required',unmonitored_approval='')
         elif choice=='5':
             if self.ui.confirm('Build the optional guard from local source; existing CPU/memory helpers are preserved.','Build native guard'):
                 path=build_guard();self.runner.guard=str(path)
@@ -131,7 +145,7 @@ class ThermalMenu:
     def start(self):
         config=self.config
         if config.monitoring=='approved_unmonitored':
-            ids=[r['device_id'] for r in self.runner.targets.discover() if selected(r,config)]
+            ids=[r['device_id'] for r in self.runner.discover(self.config) if selected(r,config)]
             config=approve_unmonitored(config,ids,'pending operator confirmation')
         plan=self.runner.inspect(config);self.ui.write('\n'.join(plan_lines(plan)))
         if plan['status']!='READY':
@@ -143,7 +157,7 @@ class ThermalMenu:
             self.results('No workload started',['Resolve the listed blockers, then preview again.',f'Readiness saved: {path}'],json.dumps(plan,indent=2));return
         note=('Unmonitored operation: no verified thermal margins; approval is for this exact duration/selection only.\n'
               if config.monitoring=='approved_unmonitored' else '')
-        if not self.ui.confirm(note+'Run only the listed eligible HDDs; blocked devices will not execute. No target writes, permission changes or CPU core reservation.',
+        if not self.ui.confirm(note+'Run only the listed eligible HDDs; blocked devices will not execute. No workload write requests or permission changes. Shared opt-in permits background/induced kernel writes and delayed read completion; fio limits do not bound initialization or OS traffic.',
                                'Start the displayed read-only workload'):
             return
         if config.monitoring=='approved_unmonitored':
@@ -172,14 +186,14 @@ class ThermalMenu:
         while not self.closed:
             try:
                 self.ui.open('LVS Storage Thermal Assist')
-                self.ui.write('Read-only provisional HDD activity; active/system/array paths are blocked.\n'
+                self.ui.write('Guarded provisional read activity; access contract is selected in configuration. System/array paths remain blocked.\n'
                               '1. Check drives and eligibility\n2. Choose drive group or individual drives\n'
                               '3. Set ordinary/system activity\n4. Set duration\n5. Advanced options\n'
                               '6. Preview execution plan\n7. Confirm and start\n8. Exit')
                 choice=self.ui.ask('Choose [8]: ').strip() or '8'
                 if choice=='8':return
                 if choice=='1':
-                    rows=self.runner.targets.discover();self.results('Available drives',drive_lines(rows) or ['No devices discovered.'],json.dumps(rows,indent=2))
+                    rows=self.runner.discover(self.config);self.results('Available drives',drive_lines(rows) or ['No devices discovered.'],json.dumps(rows,indent=2))
                 elif choice=='2':
                     labels=['All Eligible Internal Drives','SATA/SAS','NVMe','HDD','SSD','Individual drives']
                     self.ui.write('\n'.join(f'{i}. {label}' for i,label in enumerate(labels,1))+'\n0. Back')
@@ -187,7 +201,7 @@ class ThermalMenu:
                     if index:
                         ids=()
                         if index==6:
-                            rows=self.runner.targets.discover();self.ui.write('\n'.join(drive_lines(rows)))
+                            rows=self.runner.discover(self.config);self.ui.write('\n'.join(drive_lines(rows)))
                             raw=self.ui.ask('Drive numbers separated by commas (Enter cancels): ').strip()
                             if not raw:continue
                             indices=[int(v.strip()) for v in raw.split(',')]
@@ -214,6 +228,9 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true',help='passive inventory JSON only; no drive reads/workload')
     parser.add_argument('--plan',action='store_true',help='JSON readiness, including temperature reads which may access/wake drives; no workload')
+    parser.add_argument('--access-mode',choices=('exclusive','shared_readonly_opt_in'),help='explicit access contract; shared requires both aggregate budgets and reliable monitoring')
+    parser.add_argument('--aggregate-iops-limit',type=int,help='aggregate fio-request IOPS budget, not OS/initialization I/O')
+    parser.add_argument('--aggregate-bps-limit',type=int,help='aggregate fio-request bytes/s budget')
     parser.add_argument('--config',type=Path,help='version-1 standalone configuration JSON; no saved profile is changed')
     parser.add_argument('--fio',default=shutil.which('fio') or '/nonexistent/fio')
     parser.add_argument('--guard',default=str(ROOT/'build/storage_thermal_guard'))
@@ -228,7 +245,9 @@ def main(argv=None):
         except ValueError:parser.error('--run-as requires UID:GID')
     runner=ThermalRunner(args.fio,args.guard,uid=uid,gid=gid)
     config=ThermalConfig(**json.loads(args.config.read_text())) if args.config else ThermalConfig()
-    if args.check:print(json.dumps(runner.targets.discover(),indent=2));return 0
+    updates={name:getattr(args,name) for name in ('access_mode','aggregate_iops_limit','aggregate_bps_limit') if getattr(args,name) is not None}
+    if updates:config=replace(config,**updates)
+    if args.check:print(json.dumps(runner.discover(config),indent=2));return 0
     if args.plan:print(json.dumps(runner.inspect(config),indent=2));return 0
     if not sys.stdin.isatty():parser.error('interactive terminal required; use --check or --plan for plain JSON diagnostics')
     ThermalMenu(runner,config,args.output_root).run();return 0

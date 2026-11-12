@@ -17,6 +17,12 @@ import signal
 import subprocess
 import time
 
+def group_gone(pgid):
+    try:os.killpg(pgid,0);return False
+    except ProcessLookupError:return True
+    except PermissionError:return False
+
+
 ROOT=Path(__file__).resolve().parents[1]
 _LIBRARY=None
 _PROVENANCE={}
@@ -200,7 +206,6 @@ class OwnedProcess:
         The creation group is retained independently of the diagnostic PID.
         A reused numeric group can cause conservative uncertainty, never a kill.
         """
-        from .lvs_storage_thermal_runner import group_gone
         return self.poll() is not None and group_gone(self._creation.pid)
 
     def wait(self,timeout=None):

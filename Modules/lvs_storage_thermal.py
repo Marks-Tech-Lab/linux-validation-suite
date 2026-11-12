@@ -12,6 +12,7 @@ from typing import Any
 VERSION = 1
 POLICY = 'thermal_pilot_v1'
 GROUPS = ('all_internal', 'sata_sas', 'nvme', 'hdd', 'ssd', 'individual')
+ACCESS_MODES = ('exclusive', 'shared_readonly_opt_in')
 STATES = ('discovered', 'selected', 'blocked', 'ready', 'running', 'completed',
           'failed', 'cancelled', 'incomplete', 'skipped')
 # 64 KiB reference operations, deliberately low pilot ceilings; not rated IOPS.
@@ -37,6 +38,9 @@ def canonical_lease_identity(value, *, optional=False):
 class ThermalConfig:
     contract_id: str = 'lvs.storage_thermal.config'
     contract_version: int = VERSION
+    access_mode: str = 'exclusive'
+    aggregate_iops_limit: int | None = None
+    aggregate_bps_limit: int | None = None
     selection: str = 'all_internal'
     device_ids: tuple[str, ...] = ()
     intensity_percent: int = 50
@@ -59,6 +63,11 @@ class ThermalConfig:
         if (self.contract_id != 'lvs.storage_thermal.config' or self.contract_version != VERSION
                 or type(self.contract_version) is not int or self.policy != POLICY):
             raise ValueError('unsupported thermal configuration contract/policy')
+        if self.access_mode not in ACCESS_MODES:raise ValueError('unsupported access mode')
+        for name,value in (('aggregate IOPS',self.aggregate_iops_limit),('aggregate bytes/s',self.aggregate_bps_limit)):
+            if value is not None:integer(value,1,2**40,name)
+        if self.access_mode!='exclusive' and (self.aggregate_iops_limit is None or self.aggregate_bps_limit is None or self.monitoring!='required'):
+            raise ValueError('shared opt-in requires explicit aggregate IOPS/bandwidth budgets and required monitoring')
         if self.selection not in GROUPS or self.scheduling != 'normal' or self.queue_depth != 1:
             raise ValueError('unsupported selection/scheduling/queue depth')
         integer(self.queue_depth, 1, 1, 'queue depth')
@@ -180,6 +189,7 @@ class ThermalResult:
     contract_version: int = VERSION
     state: str = 'selected'
     activity_scope: str = 'unverified'
+    access_mode: str = 'exclusive'
     source_provenance: dict = field(default_factory=dict)
     executable_provenance: dict = field(default_factory=dict)
     effective_rate: dict = field(default_factory=dict)

@@ -843,3 +843,15 @@ ordinary/system intensity, and preserves a disabled stage's separate status.
 Configured activity supplies no execution or eligibility assertion. Authored
 menu descriptions, names and display labels remain operator metadata. Rendering
 does not rewrite profiles or change readiness, overrides or execution policy.
+
+## Explicit shared-data opt-in extension
+
+The [revised access contract](storage_thermal_shared_data.md) adds `access_mode`,
+`aggregate_iops_limit` and `aggregate_bps_limit` to the existing shared validated
+settings and O overrides. Defaults remain exclusive; seven profiles/41 stages
+are not edited. Shared workers reuse the supervisor, native admission, recovery
+and independent result path. Their completion is WARN/COMPLETED_WITH_WARNINGS
+pending physical acceptance. Only shared mode permits background device writes;
+its own fio write/error evidence still fails. Existing exclusive mutation stops
+and primary timing/verdict isolation remain unchanged. This extension's software
+and physical acceptance must not be inferred from historical Stage 2B-3 results.

@@ -101,6 +101,9 @@ class ModuleStorageBenchmark:
 class ModuleStorageThermal:
     """Stage duration is authoritative; approvals never belong to saved profiles."""
     enabled: bool = False
+    access_mode: str = "exclusive"
+    aggregate_iops_limit: Optional[int] = None
+    aggregate_bps_limit: Optional[int] = None
     selection: str = "all_internal"
     device_ids: List[str] = field(default_factory=list)
     intensity_percent: int = 50

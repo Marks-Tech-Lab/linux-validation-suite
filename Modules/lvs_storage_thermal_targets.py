@@ -47,6 +47,7 @@ class ThermalTargets:
 
     def topology(self) -> tuple[set[str],set[str],list[str]]:
         active, system, problems = set(), set(), []
+        self.complex_mount_members=set()
         try:
             # Refuse known containers; mount visibility plus O_EXCL is required.
             if Path('/.dockerenv').exists() or Path('/run/.containerenv').exists():
@@ -78,7 +79,9 @@ class ThermalTargets:
                         continue
                     raise ValueError(f'{mount.filesystem} mount {mount.mount_point}: physical membership unresolved')
                 active |= members
-                if str(mount.mount_point) in ('/','/boot','/boot/efi','/usr','/var'):
+                if len(members)>1:self.complex_mount_members |= members
+                point=str(mount.mount_point)
+                if point=='/' or any(point==prefix or point.startswith(prefix+'/') for prefix in ('/boot','/usr','/var','/etc','/bin','/sbin','/lib','/lib64')):
                     system |= members
             swaps = (self.proc/'swaps').read_text().splitlines()
             for row in swaps[1:]:
@@ -117,7 +120,9 @@ class ThermalTargets:
                                    association='exact_sysfs_device_ancestor'))
         return result
 
-    def discover(self) -> list[dict]:
+    def discover(self, *, access_mode='exclusive') -> list[dict]:
+        if access_mode not in ('exclusive','shared_readonly_opt_in'):raise ValueError('unsupported access contract')
+        shared=access_mode=='shared_readonly_opt_in'
         active, system, topology_problems = self.topology()
         records = []
         for node in sorted(self.sys_class.iterdir()):
@@ -152,8 +157,17 @@ class ThermalTargets:
             if not stable: reasons.append('authoritative serial/WWN unavailable')
             if removable != '0': reasons.append('removable/internal classification uncertain or removable')
             if virtual or usb: reasons.append('virtual/USB backend has no execution proof')
-            if drive_class != 'hdd': reasons.append('only inactive physical HDD execution is approved')
-            if not direct: reasons.append('independent physical ATA/SAS end-device path not proven')
+            if not shared and drive_class != 'hdd': reasons.append('only inactive physical HDD execution is approved')
+            nvme_direct=False
+            if shared and transport=='nvme':
+                match=re.fullmatch(r'(nvme[0-9]+)n[0-9]+',name)
+                controller=self.sys_class.parent/'nvme'/match[1] if match else None
+                if controller is not None and controller.is_symlink():
+                    resolved=controller.resolve()
+                    namespaces=[p for p in resolved.iterdir() if re.fullmatch(r'nvme[0-9]+n[0-9]+',p.name)]
+                    nvme_direct=(resolved in node.resolve().parents and text(resolved/'transport')=='pcie' and len(namespaces)==1)
+                if not nvme_direct:reasons.append('single-namespace local PCIe NVMe controller mapping not proven')
+            if not (direct or shared and nvme_direct and not virtual and not usb): reasons.append('independent physical ATA/SAS end-device path not proven')
             try:
                 related = [node]+[c for c in self.sys_class.iterdir() if (c/'partition').exists() and c.resolve().parent==node.resolve()]
                 if any(list((c/'holders').iterdir()) or ((c/'slaves').is_dir() and list((c/'slaves').iterdir())) for c in related):
@@ -171,13 +185,19 @@ class ThermalTargets:
                 if size<=0 or logical<=0: raise ValueError('invalid geometry')
             except (OSError, ValueError):
                 reasons.append('incomplete device geometry/topology');size=0;logical=0;major=minor=-1
-            if name in active: reasons.append('mounted/system/swap device is active')
+            if drive_class not in ('hdd','ssd','nvme'):reasons.append('media class unavailable')
+            if shared and name in getattr(self,'complex_mount_members',set()):reasons.append('multi-device filesystem needs separate physical-member qualification')
+            if name in system or name in active and not shared: reasons.append('mounted/system/swap device is active')
             path = self.dev_root/name
             if not os.access(path,os.R_OK): reasons.append('read permission unavailable; no automatic permission changes')
             identity = dict(device_id=stable or f'unresolved:{dev}:{name}', name=name, path=str(path),
                             sysfs=canonical, major=major, minor=minor, size_bytes=size,
                             logical_sector=logical, serial=serial, wwn=wwn)
-            records.append(dict(device_id=identity['device_id'], identity=identity, model=entry['Model'],
+            if shared:
+                try:
+                    endpoint=os.lstat(path);identity.update(node_device=endpoint.st_dev,node_inode=endpoint.st_ino)
+                except OSError:reasons.append('shared canonical device endpoint unavailable')
+            records.append(dict(access_mode=access_mode,mounted_or_active=name in active,device_id=identity['device_id'], identity=identity, model=entry['Model'],
                                 transport=transport, drive_class=drive_class, internal=removable=='0' and not usb and not virtual,
                                 excluded_automatic=usb or virtual, system_drive=name in system,
                                 eligible=not reasons, reasons=reasons, sensors=self.sensors(node)))
@@ -188,7 +208,9 @@ class ThermalTargets:
         return records
 
     def revalidate(self, expected: dict) -> dict:
-        matches = [r for r in self.discover() if r['device_id']==expected['device_id']]
+        mode=expected.get('access_mode','exclusive')
+        rows=self.discover(access_mode=mode) if mode!='exclusive' else self.discover()
+        matches = [r for r in rows if r['device_id']==expected['device_id']]
         if len(matches)!=1 or not matches[0]['eligible'] or matches[0]['identity'] != expected['identity']:
             raise ValueError('device identity, permissions or active topology changed')
         return matches[0]
@@ -209,7 +231,12 @@ class ThermalTargets:
 
     def open(self, expected: dict) -> int:
         self.revalidate(expected)
-        fd = os.open(expected['identity']['path'],os.O_RDONLY|os.O_DIRECT|os.O_EXCL|os.O_CLOEXEC|os.O_NOFOLLOW)
+        shared=expected.get('access_mode','exclusive')=='shared_readonly_opt_in'
+        path=expected['identity']['path']
+        before=os.lstat(path) if shared else None
+        if shared and (before.st_dev,before.st_ino)!=(expected['identity'].get('node_device'),expected['identity'].get('node_inode')):
+            raise ValueError('shared device endpoint differs from readiness')
+        fd = os.open(path,os.O_RDONLY|os.O_DIRECT|os.O_CLOEXEC|os.O_NOFOLLOW|(0 if shared else os.O_EXCL))
         try:
             info=os.fstat(fd); identity=expected['identity']
             size=struct.unpack('Q',fcntl.ioctl(fd,0x80081272,bytes(8)))[0]
@@ -219,6 +246,13 @@ class ThermalTargets:
                     or size!=identity['size_bytes'] or logical!=identity['logical_sector']
                     or flags & os.O_ACCMODE != os.O_RDONLY or not flags & os.O_DIRECT):
                 raise ValueError('opened descriptor identity/geometry/flags mismatch')
+            if shared:
+                # Cooperative OFD lock follows the same descriptor through fork/SCM_RIGHTS.
+                # It does not freeze filesystems or exclude noncooperating callers.
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                named=os.lstat(path)
+                if (before.st_dev,before.st_ino)!=(info.st_dev,info.st_ino) or (named.st_dev,named.st_ino)!=(info.st_dev,info.st_ino):
+                    raise ValueError('shared device node changed during claim')
             self.revalidate(expected)
             return fd
         except BaseException:
