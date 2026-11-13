@@ -192,3 +192,38 @@ before correction, SIGHUP exited with signal 1 without supervisor cleanup. The
 runner now handles HUP with the same bounded group cancellation as INT/TERM. The
 regression confirms INCOMPLETE plus confirmed cleanup; the complete suite and
 end-to-end synthetic proof were rerun after this correction.
+
+### Bounded standalone controls and cancellation evidence
+
+The interactive menu and active workload share one terminal byte owner. Active
+polling reads at most 4 KiB and processes at most 16 complete lines per cycle;
+partial commands remain buffered until Enter. Canonical and noncanonical input,
+CRLF, fragmented commands and recognized bracketed-paste delimiters are supported.
+The caller's descriptor flags and terminal settings are preserved. An invalid
+command is acknowledged; a line over 512 bytes, more than 32 queued commands,
+terminal EOF or a read error requests stop-all rather than guessing a command.
+Unfinished live commands are discarded at the result-screen boundary.
+
+Accepted stop requests are acknowledged separately from confirmed interruption.
+`control_events` records bounded monotonic recognition evidence; device
+`control_timing` records signal dispatch, observed exit and confirmed cleanup
+when available. Exit observation is not an exact kernel exit timestamp. A worker
+that completed its configured activity before interruption remains completed,
+with its late request retained separately. Emergency and temperature failures
+retain their safety classifications. Ctrl+C, SIGTERM and SIGHUP still request
+bounded supervised shutdown; kernel completion and uncertain cleanup retain the
+existing recovery obligations.
+
+Live display writes are nonblocking and bounded to 8 KiB pending output. Dropped
+display bytes are counted in `input_observation`; durable terminal evidence, not
+a missing terminal message, establishes execution and cleanup. Arbitrary typed
+input is not included in production result artifacts. The integrated stage
+worker uses its existing lease/deadline callback rather than terminal reads and
+shares the corrected request-versus-completion reconciliation.
+
+The original physical runs remain preliminary successful functional/heating
+observations. They do not establish physical cancellation acceptance. The
+historical PTY investigation demonstrated conditional input defects; it did not
+recover the original workstation input bytes or prove which condition caused
+those late requests. One separately approved physical cancellation test is still
+required after the reviewed deployment is promoted.

@@ -132,3 +132,42 @@ def run_acceptance_analysis_checks():
         assert not any('exclusive target mutation' in i for i in shared_report['issues'])
         meta['complete']=False;(root/'session.json').write_text(json.dumps(meta))
         assert any('incomplete' in i for i in a.analyze(root)['issues'])
+
+
+def run_acceptance_child_disappearance_checks():
+    """A real child disappears between its parent's proc snapshot and registration."""
+    import subprocess
+    import sys
+    program='''import subprocess,sys
+child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"])
+print(child.pid,flush=True)
+try:
+ for line in sys.stdin:
+  if line.strip()=="REAP":
+   child.terminate();child.wait();print("REAPED",flush=True)
+  elif line.strip()=="QUIT":break
+finally:
+ if child.poll() is None:child.terminate();child.wait()
+'''
+    parent=subprocess.Popen([sys.executable,'-u','-B','-c',program],stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,text=True,start_new_session=True)
+    child=int(parent.stdout.readline());during=False;reaped=False
+    try:
+        def reader(pid):
+            nonlocal reaped
+            row=a.process(pid)
+            if pid==parent.pid and during and not reaped:
+                assert child in row['children']
+                parent.stdin.write('REAP\n');parent.stdin.flush()
+                assert parent.stdout.readline().strip()=='REAPED';reaped=True
+            return row
+        tracker=a.Processes(reader);creation=tracker.register(parent.pid,'auxiliary');during=True
+        first,errors=tracker.sample();second,second_errors=tracker.sample()
+        assert parent.poll() is None and a.process(parent.pid)['start_ticks']==creation
+        assert parent.pid in tracker.known and parent.pid not in tracker.retired
+        assert {r['pid'] for r in first}=={parent.pid}=={r['pid'] for r in second}
+        assert len(errors)==1 and errors[0]['pid']==child and errors[0]['parent_pid']==parent.pid
+        assert errors[0]['observation']=='child registration incomplete' and not second_errors
+    finally:
+        parent.stdin.write('QUIT\n');parent.stdin.flush();parent.wait(timeout=5)
+        parent.stdin.close();parent.stdout.close()

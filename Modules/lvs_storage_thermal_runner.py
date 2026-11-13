@@ -186,7 +186,7 @@ class ThermalRunner:
             except OSError as exc:error=exc
         raise error
 
-    def run(self,config,plan,output_root,*,allow_partial=False,control=None,observe=None):
+    def run(self,config,plan,output_root,*,allow_partial=False,control=None,observe=None,control_diagnostics=None):
         if self.unconfirmed:raise RuntimeError('previous process cleanup unconfirmed; retained descriptors require recovery')
         if plan['configuration']!=config.to_dict():raise ValueError('effective configuration changed; preview again')
         if plan['partial_coverage'] and not allow_partial:raise ValueError('explicit eligible-subset confirmation required')
@@ -238,29 +238,55 @@ class ThermalRunner:
         jobs=[];pending=[r for r in plan['targets'] if r['state']=='ready'];failure=''
         started=self.clock();cpu_start=time.process_time();children_start=resource.getrusage(resource.RUSAGE_CHILDREN)
         next_launch=started;next_monitor=started;next_identity=started;next_progress=started
-        handlers={};stop_all=False;emergency=False
+        handlers={};stop_all=False;emergency=False;request_time=None
+        control_events=[];dropped_control_events=0
+        def event(kind,**fields):
+            nonlocal dropped_control_events
+            if len(control_events)<256:control_events.append(dict(kind=kind,observed_monotonic=self.clock(),**fields))
+            else:dropped_control_events+=1
         def interrupted(_signum,_frame):
-            nonlocal stop_all
-            stop_all=True
+            nonlocal stop_all,request_time
+            stop_all=True;request_time=self.clock()
+            event('signal_request',signal=_signum,recognized_monotonic=request_time)
         for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP):
             try:handlers[sig]=signal.signal(sig,interrupted)
             except ValueError:pass  # injected worker-thread tests; main CLI is always signal-aware
-        def stop(job,reason,safety=False):
+        def stop(job,reason,safety=False,recognized=None):
             r=job['result']
+            if job.get('done') or not job.get('process'):return
             if not job.get('stopping'):
-                job['stopping']=self.clock();r.stop_reason=reason;r.safety_stop=safety
-                try:self._signal_process(job['process'],signal.SIGTERM)
-                except ProcessLookupError:pass
+                timing=job.setdefault('control_timing',{})
+                if recognized is not None:timing['request_recognized_monotonic']=recognized
+                try:
+                    # A request is not proof of interruption. Reap/check through
+                    # stable authority before tagging an operator cancellation.
+                    if reason.startswith(('operator cancelled','group emergency')) and self._process(job['process']).poll() is not None:
+                        timing['request_after_observed_exit']=True
+                        event('late_stop_request',device_id=r.device_id,recognized_monotonic=recognized)
+                        return
+                    job['stopping']=self.clock();r.stop_reason=reason;r.safety_stop=safety
+                    timing['signal_dispatch_monotonic']=self.clock()
+                    self._signal_process(job['process'],signal.SIGTERM)
+                    timing['signal_dispatched']=True
+                except ProcessLookupError:
+                    timing['signal_dispatched']=False
+                    if reason.startswith('operator cancelled'):r.stop_reason=''
                 except OSError as exc:r.state='incomplete';r.stop_reason='Owned process authority lost: '+str(exc)
         try:
             while pending or any(not j.get('done') for j in jobs):
                 now=self.clock()
                 if control:
                     commands=control(jobs) or []
-                    if 'all' in commands:stop_all=True
-                    if 'emergency' in commands:emergency=True;stop_all=True
-                    for j in jobs:
-                        if j['row']['device_id'] in commands:stop(j,'operator cancelled drive')
+                    for supplied in commands[:32]:
+                        command=supplied.get('command') if isinstance(supplied,dict) else supplied
+                        recognized=supplied.get('recognized_monotonic',now) if isinstance(supplied,dict) else now
+                        event('control_request',command=command,recognized_monotonic=recognized)
+                        if command in ('all','emergency'):
+                            stop_all=True;request_time=recognized
+                            if command=='emergency':emergency=True
+                        else:
+                            for j in jobs:
+                                if j['row']['device_id']==command:stop(j,'operator cancelled drive',recognized=recognized)
                 if config.monitoring=='approved_unmonitored' and not approval_valid(config,plan['selected_devices']):
                     emergency=True;stop_all=True
                     for j in jobs:
@@ -268,7 +294,7 @@ class ThermalRunner:
                 if stop_all:
                     pending.clear()
                     for j in jobs:
-                        if not j.get('done'):stop(j,'group emergency stop' if emergency else 'operator cancelled run',emergency)
+                        if not j.get('done'):stop(j,'group emergency stop' if emergency else 'operator cancelled run',emergency,request_time)
                 if pending and now>=next_launch:
                     row=pending.pop(0);index=len(jobs)+1;fd=None;out=None;err=None;exe=None
                     result=ThermalResult(row['device_id'],row['identity'],state='running',activity_scope='physical_drive_reads',access_mode=config.access_mode,
@@ -372,11 +398,13 @@ class ThermalRunner:
                         except ProcessLookupError:pass
                     if p.poll() is not None:
                         p.wait();r.exit_code=p.returncode;r.ended_monotonic=self.clock()
+                        job.setdefault('control_timing',{})['worker_exit_observed_monotonic']=r.ended_monotonic
                         if not job.get('evidence_finished'):
                             self._finish(job,config);job['evidence_finished']=True
                             if r.state=='failed':emergency=True;stop_all=True
                         if self._clean_process(p):
                             os.close(job['fd']);job.pop('fd');r.cleanup_confirmed=True
+                            job.setdefault('control_timing',{})['cleanup_confirmed_monotonic']=self.clock()
                         else:
                             stop(job,'descendant cleanup unconfirmed');
                             if now-job['stopping']<4:continue
@@ -411,7 +439,11 @@ class ThermalRunner:
                 if 'fd' in job:
                     try:clean=bool(p) and self._clean_process(p)
                     except OSError:clean=False;job['authority_lost']=True
-                    if clean:os.close(job.pop('fd'));r.cleanup_confirmed=True
+                    if clean:
+                        os.close(job.pop('fd'));r.cleanup_confirmed=True
+                        timing=job.setdefault('control_timing',{})
+                        timing.setdefault('worker_exit_observed_monotonic',self.clock())
+                        timing['cleanup_confirmed_monotonic']=self.clock()
                     else:self.unconfirmed.append(job);r.outstanding_descriptors=1;r.state='incomplete'
                 for name in ('stdout','stderr'):
                     if name in job:job[name].close()
@@ -426,7 +458,7 @@ class ThermalRunner:
                            temperature_start_c=job['initial'],temperature_peak_c=job['peak'],
                            temperature_end_c=job.get('temperature_end'),temperature_warning=job.get('temperature_warning',False),
                            last_observation=job.get('last_snapshot'),guard_evidence=job.get('guard'),command=job.get('command'),
-                           fio_cpu=job.get('fio_cpu'),fio_activity=job.get('fio_activity'))
+                           fio_cpu=job.get('fio_cpu'),fio_activity=job.get('fio_activity'),control_timing=job.get('control_timing',{}))
             try:
                 payload['terminal_published']=True;self._write(directory/'worker_results'/f'{job["index"]}.json',payload)
             except OSError as error:payload['terminal_published']=False;payload['state']='incomplete';failure=str(error)
@@ -447,7 +479,8 @@ class ThermalRunner:
                     elapsed_seconds=ended-started,supervisor_cpu_seconds=time.process_time()-cpu_start,
                     children_cpu_seconds=(children.ru_utime+children.ru_stime)-(children_start.ru_utime+children_start.ru_stime),
                     heating_effectiveness='not_accepted',storage_integrity='not_tested',failure=failure,
-                    physical_thermal_acceptance=False,
+                    physical_thermal_acceptance=False,control_events=control_events,dropped_control_events=dropped_control_events,
+                    input_observation=control_diagnostics() if control_diagnostics else None,
                     source_provenance_end=source_end,readiness=plan,parent_finalization_complete=True,
                     ended=datetime.now(timezone.utc).isoformat(),started=manifest['started'])
         # One atomic completion authority, published LAST. No earlier successful
@@ -493,7 +526,13 @@ class ThermalRunner:
             r.errors+=1;r.stop_reason=r.stop_reason or f'worker evidence invalid: {error}'
         if r.safety_stop:r.state='failed'
         elif r.shutdown_timed_out or r.forced_kill:r.state='incomplete'
-        elif r.stop_reason.startswith(('operator cancelled','group emergency')):r.state='cancelled'
+        elif r.stop_reason.startswith(('operator cancelled','group emergency')):
+            if r.duration_completed and r.exit_code==0 and not r.errors and not (r.write_ios or r.discard_ios or r.flush_ios) and r.guard_confirmed and r.provenance_confirmed:
+                # Completion won the signal/exit race; retain the request timing
+                # without retrospectively claiming interrupted execution.
+                job.setdefault('control_timing',{})['completed_before_interruption']=True
+                r.stop_reason='';r.state='completed'
+            else:r.state='cancelled'
         elif r.exit_code!=0 or r.errors or r.write_ios or r.discard_ios or r.flush_ios or not r.duration_completed or not r.guard_confirmed or not r.provenance_confirmed:r.state='failed'
         elif r.stop_reason:r.state='incomplete'
         else:r.state='completed'

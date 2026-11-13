@@ -927,11 +927,16 @@ def run_thermal_stage_native_admission_checks():
                 if scenario=='queued_then_revoked':
                     os.pwrite(f.state._pin,b'R',5)
                     ofd_lock(f.state._pin,unlock=True)
-                    assert f.state.revoke()
+                    f.state.revoke()  # False means nonblocking closure is still pending.
+                    assert os.pread(f.state._pin,1,5)==b'R'
                 else:
                     time.sleep(max(0,deadline-time.monotonic())+.02)
                     ofd_lock(f.state._pin,unlock=True)
                 assert p.wait(timeout=2)!=0 and 'COMMITTED' not in f.text()
+                if scenario=='queued_then_revoked':
+                    deadline_close=time.monotonic()+1
+                    while not f.state.revoke() and time.monotonic()<deadline_close:time.sleep(.001)
+                    assert os.pread(f.state._pin,6,0)==b'LVS1CR'
             finally:
                 ofd_lock(f.state._pin,unlock=True);parent.close();child.close()
                 if p is not None and p.poll() is None:p.kill();p.wait(timeout=2)

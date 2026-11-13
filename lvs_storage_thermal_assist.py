@@ -7,7 +7,7 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
-import select
+from contextlib import contextmanager
 import shutil
 import subprocess
 import sys
@@ -67,7 +67,7 @@ class ThermalMenu:
     def __init__(self,runner,config,output_root,screens=None,*,recovery_marker=None):
         self.runner,self.config,self.output_root=runner,config,Path(output_root)
         self.ui=screens or EnvironmentScreens();self.last_print=0;self.cancel_input=''
-        self.closed=False
+        self.closed=False;self.input_owner=None
         self.recovery_marker=Path(recovery_marker) if recovery_marker is not None else ROOT/'build/storage_thermal_recovery_required.json'
 
     def results(self,*args):
@@ -119,18 +119,45 @@ class ThermalMenu:
                 path=build_guard();self.runner.guard=str(path)
                 self.results('Guard built',[str(path)])
 
+    @contextmanager
+    def input_context(self):
+        # Custom/non-terminal frontends retain their existing explicit ask API.
+        if self.input_owner is not None or getattr(self.ui,'ask',None) is not input or not self.ui.stdin.isatty():
+            yield
+            return
+        from Modules.lvs_terminal_input import TerminalInput
+        owner=TerminalInput(self.ui.stdin,self.ui.stdout)
+        previous=self.ui.ask
+        self.input_owner=owner;self.ui.ask=owner.ask
+        try:yield
+        finally:
+            self.ui.ask=previous;self.input_owner=None;owner.close()
+
     def controls(self,jobs):
-        try:
-            if not self.ui.stdin.isatty() or not select.select([self.ui.stdin],[],[],0)[0]:return []
-            value=self.ui.stdin.readline()
-            if not value:return ['all']
-            value=value.strip().lower()
-            if value in ('0','q','stop'):return ['all']
-            if value in ('e','emergency'):return ['emergency']
-            if value.startswith('s '):
-                index=int(value[2:]);return [jobs[index-1]['row']['device_id']] if 1<=index<=len(jobs) else []
-        except (ValueError,OSError):pass
-        return []
+        owner=self.input_owner
+        if owner is None:return []
+        commands=[]
+        for raw in owner.poll():
+            value=raw.strip().lower();command=None
+            if value in ('0','q','stop','\x03'):command='all'
+            elif value in ('e','emergency'):command='emergency'
+            elif value.startswith('s '):
+                try:
+                    index=int(value[2:])
+                    if 1<=index<=len(jobs):command=jobs[index-1]['row']['device_id']
+                except ValueError:pass
+            if command is None:
+                owner.write('Invalid control. Use 0, s NUMBER, or e, then Enter.')
+            else:
+                commands.append(dict(command=command,recognized_monotonic=time.monotonic()))
+                owner.write('Accepted stop request: '+command+'; interruption and cleanup will be verified.')
+        if owner.failure or owner.eof:
+            if not owner.stop_notified:
+                owner.stop_notified=True
+                owner.write('Input unavailable or capacity exceeded; requesting stop-all.')
+                commands.append(dict(command='all',recognized_monotonic=time.monotonic(),reason=owner.failure or 'terminal closed'))
+        owner.flush()
+        return commands
 
     def observe(self,jobs):
         if time.monotonic()-self.last_print<5:return
@@ -143,6 +170,9 @@ class ThermalMenu:
                           f"observed device reads {sample.get('device_read_ios_since_launch','unavailable')}")
 
     def start(self):
+        with self.input_context():return self._start()
+
+    def _start(self):
         config=self.config
         if config.monitoring=='approved_unmonitored':
             ids=[r['device_id'] for r in self.runner.discover(self.config) if selected(r,config)]
@@ -157,7 +187,7 @@ class ThermalMenu:
             self.results('No workload started',['Resolve the listed blockers, then preview again.',f'Readiness saved: {path}'],json.dumps(plan,indent=2));return
         note=('Unmonitored operation: no verified thermal margins; approval is for this exact duration/selection only.\n'
               if config.monitoring=='approved_unmonitored' else '')
-        if not self.ui.confirm(note+'Run only the listed eligible HDDs; blocked devices will not execute. No workload write requests or permission changes. Shared opt-in permits background/induced kernel writes and delayed read completion; fio limits do not bound initialization or OS traffic.',
+        if not self.ui.confirm(note+'Run only the listed eligible drives; blocked devices will not execute. No workload write requests or permission changes. Shared opt-in permits background/induced kernel writes and delayed read completion; fio limits do not bound initialization or OS traffic.',
                                'Start the displayed read-only workload'):
             return
         if config.monitoring=='approved_unmonitored':
@@ -175,7 +205,14 @@ class ThermalMenu:
         self.runner.targets.output_safe(self.recovery_marker.parent,[r for r in plan['targets'] if r['state']=='ready'])
         scope=RecoveryScope(self.recovery_marker).enter(evidence_directory=self.output_root)
         try:
-            directory,result=self.runner.run(config,plan,self.output_root,allow_partial=True,control=self.controls,observe=self.observe)
+            previous_output=getattr(self.ui,'output',None)
+            if self.input_owner is not None:self.ui.output=self.input_owner.write
+            try:
+                directory,result=self.runner.run(config,plan,self.output_root,allow_partial=True,control=self.controls,
+                    observe=self.observe,control_diagnostics=self.input_owner.snapshot if self.input_owner is not None else None)
+            finally:
+                if self.input_owner is not None:
+                    self.ui.output=previous_output;self.input_owner.finish_activity()
             if (not self.runner.unconfirmed and result.get('parent_finalization_complete') is True
                     and all(d.get('cleanup_confirmed') and d.get('terminal_published') for d in result.get('devices',[]))):
                 scope.resolve(cleanup_confirmed=True)
@@ -183,6 +220,9 @@ class ThermalMenu:
         self.results('Run finished',self.runner.summary(result).splitlines()+[f'Results: {directory}'],json.dumps(result,indent=2))
 
     def run(self):
+        with self.input_context():return self._run()
+
+    def _run(self):
         while not self.closed:
             try:
                 self.ui.open('LVS Storage Thermal Assist')

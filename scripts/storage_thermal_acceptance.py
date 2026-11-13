@@ -96,16 +96,21 @@ class Processes:
                 row=self.reader(pid)
                 require(row['start_ticks']==expected,'PID reused; replacement not followed')
                 rows[pid]=dict(row,role=role)
-                for child in row['children']:
-                    if child in self.retired:continue
+            except (OSError,ValueError) as error:
+                errors.append(dict(pid=pid,start_ticks=expected,reason=str(error)));self.known.pop(pid,None)
+                require(len(self.retired)<8192,'retired process history limit');self.retired.add(pid)
+            if pid not in rows:continue
+            for child in row['children']:
+                if child in self.retired:continue
+                try:
                     if child not in self.known:
                         self.register(child,role);queue.append(child)
                     elif role=='auxiliary' and self.known[child][1]=='primary':
                         self.known[child]=(self.known[child][0],'auxiliary')
                         if child in rows:rows[child]['role']='auxiliary'
-            except (OSError,ValueError) as error:
-                errors.append(dict(pid=pid,start_ticks=expected,reason=str(error)));self.known.pop(pid,None)
-                require(len(self.retired)<8192,'retired process history limit');self.retired.add(pid)
+                except (OSError,ValueError) as error:
+                    errors.append(dict(pid=child,parent_pid=pid,start_ticks=None,
+                                       observation='child registration incomplete',reason=str(error)))
         return list(rows.values()),errors
 
 

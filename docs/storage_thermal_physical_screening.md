@@ -288,3 +288,11 @@ drives require a reviewed aggregate budget; insufficient budget blocks storage
 without fabricating a primary hardware failure.
 
 Conventional LUKS data drives use the separately reviewed [non-target deployment and encrypted-topology procedure](storage_thermal_encrypted_deployment.md). Native privileged readiness and target-specific approval are still required before any physical workload.
+
+Observer child-discovery failures are incomplete measurements, not workload
+ownership decisions. If a child disappears between a live parent's `/proc`
+snapshot and registration, the observer records the child/parent gap and keeps
+tracking the parent's stable creation identity. It cannot certify cleanup or
+clear recovery state. Compare the workload's bounded `control_events` and
+per-device `control_timing` with observer timestamps when reviewing cancellation;
+a request marker alone does not prove that execution was interrupted.

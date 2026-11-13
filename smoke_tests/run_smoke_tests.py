@@ -37,7 +37,8 @@ from smoke_tests.environment_ui_checks import (
 )
 from smoke_tests.storage_thermal_crypt_checks import (run_overlay_layer_syntax_checks, run_ostree_boot_record_checks, run_bazzite_composefs_topology_checks, run_crypt_system_submount_checks, run_crypt_kernel_status_checks, run_crypt_topology_checks, run_crypt_atomic_overlay_checks, run_thermal_deployment_checks)
 from smoke_tests.storage_thermal_shared_checks import (run_shared_contract_checks, run_shared_topology_checks, run_shared_descriptor_checks, run_shared_supervisor_checks, run_shared_owned_stage_checks, run_shared_interactive_checks, run_shared_vm_evidence_checks)
-from smoke_tests.storage_thermal_physical_capture_checks import (run_acceptance_accounting_checks, run_acceptance_capture_checks, run_acceptance_analysis_checks)
+from smoke_tests.storage_thermal_input_checks import run_terminal_original_pty_checks, run_terminal_boundary_pty_checks
+from smoke_tests.storage_thermal_physical_capture_checks import (run_acceptance_accounting_checks, run_acceptance_capture_checks, run_acceptance_analysis_checks, run_acceptance_child_disappearance_checks)
 from smoke_tests.storage_thermal_file_research_checks import (run_file_research_fixture_checks, run_file_research_attribution_checks, run_file_research_evidence_checks, run_file_research_native_checks)
 from smoke_tests.profile_thermal_summary_checks import run_profile_thermal_summary_checks
 from smoke_tests.storage_thermal_active_checks import (run_active_probe_fixture_checks, run_active_probe_evidence_checks, run_active_probe_production_boundary_checks, run_active_causal_trace_checks, run_active_targeted_contract_checks)
@@ -29773,6 +29774,9 @@ def main() -> int:
         run_shared_topology_checks,
         run_shared_descriptor_checks,
         run_shared_supervisor_checks,
+        run_terminal_original_pty_checks,
+        run_terminal_boundary_pty_checks,
+        run_acceptance_child_disappearance_checks,
         run_acceptance_accounting_checks,
         run_acceptance_capture_checks,
         run_acceptance_analysis_checks,
