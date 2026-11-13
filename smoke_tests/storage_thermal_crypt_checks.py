@@ -161,3 +161,146 @@ def run_crypt_system_submount_checks():
                 (btrfs/'uuid/devices'/member).mkdir(parents=True);f.resolver.sys_fs_btrfs=btrfs
                 (f.proc/'self/mountinfo').write_text(f'1 0 8:0 / / rw - ext4 /dev/sda rw\n2 1 0:8 /@certs /etc/ssl rw - btrfs {source} rw\n')
                 assert row()['system_drive'] and not row()['eligible']
+
+
+def run_overlay_layer_syntax_checks():
+    from Modules.lvs_storage_thermal_mounts import overlay_layers
+    def parse(options):return overlay_layers('1 0 0:42 / / ro - overlay overlay '+options)[0]
+    assert parse(r'ro,lowerdir=/lower\072name:/second::/data\054name')==[
+        ('lower',Path('/lower:name')),('lower',Path('/second')),('data',Path('/data,name'))]
+    assert parse(r'ro,lowerdir+=/lower:literal,datadir+=/data\040space,datadir+=/other')==[
+        ('lower',Path('/lower:literal')),('data',Path('/data space')),('data',Path('/other'))]
+    assert parse(r'ro,lowerdir=/lower\:name,upperdir=/upper\,name,workdir=/work')==[
+        ('lower',Path('/lower:name')),('upperdir',Path('/upper,name')),('workdir',Path('/work'))]
+    for bad in ('ro','lowerdir=relative','lowerdir=/a/../b','lowerdir=/a,lowerdir=/b',
+                'lowerdir=/a,lowerdir+=/b','lowerdir=/a,upperdir=/u','lowerdir=/a:::b',
+                'lowerdir=/a:','lowerdir=/a,datadir=/unsupported','lowerdir+=',
+                'lowerdir=/a,datadir+=/data\\'):
+        rejects(lambda:parse(bad))
+
+
+def run_ostree_boot_record_checks():
+    import ctypes
+    from Modules.lvs_storage_thermal_mounts import boot_record
+    try:g=ctypes.CDLL('libglib-2.0.so.0')
+    except OSError:
+        with patch('Modules.lvs_storage_thermal_mounts.ctypes.CDLL',side_effect=OSError('missing')):
+            with tempfile.NamedTemporaryFile() as f:
+                f.write(b'x');f.flush();rejects(lambda:boot_record(Path(f.name),owner=os.getuid()))
+        return  # Optional OS capability, not a new installation requirement.
+    ptr=ctypes.c_void_p
+    for name,args,result in [('g_variant_parse',[ptr,ctypes.c_char_p,ptr,ptr,ptr],ptr),
+        ('g_variant_get_size',[ptr],ctypes.c_size_t),('g_variant_get_data',[ptr],ptr),('g_variant_unref',[ptr],None)]:
+        fn=getattr(g,name);fn.argtypes=args;fn.restype=result
+    def encoded(value):
+        v=g.g_variant_parse(None,value.encode(),None,None,None);assert v
+        try:return ctypes.string_at(g.g_variant_get_data(v),g.g_variant_get_size(v))
+        finally:g.g_variant_unref(v)
+    valid="{'composefs': <true>, 'root.transient': <false>, 'root.transient-ro': <false>, 'backing-root-device-inode': <(uint64 40, uint64 999)>}"
+    with tempfile.TemporaryDirectory() as d:
+        p=Path(d)/'booted';p.write_bytes(encoded(valid));p.chmod(0o600)
+        assert boot_record(p,owner=os.getuid())['backing-root-device-inode']==(40,999)
+        with patch('Modules.lvs_storage_thermal_mounts.ctypes.CDLL',side_effect=OSError('missing')):rejects(lambda:boot_record(p,owner=os.getuid()))
+        for bad in (valid.replace('<true>',"<'true'>"),valid.replace('uint64 40','int64 40'),
+                    valid.replace("'composefs': <true>,",''),valid.replace("'composefs': <true>,","'composefs': <true>, 'composefs': <false>,")):
+            p.write_bytes(encoded(bad));rejects(lambda:boot_record(p,owner=os.getuid()))
+        p.write_bytes(b'not a GVariant');rejects(lambda:boot_record(p,owner=os.getuid()))
+        p.write_bytes(encoded(valid));p.chmod(0o622);rejects(lambda:boot_record(p,owner=os.getuid()))
+        p.chmod(0o600);link=Path(d)/'link';link.symlink_to(p);rejects(lambda:boot_record(link,owner=os.getuid()))
+
+
+def run_bazzite_composefs_topology_checks():
+    """Sanitized observed workstation shape, actual discovery/revalidation; no devices.
+
+    Root-owned OS witness is injected; boot-record codec is tested independently.
+    Only private regular files, fake sysfs and fake mapping INFO responses are used.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        f=TopologyFixture(d)
+        # Two PCIe controllers, one namespace each; five partition-backed LUKS2s.
+        (f.root/'nvme').mkdir();nodes=[];mappings=[]
+        for index in range(2):
+            controller=f.root/'pci/nvme'/f'nvme{index}';node=controller/f'nvme{index}n1';node.mkdir(parents=True)
+            for sub in ('queue','holders','slaves'):(node/sub).mkdir()
+            (node/'device').symlink_to(controller)
+            for name,value in {'serial':f'OPAQUE-{index}','transport':'pcie','model':'Sanitized NVMe'}.items():(controller/name).write_text(value)
+            for name,value in {'size':'65536','dev':f'259:{index}','removable':'0','queue/rotational':'0','queue/logical_block_size':'512'}.items():(node/name).write_text(value)
+            (f.sys/node.name).symlink_to(node);(f.root/'nvme'/controller.name).symlink_to(controller)
+            (f.dev/node.name).write_bytes(b'fixture');nodes.append(node)
+        for index,drive in enumerate((1,0,0,0,1)):
+            node=nodes[drive];part=node/(node.name+f'p{index+1}');part.mkdir()
+            (f.sys/part.name).symlink_to(part)
+            for sub in ('holders','slaves'):(part/sub).mkdir()
+            (part/'partition').write_text(str(index+1));(part/'dev').write_text(f'259:{index+10}');(part/'size').write_text('32768')
+            mappings.append(mapping(f,part,f'dm-{index}'))
+            (f.root/f'btrfs/fs{index}/devices'/f'dm-{index}').mkdir(parents=True)
+        f.resolver.sys_fs_btrfs=f.root/'btrfs'
+        backing=f.root/'sysroot';deployment=backing/'ostree/deploy/os/deploy/opaque.0';deployment.mkdir(parents=True)
+        image=deployment/'.ostree.cfs';image.write_bytes(b'opaque metadata image')
+        (backing/'ostree/repo/objects').mkdir(parents=True)
+        bootlink=backing/'ostree/boot.0/os/opaque/0';bootlink.parent.mkdir(parents=True);bootlink.symlink_to(deployment)
+        (f.proc/'cmdline').write_text('quiet ostree=/ostree/boot.0/os/opaque/0')
+        identity=deployment.stat();record={'composefs':True,'root.transient':False,'root.transient-ro':False,
+                                         'backing-root-device-inode':(identity.st_dev,identity.st_ino)}
+        rootline=f'1 0 0:42 / / ro - overlay composefs ro,lowerdir+=/run/ostree/.private/cfsroot-lower,datadir+={backing}/ostree/repo/objects,redirect_dir=on,metacopy=on'
+        lines=[rootline,f'2 1 0:40 / {backing} rw - btrfs /dev/dm-0 rw',
+               '3 1 0:40 /etc /etc rw - btrfs /dev/dm-0 rw',
+               '4 1 0:40 /var /var rw - btrfs /dev/dm-0 rw',
+               '5 1 0:41 / /boot rw - btrfs /dev/dm-4 rw',
+               '6 1 0:50 / /var/home/operator/data-a rw - btrfs /dev/dm-1 rw',
+               '7 1 0:51 / /var/home/operator/data-b rw - btrfs /dev/dm-2 rw',
+               '8 1 0:52 / /var/home/operator/data-c rw - btrfs /dev/dm-3 rw',
+               '9 1 0:9 / /sys/fs/selinux rw - selinuxfs selinuxfs rw',
+               '10 1 0:10 / /run/user/1000/doc rw - fuse.portal portal rw',
+               '11 1 0:11 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfs rw']
+        def write(records): (f.proc/'self/mountinfo').write_text('\n'.join(records)+'\n')
+        def proof(node):return dict(device=(node/'dev').read_text(),uuid=(node/'dm/uuid').read_text(),event=1,sectors=32768)
+        real_stat=Path.stat
+        def trusted_image(path,*args,**kwargs):
+            st=real_stat(path,*args,**kwargs)
+            if path==image:return SimpleNamespace(st_mode=st.st_mode,st_uid=0)
+            return st
+        with patch('Modules.lvs_storage_thermal_mounts.boot_record',return_value=record),patch.object(Path,'stat',trusted_image),patch('Modules.lvs_storage_thermal_targets.crypt_status',side_effect=proof):
+            write(lines)
+            def rows():return {r['identity']['name']:r for r in f.resolver.discover(access_mode='shared_readonly_opt_in') if r['transport']=='nvme'}
+            current=rows();data=current['nvme0n1'];system=current['nvme1n1']
+            assert data['eligible'] and data['system_drive'] is False and data['topology_complete'],data
+            assert system['system_drive'] is True and not system['eligible'] and system['topology_complete'],system
+            assert len(data['holder_proofs'])==3 and len(system['holder_proofs'])==2 and len(current)==2
+            assert f.resolver.revalidate(data)['eligible']
+            # Same data drive becomes system when an essential subtree appears.
+            write(lines+['12 1 0:50 /certs /etc/ssl rw - btrfs /dev/dm-1 rw'])
+            assert rows()['nvme0n1']['system_drive'] is True;rejects(lambda:f.resolver.revalidate(data))
+            for extra in ('12 1 0:91 / /unknown rw - mystery source rw',
+                          '12 1 0:91 / /usr/bin rw - fuse.portal portal rw'):
+                write(lines+[extra]);result=rows()
+                assert not result['nvme0n1']['eligible'] and result['nvme0n1']['system_drive'] is None
+                assert result['nvme1n1']['system_drive'] is True
+                assert '/unknown' in ' '.join(result['nvme0n1']['reasons']) or '/usr/bin' in ' '.join(result['nvme0n1']['reasons'])
+            write(lines+[rootline.replace('1 0 0:42','99 0 0:42').replace('metacopy=on','metacopy=off')])
+            assert not rows()['nvme0n1']['eligible']  # identical mount identity, conflicting options
+            for bad in (rootline.replace('lowerdir+=','unknownlayer='),rootline.replace('datadir+=','datadir='),rootline.replace('metacopy=on','metacopy=off')):
+                write([bad,*lines[1:]]);assert not rows()['nvme0n1']['eligible']
+            write(lines)
+            for changed in ({**record,'backing-root-device-inode':(0,0)},{**record,'composefs':False},{**record,'root.transient':True}):
+                with patch('Modules.lvs_storage_thermal_mounts.boot_record',return_value=changed):
+                    result=rows();assert not result['nvme0n1']['eligible'] and result['nvme1n1']['system_drive'] is True
+            with patch('Modules.lvs_storage_thermal_mounts.boot_record',side_effect=ValueError('untrusted boot record')):
+                assert not rows()['nvme0n1']['eligible']
+            (f.proc/'cmdline').write_text('quiet')
+            assert not rows()['nvme0n1']['eligible']
+            (f.proc/'cmdline').write_text('ostree=/ostree/boot.0/os/opaque/0')
+            image.rename(deployment/'saved')
+            assert not rows()['nvme0n1']['eligible']
+            (deployment/'saved').rename(image)
+            write(lines+[f'12 1 0:50 / {backing} rw - btrfs /dev/dm-1 rw'])
+            assert not rows()['nvme0n1']['eligible']  # conflicting visible backing mounts
+            write(lines)
+            # The metadata image and data-only layers are independently mapped.
+            other=f.root/'metadata';other.mkdir();moved=other/'.ostree.cfs';image.unlink();image.symlink_to(moved);moved.write_bytes(b'image')
+            def moved_trust(path,*a,**kw):
+                st=real_stat(path,*a,**kw)
+                return SimpleNamespace(st_mode=st.st_mode,st_uid=0) if path==moved else st
+            with patch.object(Path,'stat',moved_trust):
+                write(lines+[f'12 1 0:50 / {other} rw - btrfs /dev/dm-1 rw'])
+                assert rows()['nvme0n1']['system_drive'] is True

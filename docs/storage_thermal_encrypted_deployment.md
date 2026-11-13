@@ -50,9 +50,9 @@ candidates, subject to the existing topology and monitoring checks. Any other
 protected mount on the same physical drive still excludes the whole drive.
 Bind/subvolume mount roots do not override the destination's OS role. Resolved
 OS aliases participate in the same physical mount proof; root is an exact-only
-anchor, not a blanket protected subtree. Atomic overlay root requires every
-absolute lower/upper/work directory to resolve through a visible backing mount.
-Missing required ancestry or unresolved aliases fail closed with incomplete
+anchor, not a blanket protected subtree. Overlay backing layers require visible
+physical ancestry or the narrowly verified OSTree detached-image proof described
+below. Missing required ancestry or unresolved aliases fail closed with incomplete
 classification. Swap ancestry remains system ancestry.
 
 ## Preparation: no elevated execution or device access
@@ -315,3 +315,40 @@ executing the promoted launcher. Checks inside a Python script cannot retroactiv
 make an untrusted bootstrap script safe. Do not skip the independent approval
 or path inspection steps, or treat the launcher as a privileged service for
 untrusted callers. Routine integrated privilege support remains future work.
+
+### Atomic-host overlay ancestry
+
+Native-host discovery understands legacy `lowerdir=` lists (including `::`
+data-only layers) and modern `lowerdir+=` / `datadir+=` mountinfo options. Layer
+separators are parsed before escaped delimiters are decoded. Every visible
+metadata, data-only, upper and work backing directory must resolve to a known
+mount and physical ancestry. An unknown layer, mount cycle, or conflicting
+visible backing mount blocks execution with the mount and layer reason.
+
+On the observed OSTree composefs host, the root's EROFS metadata lower is detached
+from the visible mount tree. Its `/run/ostree/.private/cfsroot-lower` name alone
+is insufficient evidence. The narrowly supported readonly root requires the
+root-owned `/run/ostree-booted` GVariant record, a matching device/inode for the
+deployment selected by the kernel `ostree=` argument, and a trusted regular
+`.ostree.cfs` image. The deployment is resolved relative to the kernel-declared
+object store, not an assumed boot-device name. Both the resolved image and every
+data-only object-store layer are mapped independently through visible Btrfs,
+partition and dm-crypt ancestry. A relocated image on another physical drive
+therefore protects that drive too. Transient roots, absent/mismatched witnesses,
+and unsupported representations remain blocked. Decoding uses the host's system
+GLib library; a missing decoder blocks this topology without installing anything.
+
+SELinux's kernel virtual filesystem and the standard non-system per-user GVfs
+and document-portal export endpoints do not constitute independent physical
+mount ancestry. Unknown FUSE filesystems and exports at protected OS paths do not
+receive that exemption. Positive system ancestry is retained even if another
+mount is unresolved; unknown ancestry still prevents eligibility. Ordinary
+`/var/home` data mounts remain distinct from essential OS mounts.
+
+This correction was checked against the workstation's actual mountinfo and
+root-owned boot/deployment metadata without sudo, block-device descriptors, or
+temperature reads. Ordinary-user namespace visibility is still insufficient for
+final native-host eligibility. A newly reviewed, versioned deployment must run
+the privileged metadata-only check before claiming the data target eligible.
+The previous encrypted disposable-VM workload evidence remains applicable;
+this change does not alter the opener, guard, fio, ownership or recovery policy.

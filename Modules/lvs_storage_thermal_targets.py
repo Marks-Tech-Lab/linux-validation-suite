@@ -15,6 +15,7 @@ import stat
 import struct
 
 from .lvs_storage_thermal_crypt import crypt_status
+from .lvs_storage_thermal_mounts import overlay_layers, composefs_image
 
 from .lvs_storage_inventory import build_storage_device_entry, clean_storage_value
 from .lvs_storage_benchmark_target import parse_mountinfo, StorageTargetResolver
@@ -70,7 +71,7 @@ class ThermalTargets:
             bydev = {text(n/'dev'):n.name for n in self.sys_class.iterdir() if text(n/'dev')}
             memory_fs = {'proc','sysfs','devtmpfs','devpts','tmpfs','ramfs','rootfs','cgroup','cgroup2',
                          'securityfs','debugfs','tracefs','pstore','configfs','mqueue','hugetlbfs','fusectl',
-                         'bpf','autofs','efivarfs','rpc_pipefs','binfmt_misc'}
+                         'bpf','autofs','efivarfs','rpc_pipefs','binfmt_misc','selinuxfs'}
             # Protect mounts containing essential paths AND mounts inside OS-only
             # trees. /var itself is exact-only: ordinary /var/home data is allowed.
             protected={Path(p) for p in ('/boot','/usr','/etc','/bin','/sbin','/lib','/lib64','/sysroot',
@@ -82,32 +83,34 @@ class ThermalTargets:
             except RuntimeError as error:
                 raise ValueError('essential system path alias unresolved') from error
             essential_mounts={max((m for m in mounts if p==m.mount_point or m.mount_point in p.parents),key=lambda m:len(m.mount_point.parts)).mount_point for p in essential}
-            for mount in mounts:
-                if mount.filesystem in memory_fs:
-                    continue
+            lines={};overlay_records={}
+            for line in raw_mounts.splitlines():
+                for mount in parse_mountinfo(line):
+                    lines[mount]=line
+                    if mount.filesystem=='overlay':
+                        overlay_records.setdefault(mount,set()).add(line.split(' - ',1)[1])
+            def path_members(path,seen):
+                resolved=path.resolve(strict=True)
+                candidates=[m for m in mounts if resolved==m.mount_point or m.mount_point in resolved.parents]
+                if not candidates:raise ValueError('backing path has no visible mount')
+                depth=max(len(m.mount_point.parts) for m in candidates)
+                matches=set(m for m in candidates if len(m.mount_point.parts)==depth)
+                if len(matches)!=1:raise ValueError('backing path mount is ambiguous')
+                return members_for(matches.pop(),seen)
+            def members_for(mount,seen=()):
+                if mount in seen:raise ValueError('overlay backing mount cycle or detached layer without proof')
+                if mount.filesystem in memory_fs:return set()
                 if mount.filesystem=='overlay':
-                    # Atomic-host root overlays must expose every backing directory.
-                    line=next(line for line in raw_mounts.splitlines() if parse_mountinfo(line)[0]==mount)
-                    options=line.split(' - ',1)[1].split()[2].split(',')
-                    paths=[]
-                    for option in options:
-                        if option.startswith(('lowerdir=','upperdir=','workdir=')):
-                            paths.extend(option.split('=',1)[1].split(':'))
-                    if not paths or any(not p.startswith('/') or '\\' in p for p in paths):
-                        raise ValueError('overlay backing directories unresolved')
-                    members=set()
-                    for p in map(Path,paths):
-                        p=p.resolve(strict=True)
-                        candidates=[m for m in mounts if m!=mount and (p==m.mount_point or m.mount_point in p.parents)]
-                        if not candidates:raise ValueError('overlay backing mount unresolved')
-                        backing=max(candidates,key=lambda m:len(m.mount_point.parts))
-                        resolver=StorageTargetResolver(sys_class_block=self.sys_class,sys_fs_btrfs=self.sys_fs_btrfs)
-                        if backing.filesystem=='btrfs':members |= resolver._mount_leaves_with_source(backing)[0]
-                        else:
-                            backing_name=bydev.get(backing.major_minor)
-                            if not backing_name:raise ValueError('overlay backing physical device unresolved')
-                            members |= self.leaves(backing_name)
-                elif mount.filesystem=='btrfs':
+                    if len(overlay_records[mount])!=1:raise ValueError('conflicting overlay backing records')
+                    layers,flags=overlay_layers(lines[mount])
+                    image=composefs_image(mount,lines[mount],layers,flags,self.proc)
+                    members=path_members(image,(*seen,mount)) if image is not None else set()
+                    for kind,path in layers:
+                        if image is not None and kind=='lower':continue  # OS-attested detached metadata image
+                        try:members |= path_members(path,(*seen,mount))
+                        except (OSError,ValueError) as error:raise ValueError(f'{kind} layer {path}: {error}') from error
+                    return members
+                if mount.filesystem=='btrfs':
                     resolver=StorageTargetResolver(sys_class_block=self.sys_class,sys_fs_btrfs=self.sys_fs_btrfs)
                     members=resolver._mount_leaves_with_source(mount)[0]
                     source_block=resolver._mount_block_name(mount)[0]
@@ -115,19 +118,26 @@ class ThermalTargets:
                                  if (fs/'devices'/source_block).exists()]
                     if len(device_sets)!=1:raise ValueError('Btrfs membership changed during discovery')
                     if len(device_sets[0])!=1:self.complex_mount_members |= members
-                else:
-                    name = bydev.get(mount.major_minor)
-                    members=self.leaves(name) if name else None
-                if members is None:
-                    # Network-only mounts don't consume a local block target.
-                    if mount.filesystem in {'nfs','nfs4','cifs','smb3','9p'}:
-                        continue
-                    raise ValueError(f'{mount.filesystem} mount {mount.mount_point}: physical membership unresolved')
+                    return members
+                name=bydev.get(mount.major_minor)
+                if name:return self.leaves(name)
+                if mount.filesystem in {'nfs','nfs4','cifs','smb3','9p'}:return set()
+                raise ValueError('physical membership unresolved')
+            for mount in mounts:
+                is_system=mount.mount_point in essential_mounts or any(p==mount.mount_point or p in mount.mount_point.parents for p in protected)
+                # These session endpoints export files; they do not own a block
+                # filesystem. Never exempt a portal at a protected OS destination.
+                parts=mount.mount_point.parts
+                portal=(len(parts)==5 and parts[1:3]==('run','user') and parts[3].isdigit()
+                        and (mount.filesystem,parts[4]) in {('fuse.portal','doc'),('fuse.gvfsd-fuse','gvfs')})
+                if portal and not is_system:continue
+                try:members=members_for(mount)
+                except (OSError,ValueError,RuntimeError) as error:
+                    problems.append(f'{mount.filesystem} mount {mount.mount_point}: {error}')
+                    continue  # retain positive ancestry from every other mount
                 active |= members
                 if len(members)>1:self.complex_mount_members |= members
-                point=str(mount.mount_point)
-                if mount.mount_point in essential_mounts or any(p==mount.mount_point or p in mount.mount_point.parents for p in protected):
-                    system |= members
+                if is_system:system |= members
             swaps = (self.proc/'swaps').read_text().splitlines()
             for row in swaps[1:]:
                 fields = row.split()
