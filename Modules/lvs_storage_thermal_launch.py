@@ -29,16 +29,18 @@ _PROVENANCE={}
 _OWNED={}  # registered before child release; failures cannot abandon ownership
 
 
-def prepare(directory=None):
+def prepare(directory=None, *, allow_build=True):
     global _LIBRARY,_PROVENANCE
     if _LIBRARY is not None:return True
     from .lvs_native_helpers import find_c_compiler,native_helper_build_command
     source=ROOT/'native/storage_thermal_launch.c'
     binary=Path(directory or ROOT/'build')/'storage_thermal_launch.so'
-    compiler=find_c_compiler()
+    compiler=find_c_compiler() if allow_build else None
     binary.parent.mkdir(parents=True,exist_ok=True)
     # Existing helper compiler policy; never called on primary timed path.
-    if not binary.exists() or binary.stat().st_mtime_ns<source.stat().st_mtime_ns:
+    if not allow_build and not binary.is_file():
+        raise OSError('Verified installed owned launch bootstrap is missing')
+    if allow_build and (not binary.exists() or binary.stat().st_mtime_ns<source.stat().st_mtime_ns):
         if compiler is None:raise OSError('C compiler required to prepare optional owned launch bootstrap')
         import tempfile
         with tempfile.TemporaryDirectory(dir=binary.parent) as tmp:

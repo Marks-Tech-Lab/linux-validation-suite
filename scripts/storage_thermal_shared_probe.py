@@ -105,8 +105,15 @@ def bootstrap():
     seal()
     subprocess.run(['/bin/mount','-t','ext4','-o','rw',fixture_device(0,True),'/newroot'],check=True)
     subprocess.run(['/bin/mount','-t','ext4','-o','rw',fixture_device(1,True),'/newroot/control'],check=True)
+    tracing=[]
+    if Path('/shared-campaign').read_text()=='encrypted-integrated':
+        # Trace the access/mutation boundary, not every interpreter stat/read.
+        # Kernel filtering avoids ptrace overhead manufacturing shutdown delays
+        # in a single-core TCG guest. Fio preadv/pread and open/mutation attempts
+        # remain observable; this is not a full initialization-I/O census.
+        tracing=['--seccomp-bpf','-e','trace=execve,openat,open,pread64,preadv,preadv2,write,pwrite64,pwritev,pwritev2,ioctl,fsync,fdatasync,fallocate,copy_file_range,splice,sendfile,io_uring_setup']
     os.execv('/bin/switch_root',['switch_root','/newroot','/bin/strace','-ff','-ttt','-T','-yy','-s','0','--kill-on-exit',
-        '-e','raw=ioctl','-o','/control/provider.trace','/usr/bin/python3','/foundation_probe.py','--inside'])
+        *tracing,'-e','raw=ioctl','-o','/control/provider.trace','/usr/bin/python3','/foundation_probe.py','--inside'])
 
 
 def config(identity,seconds=3):
@@ -277,6 +284,15 @@ def encrypted_inside():
         approved=subprocess.run([*command,'--check'],capture_output=True,text=True,timeout=20)
         require(approved.returncode==0,'root-owned verified deployment check failed: '+approved.stderr)
         require(next(r for r in json.loads(approved.stdout) if r['identity']['path']==fixture_device(4))['eligible'],'deployed encrypted discovery failed')
+        if Path('/shared-campaign').read_text()=='encrypted-integrated':
+            from scripts.storage_thermal_integrated_probe import run
+            integrated=run(deployment,data['device_id'])
+            payload=dict(contract='lvs.storage_thermal.integrated_vm.v1',results=integrated,error=None)
+            Path('/control/results.json').write_text(json.dumps(payload,indent=2))
+            archive=io.BytesIO()
+            with tarfile.open(fileobj=archive,mode='w:gz') as tar:tar.add('/control',arcname='evidence')
+            print('LVS_EVIDENCE_BEGIN',flush=True);print(base64.b64encode(archive.getvalue()).decode(),flush=True);print('LVS_EVIDENCE_END',flush=True)
+            return
         require(subprocess.run([*command,'--fio','/untrusted'],capture_output=True,timeout=10).returncode!=0,'privileged arbitrary tool override accepted')
         victim=deployment/'runtime/Modules/lvs_storage_thermal.py';original=victim.read_bytes();victim.write_bytes(original+b'\n# tamper\n')
         require(subprocess.run([*command,'--check'],capture_output=True,timeout=10).returncode!=0,'tampered privileged source accepted')
@@ -419,6 +435,11 @@ def encrypted_inside():
 
 
 def verify(result):
+    if result.get('contract')=='lvs.storage_thermal.integrated_vm.v1':
+        require(not result.get('error'),str(result.get('error')))
+        r=result['results'];require(r['canonical_CLEAN'] and r['standalone_mutual_exclusion'],'canonical recovery/mutual exclusion not proven')
+        require(r['complete']['primary_verdict']=='pass' and len(r['complete']['telemetry'])>=2,'primary isolation failed')
+        return
     if result.get('contract')=='lvs.storage_thermal.encrypted_review_vm.v1':
         require(result['root_rejected'] and result['encrypted_boot_rejected'] and result['data_readiness']=='READY','review readiness failure')
         require(len(result['protected_submounts'])==2 and all(c['system'] and not c['eligible'] for c in result['protected_submounts']),'submount review failure')
@@ -472,6 +493,7 @@ def host(args):
         subprocess.run(native_helper_build_command(compiler,ROOT/'native'/source,output)+extra,check=True,capture_output=True,timeout=60)
     snapshot,content=_source_snapshot(ROOT);require(snapshot['status']=='complete','source snapshot incomplete')
     files=[(ROOT/name,'/lvs/'+name) for name in content]
+    files += [(ROOT/'scripts/storage_thermal_integrated_probe.py','/lvs/scripts/storage_thermal_integrated_probe.py')]
     files += [(tools/'storage_thermal_launch.so','/bin/storage_thermal_launch.so'),(ROOT/'scripts/storage_thermal_acceptance.py','/lvs/scripts/storage_thermal_acceptance.py')]
     if args.campaign.startswith('encrypted'):
         from scripts.storage_thermal_prepare import prepare as prepare_bundle
@@ -483,7 +505,7 @@ def host(args):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review'),default='full')
+    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated'),default='full')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
     parser.add_argument('--case');parser.add_argument('--identity')
     for name in ('fio','old-fio','strace','kernel','python'):parser.add_argument('--'+name)

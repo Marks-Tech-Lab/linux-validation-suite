@@ -26,7 +26,7 @@ import sys
 import time
 from uuid import uuid4
 
-from .lvs_storage_thermal import ThermalConfig, GROUPS, canonical_lease_identity
+from .lvs_storage_thermal import ThermalConfig, GROUPS, canonical_lease_identity, ThermalAdmissionEnded
 from .lvs_storage_thermal_runner import ThermalRunner, approve_unmonitored, group_gone
 from .lvs_profile_report_artifacts import atomic_preflight_json
 from .lvs_storage_thermal_results import normalize, not_run, error_result
@@ -139,7 +139,12 @@ def preview(stage, runner=None):
     config = None
     try:
         config = stage_config(stage)
-        runner = runner or default_runner()
+        if runner is None:
+            from .lvs_storage_thermal_runtime import preview as installed_preview
+            result=installed_preview(config)
+            result['requires_consent']=False
+            return result
+        runner = runner
         if config.monitoring == 'approved_unmonitored':
             # Preview only: no execution authorization is conferred. The stage
             # child needs the run-local bounded consent before recreating this.
@@ -614,7 +619,7 @@ class StageLaunches:
             parent.close();child.close()
 
 
-class StageLeaseExpired(ValueError):
+class StageLeaseExpired(ThermalAdmissionEnded):
     pass
 
 
@@ -656,6 +661,7 @@ class ThermalStageSession:
                  stage_deadline=None, clock=time.monotonic, signal_group=None, group_reaped=None):
         self.stage, self.plan = stage, plan
         self.directory = Path(run_dir)/'storage_thermal'/uuid4().hex
+        self.client_directory=self.directory
         self.process = None
         self.popen = popen  # obsolete synchronous factories fail closed
         self.launch_args=launch_args;self.launch_delay_ms=launch_delay_ms
@@ -677,7 +683,12 @@ class ThermalStageSession:
             started_ns=int((self.deadline-stage.duration_seconds if stage_deadline is not None else self.started)*1e9),deadline_ns=int(self.deadline*1e9),lease_identity=None)
         self.admission=None;self.admission_identity=None;self.revocation_confirmed=False;self.revocation_error=''
         self.supervisor_forced_kill=False
-        self.marker = Path(recovery_marker) if recovery_marker is not None else RECOVERY_MARKER
+        self.installed_runtime=plan.get('installed_runtime') if launch_args is None else None
+        if self.installed_runtime:
+            from .lvs_storage_thermal_runtime import STATE
+            self.marker=STATE/'storage_thermal_recovery_required.json'
+            self.directory=STATE/'integrated'/str(os.getuid())/self.lease_id
+        else:self.marker = Path(recovery_marker) if recovery_marker is not None else RECOVERY_MARKER
         self.fault = ''
         self.terminal_read = False
         self.recovery_observation = ''
@@ -687,6 +698,10 @@ class ThermalStageSession:
         _UNCONFIRMED[str(self.marker)] = self
         self.evidence['cleanup_confirmed'] = False
         self.recovery_observation='Storage ownership recovery required: '+str(reason)
+        if self.installed_runtime:
+            # Root supervisor established ARMED before admission. Client failure
+            # cannot authorize any root journal rewrite or CLEAN transition.
+            return
         try:
             from .lvs_storage_thermal_recovery import evidence_operation
             evidence_operation('--retain',self.marker,reason[:2000])
@@ -726,7 +741,8 @@ class ThermalStageSession:
             self.pending=(json.dumps(payload)+'\n').encode()
             if len(self.pending)>8*1024**2:raise ValueError('Auxiliary bootstrap exceeds bounded IPC evidence budget')
             from .lvs_storage_thermal_launch import OwnedProcess
-            argv=self.launch_args or [sys.executable,'-m','Modules.lvs_storage_thermal_stage','--channel','{channel}']
+            argv=self.launch_args or ([sys.executable,'-m','Modules.lvs_storage_thermal_runtime','--proxy','{channel}',str(self.admission.fd)]
+                if self.installed_runtime else [sys.executable,'-m','Modules.lvs_storage_thermal_stage','--channel','{channel}'])
             argv=[str(v).replace('{channel}',f'{child.read_fd}:{child.write_fd}') for v in argv]
             self.process=OwnedProcess(argv,delay_ms=self.launch_delay_ms,owner=self,deadline=self.deadline,
                 cwd=ROOT,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
@@ -798,7 +814,10 @@ class ThermalStageSession:
         if self.channel is not None:self.channel.close();self.channel=None
         if self.process is not None:
             try:
-                if self.process.poll() is None:self.process.send_signal(signal.SIGTERM)
+                if self.process.poll() is None:
+                    # Closing the primary pipe and lease revokes the root worker;
+                    # its owned unprivileged proxy stays until the root receipt.
+                    if not self.installed_runtime:self.process.send_signal(signal.SIGTERM)
             except ProcessLookupError:pass
             except OSError as exc:self.fault=self.fault or str(exc)
 
@@ -828,7 +847,10 @@ class ThermalStageSession:
         result=None
         try:
             from .lvs_storage_thermal_recovery import evidence_operation
-            observed=evidence_operation('--read-terminal',self.directory,self.marker)
+            if self.installed_runtime:
+                from .lvs_storage_thermal_runtime import read_terminal
+                observed=read_terminal(self.lease_id)
+            else:observed=evidence_operation('--read-terminal',self.directory,self.marker)
             if observed.get('recovery_blocker'):
                 self.recovery_observation=observed['recovery_blocker']
             result=observed['result']
@@ -940,18 +962,18 @@ class ThermalStageSession:
         self.evidence['evidence_directory']=str(self.directory)
         try:
             from .lvs_storage_thermal_recovery import evidence_operation
-            evidence_operation('--publish-json',self.directory/'adapter_result.json',payload=self.evidence)
+            evidence_operation('--publish-json',self.client_directory/'adapter_result.json',payload=self.evidence)
         except (OSError,ValueError,subprocess.SubprocessError) as exc:
             self.evidence.update(failure='Storage adapter publication failed: '+str(exc),terminal_published=False)
             self.evidence=normalize(self.evidence,readiness=self.plan)
         return self.evidence
 
 
-def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=None):
+def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=None, runtime=None):
     plan=json.loads((directory/'request.json').read_text())
     parent_pid=plan.get('supervisor_parent_pid')
-    runner=default_runner()
-    saved_runner=(runner.targets,runner.popen,runner.temperature,runner.native_processes)
+    runner=runtime.runner() if runtime is not None else default_runner()
+    saved_runner=(runner.targets,runner.popen,runner.temperature,runner.native_processes,runner.final_revalidator,runner.final_temperature)
     saved_check=lease.check if lease is not None else None
     config=ThermalConfig(**plan['configuration'])
     attempted=False
@@ -976,6 +998,7 @@ def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=No
             config=approve_unmonitored(config,plan['selected_devices'],'explicit bounded profile session approval')
         fresh=inspect_stage(runner,config)
         fresh['schedule_scope'] = plan.get('schedule_scope')
+        if runtime is not None:runner.targets.output_safe(runtime.root,[r for r in fresh.get('targets',[]) if r.get('state')=='ready'])
         if decision_key(fresh)!=plan['decision_key']:
             raise ValueError('Storage readiness changed after confirmation; no fallback execution')
         # No native admission or target descriptor opening before durable intent.
@@ -1005,6 +1028,13 @@ def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=No
             lease.check()
             return original_temperature(row)
         runner.temperature=bounded_temperature
+        # _finish is reached only after stable owned poll/wait confirms exit.
+        # Revocation blocks admission, not read-only post-exit reconciliation.
+        def final_revalidate(row):
+            recovery._authority();return original_targets.revalidate(row)
+        def final_temperature(row):
+            recovery._authority();return original_temperature(row)
+        runner.final_revalidator=final_revalidate;runner.final_temperature=final_temperature
         fresh=inspect_stage(runner,config)
         lease.check(1)
         last_publish=[0.0];last_timeline=[0.0];timeline_count=[0];safety_recorded=[False]
@@ -1036,6 +1066,8 @@ def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=No
             if attempted and not hasattr(runner,'last_preflight') else
             not_run(str(exc),readiness=getattr(runner,'last_preflight',plan)))
     finally:
+        if runtime is not None and getattr(runtime,'transport_error',''):
+            result=dict(result or error_result(runtime.transport_error),failure=runtime.transport_error);code=1
         if launches is not None:
             launches.finish()
             result['stage_launch_ownership']=launches.snapshot()
@@ -1061,28 +1093,35 @@ def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=No
             try:
                 if recovery is not None:recovery.close()
             finally:
-                runner.targets,runner.popen,runner.temperature,runner.native_processes=saved_runner
+                runner.targets,runner.popen,runner.temperature,runner.native_processes,runner.final_revalidator,runner.final_temperature=saved_runner
                 if lease is not None and saved_check is not None:lease.check=saved_check
     return code
 
 
-def channel_worker(fd):
+def channel_worker(fd, *, runtime=None, descriptors=None):
     """All potentially slow initialization lives in this supervised process."""
-    channel=StageChannel(*map(int,fd.split(':')));buffer=b'';directory=None;worker_entered=False
+    channel=StageChannel(*map(int,fd.split(':')));buffer=b'';directory=None;worker_entered=False;directory_created=False
+    initial_deadline=time.monotonic()+3 if runtime is not None else None
+    if runtime is not None:channel.settimeout(3)
     stopped=[False]
     for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP):
         signal.signal(sig,lambda *_:stopped.__setitem__(0,True))
     try:
         while b'\n' not in buffer:
+            if initial_deadline is not None:
+                remaining=initial_deadline-time.monotonic()
+                if remaining<=0:raise TimeoutError('Installed stage bootstrap deadline')
+                channel.settimeout(remaining)
             data=channel.recv(65536)
             if not data:return 1
             buffer+=data
             if len(buffer)>8*1024**2:raise ValueError('Bootstrap exceeds IPC budget')
         line,buffer=buffer.split(b'\n',1);request=json.loads(line)
+        if runtime is not None:request=runtime.request(request,descriptors)
         directory=Path(request['directory'])
         deadline=request['stage_deadline'];parent=request['supervisor_parent_pid'];token=request['stage_lease_id']
         def cancelled():
-            if stopped[0] or os.getppid()!=parent:return True
+            if stopped[0] or os.getppid()!=parent or runtime is not None and runtime.disconnected():return True
             channel.setblocking(False)
             try:
                 value=channel.recv(1,peek=True)
@@ -1091,7 +1130,7 @@ def channel_worker(fd):
             except OSError:return True
         lease=StageLease(deadline,parent,cancelled,admission=SharedAdmission(request['admission_fd'],request['admission_identity']))
         lease.check()
-        directory.mkdir(parents=True,exist_ok=False)
+        directory.mkdir(parents=True,exist_ok=False);directory_created=True
         plan=dict(request['plan'],execution_context=request['execution_context'],supervisor_parent_pid=parent,recovery_marker=request['recovery_marker'],
                   admission_lease_identity=request['admission_identity'])
         atomic_preflight_json(directory/'request.json',plan)
@@ -1137,9 +1176,9 @@ def channel_worker(fd):
             except (BlockingIOError,InterruptedError):pass  # retain at most one packet; no producer wait
             except OSError:
                 pending_snapshot=b'';snapshot_stats['closed']=True
-        return worker(directory,gate=grant,lease=lease,snapshot=snapshot,snapshot_stats=snapshot_stats)
+        return worker(directory,gate=grant,lease=lease,snapshot=snapshot,snapshot_stats=snapshot_stats,runtime=runtime)
     except BaseException as exc:
-        if directory is not None:
+        if directory_created:
             try:atomic_preflight_json(directory/'completion.json',
                 dict(error_result('Stage worker/finalization exception: '+str(exc),cleanup_confirmed=False)
                 if worker_entered else not_run(str(exc)),execution_context=request.get('execution_context')))

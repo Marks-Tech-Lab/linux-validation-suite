@@ -14,7 +14,7 @@ import subprocess
 import time
 from uuid import uuid4
 
-from .lvs_storage_thermal import ThermalConfig, ThermalDevice, ThermalResult, pilot_rate, readiness, result_successful
+from .lvs_storage_thermal import ThermalConfig, ThermalDevice, ThermalResult, pilot_rate, readiness, result_successful, ThermalAdmissionEnded
 from .lvs_storage_thermal_backend import capability, guard_command, guard_environment, executable_identity
 from .lvs_storage_thermal_launch import OwnedProcess, group_gone
 from .lvs_storage_thermal_targets import ThermalTargets, selected, temperature
@@ -85,12 +85,14 @@ class ThermalRunner:
     def __init__(self, fio, guard, *, targets=None, uid=None, gid=None,
                  clock=time.monotonic, sleep=time.sleep, popen=subprocess.Popen,
                  publish=atomic_preflight_json, source=collect_source_provenance,
-                 budget=resources, temperature_reader=temperature, activity=disk_activity):
+                 budget=resources, temperature_reader=temperature, activity=disk_activity,
+                 final_revalidator=None, final_temperature_reader=None):
         self.fio,self.guard=str(fio),str(guard)
         self.targets=targets or ThermalTargets()
         self.uid=os.getuid() if uid is None else uid;self.gid=os.getgid() if gid is None else gid
         self.clock,self.sleep,self.popen,self.publish,self.source=clock,sleep,popen,publish,source
         self.budget,self.temperature,self.activity=budget,temperature_reader,activity
+        self.final_revalidator=final_revalidator;self.final_temperature=final_temperature_reader
         self.native_processes=None
         self.unconfirmed=[]  # retain exclusive descriptors if cleanup cannot be proven
 
@@ -350,7 +352,7 @@ class ThermalRunner:
                     if capacity['memory_budget']<=0:
                         emergency=True;stop_all=True
                     for job in jobs:
-                        if job.get('done'):continue
+                        if job.get('done') or job.get('stopping') is not None:continue
                         row=job['row'];r=job['result'];p=job['process']
                         reading=self.temperature(row);value=reading.get('value_c');limit,warning=limits(config,reading)
                         if value is not None:
@@ -415,10 +417,12 @@ class ThermalRunner:
                 if observe:observe(jobs)
                 self.sleep(.1)
         except BaseException as error:
-            failure=f'{type(error).__name__}: {error}'
+            admission_ended=isinstance(error,ThermalAdmissionEnded)
+            if not admission_ended:failure=f'{type(error).__name__}: {error}'
             # One broadcast, then bounded group reaping, even after UI/persistence failure.
             for j in jobs:
-                if j.get('process') and not j.get('done'):stop(j,'supervisor failure',True)
+                if j.get('process') and not j.get('done'):
+                    stop(j,'operator cancelled run: stage authorization ended' if admission_ended else 'supervisor failure',not admission_ended)
             for j in jobs:
                 if j.get('process') and not j.get('done'):
                     try:self._process(j['process']).wait(timeout=2)
@@ -429,7 +433,14 @@ class ThermalRunner:
                         try:self._process(j['process']).wait(timeout=2)
                         except (subprocess.TimeoutExpired,OSError):pass
                     except OSError:pass
-                    j['result'].state='incomplete';j['result'].stop_reason=failure
+                    p=self._process(j['process']);r=j['result']
+                    if admission_ended and p.poll() is not None:
+                        r.exit_code=p.returncode;r.ended_monotonic=self.clock()
+                        j.setdefault('control_timing',{})['worker_exit_observed_monotonic']=r.ended_monotonic
+                        if not j.get('evidence_finished'):
+                            self._finish(j,config);j['evidence_finished']=True
+                    else:
+                        r.state='incomplete';r.stop_reason=failure or 'stage authorization ended; cleanup unconfirmed'
         finally:
             progress.close()
             for fd in claims.values():os.close(fd)
@@ -510,8 +521,8 @@ class ThermalRunner:
             job['fio_activity']=dict(active_seconds=milliseconds/1000,achieved_iops=r.read_ios*1000/milliseconds if milliseconds else 0,
                                      achieved_bps=r.read_bytes*1000/milliseconds if milliseconds else 0)
             job['fio_cpu']=dict(user_percent=fio.get('usr_cpu'),system_percent=fio.get('sys_cpu'))
-            self.targets.revalidate(job['row']);r.identity_unchanged=True
-            final=self.temperature(job['row']);job['temperature_end']=final.get('value_c');bound,warning=limits(config,final)
+            (self.final_revalidator or self.targets.revalidate)(job['row']);r.identity_unchanged=True
+            final=(self.final_temperature or self.temperature)(job['row']);job['temperature_end']=final.get('value_c');bound,warning=limits(config,final)
             if final.get('value_c') is not None:
                 job['peak']=final['value_c'] if job['peak'] is None else max(job['peak'],final['value_c'])
                 job['temperature_warning']=job.get('temperature_warning',False) or warning is not None and final['value_c']>=warning

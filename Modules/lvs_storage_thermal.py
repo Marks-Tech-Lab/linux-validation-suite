@@ -20,6 +20,10 @@ CEILINGS = {'hdd': (30, 2 * 1024**2), 'ssd': (128, 8 * 1024**2),
             'nvme': (256, 16 * 1024**2)}
 
 
+class ThermalAdmissionEnded(ValueError):
+    """Authorization ended; stop owned work and reconcile its actual evidence."""
+
+
 def integer(value: Any, low: int, high: int, name: str) -> None:
     if type(value) is not int or not low <= value <= high:
         raise ValueError(f'{name} must be an integer between {low} and {high}')

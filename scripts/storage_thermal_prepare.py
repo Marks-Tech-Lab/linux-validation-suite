@@ -18,7 +18,9 @@ LAUNCHER='''"""Execute only a separately reviewed, root-owned offline LVS bundle
 import hashlib,json,os,pathlib,runpy,stat,sys
 root=pathlib.Path(__file__).resolve().parent
 if os.getuid()!=0:raise SystemExit('Use the separately approved sudo workflow; no automatic elevation')
-if set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2:raise SystemExit('Only interactive, --check or --plan is supported')
+integrated_serve=sys.argv[1:]==['--serve-integrated']
+integrated_client=len(sys.argv)==3 and sys.argv[1]=='--integrated-client'
+if not integrated_serve and not integrated_client and (set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2):raise SystemExit('Unsupported installed operation')
 for p in (root,*root.parents):
  s=p.lstat()
  if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:raise SystemExit('Unsafe deployment parent')
@@ -51,6 +53,9 @@ os.environ.clear();os.environ.update(PATH='/usr/bin:/bin',HOME='/root',LC_ALL='C
 sys.dont_write_bytecode=True;sys.path.insert(0,str(root/'runtime'))
 from Modules.lvs_source_provenance import _source_snapshot
 if _source_snapshot(root/'runtime')[0]!=m['source']:raise SystemExit('Execution-source mismatch')
+if integrated_serve or integrated_client:
+ from Modules.lvs_storage_thermal_service import serve,client
+ raise SystemExit(serve(root,m) if integrated_serve else client(root,m,sys.argv[2]))
 sys.argv=['lvs_storage_thermal_assist.py',*sys.argv[1:],'--fio',str(root/'runtime/build/fio'),'--guard',str(root/'runtime/build/storage_thermal_guard'),'--run-as',str(m['uid'])+':'+str(m['gid']),'--output-root','/var/lib/lvs-thermal/results','--access-mode','shared_readonly_opt_in','--aggregate-iops-limit','128','--aggregate-bps-limit','8388608']
 import lvs_storage_thermal_assist as app
 raise SystemExit(app.main(recovery_marker=pathlib.Path('/var/lib/lvs-thermal/storage_thermal_recovery_required.json')))
@@ -86,6 +91,9 @@ def prepare(destination: Path, fio: Path, *, root=ROOT):
     observed=capability(str(build/'fio'),str(build/'storage_thermal_guard'))
     if observed['status']!='available':raise ValueError('Qualified fio/guard required: '+str(observed['reasons']))
     (destination/'launch.py').write_text(LAUNCHER)
+    # Public code/tool traversal after trusted root promotion; never writable.
+    for directory in destination.rglob('*'):
+        if directory.is_dir():directory.chmod(0o755)
     files={str(p.relative_to(destination)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.rglob('*')) if p.is_file()}
     manifest=dict(contract='lvs.storage_thermal.offline_bundle.v1',source=source,uid=os.getuid(),gid=os.getgid(),files=files,backend=observed)
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

@@ -1263,3 +1263,19 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 - Raw vendor/backend property spelling inside documented raw boundaries.
 - Retain `Files/nvidia_persistence.md` as operator/lab guidance. Wave 5's planned
   utility requires its own design and gates; this file is not that design.
+
+### Integrated Thermal Assist qualification
+
+Standalone physical cancellation on Samsung 9100 PRO was accepted from the
+2026-11-16 run `7d82ff66`: actual interruption, confirmed cleanup and canonical
+CLEAN. Previous full-duration runs remain preliminary functional/heating evidence.
+The next integration gate uses an operator-authorized installed session service
+with the normal unprivileged CLI/TUI, existing guard/admission/ownership and the
+same canonical recovery. See the [integration contract and matched comparison](docs/storage_thermal_integrated_runtime.md).
+Physical integrated comparison has not been executed by this change.
+
+Intensity calibration and percentage scaling remain required before production
+acceptance. Current class ceilings are provisional pilot settings, not permanent
+bounds on separately approved calibration research. Sustained operation, physical
+temperature-stop validation, additional media and multi-drive scalability remain
+pending. This gate does not promote system drives, complex stacks or externals.

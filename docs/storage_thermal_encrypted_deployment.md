@@ -288,8 +288,11 @@ This separate, operator-reviewed deployment is an initial physical-qualification
 workflow only. Normal future use must integrate trusted dependency preparation,
 the accepted native build lifecycle, privilege handling and CLI/TUI/run-local
 profile workflows in LVS itself. Routine profile execution must not require users
-to maintain and manually promote a separate deployment. That integration is not
-implemented or authorized by this milestone.
+to maintain and manually promote a separate deployment. That integration was not
+implemented or authorized by that milestone. The subsequent
+[installed integrated session runtime](storage_thermal_integrated_runtime.md)
+connects the same trusted tools and canonical recovery to unprivileged LVS; its
+software and physical qualification gates are separate.
 
 ## Protected-submount finalization and focused deployment review
 
@@ -314,7 +317,8 @@ The trusted OS promotion/checksum/parent-ownership gate is mandatory **before**
 executing the promoted launcher. Checks inside a Python script cannot retroactively
 make an untrusted bootstrap script safe. Do not skip the independent approval
 or path inspection steps, or treat the launcher as a privileged service for
-untrusted callers. Routine integrated privilege support remains future work.
+untrusted callers. That historical milestone left routine integrated privilege support as future
+work; see the subsequent installed-session design linked above.
 
 ### Atomic-host overlay ancestry
 
