@@ -144,6 +144,14 @@ def clean_review_verdict_from_payload(
             "Reason": "manual_or_aborted_state",
         }
 
+    if (not stage_verdicts or all(v.lower() == "not_applicable" for v in stage_verdicts)) and (
+            (parsed.get("PrimaryValidation") or {}).get("status") == "not_applicable"
+            or report_summary.get("OutcomeClass") == "not_applicable") and not errors and validation_result != "Fail":
+        return {"FinalVerdict": "Not applicable", "RuleBasedVerdict": "None",
+                "EffectiveFinalVerdict": "Not applicable", "EvaluatedStageCount": 0,
+                "EvaluatedRuleCount": rule_count, "NotCheckedRuleCount": not_checked_count,
+                "Reason": "no_primary_workload"}
+
     if not stage_verdicts and not rule_count and not validation_result:
         return {
             "FinalVerdict": "None",
@@ -798,6 +806,10 @@ def build_department_use_summary(
     else:
         confidence = "telemetry_only_or_cpu_memory"
 
+    if result_text == "not_applicable" or stability_interpretation.get("NoPrimaryWorkloads") is True:
+        status, blocking, confidence = "not_applicable", True, "no_primary_workload"
+        decision = "No primary validation was performed; review independent Thermal Assist evidence."
+
     caveats: List[str] = []
     if skipped_stages:
         caveats.append(f"{len(skipped_stages)} requested stage(s) were skipped")
@@ -1079,6 +1091,9 @@ def overall_report_outcome_summary(
     interpretations: List[Dict[str, Any]],
     threshold_would_warn_count: int = 0,
 ) -> Dict[str, str]:
+    if state == "not_applicable" and not error_category_counts:
+        return {"OutcomeClass": "not_applicable",
+                "Summary": "No primary workload was executed; no primary PASS or throughput is established."}
     if state == "manually_aborted":
         return {
             "OutcomeClass": "manually_aborted",
@@ -1235,7 +1250,9 @@ def build_overall_stability_interpretation(
                 unobserved_details.append(entry)
 
     result_key = str(overall_result).strip().lower()
-    if result_key == "manually_aborted":
+    if result_key == "not_applicable":
+        state = "not_applicable"
+    elif result_key == "manually_aborted":
         state = "manually_aborted"
     elif result_key == "aborted":
         state = "aborted"
@@ -1264,6 +1281,8 @@ def build_overall_stability_interpretation(
         "OutcomeClass": outcome_summary["OutcomeClass"],
         "OutcomeSummary": outcome_summary["Summary"],
         "OverallResult": overall_result,
+        "NoPrimaryWorkloads": bool(interpretations) and all(
+            item.get("PrimaryWorkloads") == [] for item in interpretations),
         "SegmentCount": len(segments),
         "InterpretedSegmentCount": len(interpretations),
         "StateCounts": dict(sorted(state_counts.items())),

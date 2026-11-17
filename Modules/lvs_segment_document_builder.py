@@ -136,6 +136,7 @@ class SegmentDocumentBuilder:
             "Started": window.started_iso,
             "Ended": window.ended_iso,
             "Verdict": window.verdict,
+            "PrimaryWorkloads": getattr(window, "primary_workloads", None),
             "StabilityInterpretation": document_input.stability_interpretation,
             "FailureReasons": window.failure_reasons,
             "ErrorEvents": window.error_events,

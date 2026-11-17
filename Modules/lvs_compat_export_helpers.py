@@ -260,6 +260,8 @@ def compatibility_overall_result(windows: Iterable[Any], manual_abort: bool | No
         return "Failed"
     if any(str(getattr(window, "verdict", "")) == "warning" for window in window_list):
         return "Warning"
+    if window_list and all(window.verdict == "not_applicable" for window in window_list):
+        return "Not_Applicable"
     return "Finished"
 
 

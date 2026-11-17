@@ -308,6 +308,9 @@ def execute_stage_runtime(
         vram_attainment_events_func=vram_attainment_events_func,
     )
     stage_verdict = stage_evaluation.stage_verdict
+    from .lvs_profile_metadata import thermal_only_stage
+    if thermal_only_stage(stage) and stage_verdict == "pass":
+        stage_verdict = "not_applicable"
     stage_aborted = stage_evaluation.stage_aborted
     stage_abort_reason = stage_evaluation.stage_abort_reason
     stage_completion = complete_stage_record(

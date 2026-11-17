@@ -8,7 +8,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Dict, List, Optional
 
 from Modules.lvs_runtime_memory_guard import refresh_runtime_memory_guard
-from Modules.lvs_profile_metadata import stage_result_metadata
+from Modules.lvs_profile_metadata import stage_result_metadata, primary_workload_names
 from Modules.lvs_analysis_quality import normalized_analysis_intent
 
 
@@ -89,6 +89,7 @@ def build_stage_check_window(
         gpu_workers_initial=gpu_workers_initial or [],
         gpu_workers_final=gpu_workers_final or [],
         worker_results=worker_results or [],
+        primary_workloads=primary_workload_names(stage),
         analysis_intent=normalized_analysis_intent(getattr(analysis, "intent", None)),
         analysis_minimum_usable_seconds=getattr(analysis, "minimum_usable_seconds", None),
         gpu_evaluation_requirements=(

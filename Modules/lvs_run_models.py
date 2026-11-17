@@ -53,6 +53,7 @@ class StageWindow:
     gpu_evaluation_evidence: Dict[str, Any] = field(default_factory=dict)
     storage_thermal_summary: Optional[Dict[str, Any]] = None
     storage_benchmark_summary: Optional[Dict[str, Any]] = None
+    primary_workloads: Optional[List[str]] = None  # None: historical/unknown; []: none configured
 
     @property
     def analysis_start(self) -> float:

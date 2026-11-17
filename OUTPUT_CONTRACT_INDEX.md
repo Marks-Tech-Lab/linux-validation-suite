@@ -1192,3 +1192,17 @@ self-authorize a new run's successful coverage. See the
 returned-worker observation; native commitment further bounds the earliest stage
 I/O. Explicit auxiliary ERROR/publication failure remains ERROR through fallback
 normalization even without device records.
+
+### Thermal Assist-only timed execution
+
+A newly recorded stage's additive `primary_workloads` list distinguishes configured
+primary work from auxiliary work; `null` on historical windows means unknown,
+while `[]` explicitly means none. A completed auxiliary-only stage/run uses
+`not_applicable` for its primary verdict (`Not_Applicable` in compatibility
+`Result`). It is terminal for execution-completion reconciliation, not PASS.
+All-auxiliary manifests add `primary_validation` (compatibility
+`PrimaryValidation`) with status `not_applicable`, empty workloads and null
+throughput. Segment `PrimaryWorkloads` and stability `NoPrimaryWorkloads` retain
+that distinction through department-use and review rendering. Actual aborts,
+errors and worker failures retain precedence. Mixed-run primary verdicts and
+independent Storage Thermal Assist success/cleanup contracts are unchanged.

@@ -103,6 +103,9 @@ class StageStabilityInterpreter:
                 )
             if not reasons:
                 reasons.append("stage completed with non-blocking warnings")
+        elif window.verdict == "not_applicable":
+            state = result = "not_applicable"
+            reasons.append("No primary validation workload configured; see independent Thermal Assist evidence")
         elif diagnostic_only:
             state = "diagnostic_only"
             result = "diagnostic_only"
@@ -139,7 +142,9 @@ class StageStabilityInterpreter:
 
         backend_confidence = self._stage_backend_confidence(window, backend_profiles, integrity_error_count)
         primary_purpose = "general_validation"
-        if diagnostic_only:
+        if getattr(window, "primary_workloads", None) == []:
+            primary_purpose = "auxiliary_only"
+        elif diagnostic_only:
             primary_purpose = "diagnostic_or_smoke"
         elif has_vram and has_gpu_3d:
             primary_purpose = "gpu_plus_vram_saturation"
@@ -213,6 +218,7 @@ class StageStabilityInterpreter:
             "OutcomeClass": outcome_summary["OutcomeClass"],
             "OutcomeSummary": outcome_summary["Summary"],
             "PrimaryPurpose": primary_purpose,
+            "PrimaryWorkloads": getattr(window, "primary_workloads", None),
             "BackendConfidence": backend_confidence,
             "DiagnosticOnly": diagnostic_only,
             "SaturationCandidate": saturation_candidate,
@@ -447,6 +453,9 @@ class StageStabilityInterpreter:
                 "Summary": "Stage completed with error-level events or worker integrity failures.",
             }
         warning_categories = set(warning_category_counts)
+        if window.verdict == "not_applicable":
+            return {"OutcomeClass": "not_applicable",
+                    "Summary": "No primary workload was executed; no primary PASS or throughput is established."}
         if not warning_categories:
             if threshold_would_warn_count > 0:
                 return {

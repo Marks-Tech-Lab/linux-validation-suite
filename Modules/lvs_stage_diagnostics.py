@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from .lvs_gpu_backend_catalog import OPENCL_COMPUTE_VARIANTS, VULKAN_COMPUTE_VARIANTS
 from .lvs_gpu_backend_resolution import gpu_backend_resolution_messages, gpu_excluded_targets_summary
-from .lvs_profile_metadata import stage_result_metadata
+from .lvs_profile_metadata import stage_result_metadata, thermal_only_stage
 from .lvs_analysis_quality import planned_analysis_evidence
 from .lvs_gpu_evaluation_policy import planned_gpu_evaluation
 from .lvs_stage_gpu_diagnostics import (
@@ -381,7 +381,7 @@ def build_stage_diagnostics_payload(runner: Any, stage: Any, label: str) -> Dict
         targeted_warning = vram_messages.get("warning")
         if targeted_warning:
             warnings.append(targeted_warning)
-    if stage.enabled and workloads and not cmds:
+    if stage.enabled and workloads and not cmds and not thermal_only_stage(stage):
         issues.append("enabled workloads produced no runnable commands")
     if missing_tools:
         issues.append(f"missing tools: {', '.join(missing_tools)}")

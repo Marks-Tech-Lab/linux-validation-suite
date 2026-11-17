@@ -148,3 +148,37 @@ after confirmed worker exit, final identity/temperature observations reconcile
 raw fio, guard and exit evidence without granting new admission. Other supervision
 exceptions remain errors. None of these tests establishes physical thermal-stop,
 performance interference, power-loss, or multi-drive acceptance.
+
+## Thermal Assist-only timed stages
+
+A run-local timed stage may enable only `storage_thermal`. It uses the same
+normal LVS preflight, run service, telemetry, Advanced Debug, installed session
+service, native admission, cancellation and canonical recovery as a mixed stage.
+No CPU/RAM/GPU command or dummy process is required. The stage must have valid
+positive duration and authorized runnable Thermal Assist readiness; blocked,
+unavailable or unapproved storage-only activity is not a runnable stage. A mixed
+stage can still run primary validation when its non-gating auxiliary is blocked.
+Genuinely empty stages remain invalid.
+
+Completed storage-only stages report primary verdict `not_applicable`, not PASS.
+Their recorded `primary_workloads` is empty; the manifest `primary_validation`
+(and compatibility `PrimaryValidation`) explicitly records absent primary work
+and `throughput: null`. Compatibility result `Not_Applicable` is a terminal
+execution result, not successful hardware validation. Department-use and review
+summaries must not promote it to a passing validation. Cancellation and genuine
+run failures retain their existing aborted/failure outcomes. Thermal Assist
+COMPLETED/WARN, NOT_RUN, STOPPED and ERROR remain separate authoritative outcomes.
+In a mixed schedule, a storage-only stage does not replace or improve the primary
+verdicts from other stages. Telemetry observed during storage-only work describes
+background host conditions, not executed primary throughput.
+
+The November 17 integrated 60-second physical A/B functional screening is accepted
+as preliminary functional/interference evidence. Its original artifacts are
+preserved; it does not establish calibrated percentages, sustained heating,
+physical temperature-stop acceptance or scalability. The approved next campaign
+is the ten-minute idle baseline and bounded 16/32/64/128/256 IOPS screening with
+up to two confirmation trials and cooling. It remains within the existing pilot
+ceilings, with 64 KiB random reads/QD1, required monitoring, 55C agent-requested
+stop and 60C automatic stop. It must use the corrected source and a matching
+operator-approved installed runtime. No physical screening is authorized by this
+document itself; the existing separate campaign authorization is unchanged.

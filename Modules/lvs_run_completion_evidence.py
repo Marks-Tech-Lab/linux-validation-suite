@@ -16,7 +16,7 @@ from .lvs_worker_integrity import worker_cleanup_satisfied, worker_integrity_err
 PASS = {"pass", "passed", "finished", "success", "successful", "stable"}
 FAIL = {"fail", "failed", "failure", "error", "crashed", "unstable"}
 ABORT = {"aborted", "manually_aborted", "interrupted"}
-TERMINAL = PASS | FAIL | ABORT | {"warning", "warn"}
+TERMINAL = PASS | FAIL | ABORT | {"warning", "warn", "not_applicable"}
 
 
 def _state(value):

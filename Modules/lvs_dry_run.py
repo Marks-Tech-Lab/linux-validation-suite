@@ -33,6 +33,14 @@ def build_dry_run_plan(runner: Any, profile: Any, labels: List[str]) -> List[Dic
         plan.append(build_stage_diagnostics(runner, stage, label))
     from .lvs_storage_thermal_stage import apply_profile_decisions
     apply_profile_decisions(profile, plan)
+    from .lvs_profile_metadata import thermal_only_stage
+    for stage, item in zip(profile.stages, plan):
+        if getattr(stage, "enabled", False) and thermal_only_stage(stage):
+            thermal = item.get("storage_thermal") or {}
+            if not thermal.get("execution_permitted"):
+                item["issues"].append("Thermal Assist-only stage has no authorized runnable storage activity: "
+                                      + "; ".join(thermal.get("reasons") or [thermal.get("status", "unavailable")]))
+                item["runnable"] = False
     return plan
 
 

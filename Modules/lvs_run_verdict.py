@@ -30,11 +30,13 @@ def combine_run_verdict(
     if manual_abort:
         return "manually_aborted"
 
-    verdict = "aborted" if run_aborted else "pass"
+    stage_verdicts = [str(value or "").strip().lower() for value in stage_verdicts]
+    verdict = "aborted" if run_aborted else (
+        "not_applicable" if stage_verdicts and all(v == "not_applicable" for v in stage_verdicts) else "pass")
     for raw in stage_verdicts:
         stage_verdict = str(raw or "").strip().lower()
         if stage_verdict not in _VERDICT_RANK:
             continue
-        if _VERDICT_RANK[stage_verdict] > _VERDICT_RANK[verdict]:
+        if _VERDICT_RANK[stage_verdict] > _VERDICT_RANK.get(verdict, -1):
             verdict = stage_verdict
     return verdict

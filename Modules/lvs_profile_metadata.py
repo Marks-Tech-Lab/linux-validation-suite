@@ -11,6 +11,18 @@ _SSE_INSTRUCTION_SETS = frozenset({"sse"})
 _AVX_INSTRUCTION_SETS = frozenset({"avx", "avx2", "avx512"})
 
 
+def primary_workload_names(stage: Any) -> list[str]:
+    """Configured primary modules; Thermal Assist has an independent lifecycle."""
+    modules = getattr(stage, "modules", None)
+    return [name for name in ("cpu", "memory", "gpu_3d", "vram", "storage_benchmark")
+            if getattr(getattr(modules, name, None), "enabled", False)]
+
+
+def thermal_only_stage(stage: Any) -> bool:
+    return bool(getattr(getattr(getattr(stage, "modules", None), "storage_thermal", None),
+                        "enabled", False) and not primary_workload_names(stage))
+
+
 def stage_display_label(stage: Any) -> str:
     """Return the canonical operator label, falling back only for old objects."""
     return str(getattr(stage, "display_label", "") or getattr(stage, "name", "") or "").strip()

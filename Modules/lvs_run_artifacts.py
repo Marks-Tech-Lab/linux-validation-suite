@@ -166,6 +166,11 @@ def write_final_run_artifacts(
     except Exception as exc:
         thermal_summary = reporting_error('auxiliary aggregation/publication', exc)
     manifest_payload["storage_thermal_summary"] = thermal_summary
+    primary_validation = None
+    if stage_windows and all(getattr(w, "primary_workloads", None) == [] for w in stage_windows):
+        primary_validation = {"status": "not_applicable", "workloads": [], "throughput": None,
+                              "reason": "No primary validation workloads configured; auxiliary evidence is independent."}
+        manifest_payload["primary_validation"] = primary_validation
     manifest_payload["ended"] = ended_iso
     manifest_payload["elapsed_seconds"] = round(total_elapsed, 2)
     manifest_payload["executed_plan"] = executed_plan
@@ -219,6 +224,8 @@ def write_final_run_artifacts(
     )
     compat = with_completion(preserve_legacy_worker_evidence_contract(compatibility_payload), completion)
     compat["StorageThermalSummary"] = thermal_summary
+    if primary_validation is not None:
+        compat["PrimaryValidation"] = primary_validation
     if "source_provenance" in manifest_payload:
         # Preserve actual endpoints in compatibility output so every later
         # summary writer can render them without consulting today's checkout.
