@@ -26,18 +26,24 @@ class RuntimePolicy:
         self.root=Path(root);self.manifest=manifest;self.generation=token(generation)
         self.uid=manifest['uid'];self.gid=manifest['gid'];self.peer_pid=peer_pid
         require(type(self.uid) is int and type(self.gid) is int and self.uid>0 and self.gid>0,'explicit non-root operator identity required')
+        for name in ('worker_uid','worker_gid'):
+            value=manifest.get(name,manifest['uid' if name=='worker_uid' else 'gid'])
+            require(type(value) is int and 0<value<2**32-1,'invalid trusted worker identity')
         self.marker=STATE/'storage_thermal_recovery_required.json'
 
     def runner(self):
         from .lvs_storage_thermal_runner import ThermalRunner
-        return ThermalRunner(self.root/'runtime/build/fio',self.root/'runtime/build/storage_thermal_guard',uid=self.uid,gid=self.gid)
+        from .lvs_storage_thermal_system import SystemAuthority
+        return ThermalRunner(self.root/'runtime/build/fio',self.root/'runtime/build/storage_thermal_guard',
+            uid=self.manifest.get('worker_uid',self.uid),gid=self.manifest.get('worker_gid',self.gid),
+            system_authority=SystemAuthority(self.root,self.manifest))
 
     def directory(self,session):return STATE/'integrated'/str(self.uid)/token(session)
 
     def request(self,request,descriptors):
         require(type(request) is dict,'stage request object required')
         require(set(request)=={'plan','execution_context','directory','supervisor_parent_pid','recovery_marker','stage_deadline','stage_lease_id','admission_fd','admission_identity'},'invalid stage envelope')
-        plan=request['plan'];configuration(plan['configuration'])
+        plan=request['plan'];config=configuration(plan['configuration'])
         require(plan['installed_runtime']['generation']==self.generation,'stale runtime generation')
         require(plan['installed_runtime']['source']==self.manifest['source'],'foreign runtime source')
         deadline=request['stage_deadline'];now=time.monotonic()
@@ -63,6 +69,9 @@ class RuntimePolicy:
         for fd,mode in zip(descriptors[:2],(os.O_RDONLY,os.O_WRONLY)):
             import fcntl
             require(stat.S_ISFIFO(os.fstat(fd).st_mode) and fcntl.fcntl(fd,fcntl.F_GETFL)&os.O_ACCMODE==mode,'stage pipe identity/type mismatch')
+        if config.system_device_ids:
+            from .lvs_storage_thermal_system import SystemAuthority
+            self.control_budget=SystemAuthority(self.root,self.manifest).activate(config)
         result=dict(request,directory=str(self.directory(session)),recovery_marker=str(self.marker),
                     supervisor_parent_pid=os.getppid(),admission_fd=descriptors[2])
         # No child/caller path is ever a privileged publication destination.

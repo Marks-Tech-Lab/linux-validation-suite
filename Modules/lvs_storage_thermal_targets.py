@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import Counter
 import fcntl
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -51,6 +52,8 @@ class ThermalTargets:
     def topology(self) -> tuple[set[str],set[str],list[str]]:
         active, system, problems = set(), set(), []
         self.complex_mount_members=set()
+        self.swap_members=set()
+        self.topology_generation=None
         self.topology_complete=False
         try:
             # Refuse known containers; mount visibility plus O_EXCL is required.
@@ -138,7 +141,8 @@ class ThermalTargets:
                 active |= members
                 if len(members)>1:self.complex_mount_members |= members
                 if is_system:system |= members
-            swaps = (self.proc/'swaps').read_text().splitlines()
+            swap_text=(self.proc/'swaps').read_text()
+            swaps = swap_text.splitlines()
             for row in swaps[1:]:
                 fields = row.split()
                 if not fields:
@@ -146,9 +150,29 @@ class ThermalTargets:
                 path = Path(re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),fields[0]))
                 st = path.stat()
                 key = f'{os.major(st.st_rdev if stat.S_ISBLK(st.st_mode) else st.st_dev)}:{os.minor(st.st_rdev if stat.S_ISBLK(st.st_mode) else st.st_dev)}'
-                if key not in bydev:
-                    raise ValueError('swap physical membership unresolved')
-                active |= self.leaves(bydev[key]); system |= self.leaves(bydev[key])
+                if stat.S_ISREG(st.st_mode):
+                    members=path_members(path,())
+                else:
+                    if key not in bydev:raise ValueError('swap physical membership unresolved')
+                    name=bydev[key]
+                    if name.startswith('zram'):
+                        backing=text(self.sys_class/name/'backing_dev')
+                        if backing=='none':continue
+                        if not backing:raise ValueError('zram backing membership unavailable')
+                        backing_path=Path(backing)
+                        if not backing_path.is_absolute():backing_path=self.dev_root/backing
+                        info=backing_path.stat()
+                        if not stat.S_ISBLK(info.st_mode):raise ValueError('zram backing is not a block device')
+                        key=f'{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}'
+                        if key not in bydev:raise ValueError('zram backing membership unresolved')
+                        name=bydev[key]
+                    members=self.leaves(name)
+                active |= members; system |= members; self.swap_members |= members
+            # Swap usage changes during ordinary paging. Bind configuration and
+            # ancestry, not volatile occupancy, to the authorization generation.
+            swap_identity='\n'.join(' '.join((f[0],f[1],f[2],f[-1]))
+                                    for line in swaps[1:] if len(f:=line.split())>=5)
+            self.topology_generation=hashlib.sha256((raw_mounts+'\n'+swap_identity).encode()).hexdigest()
         except (OSError, ValueError) as error:
             problems.append(str(error))
         self.topology_complete=not problems
@@ -267,7 +291,11 @@ class ThermalTargets:
                 reasons.append('incomplete device geometry/topology');size=0;logical=0;major=minor=-1
             if drive_class not in ('hdd','ssd','nvme'):reasons.append('media class unavailable')
             if shared and name in getattr(self,'complex_mount_members',set()):reasons.append('multi-device filesystem needs separate physical-member qualification')
-            if name in system or name in active and not shared: reasons.append('mounted/system/swap device is active')
+            approval=getattr(self,'system_approval',None)
+            authorized=(shared and approval is not None and stable in approval['device_ids'])
+            if name in system and not authorized or name in active and not shared: reasons.append('mounted/system/swap device is active')
+            if authorized and name in self.swap_members and not approval['swap']:
+                reasons.append('disk-backed swap requires separate explicit qualification/authorization')
             path = self.dev_root/name
             if not os.access(path,os.R_OK): reasons.append('read permission unavailable; no automatic permission changes')
             identity = dict(device_id=stable or f'unresolved:{dev}:{name}', name=name, path=str(path),
@@ -277,7 +305,8 @@ class ThermalTargets:
                 try:
                     endpoint=os.lstat(path);identity.update(node_device=endpoint.st_dev,node_inode=endpoint.st_ino)
                 except OSError:reasons.append('shared canonical device endpoint unavailable')
-            records.append(dict(access_mode=access_mode,mounted_or_active=True if name in active else False if self.topology_complete else None,device_id=identity['device_id'], identity=identity, model=entry['Model'],
+            proof=dict(approval,topology_generation=self.topology_generation,physical_id=identity['device_id']) if authorized and name in system else {}
+            records.append(dict(access_mode=access_mode,system_authorization=proof,mounted_or_active=True if name in active else False if self.topology_complete else None,device_id=identity['device_id'], identity=identity, model=entry['Model'],
                                 transport=transport, drive_class=drive_class, internal=removable=='0' and not usb and not virtual,
                                 excluded_automatic=usb or virtual, system_drive=True if name in system else False if self.topology_complete else None, topology_complete=self.topology_complete, classification_status='confirmed' if self.topology_complete else 'incomplete', holder_proofs=holder_proofs,
                                 eligible=not reasons, reasons=reasons, sensors=self.sensors(node)))
@@ -291,7 +320,7 @@ class ThermalTargets:
         mode=expected.get('access_mode','exclusive')
         rows=self.discover(access_mode=mode) if mode!='exclusive' else self.discover()
         matches = [r for r in rows if r['device_id']==expected['device_id']]
-        if len(matches)!=1 or not matches[0]['eligible'] or matches[0]['identity'] != expected['identity'] or matches[0].get('holder_proofs',[])!=expected.get('holder_proofs',[]):
+        if len(matches)!=1 or not matches[0]['eligible'] or matches[0]['identity'] != expected['identity'] or matches[0].get('holder_proofs',[])!=expected.get('holder_proofs',[]) or matches[0].get('system_authorization',{})!=expected.get('system_authorization',{}):
             raise ValueError('device identity, permissions or active topology changed')
         return matches[0]
 
@@ -307,6 +336,12 @@ class ThermalTargets:
         resolver=StorageTargetResolver(sys_class_block=self.sys_class,sys_fs_btrfs=self.sys_fs_btrfs)
         leaves=resolver._mount_leaves_with_source(mount)[0]
         if leaves & {r['identity']['name'] for r in records}:
+            approval=getattr(self,'system_approval',None)
+            config=getattr(self,'system_config',None)
+            if approval and approval['colocated'] and config is not None and any(r.get('system_authorization') and r.get('eligible') for r in records) and set(r['device_id'] for r in records)<=set(config.device_ids):
+                from .lvs_storage_thermal_system import ControlBudget
+                ControlBudget(len(records)).space(path)
+                return
             raise ValueError('result destination is on a selected target')
 
     def open(self, expected: dict) -> int:

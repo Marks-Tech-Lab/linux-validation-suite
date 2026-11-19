@@ -47,23 +47,26 @@ def build_fixture(bundle,root,token,args):
         path=Path('/usr/lib/modules')/KERNEL/name
         if path.exists():shutil.copy2(path,root/'lib/modules'/KERNEL/name)
     for name in ('newroot','control','data-hdd','data-ssd','data-nvme'):(root/name).mkdir(exist_ok=True)
+    if args.campaign.endswith('system'):
+        for name in ('mkswap','swapon','swapoff'):copy_binary(root,'/usr/sbin/'+name,'bin/'+name)
     if args.campaign.startswith('encrypted'):
         for source,dest in [('/usr/sbin/cryptsetup','bin/cryptsetup'),('/usr/sbin/mkfs.btrfs','bin/mkfs.btrfs'),('/usr/sbin/mkfs.ext4','bin/mkfs.ext4'),('/usr/sbin/dmsetup','bin/dmsetup')]:copy_binary(root,source,dest)
     (root/'shared-campaign').write_text(args.campaign)
     (root/'init').write_text('#!/bin/sh\n/bin/mount -t proc proc /proc\n/bin/mount -t sysfs sysfs /sys\n/bin/mount -t devtmpfs devtmpfs /dev\n/bin/modprobe nvme\nexec /usr/bin/python3 /foundation_probe.py --bootstrap\n')
     for p in root.rglob('*'):
         if p.is_file():p.chmod(p.stat().st_mode&~0o6000)
-    system=partition_image(bundle,'shared-system',512*1024**2,root)
+    system=partition_image(bundle,'shared-system',(1024 if args.campaign.endswith('system') else 512)*1024**2,root)
     control=partition_image(bundle,'shared-control',128*1024**2)
     corpus=bundle/'data-tree';corpus.mkdir();(corpus/'ordinary-data').write_bytes(b'fixture-data'*8192)
     images=[system,control]+[partition_image(bundle,'shared-'+name,64*1024**2,corpus) for name in ('hdd','ssd','nvme')]
     if args.campaign.startswith('encrypted'):
         import struct
         image=bundle/'encrypted-data.raw'
-        with image.open('wb') as f:f.truncate(514*1024**2)
+        sectors=2097152 if args.campaign.endswith('system') else 524288
+        with image.open('wb') as f:f.truncate((2*sectors+4096)*512)
         mbr=bytearray(512)
         for i in range(2):
-            struct.pack_into('<B3sB3sII',mbr,446+i*16,0,b'\0'*3,0x83,b'\0'*3,2048+i*524288,524288)
+            struct.pack_into('<B3sB3sII',mbr,446+i*16,0,b'\0'*3,0x83,b'\0'*3,2048+i*sectors,sectors)
         mbr[510:]=b'\x55\xaa'
         with image.open('r+b') as f:f.write(mbr)
         images[4]=image
@@ -105,14 +108,19 @@ def bootstrap():
     seal()
     subprocess.run(['/bin/mount','-t','ext4','-o','rw',fixture_device(0,True),'/newroot'],check=True)
     subprocess.run(['/bin/mount','-t','ext4','-o','rw',fixture_device(1,True),'/newroot/control'],check=True)
+    newroot=Path('/newroot')
+    if Path('/shared-campaign').read_text()=='encrypted-system':
+        sys.path.insert(0,'/lvs')
+        from scripts.storage_thermal_system_probe import encrypted_root
+        newroot=encrypted_root(newroot)
     tracing=[]
-    if Path('/shared-campaign').read_text()=='encrypted-integrated':
+    if Path('/shared-campaign').read_text() in ('encrypted-integrated','encrypted-system','ext4-system'):
         # Trace the access/mutation boundary, not every interpreter stat/read.
         # Kernel filtering avoids ptrace overhead manufacturing shutdown delays
         # in a single-core TCG guest. Fio preadv/pread and open/mutation attempts
         # remain observable; this is not a full initialization-I/O census.
         tracing=['--seccomp-bpf','-e','trace=execve,openat,open,pread64,preadv,preadv2,write,pwrite64,pwritev,pwritev2,ioctl,fsync,fdatasync,fallocate,copy_file_range,splice,sendfile,io_uring_setup']
-    os.execv('/bin/switch_root',['switch_root','/newroot','/bin/strace','-ff','-ttt','-T','-yy','-s','0','--kill-on-exit',
+    os.execv('/bin/switch_root',['switch_root',str(newroot),'/bin/strace','-ff','-ttt','-T','-yy','-s','0','--kill-on-exit',
         *tracing,'-e','raw=ioctl','-o','/control/provider.trace','/usr/bin/python3','/foundation_probe.py','--inside'])
 
 
@@ -162,6 +170,18 @@ def inside(case=None,identity=None):
         result=execute(case,identity,8)
         Path('/control/concurrent-result.json').write_text(json.dumps(result));return
     campaign=Path('/shared-campaign').read_text()
+    if campaign.endswith('system'):
+        try:
+            from scripts.storage_thermal_system_probe import inside as system_inside
+            payload=system_inside()
+        except BaseException as exc:
+            import traceback
+            payload=dict(contract='lvs.storage_thermal.system_vm.v1',error=traceback.format_exc())
+        Path('/control/results.json').write_text(json.dumps(payload,indent=2))
+        archive=io.BytesIO()
+        with tarfile.open(fileobj=archive,mode='w:gz') as tar:tar.add('/control',arcname='evidence')
+        print('LVS_EVIDENCE_BEGIN',flush=True);print(base64.b64encode(archive.getvalue()).decode(),flush=True);print('LVS_EVIDENCE_END',flush=True)
+        return
     if campaign.startswith('encrypted'):
         encrypted_inside();return
     results={};ordinary=[];error=None
@@ -435,6 +455,11 @@ def encrypted_inside():
 
 
 def verify(result):
+    if result.get('contract')=='lvs.storage_thermal.system_vm.v1':
+        require(not result.get('error'),str(result.get('error')))
+        require(result['integrity'] and result['canonical_CLEAN_before_interruption'] and result['fresh_process_ARMED'],'system ownership/integrity proof missing')
+        require(result['events'].get('privacy') and result['events'].get('swap_active') and result['events'].get('busy_cycles'),'system scenarios incomplete')
+        return
     if result.get('contract')=='lvs.storage_thermal.integrated_vm.v1':
         require(not result.get('error'),str(result.get('error')))
         r=result['results'];require(r['canonical_CLEAN'] and r['standalone_mutual_exclusion'],'canonical recovery/mutual exclusion not proven')
@@ -493,19 +518,19 @@ def host(args):
         subprocess.run(native_helper_build_command(compiler,ROOT/'native'/source,output)+extra,check=True,capture_output=True,timeout=60)
     snapshot,content=_source_snapshot(ROOT);require(snapshot['status']=='complete','source snapshot incomplete')
     files=[(ROOT/name,'/lvs/'+name) for name in content]
-    files += [(ROOT/'scripts/storage_thermal_integrated_probe.py','/lvs/scripts/storage_thermal_integrated_probe.py')]
+    files += [(ROOT/'scripts/storage_thermal_integrated_probe.py','/lvs/scripts/storage_thermal_integrated_probe.py'),(ROOT/'scripts/storage_thermal_system_probe.py','/lvs/scripts/storage_thermal_system_probe.py')]
     files += [(tools/'storage_thermal_launch.so','/bin/storage_thermal_launch.so'),(ROOT/'scripts/storage_thermal_acceptance.py','/lvs/scripts/storage_thermal_acceptance.py')]
-    if args.campaign.startswith('encrypted'):
+    if args.campaign.startswith('encrypted') or args.campaign.endswith('system'):
         from scripts.storage_thermal_prepare import prepare as prepare_bundle
         deployment=tools/'deployment'
-        prepare_bundle(deployment,Path(args.fio))
+        prepare_bundle(deployment,Path(args.fio),**(dict(worker_uid=65533,worker_gid=65533) if args.campaign.endswith('system') else {}))
         files += [(p,'/opt/lvs-thermal-fixture/'+str(p.relative_to(deployment))) for p in deployment.rglob('*') if p.is_file()]
-    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture)
+    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=600 if args.campaign.endswith('system') else None)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated'),default='full')
+    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system'),default='full')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
     parser.add_argument('--case');parser.add_argument('--identity')
     for name in ('fio','old-fio','strace','kernel','python'):parser.add_argument('--'+name)

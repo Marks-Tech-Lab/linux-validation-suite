@@ -53,7 +53,7 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    tests and 81/81 profiles valid. **Broader real-host deployment acceptance
    remains pending**, separate from these completed software gates. See the
    [Environment Manager contract and deployment procedure](docs/environment_manager.md).
-2. [ ] **Storage Thermal Assist — broad internal data-drive compatibility first.**
+2. [ ] **Storage Thermal Assist — system-access software qualified; installation integration next.**
    Wave 2A and Stage 2B-1 are committed, including guarded descriptor proofs.
    Stage 2B-2 standalone inactive-HDD execution is committed. Stage 2B-3 shared
    CLI/TUI configuration, concurrent timed-stage adapter and seven-profile/41-stage
@@ -63,11 +63,11 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    Thermal Assist is auxiliary/non-gating: independent outcomes never determine
    CPU/GPU/RAM PASS/FAIL. Unavailable storage continues automatically; unsafe or
    unapproved unmonitored execution stays blocked. Current priority order:
-   1. Ordinary internal non-system HDD/SSD/NVMe data drives, mounted or unmounted.
-   2. Practical physical screening on available supported hardware.
-   3. Internal boot/system-drive support, retaining 25% system intensity intent.
+   1. Explicit active internal system access/co-location is implemented and VM-qualified; physical system-drive acceptance remains pending.
+   2. Routine trusted installation/update integration using the established environment and build lifecycle.
+   3. Broader hardware qualification and calibration; retain 25% system intensity intent.
    4. Complex RAID/ZFS/LVM/integrity/cache/multipath storage with authoritative mapping.
-      Conventional directly backed LUKS data mappings now have experimental software qualification; physical acceptance remains pending.
+      Conventional directly backed LUKS data mappings have experimental software qualification and scoped Samsung physical acceptance; broader hardware remains pending.
       Initial physical qualification may use a separately reviewed deployment; routine use must integrate existing dependency/native-build/privilege and CLI/TUI lifecycles without manual deployment promotion.
    5. Explicit operator-selected external drives; excluded from automatic groups.
    The initial [shared read-only opt-in](docs/storage_thermal_shared_data.md) reuses
@@ -83,7 +83,7 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    do not demonstrate direct worker mutation or rule out a revised shared-access
    contract that explicitly admits kernel writeback and initialization effects.
    See [the mounted-device research report](docs/storage_thermal_active_access_research.md).
-   Physical thermal/interference acceptance and active-storage paths remain pending.
+   Broader physical thermal/interference acceptance and unsupported active-storage paths remain pending.
    See [stage integration and acceptance boundaries](docs/storage_thermal_stage_integration.md).
    See [the backend foundation contract](docs/storage_thermal_backend_contract.md).
    Optional, lightweight, rate-limited, **read-only** drive activity for whole-system
@@ -1264,7 +1264,10 @@ evidence groundwork does not authorize changing the legacy compatibility format.
 - Retain `Files/nvidia_persistence.md` as operator/lab guidance. Wave 5's planned
   utility requires its own design and gates; this file is not that design.
 
-### Integrated Thermal Assist qualification
+### Historical integrated Thermal Assist implementation gate
+
+The following gate record describes its original software scope. The later
+accepted Samsung physical results are recorded immediately below.
 
 Standalone physical cancellation on Samsung 9100 PRO was accepted from the
 2026-11-16 run `7d82ff66`: actual interruption, confirmed cleanup and canonical
@@ -1279,3 +1282,25 @@ acceptance. Current class ceilings are provisional pilot settings, not permanent
 bounds on separately approved calibration research. Sustained operation, physical
 temperature-stop validation, additional media and multi-drive scalability remain
 pending. This gate does not promote system drives, complex stacks or externals.
+
+### Samsung physical milestones and system-drive continuation
+
+The Samsung 9100 PRO mounted LUKS/Btrfs data configuration has accepted functional,
+standalone cancellation, low-rate sustained heating and integrated physical A/B
+screening evidence. The matched 20-minute pair is closed and must not be repeated.
+The focused 16 IOPS automatic-stop trial recorded a worker reading of 53.85 C,
+production temperature-stop attribution, confirmed cleanup/revocation and canonical
+CLEAN; primary work continued 101.37 seconds and passed. The independent 1 Hz
+observer peaked at 52.85 C. Its separate samples must not be rewritten to match
+the worker. The previous blocked attempt and all physical/raw research evidence
+remain preserved. This is scoped Samsung acceptance, not universal physical
+qualification or definitive throughput-interference acceptance.
+
+The implemented software gate is [explicit system access and co-location](docs/storage_thermal_system_access.md),
+qualified with disposable selected-root ext4 and encrypted Btrfs VM fixtures.
+System execution stays explicit and experimental; saved profiles do not authorize
+it. Routine trusted installation/update integration follows, reusing Wave 1.
+Primary verified-work instrumentation remains a separate workstream. Broader
+percentage calibration, higher-rate research, HDD/SATA SSD qualification, multi-drive
+scalability, complex stacks and external-drive support remain open. No new physical
+system-drive workload, release or eligibility promotion is authorized by this change.

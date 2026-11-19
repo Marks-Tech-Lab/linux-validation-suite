@@ -74,12 +74,13 @@ The service cleans its owned children; uncertainty leaves ARMED. Other hosts may
 use their existing supervisor with the same launcher; Python does not depend on
 systemd. Never clear recovery to restart a session.
 
-Keep the ordinary execution workspace/build/results on the non-target system
-filesystem. A normal-user `git archive` execution copy of the accepted commit is
-sufficient and preserves the original repository/environment. Use the existing
-qualified environment to start the normal CLI/TUI there, never sudo the whole
-interface. Its scoped source must match the installed runtime. O / Stage Overrides
-remains run-local; no standard profile or manual label is rewritten.
+Use the original repository and its managed `.venv` for the normal unprivileged
+CLI/TUI and production run service. Do not require a separate LLM environment or
+execution copy. Installed privileged code/tools remain independently approved and
+root-owned; their scoped source must match the client. Run-local O / Stage Overrides
+does not rewrite standard profiles. Existing data-only qualification keeps durable
+state and evidence off its target; [system co-location](storage_thermal_system_access.md)
+is separately explicit and qualified.
 
 ## First matched comparison — separate physical authorization
 

@@ -42,14 +42,7 @@ def configuration(value):
     return result
 
 
-def owned_path(path, directory=False):
-    path=Path(path)
-    require(path.is_absolute(),'absolute installed path required')
-    for item in (path,*path.parents):
-        s=item.lstat()
-        require(s.st_uid==0 and not s.st_mode&0o022,'untrusted installed ownership: '+str(item))
-        require(stat.S_ISDIR(s.st_mode) if item!=path or directory else stat.S_ISREG(s.st_mode),'untrusted installed type: '+str(item))
-    return path
+from .lvs_storage_thermal_system import owned_path
 
 
 def endpoint(uid=None):return SOCKET_ROOT/(str(os.getuid() if uid is None else uid)+'.sock')

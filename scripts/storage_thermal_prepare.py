@@ -62,11 +62,15 @@ raise SystemExit(app.main(recovery_marker=pathlib.Path('/var/lib/lvs-thermal/sto
 '''
 
 
-def prepare(destination: Path, fio: Path, *, root=ROOT):
+def prepare(destination: Path, fio: Path, *, root=ROOT, worker_uid=None, worker_gid=None):
     from Modules.lvs_source_provenance import _source_snapshot
     from Modules.lvs_native_helpers import find_c_compiler,native_helper_build_command
     from Modules.lvs_storage_thermal_backend import capability
     if os.getuid()==0:raise ValueError('Prepare as the ordinary operator; promotion is separate')
+    if (worker_uid is None)!=(worker_gid is None):raise ValueError('Both dedicated worker IDs required')
+    if worker_uid is not None and (type(worker_uid) is not int or type(worker_gid) is not int or
+            not 0<worker_uid<2**32-1 or not 0<worker_gid<2**32-1 or worker_uid==os.getuid()):
+        raise ValueError('Dedicated non-root worker must differ from operator')
     if fio.is_symlink() or not fio.is_file():raise ValueError('Explicit regular qualified fio executable required')
     from Modules.lvs_storage_thermal_recovery import blocker
     if blocker(root/'build/storage_thermal_recovery_required.json'):raise ValueError('Source recovery scope unresolved; do not bypass it through deployment')
@@ -96,6 +100,9 @@ def prepare(destination: Path, fio: Path, *, root=ROOT):
         if directory.is_dir():directory.chmod(0o755)
     files={str(p.relative_to(destination)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.rglob('*')) if p.is_file()}
     manifest=dict(contract='lvs.storage_thermal.offline_bundle.v1',source=source,uid=os.getuid(),gid=os.getgid(),files=files,backend=observed)
+    if worker_uid is not None:
+        (build/'fio').chmod(0o711)
+        manifest.update(worker_uid=worker_uid,worker_gid=worker_gid)
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     files['manifest.json']=hashlib.sha256((destination/'manifest.json').read_bytes()).hexdigest()
     (destination/'SHA256SUMS').write_text(''.join(h+'  '+n+'\n' for n,h in sorted(files.items())))
@@ -104,6 +111,7 @@ def prepare(destination: Path, fio: Path, *, root=ROOT):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--destination',type=Path,required=True);parser.add_argument('--fio',type=Path,required=True)
-    args=parser.parse_args();print(json.dumps(prepare(args.destination,args.fio),indent=2))
+    parser.add_argument('--worker-uid',type=int);parser.add_argument('--worker-gid',type=int)
+    args=parser.parse_args();print(json.dumps(prepare(args.destination,args.fio,worker_uid=args.worker_uid,worker_gid=args.worker_gid),indent=2))
 
 if __name__=='__main__':main()

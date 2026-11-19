@@ -47,7 +47,7 @@ reads complete. Heating, hardware safety and physical acceptance remain unproven
 | Internal SATA/SAS SSD data drive, mounted/unmounted | Blocked | Software path available |
 | Local PCIe NVMe SSD, one namespace/controller, data-only | Blocked | Software path available |
 | Single-device conventional filesystem, including single-device Btrfs | Mounted excluded | Filesystem name alone does not exclude; physical mapping must resolve |
-| Root/boot/system/swap drive | Blocked | Blocked: system-specific compatibility remains separate |
+| Root/boot/system/swap drive | Blocked | Explicit experimental system authorization and co-location qualification; see [system contract](storage_thermal_system_access.md) |
 | RAID/ZFS/LVM/multipath, multi-device filesystem | Blocked | Blocked or unresolved: separate ownership/mapping/controller qualification required |
 | NVMe fabrics, multiple namespaces, virtual/controller RAID volume | Blocked | Blocked: local independent physical-drive budgeting not established |
 | External/USB | Excluded | Still blocked; future explicit external opt-in is a roadmap requirement |

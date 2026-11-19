@@ -1,7 +1,7 @@
 """Version-1 thermal contracts and pure pilot planning.
 
 These provisional activity ceilings are NOT hardware/thermal acceptance. The
-active-stack providers are intentionally not implemented.
+shared providers remain experimental and require explicit authorization.
 """
 from __future__ import annotations
 
@@ -43,6 +43,9 @@ class ThermalConfig:
     contract_id: str = 'lvs.storage_thermal.config'
     contract_version: int = VERSION
     access_mode: str = 'exclusive'
+    system_device_ids: tuple[str, ...] = ()
+    control_plane_colocation: bool = False
+    system_swap: bool = False
     aggregate_iops_limit: int | None = None
     aggregate_bps_limit: int | None = None
     selection: str = 'all_internal'
@@ -68,6 +71,18 @@ class ThermalConfig:
                 or type(self.contract_version) is not int or self.policy != POLICY):
             raise ValueError('unsupported thermal configuration contract/policy')
         if self.access_mode not in ACCESS_MODES:raise ValueError('unsupported access mode')
+        if type(self.control_plane_colocation) is not bool or type(self.system_swap) is not bool:
+            raise ValueError('system authorization flags must be booleans')
+        if (not isinstance(self.system_device_ids,(tuple,list)) or
+                any(type(v) is not str or not v.strip() for v in self.system_device_ids) or
+                len(set(self.system_device_ids))!=len(self.system_device_ids)):
+            raise ValueError('explicit distinct system physical IDs required')
+        if self.system_device_ids:
+            if (self.access_mode!='shared_readonly_opt_in' or self.selection!='individual' or
+                    not set(self.system_device_ids)<=set(self.device_ids) or not self.control_plane_colocation):
+                raise ValueError('system authorization requires individual shared selection and explicit co-location')
+        elif self.control_plane_colocation or self.system_swap:
+            raise ValueError('co-location/swap authorization requires explicit system IDs')
         for name,value in (('aggregate IOPS',self.aggregate_iops_limit),('aggregate bytes/s',self.aggregate_bps_limit)):
             if value is not None:integer(value,1,2**40,name)
         if self.access_mode!='exclusive' and (self.aggregate_iops_limit is None or self.aggregate_bps_limit is None or self.monitoring!='required'):
@@ -150,6 +165,7 @@ class ThermalDevice:
     system_drive: bool = False
     reasons: list[str] = field(default_factory=list)
     rate: dict[str, Any] = field(default_factory=dict)
+    system_authorization: dict = field(default_factory=dict)
 
     def validate(self):
         if not self.device_id or not isinstance(self.identity, dict) or self.state not in STATES:
@@ -159,7 +175,9 @@ class ThermalDevice:
         if self.state in ('ready', 'running', 'completed') and not self.selected:
             raise ValueError('execution state requires selection')
         if self.system_drive and self.state in ('ready', 'running', 'completed'):
-            raise ValueError('system-drive execution has no approved backend')
+            from .lvs_storage_thermal_system import valid_system_proof
+            if not valid_system_proof(self.system_authorization,self.device_id):
+                raise ValueError('system-drive execution has no approved backend')
 
 
 def readiness(config: ThermalConfig, devices: list[ThermalDevice], backend: dict,
@@ -194,6 +212,7 @@ class ThermalResult:
     state: str = 'selected'
     activity_scope: str = 'unverified'
     access_mode: str = 'exclusive'
+    system_authorization: dict = field(default_factory=dict)
     source_provenance: dict = field(default_factory=dict)
     executable_provenance: dict = field(default_factory=dict)
     effective_rate: dict = field(default_factory=dict)

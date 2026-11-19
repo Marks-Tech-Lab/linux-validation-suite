@@ -27,6 +27,9 @@ def primary(plan,config,path,seconds,cancel_after=None,temperature_stop=False,de
     thermal={k:v for k,v in config.items() if k in names and k!='enabled'}
     stage=StageConfig('integrated-proof','CPU',seconds,modules=StageModules(cpu=ModuleCpu(enabled=True),storage_thermal=ModuleStorageThermal(enabled=True,**thermal)))
     stage.normalization.trim_start_seconds=0;stage.normalization.trim_end_seconds=0
+    if config.get('system_device_ids'):
+        from Modules.lvs_storage_thermal_stage import set_thermal_setting
+        set_thermal_setting(stage,'thermal_system_access',json.dumps(dict(device_ids=config['system_device_ids'],colocated=config['control_plane_colocation'],swap=config['system_swap'])))
     plan=preview(stage)
     assert plan['status']=='READY',plan
     item=dict(storage_thermal=plan)

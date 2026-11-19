@@ -223,7 +223,7 @@ def guest():
 
 
 def host(args, *, guest_script=None, verifier=verify_results, extra_files=None,
-         fixture_builder=None):
+         fixture_builder=None, guest_timeout=None):
     bundle = Path(tempfile.mkdtemp(prefix='lvs-wave2a-'))
     print(f'Retained disposable evidence: {bundle}', flush=True)
     root = bundle / 'root'; root.mkdir()
@@ -310,7 +310,7 @@ def host(args, *, guest_script=None, verifier=verify_results, extra_files=None,
     with (bundle / 'console.log').open('wb') as console:
         p = subprocess.Popen(argv, stdout=console, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            p.wait(timeout=300 if layout else 150)
+            p.wait(timeout=guest_timeout or (300 if layout else 150))
         except BaseException:
             os.killpg(p.pid, signal.SIGKILL); p.wait(timeout=10)
             raise

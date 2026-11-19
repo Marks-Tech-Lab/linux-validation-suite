@@ -29,6 +29,8 @@ def profile_used_payload(profile: Any, labels: List[str]) -> Dict[str, Any]:
 
 def atomic_preflight_json(path: Path, payload: Any) -> None:
     """Publish complete readiness JSON; never leave a truncated prior decision."""
+    from .lvs_storage_thermal_system import charge_output
+    charge_output(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     name = None
     try:

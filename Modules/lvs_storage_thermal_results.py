@@ -106,6 +106,15 @@ def _rate_errors(row,configuration,planned,plan):
     newly authorized effective plan before launch. Shortened duration keeps rates.
     """
     mode=(configuration or {}).get('access_mode','exclusive')
+    if planned.get('system_drive'):
+        from .lvs_storage_thermal_system import valid_system_proof
+        proof=planned.get('system_authorization')
+        if (not valid_system_proof(proof,row['device_id']) or row.get('system_authorization')!=proof or
+                row['device_id'] not in (configuration or {}).get('system_device_ids',[]) or
+                not (configuration or {}).get('control_plane_colocation') or
+                (row.get('guard_evidence') or {}).get('uid')!=proof.get('worker_uid') or
+                (row.get('guard_evidence') or {}).get('gid')!=proof.get('worker_gid')):
+            return ['System execution differs from authoritative authorization/worker identity']
     if row.get('access_mode','exclusive')!=mode:return ['Device access contract differs from authoritative configuration']
     actual=row.get('effective_rate');expected=planned.get('rate')
     if not isinstance(expected,dict) or not expected:
@@ -347,7 +356,9 @@ def _outcome(payload, requested, *, device=False):
     if not requested or payload.get('execution_started') is False or not payload.get('executed_devices'):
         return 'NOT_RUN' if not payload.get('execution_started') else 'ERROR'
     verdict = payload.get('verdict')
-    if verdict == 'PASS':return 'COMPLETED_WITH_WARNINGS' if payload.get('stage_window_shortened') else 'COMPLETED'
+    if verdict == 'PASS':
+        experimental=(payload.get('configuration') or {}).get('access_mode','exclusive')!='exclusive'
+        return 'COMPLETED_WITH_WARNINGS' if payload.get('stage_window_shortened') or experimental else 'COMPLETED'
     if verdict == 'WARN':return 'COMPLETED_WITH_WARNINGS'
     return 'ERROR'
 

@@ -250,7 +250,7 @@ class ThermalMenu:
                         self.config=replace(self.config,selection=GROUPS[index-1],device_ids=ids)
                 elif choice=='3':
                     ordinary=self.number('Ordinary drive activity percent',0,100,self.config.intensity_percent)
-                    system=self.number('System drive intent percent (execution remains blocked)',0,100,self.config.system_intensity_percent)
+                    system=self.number('System drive intent percent (separate installed-service authorization required)',0,100,self.config.system_intensity_percent)
                     self.config=replace(self.config,intensity_percent=ordinary,system_intensity_percent=system)
                 elif choice=='4':self.config=replace(self.config,duration_seconds=self.number('Seconds per started drive',1,86400,self.config.duration_seconds))
                 elif choice=='5':self.advanced()

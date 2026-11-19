@@ -41,6 +41,9 @@ def stage_config(stage):
     if type(values["enabled"]) is not bool:
         raise ValueError("Thermal enabled must be a boolean")
     values.pop('enabled')
+    # Dynamic run-local attributes are excluded from dataclass/profile JSON.
+    for key in ('system_device_ids','control_plane_colocation','system_swap'):
+        if hasattr(stage.modules.storage_thermal,'_'+key):values[key]=getattr(stage.modules.storage_thermal,'_'+key)
     # Saved profiles express intent only. The session must explicitly approve
     # the entire bounded scope before this placeholder can become executable.
     if values['monitoring'] == 'approved_unmonitored':
@@ -62,7 +65,7 @@ def thermal_settings(stage, setting_type):
         return fields
     options = dict(access_mode=('exclusive','shared_readonly_opt_in'), selection=GROUPS, rate_mode=('percent', 'advanced'), monitoring=('required', 'approved_unmonitored'), scheduling=('normal',))
     labels = dict(access_mode='Access contract (shared is experimental explicit opt-in)', aggregate_iops_limit='Aggregate IOPS budget (JSON integer/null)', aggregate_bps_limit='Aggregate bytes/s budget (JSON integer/null)',device_ids='Individual stable IDs (comma-separated or JSON list)', per_device_percent='Per-drive intensity (JSON object)',
-                  intensity_percent='Ordinary activity %', system_intensity_percent='System activity % (active drives blocked)',
+                  intensity_percent='Ordinary activity %', system_intensity_percent='System activity % (separate authorization required)',
                   block_size='Read size bytes', iops='Advanced IOPS (JSON integer/null)',
                   bandwidth_bytes_per_second='Advanced bytes/s (JSON integer/null)',
                   temperature_limit_c='Stop temperature C (JSON number/null)',
@@ -74,11 +77,21 @@ def thermal_settings(stage, setting_type):
                                    'storage_thermal', name, value, tuple(options.get(name, ()))))
     fields.append(StageSetting('thermal_rates', 'Thermal advanced rates (JSON object: rate_mode, iops, bandwidth_bytes_per_second)',
                   'storage_thermal', 'rate_mode', {k:getattr(obj,k) for k in ('rate_mode','iops','bandwidth_bytes_per_second')}))
+    fields.append(StageSetting('thermal_system_access','Run-local system authorization (JSON: device_ids, colocated, swap)',
+                  'storage_thermal','system_access',dict(device_ids=list(getattr(obj,'_system_device_ids',())),
+                  colocated=getattr(obj,'_control_plane_colocation',False),swap=getattr(obj,'_system_swap',False))))
     return fields
 
 
 def set_thermal_setting(stage, key, raw):
     name = key.removeprefix('thermal_')
+    if name=='system_access':
+        values=json.loads(raw)
+        if not isinstance(values,dict) or set(values)!={'device_ids','colocated','swap'}:raise ValueError('Complete run-local system authorization required')
+        for k,v in [('system_device_ids',values['device_ids']),('control_plane_colocation',values['colocated']),('system_swap',values['swap'])]:
+            setattr(stage.modules.storage_thermal,'_'+k,v)
+        stage_config(stage)
+        return values
     if name == 'rates':
         values=json.loads(raw)
         if not isinstance(values,dict) or set(values)!={'rate_mode','iops','bandwidth_bytes_per_second'}:
@@ -172,7 +185,7 @@ def decision_key(plan):
     configuration = dict(plan['configuration'])
     configuration['unmonitored_approval'] = ''
     payload = dict(configuration=configuration, status=plan['status'], schedule_scope=plan.get('schedule_scope'),
-                   devices=[{k:d.get(k) for k in ('device_id','identity','selected','state','system_drive','reasons','rate')}
+                   devices=[{k:d.get(k) for k in ('device_id','identity','selected','state','system_drive','reasons','rate','system_authorization')}
                             for d in plan.get('devices',[]) if d.get('selected')],
                    backend=plan.get('backend'),source=(plan.get('source_provenance') or {}).get('source'), reasons=plan.get('reasons',[]),
                    monitoring=[dict(device_id=r['device_id'], sensors=r.get('sensors',[]),
@@ -1050,7 +1063,8 @@ def worker(directory, *, gate=None, lease=None, snapshot=None, snapshot_stats=No
                 atomic_preflight_json(directory/'live.json',observation)
                 if (timeline_count[0]<1024 and now-last_timeline[0]>=max(1,config.duration_seconds/1024)) or (safety and not safety_recorded[0]):
                     with (directory/'stage_monitoring.jsonl').open('a') as stream:
-                        stream.write(json.dumps(observation)+'\n')
+                        from .lvs_storage_thermal_system import write_observation
+                        write_observation(stream,observation)
                     last_timeline[0]=now;timeline_count[0]+=1;safety_recorded[0]=safety
                 last_publish[0]=now
         attempted=True

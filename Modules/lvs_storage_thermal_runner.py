@@ -86,7 +86,7 @@ class ThermalRunner:
                  clock=time.monotonic, sleep=time.sleep, popen=subprocess.Popen,
                  publish=atomic_preflight_json, source=collect_source_provenance,
                  budget=resources, temperature_reader=temperature, activity=disk_activity,
-                 final_revalidator=None, final_temperature_reader=None):
+                 final_revalidator=None, final_temperature_reader=None, system_authority=None):
         self.fio,self.guard=str(fio),str(guard)
         self.targets=targets or ThermalTargets()
         self.uid=os.getuid() if uid is None else uid;self.gid=os.getgid() if gid is None else gid
@@ -94,9 +94,13 @@ class ThermalRunner:
         self.budget,self.temperature,self.activity=budget,temperature_reader,activity
         self.final_revalidator=final_revalidator;self.final_temperature=final_temperature_reader
         self.native_processes=None
+        self.system_authority=system_authority
         self.unconfirmed=[]  # retain exclusive descriptors if cleanup cannot be proven
 
     def discover(self,config):
+        if config.system_device_ids or getattr(self.targets,'system_approval',None):
+            from .lvs_storage_thermal_system import configure_targets
+            configure_targets(self.targets,config,self.system_authority)
         return self.targets.discover(access_mode=config.access_mode) if config.access_mode!='exclusive' else self.targets.discover()
 
     def _process(self,p):
@@ -123,8 +127,12 @@ class ThermalRunner:
     def plan(self,config,rows,backend):
         ThermalConfig(**config.to_dict())
         if config.access_mode!='exclusive':
-            backend=dict(backend,active_storage_supported=True,system_storage_supported=False,physical_acceptance=False,shared_access='experimental_opt_in')
+            backend=dict(backend,active_storage_supported=True,system_storage_supported=bool(config.system_device_ids),physical_acceptance=False,shared_access='experimental_opt_in')
         ids=list(config.device_ids) if config.selection=='individual' else [r['device_id'] for r in rows if selected(r,config)]
+        if config.system_device_ids:
+            proven={r['device_id'] for r in rows if r.get('system_drive') is True and r.get('system_authorization') and r.get('topology_complete')}
+            if not set(config.system_device_ids)<=proven:
+                raise ValueError('Requested system physical identities are not authoritatively resolved')
         approved=approval_valid(config,ids)
         devices=[];planned=[]
         for row in rows:
@@ -145,7 +153,8 @@ class ThermalRunner:
                     if config.monitoring=='approved_unmonitored' and not approved:
                         why.append('exact target/configuration/duration unmonitored approval required')
             state='discovered' if not chosen else 'blocked' if why else 'skipped' if rate.get('effective_iops')==0 else 'ready'
-            d=ThermalDevice(row['device_id'],row['identity'],state,chosen,row['system_drive'],why,rate)
+            d=ThermalDevice(row['device_id'],row['identity'],state,chosen,row['system_drive'],why,rate,
+                            system_authorization=row.get('system_authorization') or {})
             devices.append(d)
             if chosen:planned.append(dict(row,rate=rate,state=state,reasons=why,initial_temperature=reading))
         for missing in set(config.device_ids)-{r['device_id'] for r in rows}:
@@ -300,6 +309,7 @@ class ThermalRunner:
                 if pending and now>=next_launch:
                     row=pending.pop(0);index=len(jobs)+1;fd=None;out=None;err=None;exe=None
                     result=ThermalResult(row['device_id'],row['identity'],state='running',activity_scope='physical_drive_reads',access_mode=config.access_mode,
+                        system_authorization=row.get('system_authorization') or {},
                                          source_provenance=provenance,executable_provenance=plan['backend'],effective_rate=row['rate'])
                     job=dict(row=row,result=result,index=index,started=now,samples=[],peak=None,initial=None)
                     jobs.append(job)
@@ -386,7 +396,9 @@ class ThermalRunner:
                             snapshot['background_flushes_since_launch']=max(0,counters[15]-baseline[15]) if len(counters)>15 else None
                         job['temperature_warning']=job.get('temperature_warning',False) or snapshot['temperature_warning']
                         job['last_snapshot']=snapshot
-                        if now>=next_progress:progress.write(json.dumps(snapshot)+'\n')
+                        if now>=next_progress:
+                            from .lvs_storage_thermal_system import write_observation
+                            write_observation(progress,snapshot)
                     if now>=next_progress:progress.flush();next_progress=now+max(1,config.duration_seconds/1024)
                     next_monitor=now+1
                 for job in jobs:
