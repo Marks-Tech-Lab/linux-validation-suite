@@ -132,6 +132,10 @@ def bootstrap():
             if directory.exists():
                 for p in (directory,*directory.rglob('*')):os.chown(p,0,0,follow_symlinks=False)
         os.execv('/bin/switch_root',['switch_root',str(newroot),'/usr/lib/systemd/systemd','--unit=lvs-fixture.target','--log-target=console','--log-level=warning'])
+    if Path('/shared-campaign').read_text()in('ext4-system','encrypted-system'):
+        # Privacy controls need an untraced same-UID parent positive control.
+        # A root strace parent would itself defeat/obscure ptrace/core checks.
+        os.execv('/bin/switch_root',['switch_root',str(newroot),'/usr/bin/python3','/foundation_probe.py','--inside'])
     tracing=[]
     if Path('/shared-campaign').read_text() in ('encrypted-integrated','encrypted-system','ext4-system','encrypted-install'):
         # Trace the access/mutation boundary, not every interpreter stat/read.
@@ -547,6 +551,11 @@ def host(args):
         subprocess.run(native_helper_build_command(compiler,ROOT/'native'/source,output)+extra,check=True,capture_output=True,timeout=60)
     snapshot,content=_source_snapshot(ROOT);require(snapshot['status']=='complete','source snapshot incomplete')
     files=[(ROOT/name,'/lvs/'+name) for name in content]
+    from scripts.storage_thermal_confidential_probe import build as privacy_build
+    from Modules.lvs_native_helpers import find_c_compiler
+    if args.campaign.endswith('system'):
+        files += privacy_build(ROOT,tools,find_c_compiler())
+    files += [(ROOT/'scripts/storage_thermal_confidential_probe.py','/lvs/scripts/storage_thermal_confidential_probe.py')]
     files += [(ROOT/'scripts/storage_thermal_integrated_probe.py','/lvs/scripts/storage_thermal_integrated_probe.py'),(ROOT/'scripts/storage_thermal_system_probe.py','/lvs/scripts/storage_thermal_system_probe.py')]
     files += [(tools/'storage_thermal_launch.so','/bin/storage_thermal_launch.so'),(ROOT/'scripts/storage_thermal_acceptance.py','/lvs/scripts/storage_thermal_acceptance.py')]
     if args.campaign.startswith('encrypted') or args.campaign.endswith('system'):

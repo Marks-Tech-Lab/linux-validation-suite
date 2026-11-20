@@ -115,6 +115,16 @@ def _rate_errors(row,configuration,planned,plan):
                 (row.get('guard_evidence') or {}).get('uid')!=proof.get('worker_uid') or
                 (row.get('guard_evidence') or {}).get('gid')!=proof.get('worker_gid')):
             return ['System execution differs from authoritative authorization/worker identity']
+        if proof.get('postexec_required'):
+            from .lvs_storage_thermal_system import postexec_witness_valid
+            guard=row.get('guard_evidence')or{}
+            if not postexec_witness_valid(guard.get('postexec_confidentiality'),proof['worker_uid'],proof['worker_gid'],row.get('pid'),planned.get('identity')or{}):
+                return ['System postexec confidentiality witness missing or contradictory']
+    post_policy=(plan.get('backend')or{}).get('postexec_confidentiality')or{}
+    if post_policy.get('status')=='verified':
+        from .lvs_storage_thermal_system import postexec_witness_valid
+        if not postexec_witness_valid((row.get('guard_evidence')or{}).get('postexec_confidentiality'),post_policy.get('worker_uid'),post_policy.get('worker_gid'),row.get('pid'),planned.get('identity')or{}):
+            return ['Qualified postexec worker confidentiality witness missing or contradictory']
     if row.get('access_mode','exclusive')!=mode:return ['Device access contract differs from authoritative configuration']
     actual=row.get('effective_rate');expected=planned.get('rate')
     if not isinstance(expected,dict) or not expected:

@@ -1,4 +1,4 @@
-# Workstation readiness review after routine-install qualification
+# Historical workstation readiness review after routine-install qualification
 
 Metadata-only review on 2026-11-20 preserved every prepared/installed version,
 canonical recovery and host policy. No sudo, sensor access or workload occurred.
@@ -65,3 +65,10 @@ additionally requires the confidentiality prerequisite above and explicit
 run-local target/session authorization. No physical trial or security-policy
 change is authorized by this document. The genuine primary-throughput work is
 independent of this remaining system-worker qualification.
+
+The findings above describe the accepted 709c730-era state. The subsequent
+[post-exec confidentiality implementation](storage_thermal_confidentiality.md)
+qualifies dedicated worker protection under policy 2 without changing host policy.
+It does not install itself or make the older prepared/installed runtime match the
+new source. Fresh preparation, independent approval and privileged recovery
+verification remain mandatory before any new physical authorization.

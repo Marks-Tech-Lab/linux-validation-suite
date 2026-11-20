@@ -1215,3 +1215,12 @@ regions. Final manifest `worker_results[].primary_work_analysis` and report JSON
 `primary_completed_work` retain observed interval rates and coverage. These are
 supplementary measurements, never primary verdicts, retired-instruction counters
 or physical DRAM bandwidth. See [measurement semantics](docs/primary_completed_work.md).
+
+### Post-exec Thermal Assist worker confidentiality
+
+`lvs.storage_thermal.postexec`, version 1: native final-exec PID/UID/GID, zero
+dumpability, synchronized locked state, deferred-target and geometry witness.
+Readiness `backend.postexec_confidentiality` binds stable library identity and
+verified policy, excluding transient probe PIDs. Qualified worker success requires
+this witness in `guard_evidence.postexec_confidentiality`; it grants no cleanup or
+CLEAN authority. See [the contract](docs/storage_thermal_confidentiality.md).

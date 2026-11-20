@@ -560,7 +560,7 @@ class StageLaunches:
         # This check is only an optimization. The native shared gate, not this
         # Python sample, decides admission after process ownership is registered.
         self.lease.check(1)
-        if len(argv)!=11 or argv[1]!='--fio-fd':raise ValueError('Unexpected standalone guard command')
+        if len(argv)!=11 or argv[1]not in('--fio-fd','--confidential-fio-fd'):raise ValueError('Unexpected standalone guard command')
         target = kwargs['stdin']
         if type(target) is not int or target==int(argv[2]) or tuple(kwargs.get('pass_fds',()))!=(int(argv[2]),):
             raise ValueError('Only the pinned executable may be inherited; target must remain in its owner')
@@ -570,7 +570,7 @@ class StageLaunches:
         parent.settimeout(.02)
         row = None
         try:
-            command=[argv[0],'--stage-fio-fd',argv[2],str(child.fileno()),
+            command=[argv[0],'--stage-confidential-fio-fd'if argv[1]=='--confidential-fio-fd'else'--stage-fio-fd',argv[2],str(child.fileno()),
                 str(self.lease.admission.fd),str(self.lease.deadline_ns),str(os.getpid()),
                 *map(str,self.lease.admission.identity),*argv[3:]]
             options=dict(kwargs,stdin=subprocess.DEVNULL,

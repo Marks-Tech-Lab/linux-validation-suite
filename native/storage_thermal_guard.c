@@ -49,12 +49,12 @@ static uint64_t number(const char *s) {
     if(errno || *end) fail("decimal overflow");
     return n;
 }
-static int close_extra(int keep) {
+static int close_extra_many(int keep,int library,int channel) {
     DIR *dir=opendir("/proc/self/fd"); if(!dir) fail("enumerate inherited descriptors");
     struct dirent *entry; int count=0;
     while((entry=readdir(dir))) {
         char *end; long fd=strtol(entry->d_name,&end,10);
-        if(*end==0 && fd>2 && fd!=keep && fd!=dirfd(dir)) {
+        if(*end==0 && fd>2 && fd!=keep && fd!=library && fd!=channel && fd!=dirfd(dir)) {
             if(close((int)fd)) fail("close inherited descriptor");
             count++;
         }
@@ -62,6 +62,9 @@ static int close_extra(int keep) {
     closedir(dir);
     return count;
 }
+
+/* Preserve the accepted single-descriptor research/test interface. */
+static int close_extra(int keep) {return close_extra_many(keep,-1,-1);}
 
 #define LOAD(field) BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,field))
 #define ALLOW BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW)
@@ -260,12 +263,32 @@ static int stage_target(int channel,int lease,uint64_t deadline,pid_t parent,uin
     close(reference);close(pin);return target;
 }
 
+/* Queue a capability, not sector bytes. No target descriptor survives exec;
+ * only the trusted post-exec hook can dequeue it after locking confidentiality. */
+static int defer_target(void) {
+    int pair[2];need(socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0,pair)==0,"target handoff socket");
+    union {struct cmsghdr align;char bytes[CMSG_SPACE(sizeof(int))];} control={0};
+    char byte='T';struct iovec v={&byte,1};struct msghdr m={.msg_iov=&v,.msg_iovlen=1,.msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
+    struct cmsghdr *c=CMSG_FIRSTHDR(&m);c->cmsg_level=SOL_SOCKET;c->cmsg_type=SCM_RIGHTS;c->cmsg_len=CMSG_LEN(sizeof(int));int target=0;memcpy(CMSG_DATA(c),&target,sizeof(target));
+    need(sendmsg(pair[0],&m,MSG_DONTWAIT|MSG_NOSIGNAL)==1,"queue target");close(pair[0]);
+    int null=open("/dev/null",O_RDONLY|O_CLOEXEC);need(null>=0 && dup2(null,0)==0,"defer stdin");close(null);
+    need(fcntl(pair[1],F_SETFD,0)==0,"handoff inheritance");return pair[1];
+}
+static int confidentiality_library(void) {
+    char path[4096];ssize_t n=readlink("/proc/self/exe",path,sizeof(path)-1);need(n>0 && n<(ssize_t)sizeof(path)-1,"guard source path");path[n]=0;
+    char *slash=strrchr(path,'/');need(slash!=NULL,"guard directory");need((size_t)(slash-path)+sizeof("/storage_thermal_confidential.so")<sizeof(path),"hook path length");strcpy(slash,"/storage_thermal_confidential.so");
+    int fd=open(path,O_RDONLY|O_NOFOLLOW);struct stat s;need(fd>=3 && fstat(fd,&s)==0 && S_ISREG(s.st_mode) && s.st_nlink==1 && !(s.st_mode&022) && (geteuid()!=0 || s.st_uid==0),"trusted postexec library");return fd;
+}
+
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--version")) { puts("lvs-storage-thermal-guard-v1"); return 0; }
     if(argc==2 && !strcmp(argv[1],"--stage-admission-version")) { puts("lvs-storage-thermal-stage-admission-v2"); return 0; }
-    int stage=argc>1 && (!strcmp(argv[1],"--stage-fio-fd") || !strcmp(argv[1],"--stage-policy-test"));
+    if(argc==2 && !strcmp(argv[1],"--confidentiality-version")) {puts("lvs-postexec-nondumpable-v1");return 0;}
+    int confidential=argc>1 && (!strcmp(argv[1],"--confidential-fio-fd") || !strcmp(argv[1],"--stage-confidential-fio-fd") || !strcmp(argv[1],"--confidential-probe-fd"));
+    int probe=argc>1 && !strcmp(argv[1],"--confidential-probe-fd");
+    int stage=argc>1 && (!strcmp(argv[1],"--stage-fio-fd") || !strcmp(argv[1],"--stage-confidential-fio-fd") || !strcmp(argv[1],"--stage-policy-test"));
     int test=argc>1 && (!strcmp(argv[1],"--policy-test") || !strcmp(argv[1],"--stage-policy-test"));
-    need((stage && argc==17) || (!stage && test && argc==10) || (argc==11 && !strcmp(argv[1],"--fio-fd")),"invalid fixed guard protocol");
+    need((stage && argc==17) || (!stage && test && argc==10) || (!stage && argc==11 && (!strcmp(argv[1],"--fio-fd") || confidential)),"invalid fixed guard protocol");
     pid_t owner=0;
     if(stage) {
         uint64_t channel=number(argv[3]),lease=number(argv[4]),parent=number(argv[6]);
@@ -285,7 +308,7 @@ int main(int argc,char **argv) {
     if(fstat(0,&info)) fail("stdin identity");
     int flags=fcntl(0,F_GETFL); if(flags<0) fail("stdin flags");
     need((flags&O_ACCMODE)==O_RDONLY && (flags&O_DIRECT),"stdin must be readonly and direct");
-    need((S_ISBLK(info.st_mode) || (test && S_ISREG(info.st_mode))) && major(info.st_rdev)==values[2] && minor(info.st_rdev)==values[3],"descriptor identity mismatch");
+    need((S_ISBLK(info.st_mode) || ((test || probe) && S_ISREG(info.st_mode))) && major(info.st_rdev)==values[2] && minor(info.st_rdev)==values[3],"descriptor identity mismatch");
     uint64_t actual=info.st_size; int sector=512;
     if(S_ISBLK(info.st_mode)) {
         if(ioctl(0,BLKGETSIZE64,&actual) || ioctl(0,BLKSSZGET,&sector)) fail("block geometry");
@@ -301,7 +324,9 @@ int main(int argc,char **argv) {
         char magic[4]; need(pread(executable,magic,4,0)==4 && !memcmp(magic,"\177ELF",4),"fio must be an ELF executable");
         if(fcntl(executable,F_SETFD,FD_CLOEXEC)) fail("executable cloexec");
     }
-    int closed=close_extra(executable);
+    int library=confidential?confidentiality_library():-1;
+    int channel=confidential?defer_target():-1;
+    int closed=confidential?close_extra_many(executable,library,channel):close_extra(executable);
     drop_privileges(uid,gid);
     restrict_operations();
     if(stage) need(prctl(PR_SET_PDEATHSIG,SIGKILL)==0 && getppid()==owner,"stage owner lost during privilege drop");
@@ -318,6 +343,13 @@ int main(int argc,char **argv) {
         "--end_fsync=0","--end_syncfs=0","--fsync_on_close=0","--norandommap=1","--randrepeat=1",
         "--randseed=719","--output-format=json","--eta=never","--disk_util=0",NULL};
     char *environment[]={"PATH=/usr/bin:/bin","LC_ALL=C","HOME=/","TMPDIR=/tmp",NULL};
-    fexecve(executable,args,environment);
+    char preload[128],handoff[256];
+    char *secure_environment[]={"PATH=/usr/bin:/bin","LC_ALL=C","HOME=/","TMPDIR=/tmp",preload,handoff,NULL};
+    if(confidential) {
+        snprintf(preload,sizeof(preload),"LD_PRELOAD=/proc/self/fd/%d",library);
+        snprintf(handoff,sizeof(handoff),"LVS_THERMAL_HANDOFF=%d:%d:%ld:%u:%u:%"PRIu64,channel,library,(long)getppid(),(unsigned)values[2],(unsigned)values[3],size);
+    }
+    char *probe_args[]={"fio","--version",NULL};
+    fexecve(executable,probe?probe_args:args,confidential?secure_environment:environment);
     fail("fio exec");
 }

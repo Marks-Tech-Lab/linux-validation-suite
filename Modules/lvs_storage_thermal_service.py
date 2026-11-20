@@ -120,7 +120,7 @@ def client(root,manifest,generation):
                 try:SystemAuthority(root,manifest).worker();system_worker_ready=True;system_reason=''
                 except ValueError as exc:system_worker_ready=False;system_reason=str(exc)
                 send(conn,dict(status='AVAILABLE',system_worker_ready=system_worker_ready,system_worker_reason=system_reason,source=manifest['source'],generation=generation,
-                    root=str(root),bootstrap_sha256=manifest['files']['runtime/build/storage_thermal_launch.so'],
+                    root=str(root),postexec_sha256=manifest['files'].get('runtime/build/storage_thermal_confidential.so'),bootstrap_sha256=manifest['files']['runtime/build/storage_thermal_launch.so'],
                     fio_version=manifest.get('backend',{}).get('fio_version'),
                     worker_uid=manifest.get('worker_uid',manifest['uid']),worker_gid=manifest.get('worker_gid',manifest['gid']),
                     fio_sha256=manifest['files']['runtime/build/fio'],guard_sha256=manifest['files']['runtime/build/storage_thermal_guard'],

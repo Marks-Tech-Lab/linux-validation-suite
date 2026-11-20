@@ -81,12 +81,15 @@ def run_system_confidentiality_policy_checks():
         root=Path(name);fio=root/'runtime/build/fio';fio.parent.mkdir(parents=True);fio.write_bytes(b'fixture');fio.chmod(0o711)
         original=Path.read_text
         read=lambda p,*a,**k:'0'if str(p)=='/proc/sys/fs/suid_dumpable'else original(p,*a,**k)
-        manifest=dict(uid=1000,gid=1000,worker_uid=65533,worker_gid=65533)
+        hook=fio.with_name('storage_thermal_confidential.so');hook.write_bytes(b'fixture trusted hook')
+        import hashlib
+        manifest=dict(uid=1000,gid=1000,worker_uid=65533,worker_gid=65533,files={'runtime/build/storage_thermal_confidential.so':hashlib.sha256(hook.read_bytes()).hexdigest()},backend={'postexec_confidentiality':{'status':'verified'}})
         with patch('Modules.lvs_storage_thermal_system.pwd.getpwuid',return_value=SimpleNamespace(pw_name='lvs-thermal-worker',pw_gid=65533,pw_shell='/sbin/nologin')),patch('Modules.lvs_storage_thermal_system.os.geteuid',return_value=0),patch('Modules.lvs_storage_thermal_system.owned_path',side_effect=lambda p:p),patch.object(Path,'read_text',read):
             assert SystemAuthority(root,manifest).approve(config())['worker_uid']==65533
             with patch.object(Path,'read_text',lambda p,*a,**k:'2'if str(p)=='/proc/sys/fs/suid_dumpable'else original(p,*a,**k)):
                 assert SystemAuthority(root,manifest).worker(confidential=False)==(65533,65533)
-                rejects(lambda:SystemAuthority(root,manifest).approve(config()))
+                assert SystemAuthority(root,manifest).approve(config())['postexec_required']is True
+                rejects(lambda:SystemAuthority(root,dict(manifest,files={})).approve(config()))
             fio.chmod(0o755);rejects(lambda:SystemAuthority(root,manifest).approve(config()));fio.chmod(0o711)
             for worker in (0,True,1000):rejects(lambda:SystemAuthority(root,dict(manifest,worker_uid=worker)).approve(config()))
             rejects(lambda:SystemAuthority(root,dict(uid=1000,gid=1000)).approve(config()))
@@ -102,18 +105,25 @@ def run_system_evidence_checks():
     from Modules.lvs_storage_thermal_results import evidence_run,register_stage
     from Modules.lvs_storage_thermal_stage import ThermalStageSession
     from Modules.lvs_run_models import StageWindow
-    for mutation in ('valid','missing','foreign','operator_uid','stale_generation','cleanup_uncertain'):
+    for mutation in ('valid','missing','foreign','operator_uid','stale_generation','cleanup_uncertain','missing_post','dumpable_post','unsynced_post','foreign_post'):
         with tempfile.TemporaryDirectory()as name, evidence_run(name)as run:
             root=Path(name)
             from Modules.lvs_storage_thermal_launch import prepare
             prepare(root/'bootstrap')
             p,plan,ctx,own=build(root,run)
             cfg=replace(ThermalConfig(),access_mode='shared_readonly_opt_in',selection='individual',device_ids=['audit-drive'],system_device_ids=['audit-drive'],control_plane_colocation=True,aggregate_iops_limit=16,aggregate_bps_limit=1048576).to_dict()
-            proof=dict(contract='shared_system_readonly_v1',physical_id='audit-drive',device_ids=['audit-drive'],colocated=True,swap=False,worker_uid=65533,worker_gid=65533,operator_uid=1000,topology_generation='a'*64)
+            proof=dict(contract='shared_system_readonly_v1',physical_id='audit-drive',device_ids=['audit-drive'],colocated=True,swap=False,worker_uid=65533,worker_gid=65533,operator_uid=1000,topology_generation='a'*64,postexec_required=True,confidentiality='separate_uid_postexec_nondumpable_v1')
             p['configuration']=cfg;plan['configuration']=deepcopy(cfg)
+            plan['devices'][0]['identity']['size_bytes']=1024**3
+            p['devices'][0]['identity']['size_bytes']=1024**3
             plan['devices'][0].update(system_drive=True,system_authorization=deepcopy(proof))
             p['readiness']=deepcopy(plan)
             d=p['devices'][0];d.update(access_mode='shared_readonly_opt_in',system_authorization=deepcopy(proof));d['guard_evidence'].update(uid=65533,gid=65533)
+            d['guard_evidence']['postexec_confidentiality']=dict(contract_id='lvs.storage_thermal.postexec',version=1,pid=d['pid'],uid=65533,gid=65533,dumpable=0,state_locked=True,thread_sync=True,target_deferred=True,parent=321,major=plan['devices'][0]['identity']['major'],minor=plan['devices'][0]['identity']['minor'],size=plan['devices'][0]['identity']['size_bytes'])
+            if mutation=='missing_post':d['guard_evidence'].pop('postexec_confidentiality')
+            if mutation=='dumpable_post':d['guard_evidence']['postexec_confidentiality']['dumpable']=2
+            if mutation=='unsynced_post':d['guard_evidence']['postexec_confidentiality']['thread_sync']=False
+            if mutation=='foreign_post':d['guard_evidence']['postexec_confidentiality']['pid']+=1
             if mutation=='missing':d.pop('system_authorization')
             if mutation=='foreign':d['system_authorization']['physical_id']='foreign'
             if mutation=='operator_uid':d['guard_evidence']['uid']=1000

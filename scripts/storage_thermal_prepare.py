@@ -93,11 +93,11 @@ def prepare(destination: Path, fio: Path, *, root=ROOT, worker_uid=None, worker_
     shutil.copyfile(root/'scripts/storage_thermal_acceptance.py',observer);observer.chmod(0o644)
     build=runtime/'build';build.mkdir();compiler=find_c_compiler()
     if not compiler:raise ValueError('Existing C compiler required; nothing is installed automatically')
-    for name,output,flags in [('storage_thermal_guard.c','storage_thermal_guard',[]),('storage_thermal_launch.c','storage_thermal_launch.so',['-shared','-fPIC'])]:
+    for name,output,flags in [('storage_thermal_guard.c','storage_thermal_guard',[]),('storage_thermal_launch.c','storage_thermal_launch.so',['-shared','-fPIC']),('storage_thermal_confidential.c','storage_thermal_confidential.so',['-shared','-fPIC'])]:
         subprocess.run(native_helper_build_command(compiler,runtime/'native'/name,build/output)+flags,check=True,capture_output=True,timeout=60)
     shutil.copyfile(fio,build/'fio');(build/'fio').chmod(0o755)
     observed=capability(str(build/'fio'),str(build/'storage_thermal_guard'))
-    if observed['status']!='available':raise ValueError('Qualified fio/guard required: '+str(observed['reasons']))
+    if observed['status']!='available' or (observed.get('postexec_confidentiality')or{}).get('status')!='verified':raise ValueError('Qualified fio/guard required: '+str(observed['reasons']))
     (destination/'launch.py').write_text(LAUNCHER)
     # Public code/tool traversal after trusted root promotion; never writable.
     for directory in destination.rglob('*'):
@@ -105,9 +105,9 @@ def prepare(destination: Path, fio: Path, *, root=ROOT, worker_uid=None, worker_
     from Modules.lvs_source_provenance import collect_source_provenance
     preparation=dict(contract='lvs.storage_thermal.preparation.v1',source=source,git=collect_source_provenance(root)['git'],
         fio_sha256=hashlib.sha256((build/'fio').read_bytes()).hexdigest(),fio_version=observed['fio_version'],
-        native_sources={n:hashlib.sha256((runtime/'native'/n).read_bytes()).hexdigest()for n in ('storage_thermal_guard.c','storage_thermal_launch.c')},
+        native_sources={n:hashlib.sha256((runtime/'native'/n).read_bytes()).hexdigest()for n in ('storage_thermal_guard.c','storage_thermal_launch.c','storage_thermal_confidential.c')},
         compiler=dict(path=str(Path(compiler).resolve()),sha256=hashlib.sha256(Path(compiler).read_bytes()).hexdigest(),version=subprocess.check_output([compiler,'--version'],text=True).splitlines()[0]),
-        build_commands=[native_helper_build_command(compiler,runtime/'native'/n,build/o)+f for n,o,f in [('storage_thermal_guard.c','storage_thermal_guard',[]),('storage_thermal_launch.c','storage_thermal_launch.so',['-shared','-fPIC'])]])
+        build_commands=[native_helper_build_command(compiler,runtime/'native'/n,build/o)+f for n,o,f in [('storage_thermal_guard.c','storage_thermal_guard',[]),('storage_thermal_launch.c','storage_thermal_launch.so',['-shared','-fPIC']),('storage_thermal_confidential.c','storage_thermal_confidential.so',['-shared','-fPIC'])]])
     (destination/'preparation.json').write_text(json.dumps(preparation,indent=2)+'\n')
     files={str(p.relative_to(destination)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.rglob('*')) if p.is_file()}
     manifest=dict(contract='lvs.storage_thermal.offline_bundle.v1',source=source,uid=os.getuid(),gid=os.getgid(),files=files,backend=observed)

@@ -5,6 +5,7 @@ cover LVS logical output, not filesystem amplification or ordinary OS writes.
 """
 from contextvars import ContextVar
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,18 @@ def valid_system_proof(proof, device):
             and proof['worker_uid']!=proof['operator_uid']
             and type(proof.get('topology_generation')) is str
             and re.fullmatch('[0-9a-f]{64}',proof['topology_generation']) is not None)
+
+
+def postexec_witness_valid(value,uid,gid,pid,identity):
+    if (type(value)is not dict or type(identity)is not dict or
+            any(type(v)is not int or v<=0 for v in (uid,gid,pid)) or pid<=1 or
+            any(type(identity.get(k))is not int or identity[k]<0 for k in ('major','minor')) or
+            type(identity.get('size_bytes'))is not int or identity['size_bytes']<=0):return False
+    expected=dict(contract_id='lvs.storage_thermal.postexec',version=1,pid=pid,uid=uid,gid=gid,dumpable=0,state_locked=True,thread_sync=True,target_deferred=True,
+                  major=identity.get('major'),minor=identity.get('minor'),size=identity.get('size_bytes'))
+    return (type(value)is dict and type(pid)is int and pid>1 and
+            all(k in value and type(value[k])is type(v)and value[k]==v for k,v in expected.items())and
+            type(value.get('parent'))is int and value['parent']>1)
 
 
 def charge_output(value):
@@ -96,10 +109,14 @@ class SystemAuthority:
                 account.pw_shell not in ('/sbin/nologin','/usr/sbin/nologin','/bin/false')):
             raise ValueError('System worker must be the dedicated non-login lvs-thermal-worker account')
         fio = owned_path(self.root/'runtime/build/fio')
-        # An unreadable ordinary ELF makes exec nondumpable. The zero kernel
-        # suid_dumpable policy is required even when core_pattern is a pipe.
-        if fio.stat().st_mode & 0o044 or confidential and Path('/proc/sys/fs/suid_dumpable').read_text().strip() != '0':
-            raise ValueError('System worker requires unreadable fio and nondumpable exec policy')
+        if fio.stat().st_mode & 0o044:
+            raise ValueError('System worker requires unreadable trusted fio')
+        if confidential:
+            hook=owned_path(self.root/'runtime/build/storage_thermal_confidential.so')
+            expected=m.get('files',{}).get('runtime/build/storage_thermal_confidential.so')
+            proof=(m.get('backend')or{}).get('postexec_confidentiality')or{}
+            if not expected or hashlib.sha256(hook.read_bytes()).hexdigest()!=expected or proof.get('status')!='verified':
+                raise ValueError('Verified final-exec nondumpable worker protection required')
         return uid,gid
 
     def approve(self, config):
@@ -107,7 +124,7 @@ class SystemAuthority:
         uid,gid=self.worker();m=self.manifest
         return dict(contract='shared_system_readonly_v1', device_ids=list(config.system_device_ids),
                     colocated=config.control_plane_colocation, swap=config.system_swap,
-                    worker_uid=uid, worker_gid=gid, operator_uid=m['uid'],confidentiality='separate_uid_unreadable_exec_no_core')
+                    worker_uid=uid, worker_gid=gid, operator_uid=m['uid'],confidentiality='separate_uid_postexec_nondumpable_v1',postexec_required=True)
 
     def activate(self, config):
         proof = self.approve(config)

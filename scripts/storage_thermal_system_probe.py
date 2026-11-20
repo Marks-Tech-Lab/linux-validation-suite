@@ -70,6 +70,7 @@ def client(identity):
         cfg=replace(base,access_mode='exclusive'if label.startswith('exclusive')else'shared_readonly_opt_in',device_ids=[row['device_id']],duration_seconds=25,iops=8,bandwidth_bytes_per_second=524288)
         directory=Path('/var/tmp/lvs-system-user')/label;directory.mkdir()
         results[label]=primary(None,cfg.to_dict(),directory,25)
+        (Path('/control/user')/(label+'.json')).write_text(json.dumps(results[label],indent=2))
         assert results[label]['auxiliary']['cleanup_confirmed']and results[label]['auxiliary']['devices'][0]['read_ios']>0,results[label]
     cases=[('complete',12,None),('busy',12,None),('temperature',16,None),('cancel',20,2),('delayed',4,None),('eio-intent',8,None),('confidentiality',16,None),('topology-change',16,None)]
     for name,seconds,cancel in cases:
@@ -123,7 +124,7 @@ def inside():
     seal();sys.path.insert(0,'/lvs');encrypted=Path('/shared-campaign').read_text().startswith('encrypted')
     deployment=Path('/opt/lvs-thermal-fixture')
     for p in (Path('/opt'),deployment,*deployment.rglob('*')):
-        os.chown(p,0,0);p.chmod(0o755 if p.is_dir()or p.name in('storage_thermal_guard','storage_thermal_launch.so')else 0o644)
+        os.chown(p,0,0);p.chmod(0o755 if p.is_dir()or p.name in('storage_thermal_guard','storage_thermal_launch.so','storage_thermal_confidential.so')else 0o644)
     (deployment/'runtime/build/fio').chmod(0o711)
     for p in (Path('/var'),Path('/var/lib'),Path('/var/lib/lvs-thermal')):p.mkdir(exist_ok=True);p.chmod(0o755)
     Path('/run').mkdir(exist_ok=True);Path('/run').chmod(0o755)
@@ -168,10 +169,14 @@ def inside():
     # Positive core control stores only an invocation marker, never core data.
     core=Path('/bin/fixture-core');core.write_text('#!/bin/sh\necho invoked > /control/core-invoked\n');core.chmod(0o755)
     Path('/proc/sys/kernel/core_pattern').write_text('|/bin/fixture-core')
+    Path('/proc/sys/fs/suid_dumpable').write_text('2')  # sealed guest only
     positive=subprocess.run(['/usr/bin/python3','-c','import os;os.abort()'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     end=time.monotonic()+3
     while not Path('/control/core-invoked').exists()and time.monotonic()<end:time.sleep(.05)
     assert Path('/control/core-invoked').exists(),'core instrumentation positive control missing';Path('/control/core-invoked').unlink();events['core_positive_control']=True
+    from scripts.storage_thermal_confidential_probe import run as privacy_probe
+    events['postexec_privacy']=privacy_probe(deployment)
+    Path('/control/core-invoked').unlink(missing_ok=True)
     def observer():
         try:
             while not stop.is_set():
@@ -237,7 +242,16 @@ def inside():
                     for p in marker.parent.glob('integrated/1000/*/launch_ownership.json'):
                         own=json.loads(p.read_text());workers=[w for w in own.get('workers',[])if w.get('io_admission')=='committed'and not w.get('reaped')]
                         if not workers:continue
-                        pid=workers[0]['pid'];time.sleep(.5)
+                        pid=workers[0]['pid']
+                        post=False
+                        for log in p.parent.glob('activity/*/worker_logs/*.stderr'):
+                            for line in log.read_text().splitlines():
+                                if line.startswith('{'):
+                                    try:event=json.loads(line)
+                                    except ValueError:continue
+                                    post |= event.get('contract_id')=='lvs.storage_thermal.postexec'and event.get('pid')==pid and event.get('dumpable')==0
+                        if not post:continue
+                        time.sleep(.5)
                         if not Path(f'/proc/{pid}').exists():continue
                         # Operator cannot inspect or signal the distinct identity.
                         child=os.fork()
@@ -273,6 +287,7 @@ def inside():
             os.setgroups([]);os.setgid(1000);os.setuid(1000);os.execv('/usr/bin/python3',['/usr/bin/python3','-B','/lvs/scripts/storage_thermal_system_probe.py','--client',identity])
         _,status=os.waitpid(child,0);assert os.waitstatus_to_exitcode(status)==0,'system client failed'
         results=json.loads((control/'result.json').read_text());assert not events.get('observer_error'),events
+        assert events.get('privacy',{}).get('root_injected_worker_death'),'live final-exec privacy injection not observed'
         assert read_state(marker)['state']=='CLEAN'and not blocker(marker)
         assert before==hashlib.sha256(canary.read_bytes()).hexdigest()
         # Existing standalone and integrated operations must share one scope.

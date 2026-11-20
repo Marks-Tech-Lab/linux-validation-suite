@@ -28,7 +28,7 @@ def verify_components(root,manifest):
     try:authority.worker();system_worker_ready=True;system_reason=''
     except ValueError as exc:system_worker_ready=False;system_reason=str(exc)
     backend=capability(str(root/'runtime/build/fio'),str(root/'runtime/build/storage_thermal_guard'),uid=uid,gid=gid)
-    if backend['status']!='available':raise ValueError('Installed tool/dependency failure: '+str(backend['reasons']))
+    if backend['status']!='available' or (backend.get('postexec_confidentiality')or{}).get('status')!='verified':raise ValueError('Installed tool/dependency failure: '+str(backend['reasons']))
     prepare(root/'runtime/build',allow_build=False)
     return dict(status='VERIFIED',source=manifest['source'],system_worker_ready=system_worker_ready,system_worker_reason=system_reason,system_python=dict(path=sys.executable,version=list(sys.version_info[:3]),minimum=policy['minimum']),fio_version=backend['fio_version'],worker_uid=uid,worker_gid=gid,scope='regular-file native policy test; no device access')
 
@@ -87,9 +87,10 @@ def prepare_runtime(fio=None,approved_fio=None,approved_source=None,root=ROOT):
         raise ValueError('Prepared source/tool identities differ from independent approvals; preserve the preparation for inspection')
     manifest_sha=hashlib.sha256((destination/'manifest.json').read_bytes()).hexdigest()
     installer=root/'scripts/storage_thermal_install.py';installer_sha=hashlib.sha256(installer.read_bytes()).hexdigest()
-    result=dict(status='PREPARED',source=source,git=git,bundle=str(destination.resolve()),manifest_sha256=manifest_sha,checksum_list_sha256=hashlib.sha256((destination/'SHA256SUMS').read_bytes()).hexdigest(),installer=str(installer.resolve()),installer_sha256=installer_sha,fio_sha256=pinned,
+    administrator_installer=str(Path('/usr/local/libexec/lvs-thermal-install.py').resolve())
+    result=dict(administrator_installer=administrator_installer,status='PREPARED',source=source,git=git,bundle=str(destination.resolve()),manifest_sha256=manifest_sha,checksum_list_sha256=hashlib.sha256((destination/'SHA256SUMS').read_bytes()).hexdigest(),installer=str(installer.resolve()),installer_sha256=installer_sha,fio_sha256=pinned,
         approval='Administrator must independently review source/tools/build provenance and these identities. Locally generated checksums alone are not approval.',
-        promotion=['Install the reviewed installer into /usr/local/libexec as root; verify its approved SHA-256 before executing it.',shlex.join(['/usr/bin/env','-i','PATH=/usr/bin:/bin','HOME=/root','LC_ALL=C','/usr/bin/python3','-I','-B','/usr/local/libexec/lvs-thermal-install.py','--approve','--bundle',str(destination.resolve()),'--manifest-sha256',manifest_sha])],
+        promotion=['Install the reviewed installer into /usr/local/libexec as root; verify its approved SHA-256 before executing it.',shlex.join(['/usr/bin/env','-i','PATH=/usr/bin:/bin','HOME=/root','LC_ALL=C','/usr/bin/python3','-I','-B',administrator_installer,'--approve','--bundle',str(destination.resolve()),'--manifest-sha256',manifest_sha])],
         physical_execution_authorized=False)
     (cache/'approval.json').write_text(json.dumps(result,indent=2));return result
 

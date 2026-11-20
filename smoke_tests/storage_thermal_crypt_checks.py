@@ -95,7 +95,7 @@ def run_thermal_deployment_checks():
         def build(command,**kwargs):
             if '-o'in command:Path(command[command.index('-o')+1]).write_bytes(b'fixture compiled bytes');return None
             return original_run(command,**kwargs)
-        with patch('Modules.lvs_native_helpers.find_c_compiler',return_value=shutil.which('cc')or sys.executable),patch('scripts.storage_thermal_prepare.subprocess.run',side_effect=build),patch('Modules.lvs_storage_thermal_backend.capability',return_value={'status':'available','fio_version':'fio-3.42'}):
+        with patch('Modules.lvs_native_helpers.find_c_compiler',return_value=shutil.which('cc')or sys.executable),patch('scripts.storage_thermal_prepare.subprocess.run',side_effect=build),patch('Modules.lvs_storage_thermal_backend.capability',return_value={'status':'available','fio_version':'fio-3.42','postexec_confidentiality':{'status':'verified'}}):
             result=prepare(Path(d)/'bundle',fio)
         import json
         manifest=json.loads((Path(result['directory'])/'manifest.json').read_text())

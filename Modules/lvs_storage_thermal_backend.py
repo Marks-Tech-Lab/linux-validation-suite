@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -76,6 +77,25 @@ def capability(fio: str, guard: str, *, run=subprocess.run, uid: int | None = No
                 os.close(fd)
         if proof.returncode or '"policy_test":"PASS"' not in proof.stdout:
             raise ValueError('kernel mutation restrictions could not be verified')
+        hook=Path(guard).resolve().with_name('storage_thermal_confidential.so')
+        if hook.exists():
+            try:
+                evidence['postexec_confidentiality']=dict(status='unavailable',library=executable_identity(str(hook)))
+                protocol=query([guard,'--confidentiality-version'])
+                if protocol.returncode or protocol.stdout.strip()!='lvs-postexec-nondumpable-v1':raise ValueError('postexec guard protocol unavailable')
+                with tempfile.TemporaryDirectory(prefix='lvs-postexec-policy-')as directory:
+                    path=Path(directory)/'fixture';path.write_bytes(bytes(4096))
+                    fd=os.open(path,os.O_RDONLY|os.O_DIRECT|os.O_CLOEXEC);exe=os.open(fio,os.O_RDONLY|os.O_CLOEXEC)
+                    try:
+                        probe=run([guard,'--confidential-probe-fd',str(exe),str(uid),str(gid),'0','0','4096','4096','1','1'],stdin=fd,pass_fds=(exe,),capture_output=True,text=True,timeout=10,check=False,env=env)
+                    finally:os.close(fd);os.close(exe)
+                witnesses=[json.loads(line)for line in probe.stderr.splitlines()if line.startswith('{') and '"contract_id":"lvs.storage_thermal.postexec"'in line]
+                if probe.returncode or probe.stdout.strip()!='fio-3.42' or len(witnesses)!=1:raise ValueError('final fio exec confidentiality could not be verified')
+                witness=witnesses[0]
+                if (type(witness.get('dumpable'))is not int or witness['dumpable']!=0 or witness.get('state_locked')is not True or witness.get('thread_sync')is not True or witness.get('target_deferred')is not True or witness.get('uid')!=uid or witness.get('gid')!=gid):raise ValueError('contradictory postexec witness')
+                evidence['postexec_confidentiality'].update(status='verified',contract='lvs_postexec_nondumpable_v1',verification='final_fio_exec_regular_file',worker_uid=uid,worker_gid=gid,dumpable=0,thread_sync=True)
+            except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError)as exc:
+                evidence['postexec_confidentiality']=dict(status='unavailable',reason=str(exc))
         evidence.update(status='available', kernel_policy='verified_on_disposable_regular_file',
                         reasons=['synthetic block proof does not establish physical-drive eligibility'])
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -85,12 +105,13 @@ def capability(fio: str, guard: str, *, run=subprocess.run, uid: int | None = No
 
 def guard_command(guard: str, executable_fd: int, *, backend: dict, uid: int, gid: int,
                   major: int, minor: int, size: int, block_size: int, iops: int,
-                  seconds: int) -> list[str]:
+                  seconds: int, confidential: bool = False) -> list[str]:
     """Caller owns and pins all descriptors until child cleanup is confirmed.
 
     stdin must be the independently identity/topology-validated block descriptor.
     This is a specification builder, not a physical eligibility decision.
     """
+    if type(confidential)is not bool:raise ValueError('explicit confidentiality boolean required')
     for name, value, low, high in [('fd', executable_fd, 3, 2**31-1), ('uid', uid, 1, 2**32-2),
         ('gid', gid, 1, 2**32-2), ('major', major, 0, 2**32-1), ('minor', minor, 0, 2**32-1),
         ('size', size, 4096, 2**63-1), ('read size', block_size, 4096, 1048576),
@@ -116,5 +137,8 @@ def guard_command(guard: str, executable_fd: int, *, backend: dict, uid: int, gi
             or info.st_mtime_ns != expected.get('modified_ns') or info.st_ctime_ns != expected.get('changed_ns')
             or unchanged(os.fstat(executable_fd)) != unchanged(info)):
         raise ValueError('fio descriptor does not match capability evidence')
-    return [guard, '--fio-fd', str(executable_fd), *map(str,
+    if confidential:
+        proof=backend.get('postexec_confidentiality')or{}
+        if proof.get('status')!='verified' or executable_identity(str(Path(guard).resolve().with_name('storage_thermal_confidential.so')))!=proof.get('library'):raise ValueError('postexec confidentiality authority changed')
+    return [guard, '--confidential-fio-fd'if confidential else'--fio-fd', str(executable_fd), *map(str,
             (uid, gid, major, minor, size, block_size, iops, seconds))]

@@ -51,11 +51,14 @@ it does not create accounts, elevate, install or change device permissions.
 Provisioning belongs to the reviewed installation workflow.
 
 The qualified fio file is root-owned, mode 0711 after promotion, and supplied on
-its verified descriptor. An unreadable ordinary ELF causes nondumpable execution;
-the kernel `fs.suid_dumpable` policy must be zero. System requests fail if these
-conditions are absent. The disposable request handler also sets zero core limit.
-The worker retains no supplementary groups or capabilities. Operator memory/FD,
-debugger and signal access, and core-handler suppression require VM evidence.
+its verified descriptor. The trusted post-exec hook establishes and verifies
+nondumpability, synchronizes its persistent restrictions across threads and only
+then receives the deferred target descriptor. System requests fail without this
+proof; host `fs.suid_dumpable=0` is no longer required for the qualified new mode.
+The dedicated worker retains no supplementary groups or capabilities. The zero
+core limit is defense in depth, not protection against a piped core handler.
+See [the post-exec contract and VM controls](storage_thermal_confidentiality.md).
+The earlier policy-zero qualification remains historical evidence.
 An operator/root administrator's ability to compromise the OS is outside this
 boundary. Diagnostic output contains identities/counts, not raw sector payloads
 or encryption keys. Raw reads below dm-crypt do not perform decryption.

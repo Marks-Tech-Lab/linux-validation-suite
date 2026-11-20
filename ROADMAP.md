@@ -1324,3 +1324,12 @@ authorized matched campaign; previous accepted Samsung trials are not repeated.
 The [workstation readiness review](docs/storage_thermal_workstation_readiness.md)
 keeps post-exec worker confidentiality qualification separate from installation
 and leaves current system-access authorization checks unchanged.
+
+Trusted post-exec worker confidentiality now replaces the temporary global
+core-policy prerequisite for qualified system access: raw target capabilities
+remain deferred until nondumpability is verified and locked across threads.
+Routine preparation includes the native hook and verified immutable-OS directory
+aliases; promotion and physical system-drive authorization remain separate.
+See [scope and qualification](docs/storage_thermal_confidentiality.md). Completed
+Samsung milestones and genuine CPU/RAM measurement semantics remain preserved;
+physical system-drive, broader calibration, media and scalability gates remain open.

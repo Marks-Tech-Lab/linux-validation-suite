@@ -138,6 +138,7 @@ class ThermalRunner:
         for row in rows:
             chosen=selected(row,config);why=list(row['reasons']);rate={};reading={}
             if chosen:
+                if (row.get('system_authorization',{}).get('postexec_required')or backend.get('postexec_confidentiality')is not None) and (backend.get('postexec_confidentiality')or{}).get('status')!='verified':why.append('final-exec worker confidentiality unavailable')
                 if backend.get('status')!='available':why+=backend.get('reasons') or ['backend unavailable']
                 try:
                     rate=pilot_rate(config,row['device_id'],row['drive_class'],system=row['system_drive'])
@@ -326,9 +327,10 @@ class ThermalRunner:
                         exe=os.open(plan['backend']['fio']['path'],os.O_RDONLY|os.O_CLOEXEC)
                         argv=guard_command(self.guard,exe,backend=plan['backend'],uid=self.uid,gid=self.gid,
                                            major=row['identity']['major'],minor=row['identity']['minor'],size=row['identity']['size_bytes'],
-                                           block_size=config.block_size,iops=row['rate']['effective_iops'],seconds=config.duration_seconds)
+                                           block_size=config.block_size,iops=row['rate']['effective_iops'],seconds=config.duration_seconds,
+                                           confidential=bool(row.get('system_authorization',{}).get('postexec_required')or (plan['backend'].get('postexec_confidentiality')or{}).get('status')=='verified'))
                         out=(directory/'worker_logs'/f'{index}.stdout').open('wb');err=(directory/'worker_logs'/f'{index}.stderr').open('wb')
-                        job.update(stdout=out,stderr=err,command=argv)
+                        job.update(stdout=out,stderr=err,command=argv,confidential=argv[1]=='--confidential-fio-fd')
                         result.launch_requested_monotonic=self.clock()
                         launcher=self.popen
                         if config.access_mode!='exclusive' and self.native_processes is None and launcher is subprocess.Popen:
@@ -519,8 +521,15 @@ class ThermalRunner:
             stderr=Path(job['stderr'].name).read_text()
             guard=next(json.loads(line) for line in stderr.splitlines() if line.startswith('{') and '"contract_id":"lvs.storage_thermal.guard"' in line)
             job['guard']=guard
+            if job.get('confidential')or r.system_authorization.get('postexec_required'):
+                post=[json.loads(line)for line in stderr.splitlines()if line.startswith('{')and '"contract_id":"lvs.storage_thermal.postexec"'in line]
+                guard['postexec_confidentiality']=post[0]if len(post)==1 else{}
             r.guard_confirmed=(guard['pid']==self._process_pid(job['process']) and guard['uid']==self.uid and guard['gid']==self.gid
                                and guard['capabilities']==0 and guard['seccomp']==2 and guard['no_new_privs']==1 and guard['readonly_direct'] is True)
+            if job.get('confidential')or r.system_authorization.get('postexec_required'):
+                post=guard.get('postexec_confidentiality')or{}
+                from .lvs_storage_thermal_system import postexec_witness_valid
+                r.guard_confirmed=bool(r.guard_confirmed and postexec_witness_valid(post,self.uid,self.gid,guard['pid'],r.identity))
             output=Path(job['stdout'].name).read_text();payload=json.loads(output[output.index('{'):]);fio=payload['jobs'][0]
             for value in (fio['read']['total_ios'],fio['read']['io_bytes'],fio['write']['total_ios'],fio['trim']['total_ios'],fio['error']):
                 if type(value) is not int or value<0:raise ValueError('invalid fio counter')
@@ -543,6 +552,8 @@ class ThermalRunner:
                         or final.get('low_critical_c') is not None and final['value_c']<=final['low_critical_c'])):
                 r.safety_stop=True;r.stop_reason=r.stop_reason or 'final temperature evidence failed safety policy'
             r.provenance_confirmed=(executable_identity(self.fio)==r.executable_provenance['fio'] and executable_identity(self.guard)==r.executable_provenance['guard'])
+            if job.get('confidential')or r.system_authorization.get('postexec_required'):
+                r.provenance_confirmed=bool(r.provenance_confirmed and executable_identity(str(Path(self.guard).resolve().with_name('storage_thermal_confidential.so')))==r.executable_provenance.get('postexec_confidentiality',{}).get('library'))
             r.temperature_status='monitored' if config.monitoring=='required' and job['initial'] is not None else 'unmonitored'
             r.heating_status='observed_temperature_only' if job['initial'] is not None else 'unmeasured'
         except (OSError,ValueError,KeyError,StopIteration,IndexError,TypeError) as error:

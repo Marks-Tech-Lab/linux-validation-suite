@@ -49,6 +49,35 @@ def trusted(path,directory=False):
     return path
 
 
+def canonical_directory(path,allow_missing=False):
+    """Resolve fixed OS directory aliases only through root-controlled entries.
+
+    Execution files still use strict link-free trusted(). This does not accept
+    arbitrary prefixes or trust a symlink merely because its endpoint is safe.
+    """
+    path=Path(path);require(path.is_absolute(),'absolute directory required')
+    pending=list(path.parts[1:]);current=Path('/');links=0
+    trusted(current,directory=True)
+    while pending:
+        part=pending.pop(0)
+        if part in ('','.'):continue
+        if part=='..':current=current.parent;continue
+        candidate=current/part
+        try:s=os.lstat(candidate)
+        except FileNotFoundError:
+            require(allow_missing and not pending,'unresolved installation ancestor')
+            return candidate
+        if stat.S_ISLNK(s.st_mode):
+            require(s.st_uid==0,'untrusted OS alias');links+=1;require(links<=40,'OS alias loop')
+            target=Path(os.readlink(candidate))
+            if target.is_absolute():current=Path('/');pending=list(target.parts[1:])+pending
+            else:pending=list(target.parts)+pending
+        else:
+            require(stat.S_ISDIR(s.st_mode)and s.st_uid==0 and not s.st_mode&0o022,'unsafe canonical installation directory')
+            current=candidate
+    return current
+
+
 def sync(path):
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:os.fsync(fd)
@@ -142,6 +171,7 @@ def worker_account():
 
 
 class Systemd:
+    def __init__(self,base=BASE):self.base=Path(base)
     def preflight(self):
         version=self.run('--version').stdout.splitlines()[0]
         match=re.match(r'systemd (\d+)',version)
@@ -168,7 +198,7 @@ class Systemd:
         require(fragment==str(UNITS/unit),'unexpected service fragment')
         path=trusted(Path(fragment));text=read_regular(path,65536).decode()
         commands=[l for l in text.splitlines()if l.startswith('ExecStart=')]
-        require(len(commands)==1 and re.fullmatch(r'ExecStart=/usr/bin/python3 -I -B /opt/lvs-thermal/[A-Za-z0-9_.-]+/launch\.py --serve-integrated',commands[0]),'unexpected service executable')
+        require(len(commands)==1 and re.fullmatch(r'ExecStart=/usr/bin/python3 -I -B '+re.escape(str(self.base))+r'/[A-Za-z0-9_.-]+/launch\.py --serve-integrated',commands[0]),'unexpected service executable')
         self.verify_dropins(unit)
 
     def enabled(self,unit):return self.run('is-enabled','--quiet',unit,check=False).returncode==0
@@ -202,7 +232,7 @@ class Systemd:
 
 class Installer:
     def __init__(self,base=BASE,state=STATE,units=UNITS,service=None,socket_root=Path('/run/lvs-thermal')):
-        self.base,self.state,self.units=map(Path,(base,state,units));self.service=service or Systemd();self.socket_root=Path(socket_root)
+        self.base,self.state,self.units=map(Path,(base,state,units));self.service=service or Systemd(self.base);self.socket_root=Path(socket_root)
 
     def check(self,path):
         trusted(path,directory=True)
@@ -221,7 +251,7 @@ class Installer:
                 detail=getattr(exc,'stderr',None)
                 last=(detail.decode(errors='replace')if isinstance(detail,bytes)else str(detail or type(exc).__name__))[-1200:]
                 time.sleep(.2);continue
-            require(value.get('source')==manifest['source']and value.get('status')=='AVAILABLE'and value.get('root')==str(path)and value.get('worker_uid')==manifest['worker_uid']and value.get('worker_gid')==manifest['worker_gid']and value.get('bootstrap_sha256')==manifest['files']['runtime/build/storage_thermal_launch.so']and value.get('guard_sha256')==manifest['files']['runtime/build/storage_thermal_guard']and value.get('fio_sha256')==manifest['files']['runtime/build/fio'],'service source/tool/identity mismatch');return value
+            require(value.get('source')==manifest['source']and value.get('status')=='AVAILABLE'and value.get('root')==str(path)and value.get('worker_uid')==manifest['worker_uid']and value.get('worker_gid')==manifest['worker_gid']and value.get('bootstrap_sha256')==manifest['files']['runtime/build/storage_thermal_launch.so']and value.get('guard_sha256')==manifest['files']['runtime/build/storage_thermal_guard']and value.get('fio_sha256')==manifest['files']['runtime/build/fio']and value.get('postexec_sha256')==manifest['files']['runtime/build/storage_thermal_confidential.so'],'service source/tool/identity mismatch');return value
         raise ValueError('Service metadata health deadline: '+last)
 
     def unit(self,path):
@@ -243,9 +273,9 @@ class Installer:
 
     def previous(self,data,uid):
         if data is None:return None
-        names=set(re.findall(re.escape(str(self.base))+r'/[A-Za-z0-9_.-]+/launch\.py',data.decode()))
+        names={name for base in {BASE,self.base}for name in re.findall(r'(?<![A-Za-z0-9_/.-])'+re.escape(str(base))+r'/[A-Za-z0-9_.-]+/launch\.py(?![A-Za-z0-9_/.-])',data.decode())}
         require(len(names)==1,'previous unit is not a supported trusted LVS deployment')
-        path=Path(names.pop()).parent;trusted(path,directory=True)
+        path=canonical_directory(Path(names.pop()).parent);trusted(path,directory=True)
         manifest=path/'manifest.json';trusted(manifest);m=json.loads(read_regular(manifest,262144))
         require(m.get('contract')=='lvs.storage_thermal.offline_bundle.v1'and m.get('uid')==uid and m.get('gid')==pwd.getpwuid(uid).pw_gid and type(m.get('files'))is dict and 0<len(m['files'])<=1024 and {'launch.py','runtime/build/fio','runtime/build/storage_thermal_guard','runtime/build/storage_thermal_launch.so'}<=set(m['files'])and(m.get('source')or{}).get('status')=='complete','previous installation identity invalid')
         for name,h in m['files'].items():
@@ -334,11 +364,11 @@ class Installer:
                 data=source_file(bundle,name,32*1024**2);total+=len(data);require(total<=256*1024**2,'bundle exceeds size bound');require(digest(data)==h,'approved bytes changed: '+name)
                 p=stage/name;p.parent.mkdir(parents=True,exist_ok=True);
                 with p.open('wb')as stream:stream.write(data);stream.flush();os.fsync(stream.fileno())
-                p.chmod(0o755 if name.endswith('storage_thermal_guard')else 0o644)
+                p.chmod(0o755 if name.endswith(('storage_thermal_guard','storage_thermal_confidential.so'))else 0o644)
             checksums=source_file(bundle,'SHA256SUMS',262144).decode();expected=''.join(h+'  '+n+'\n'for n,h in sorted(dict(m['files'],**{'manifest.json':digest(raw)}).items()))
             require(checksums==expected,'checksum list inconsistent')
             provenance=json.loads(read_regular(stage/'preparation.json',262144));require(provenance.get('source')==m['source']and provenance.get('fio_sha256')==m['files']['runtime/build/fio'],'missing approved preparation provenance')
-            for name in ('storage_thermal_guard.c','storage_thermal_launch.c'):
+            for name in ('storage_thermal_guard.c','storage_thermal_launch.c','storage_thermal_confidential.c'):
                 require(provenance['native_sources'][name]==m['files']['runtime/native/'+name],'native build/source mismatch')
             uid,gid=worker_account();require(uid!=m['uid'],'operator cannot be worker');m.update(worker_uid=uid,worker_gid=gid)
             (stage/'runtime/build/fio').chmod(0o711)
@@ -387,7 +417,7 @@ def main():
     require(os.getuid()==0 and args.approve,'explicit administrator invocation and --approve required')
     trusted(Path(__file__).absolute());trusted(Path('/usr/bin/python3').resolve())
     require(Path(sys.executable).resolve()==Path('/usr/bin/python3').resolve()and sys.flags.isolated and sys.dont_write_bytecode,'invoke the trusted system Python with -I -B')
-    installer=Installer()
+    installer=Installer(base=canonical_directory(BASE,allow_missing=True))
     if args.rollback is not None:require(args.rollback>0 and args.bundle is None,'invalid rollback');result=installer.rollback(args.rollback)
     else:require(args.bundle is not None and args.manifest_sha256 is not None,'bundle and approved manifest required');result=installer.install(args.bundle,args.manifest_sha256)
     print(json.dumps(result,indent=2))

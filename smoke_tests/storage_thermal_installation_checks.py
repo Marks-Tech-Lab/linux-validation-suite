@@ -11,9 +11,9 @@ from scripts import storage_thermal_install as install
 
 
 def bundle(root,variation=''):
-    root.mkdir();files={'launch.py':b'approved fixture only','runtime/build/fio':b'approved fio','runtime/build/storage_thermal_guard':b'guard','runtime/build/storage_thermal_launch.so':b'bootstrap','runtime/native/storage_thermal_guard.c':b'guard source','runtime/native/storage_thermal_launch.c':b'launch source'}
+    root.mkdir();files={'launch.py':b'approved fixture only','runtime/build/fio':b'approved fio','runtime/build/storage_thermal_guard':b'guard','runtime/build/storage_thermal_launch.so':b'bootstrap','runtime/native/storage_thermal_guard.c':b'guard source','runtime/native/storage_thermal_launch.c':b'launch source','runtime/native/storage_thermal_confidential.c':b'confidential source','runtime/build/storage_thermal_confidential.so':b'confidential library'}
     source=dict(digest='a'*64,status='complete')
-    p=dict(source=source,fio_sha256=install.digest(files['runtime/build/fio']),native_sources={n:install.digest(files['runtime/native/'+n])for n in ('storage_thermal_guard.c','storage_thermal_launch.c')},variation=variation)
+    p=dict(source=source,fio_sha256=install.digest(files['runtime/build/fio']),native_sources={n:install.digest(files['runtime/native/'+n])for n in ('storage_thermal_guard.c','storage_thermal_launch.c','storage_thermal_confidential.c')},variation=variation)
     files['preparation.json']=json.dumps(p).encode()
     for n,data in files.items():
         path=root/n;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
@@ -45,7 +45,7 @@ def run_thermal_install_transaction_checks():
         unit=units/f'lvs-thermal-{os.getuid()}.service';svc=Service(unit);obj=install.Installer(base,state,units,svc,socket_root=root/'sockets')
         a=root/'a';ha=bundle(a);b=root/'b';hb=bundle(b,'upgrade')
         healthy=lambda p,m:dict(status='AVAILABLE',source=m['source'],recovery_blocker=None)
-        with patch.object(install,'trusted',side_effect=lambda p,**k:p),patch.object(install,'worker_account',return_value=(65533,65533)),patch.object(obj,'check',return_value={'status':'VERIFIED'}),patch.object(obj,'health',side_effect=healthy),patch.object(install.pwd,'getpwuid',return_value=SimpleNamespace(pw_gid=os.getgid())):
+        with patch.object(install,'trusted',side_effect=lambda p,**k:p),patch.object(install,'canonical_directory',side_effect=lambda p,**k:Path(p)),patch.object(install,'worker_account',return_value=(65533,65533)),patch.object(obj,'check',return_value={'status':'VERIFIED'}),patch.object(obj,'health',side_effect=healthy),patch.object(install.pwd,'getpwuid',return_value=SimpleNamespace(pw_gid=os.getgid())):
             # No native/code execution is mocked as a qualification claim here;
             # the sealed VM separately runs the real installed call path.
             assert obj.install(a,ha)['status']=='INSTALLED';before=unit.read_bytes()

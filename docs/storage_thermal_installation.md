@@ -147,16 +147,19 @@ preserves it across stops; sockets remain 0660. This incorporates the establishe
 blindly removed. Installers serialize with a separate stable installation lock;
 operators must not concurrently issue manual service changes or external updates.
 
-The installer does not change `fs.suid_dumpable`. The accepted system-drive
-contract still requires zero plus the unreadable fio executable and dedicated
-identity. A host using policy 2 (including the reviewed Bazzite workstation) can
-install and use the existing data-drive provider, while metadata explicitly
-reports system-worker confidentiality unavailable and system admission remains
-blocked. No administrator core-handling policy is silently changed. System-drive
-physical qualification must separately resolve this prerequisite or qualify an
-isolated per-process solution. Data operation retains its accepted contract,
-using the private worker UID and zero core limit without granting the operator
-new memory, core or device access.
+The installer does not change `fs.suid_dumpable`. The new trusted final-exec
+hook sets and locks worker nondumpability before receiving a target capability,
+including on a policy-2 host. System access still requires the dedicated identity,
+unreadable fio and a successful actual final-exec capability check. The original
+2ee5db0 qualification correctly reported system access blocked under policy 2;
+that historical evidence is preserved. The separately qualified new mechanism
+is described in [the confidentiality contract](storage_thermal_confidentiality.md).
+
+Fixed installation locations can resolve through verified root-owned OS aliases;
+all executed paths remain canonical, root-owned and free of writable ancestors.
+The generated administrator handoff uses the canonical libexec location. On the
+reviewed Bazzite host these roots resolve to `/var/opt` and `/var/usrlocal`.
+Unsafe aliases are refused, never repaired blindly.
 
 The canonical scope remains `/var/lib/lvs-thermal` across versions, standalone
 and integrated operation. Installation state is separate from cleanup authority.

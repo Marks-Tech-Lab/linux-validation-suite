@@ -26,10 +26,9 @@ def client(identity):
     from dataclasses import replace
     from Modules.lvs_storage_thermal_runtime import preview
     root=next(r for r in preview(c)['devices']if r.get('system_drive')and r.get('identity',{}).get('name','').startswith('nvme'))
-    try:preview(replace(c,device_ids=[root['device_id']],system_device_ids=[root['device_id']],control_plane_colocation=True))
-    except (OSError,ValueError):pass
-    else:raise AssertionError('fs.suid_dumpable=2 admitted a system drive')
-    results={'system_access_blocked_under_fs2':True}
+    authorized=preview(replace(c,device_ids=[root['device_id']],system_device_ids=[root['device_id']],control_plane_colocation=True))
+    assert authorized['status']=='READY',authorized
+    results={'postexec_system_ready_under_fs2':True}
     for case,seconds,cancel,thermal in [('normal',35,None,False),('cancel',45,2,False),('temperature',45,None,True)]:
         directory=Path('/control/user')/case;directory.mkdir();(Path('/control/user')/'case').write_text(case)
         r=primary(None,dict(c.to_dict(),duration_seconds=seconds),directory,seconds,cancel_after=cancel,temperature_stop=thermal);results[case]=r
@@ -44,7 +43,7 @@ def client(identity):
 def run(bundle,identity):
     from __main__ import seal
     seal()
-    from scripts.storage_thermal_install import Installer,Systemd,ENV,digest
+    from scripts.storage_thermal_install import Installer,Systemd,ENV,digest,canonical_directory
     from Modules.lvs_storage_thermal_recovery import RecoveryScope,blocker,read_state
     # mkfs -d preserves the unprivileged image-builder UID; model a real OS
     # with trusted root-owned interpreter, libraries and shadow-utils.
@@ -58,6 +57,12 @@ def run(bundle,identity):
     Path('/etc/group').write_text('root:x:0:\nfixture:x:1000:\n')
     Path('/etc/shadow').write_text('root:!:1:0:99999:7:::\nfixture:!:1:0:99999:7:::\n');Path('/etc/shadow').chmod(0o600)
     Path('/etc/login.defs').write_text('SYS_UID_MIN 200\nSYS_UID_MAX 999\nSYS_GID_MIN 200\nSYS_GID_MAX 999\n')
+    # Model the workstation's root-owned immutable-OS aliases in the VM.
+    if not Path('/opt').is_symlink():
+        Path('/opt').rename('/var/opt');Path('/opt').symlink_to('/var/opt',target_is_directory=True)
+    Path('/var/usrlocal').mkdir(exist_ok=True)
+    if not Path('/usr/local').exists():Path('/usr/local').symlink_to('/var/usrlocal',target_is_directory=True)
+    install_base=canonical_directory(Path('/opt/lvs-thermal'),allow_missing=True)
     control=Path('/control/user');control.mkdir();os.chown(control,1000,1000);control.chmod(0o700)
     build=Path('/lvs/build');build.mkdir(exist_ok=True);shutil.copy2(bundle/'runtime/build/storage_thermal_launch.so',build/'storage_thermal_launch.so')
     # Explicit guest-only sensor injection, covered by the fixture approval hash.
@@ -116,11 +121,12 @@ def run(bundle,identity):
             finally:os.close(fd)
             end=time.monotonic()+10
             while self.active(unit)and time.monotonic()<end:time.sleep(.1)
-    service=NativeSupervisor()if real_systemd else Supervisor();installer=Installer(service=service);out={};unit='lvs-thermal-1000.service';unitpath=Path('/etc/systemd/system')/unit
+    service=NativeSupervisor(install_base)if real_systemd else Supervisor();installer=Installer(base=install_base,service=service);out={};unit='lvs-thermal-1000.service';unitpath=Path('/etc/systemd/system')/unit
     marker=Path('/var/lib/lvs-thermal/storage_thermal_recovery_required.json')
     fixtures=[Path('/encrypted1/fixture-integrity'),Path('/encrypted2/fixture-integrity')]
     integrity=[digest(p.read_bytes())for p in fixtures]
     try:
+        out['canonical_install_base']=str(install_base);out['root_owned_aliases']=True
         out['fresh']=installer.install(*versions[0]);out['repeat']=installer.install(*versions[0]);assert out['repeat']['status']=='UNCHANGED'
         worker=out['fresh']['worker_uid'];assert worker!=1000 and worker>0
         out['first_rollback']=installer.rollback(1000);assert not service.active(unit)and not unitpath.exists()
@@ -136,7 +142,7 @@ def run(bundle,identity):
             unitpath.write_text('[Service]\nExecStart=/usr/bin/python3 -I -B '+str(previous/'launch.py')+' --serve-integrated\n');unitpath.chmod(0o644);service.start(unit)
         old_source=json.loads((previous/'manifest.json').read_text())['source'];out['previous_source']=old_source
         out['upgrade']=installer.install(*versions[0]);out['rollback']=installer.rollback(1000)
-        assert str(previous/'launch.py')in unitpath.read_text()and service.active(unit)
+        assert str(previous.resolve()/'launch.py')in unitpath.read_text()and service.active(unit)
         out['reapply']=installer.install(*versions[0]);before=unitpath.read_bytes();service.fail=True
         try:installer.install(*versions[1])
         except OSError:pass
@@ -146,7 +152,7 @@ def run(bundle,identity):
         child=os.fork()
         if child==0:service.crash=True;installer.install(*versions[2]);os._exit(2)
         _,status=os.waitpid(child,0);assert os.waitstatus_to_exitcode(status)==77
-        installer=Installer(service=service)
+        installer=Installer(base=install_base,service=service)
         try:installer.install(*versions[0])
         except ValueError as exc:assert 'interrupted'in str(exc)
         else:raise AssertionError('interrupted transaction ignored')
@@ -161,8 +167,8 @@ def run(bundle,identity):
         out['idle_crash_restart']=True
         if real_systemd:
             # Exercise the administrator CLI only after root-owned verified copy.
-            parent=Path('/usr/local/libexec');parent.mkdir(parents=True,exist_ok=True)
-            for p in (Path('/usr/local'),parent):os.chown(p,0,0);p.chmod(0o755)
+            parent=Path('/usr/local/libexec').resolve();parent.mkdir(parents=True,exist_ok=True)
+            for p in (Path('/usr/local').resolve(),parent):os.chown(p,0,0);p.chmod(0o755)
             copied=parent/'lvs-thermal-install.py';shutil.copyfile('/lvs/scripts/storage_thermal_install.py',copied);copied.chmod(0o755)
             assert digest(copied.read_bytes())==digest(Path('/lvs/scripts/storage_thermal_install.py').read_bytes())
             reply=json.loads(subprocess.check_output(['/usr/bin/python3','-I','-B',str(copied),'--approve','--bundle',str(versions[2][0]),'--manifest-sha256',versions[2][1]],env=ENV))
@@ -178,7 +184,7 @@ def run(bundle,identity):
         finally:record.write_bytes(saved_record)
         # Match the workstation core policy without weakening system admission.
         Path('/proc/sys/fs/suid_dumpable').write_text('2')
-        verified=installer.check(deployment);assert verified['status']=='VERIFIED'and not verified['system_worker_ready']
+        verified=installer.check(deployment);assert verified['status']=='VERIFIED'and verified['system_worker_ready']
         out['fs2_data_components']=True
         # Genuine normal integrated stage API as an ordinary user.
         stop=threading.Event();events={}
