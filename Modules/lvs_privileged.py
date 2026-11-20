@@ -41,7 +41,7 @@ class PrivilegedTelemetryManager:
         self._start_keepalive()
         return True
 
-    def ensure_ready(self) -> bool:
+    def ensure_ready(self, *, allow_prompt: bool = True) -> bool:
         if not self.settings.privileged_helper_enabled:
             return False
         if os.geteuid() == 0:
@@ -51,6 +51,8 @@ class PrivilegedTelemetryManager:
             return False
         if self._sudo_noninteractive_ready():
             return True
+        if not allow_prompt:
+            return False
         if self._prepare_session():
             self._start_keepalive()
             return True

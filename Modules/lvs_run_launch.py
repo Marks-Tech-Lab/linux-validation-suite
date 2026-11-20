@@ -37,6 +37,13 @@ class RunLaunchCoordinator:
         self.executor = executor
         self.state_lock_context = state_lock_context or nullcontext
 
+    def prepare_execution(self, request: RunLaunchRequest, *, privilege_manager: Any, authorize: Callable[[], bool]):
+        """Foreground-only boundary after final confirmation and effective overrides."""
+        from .lvs_storage_thermal_execution import prepare
+        if request.setup is None:
+            raise ValueError('Execution preparation requires the effective run setup')
+        return prepare(request.setup.profile, privilege_manager, authorize)
+
     def run_direct(
         self,
         profile_path: Path,

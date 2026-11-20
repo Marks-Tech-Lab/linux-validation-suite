@@ -78,6 +78,7 @@ class RunExecutor:
         profile = context.profile
         labels = context.labels
         run_metadata = context.metadata
+        thermal_preparation = profile.__dict__.pop('_thermal_execution_preparation', {})
         progress_events: list[RunProgressEvent] = []
         progress_tracker = RunStatusTracker()
 
@@ -137,11 +138,12 @@ class RunExecutor:
                 if cancelled():
                     output.write(phase_line(now_local_iso(), "operator-stop", source=operator_stop_source) + "\n")
                     raise RuntimeError("run cancelled before validation stages")
-                run_dir = self.orchestrator.run(
+                run_dir = self._run_with_preparation(
                     profile_path,
                     profile,
                     labels,
                     run_metadata,
+                    thermal_preparation=thermal_preparation,
                     run_dir=run_dir,
                     cancel_check=cancel_check,
                     operator_stop_source=operator_stop_source,
@@ -190,6 +192,7 @@ class RunExecutor:
         profile = context.profile
         labels = context.labels
         run_metadata = context.metadata
+        thermal_preparation = profile.__dict__.pop('_thermal_execution_preparation', {})
 
         self.ensure_enhanced_telemetry_ready()
         run_dir = None
@@ -200,7 +203,13 @@ class RunExecutor:
                 heatsoak_debug_callback(run_dir / "advanced_debug" / "heatsoak")
         if not self.run_heatsoak_if_requested(heatsoak_minutes, advanced_debug=heatsoak_debug):
             return None
-        return self.orchestrator.run(profile_path, profile, labels, run_metadata, run_dir=run_dir)
+        return self._run_with_preparation(profile_path, profile, labels, run_metadata,
+                                          thermal_preparation=thermal_preparation, run_dir=run_dir)
+
+    def _run_with_preparation(self, profile_path, profile, labels, metadata, *, thermal_preparation, **kwargs):
+        from .lvs_storage_thermal_execution import execution_scope
+        with execution_scope(profile, thermal_preparation):
+            return self.orchestrator.run(profile_path, profile, labels, metadata, **kwargs)
 
     def _profile_run_context(
         self,

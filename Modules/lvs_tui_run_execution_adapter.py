@@ -141,6 +141,18 @@ class TuiRunExecutionAdapterMixin:
             self.confirm_run = False
             self._set_detail(f"Run readiness check failed:\n{exc}")
             return
+        # Still on the frontend thread, after the second/final confirmation.
+        # Never authenticate from _run_profile_thread or a timed stage.
+        try:
+            self.service.run_launcher.prepare_execution(
+                prepared_flow.launch_request,
+                privilege_manager=getattr(self.service, 'privileged_telemetry', None),
+                authorize=self._authorize_thermal_execution,
+            )
+        except Exception as exc:
+            self.confirm_run = False
+            self._set_detail(f'Run preparation failed: {exc}')
+            return
         self.confirm_run = False
         self.run_in_progress = True
         self.run_cancel_requested = False
@@ -168,6 +180,15 @@ class TuiRunExecutionAdapterMixin:
             pass
         thread = threading.Thread(target=self._run_profile_thread, args=(profile,), daemon=True)
         thread.start()
+
+    def _authorize_thermal_execution(self) -> bool:
+        # Textual releases the terminal before the existing sudo manager prompts.
+        try:
+            with self.suspend():
+                choice = input('Authorize privileged Thermal Assist preparation for this run? [y/N]: ').strip().lower()
+                return choice in {'y', 'yes'} and self.service.privileged_telemetry.prepare_session()
+        except (EOFError, KeyboardInterrupt, RuntimeError):
+            return False
 
     def action_edit_wall_wattage(self) -> None:
         if self.view_mode == "settings":

@@ -316,3 +316,19 @@ def result_successful(record: dict) -> bool:
             and all(type(record.get(k)) is int and record[k] == 0 for k in
                     ('errors', 'write_ios', 'discard_ios', 'flush_ios', 'outstanding_descriptors'))
             and record.get('guard_confirmed') is True)
+
+
+def stage_config(stage):
+    values = asdict(stage.modules.storage_thermal)
+    if type(values["enabled"]) is not bool:
+        raise ValueError("Thermal enabled must be a boolean")
+    values.pop('enabled')
+    # Dynamic run-local attributes are excluded from dataclass/profile JSON.
+    for key in ('system_device_ids','control_plane_colocation','system_swap'):
+        if hasattr(stage.modules.storage_thermal,'_'+key):values[key]=getattr(stage.modules.storage_thermal,'_'+key)
+    # Saved profiles express intent only. The session must explicitly approve
+    # the entire bounded scope before this placeholder can become executable.
+    if values['monitoring'] == 'approved_unmonitored':
+        values['unmonitored_approval'] = 'pending explicit run-local approval'
+    duration = stage.duration_seconds if stage.modules.storage_thermal.enabled else 120
+    return ThermalConfig(**values, duration_seconds=duration)

@@ -9063,6 +9063,11 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
             self.request = None
             self.callback_path = None
             self.capture_called = False
+            self.preparation_request = None
+
+        def prepare_execution(self, request, *, privilege_manager, authorize):
+            self.preparation_request = request
+            return {}
 
         def run_prepared_capture(
             self,
@@ -9073,6 +9078,7 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
             cancel_check=None,
             operator_stop_source="cli",
         ):
+            assert self.preparation_request is request, "CLI preparation precedes captured launch"
             self.request = request
             self.capture_called = True
             return RunResult(
@@ -9082,6 +9088,7 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
             )
 
         def run_prepared_direct(self, request, *, heatsoak_debug_callback=None):
+            assert self.preparation_request is request, "CLI preparation precedes direct launch"
             self.request = request
             if heatsoak_debug_callback is not None:
                 self.callback_path = Path("/tmp/heatsoak-debug")
@@ -10008,7 +10015,7 @@ def test_run_preflight_manager_readiness() -> None:
     assert_equal(setup_readiness.labels, ["Edited CPU"], "preflight setup context labels")
     assert_equal(setup_readiness.validation["warnings"], ["1 labels", "sidecar warning"], "preflight setup context warnings")
     result = manager.run_preflight(readiness, save_blocked_report=True)
-    assert_equal(calls["ensure"], 1, "preflight ensure callback")
+    assert_equal(calls["ensure"], 0, "passive preflight must not authorize privileges")
     assert_equal(result.skipped_stage_count, 1, "preflight skipped stage count")
     assert_equal(result.report["validation"]["warnings"], ["sidecar warning"], "preflight warning merge")
     assert_equal(result.report_dir, Path("/tmp/lvs_preflight_smoke"), "preflight saved report dir")
@@ -29476,8 +29483,14 @@ from smoke_tests.primary_work_progress_checks import (run_primary_work_analysis_
 
 from smoke_tests.storage_thermal_confidential_checks import run_thermal_postexec_native_checks, run_thermal_postexec_witness_checks
 
+from smoke_tests.storage_thermal_execution_checks import (run_thermal_passive_inspection_checks, run_thermal_execution_preparation_checks, run_thermal_frontend_authorization_checks, run_thermal_prepared_executor_checks)
+
 def main() -> int:
     tests = [
+        run_thermal_passive_inspection_checks,
+        run_thermal_execution_preparation_checks,
+        run_thermal_frontend_authorization_checks,
+        run_thermal_prepared_executor_checks,
         run_environment_ui_terminal_checks,
         run_environment_ui_confirmation_checks,
         run_environment_ui_results_checks,

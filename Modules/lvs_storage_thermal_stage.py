@@ -26,7 +26,7 @@ import sys
 import time
 from uuid import uuid4
 
-from .lvs_storage_thermal import ThermalConfig, GROUPS, canonical_lease_identity, ThermalAdmissionEnded
+from .lvs_storage_thermal import ThermalConfig, GROUPS, canonical_lease_identity, ThermalAdmissionEnded, stage_config
 from .lvs_storage_thermal_runner import ThermalRunner, approve_unmonitored, group_gone
 from .lvs_profile_report_artifacts import atomic_preflight_json
 from .lvs_storage_thermal_results import normalize, not_run, error_result
@@ -34,22 +34,6 @@ from .lvs_storage_thermal_results import normalize, not_run, error_result
 ROOT = Path(__file__).resolve().parents[1]
 RECOVERY_MARKER = ROOT/'build/storage_thermal_recovery_required.json'
 _UNCONFIRMED = {}  # retain supervisor references; never silently release recovery state
-
-
-def stage_config(stage):
-    values = asdict(stage.modules.storage_thermal)
-    if type(values["enabled"]) is not bool:
-        raise ValueError("Thermal enabled must be a boolean")
-    values.pop('enabled')
-    # Dynamic run-local attributes are excluded from dataclass/profile JSON.
-    for key in ('system_device_ids','control_plane_colocation','system_swap'):
-        if hasattr(stage.modules.storage_thermal,'_'+key):values[key]=getattr(stage.modules.storage_thermal,'_'+key)
-    # Saved profiles express intent only. The session must explicitly approve
-    # the entire bounded scope before this placeholder can become executable.
-    if values['monitoring'] == 'approved_unmonitored':
-        values['unmonitored_approval'] = 'pending explicit run-local approval'
-    duration = stage.duration_seconds if stage.modules.storage_thermal.enabled else 120
-    return ThermalConfig(**values, duration_seconds=duration)
 
 
 def default_runner():
@@ -153,7 +137,11 @@ def preview(stage, runner=None):
     try:
         config = stage_config(stage)
         if runner is None:
-            from .lvs_storage_thermal_runtime import preview as installed_preview
+            from .lvs_storage_thermal_execution import execution_plan
+            prepared = execution_plan(stage)
+            if prepared is not None:
+                return prepared
+            from .lvs_storage_thermal_runtime import inspect as installed_preview
             result=installed_preview(config)
             result['requires_consent']=False
             return result
@@ -733,6 +721,8 @@ class ThermalStageSession:
             self.evidence=not_run('Stage ended before auxiliary startup',readiness=self.plan);return
         if self.plan.get('status')!='READY':
             self.evidence=not_run('No eligible runnable storage; see readiness reasons',readiness=self.plan);return
+        if self.installed_runtime and self.plan.get('execution_ready') is not True:
+            self.evidence=not_run('Final run-local Thermal Assist preparation required',readiness=self.plan);return
         if self.plan.get('requires_consent') and not consent_valid(self.plan,{decision_key(self.plan):self.plan.get('coverage_consent') or {}}):
             self.evidence=not_run('Bounded unmonitored consent missing/declined/expired',readiness=self.plan);return
         if str(self.marker) in _UNCONFIRMED:

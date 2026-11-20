@@ -37,7 +37,10 @@ def build_dry_run_plan(runner: Any, profile: Any, labels: List[str]) -> List[Dic
     for stage, item in zip(profile.stages, plan):
         if getattr(stage, "enabled", False) and thermal_only_stage(stage):
             thermal = item.get("storage_thermal") or {}
-            if not thermal.get("execution_permitted"):
+            # A passive preview cannot establish execution authority. Permit
+            # confirmation/preparation, then require actual readiness at run.
+            deferred = thermal.get('inspection_only') and thermal.get('preparation_required')
+            if not thermal.get("execution_permitted") and not deferred:
                 item["issues"].append("Thermal Assist-only stage has no authorized runnable storage activity: "
                                       + "; ".join(thermal.get("reasons") or [thermal.get("status", "unavailable")]))
                 item["runnable"] = False

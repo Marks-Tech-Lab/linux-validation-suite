@@ -128,7 +128,9 @@ class SuiteAppService(
         return self.privileged_telemetry.enable_enhanced_telemetry()
 
     def ensure_enhanced_telemetry_ready(self) -> bool:
-        return self.privileged_telemetry.ensure_ready()
+        # Service execution may run in the TUI background worker. Interactive
+        # authentication belongs exclusively to foreground frontend preparation.
+        return self.privileged_telemetry.ensure_ready(allow_prompt=False)
 
     def stop_enhanced_telemetry_keepalive(self) -> None:
         self.privileged_telemetry.stop_keepalive()

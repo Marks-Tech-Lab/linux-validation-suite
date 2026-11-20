@@ -48,7 +48,7 @@ def run_installed_runtime_authority_checks():
     s=stage();s.modules.storage_thermal.enabled=False
     with patch.object(rt,'preview',side_effect=AssertionError('disabled stage contacted privileged service')):assert preview(s) is None
     s.modules.storage_thermal.enabled=True
-    with patch.object(rt,'preview',side_effect=PermissionError('authorization absent')):
+    with patch.object(rt,'inspect',side_effect=PermissionError('authorization absent')):
         result=preview(s);assert result['status']=='BLOCKED' and not result['runnable_devices']
         assert any('authorization absent' in text for text in result['backend']['reasons'])
     # A newer ordinary execution copy must neither rebuild nor replace the

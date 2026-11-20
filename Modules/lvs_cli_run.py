@@ -298,6 +298,14 @@ class RunCliAdapter:
         if preflight_action.skip_notice:
             print(preflight_action.skip_notice)
         try:
+            plans = self.run_launcher.prepare_execution(
+                prepared_run.launch_request,
+                privilege_manager=getattr(self.launcher, 'privileged_telemetry', None),
+                authorize=self._authorize_thermal_execution,
+            )
+            for plan in plans.values():
+                if plan.get('status') != 'READY':
+                    print('Thermal Assist unavailable: ' + '; '.join(plan.get('reasons') or ['Not ready']))
             if cli_live_run_supported(sys.stdout):
                 live = CliLiveRunPresenter(stream=sys.stdout, enabled=True)
                 try:
@@ -329,6 +337,15 @@ class RunCliAdapter:
         self.post_run_wall_wattage_prompt(run_dir, metadata)
         self._save_run_setup_history(profile_path, profile, metadata, heatsoak_minutes=setup.heatsoak_minutes)
         self.upload_cli.post_run_google_drive_prompt(run_dir)
+
+    def _authorize_thermal_execution(self) -> bool:
+        if not sys.stdin.isatty():
+            return False
+        try:
+            choice = self._input('Authorize privileged Thermal Assist preparation for this run? [y/N]: ').strip().lower()
+            return choice in {'y', 'yes'} and self.launcher.privileged_telemetry.prepare_session()
+        except (EOFError, KeyboardInterrupt):
+            return False
 
     def post_run_wall_wattage_prompt(self, run_dir: Path, metadata: RunMetadata) -> None:
         if not self.settings_manager.settings.prompt_for_wall_wattage:

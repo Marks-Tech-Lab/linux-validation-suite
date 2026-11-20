@@ -72,8 +72,7 @@ class RunPreflightManager:
         *,
         save_blocked_report: bool = False,
     ) -> PreflightReadiness:
-        if self.ensure_ready is not None:
-            self.ensure_ready()
+        # Inspection must never invoke a frontend authorization/sudo callback.
         report = self.orchestrator.dry_run(
             readiness.profile_path,
             readiness.profile,

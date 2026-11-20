@@ -112,18 +112,42 @@ def preview(config):
         raise OSError('Installed runtime readiness is incomplete: '+str(exc)) from exc
 
 
-def _preview(config):
+def inspect(config):
+    """Local metadata only: no RPC, subprocess, sudo, native load or host write.
+
+    Socket presence is not proof that a service is live, compatible or eligible.
+    Those authoritative checks belong to confirmed execution preparation.
+    """
+    owned_path(SOCKET_ROOT,directory=True)
+    s = endpoint().lstat()
+    require(stat.S_ISSOCK(s.st_mode) and s.st_uid==0 and not s.st_mode&0o007,
+            'trusted Thermal Assist endpoint unavailable')
+    return dict(status='DEFERRED', inspection_only=True, preparation_required=True,
+        execution_ready=False, configuration=config.to_dict(), devices=[], targets=[],
+        selected_devices=[], runnable_devices=[], blocked_devices=[], commands=[],
+        backend=dict(status='unverified'),
+        reasons=['Execution readiness pending final run confirmation and authorization'])
+
+
+def _inspect(config):
     result=rpc('inspect',configuration=config.to_dict())
     from .lvs_source_provenance import _source_snapshot
     require(result['installed_runtime']['source']==_source_snapshot(ROOT)[0],'installed runtime/source mismatch; use ./setup.sh → 9 to prepare an approved update; restart LVS after promotion')
     info=result['installed_runtime']
     binary=owned_path(Path(info['root'])/'runtime/build/storage_thermal_launch.so')
     require(hashlib.sha256(binary.read_bytes()).hexdigest()==info['bootstrap_sha256'],'installed bootstrap mismatch')
+    return result
+
+
+def _preview(config):
+    result = _inspect(config)
+    binary=owned_path(Path(result['installed_runtime']['root'])/'runtime/build/storage_thermal_launch.so')
     from .lvs_storage_thermal_launch import prepare,ready,provenance
     if ready():
         observed=provenance()['binary'];identity=binary.stat()
         require((observed['file_device'],observed['file_inode'])==(identity.st_dev,identity.st_ino),'different bootstrap already loaded; restart LVS')
     prepare(binary.parent,allow_build=False)  # verified installed bytes; never rebuild from client source
+    result['execution_ready'] = True
     return result
 
 
