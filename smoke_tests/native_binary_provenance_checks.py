@@ -190,6 +190,8 @@ def run_native_binary_provenance_checks():
         compiler = shutil.which('gcc') or shutil.which('cc')
         assert compiler
         def build(cmd): return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        source.with_name('primary_work_progress.h').write_text('fixture include dependency')
+        source.with_name('primary_work_progress.c').write_text('/* fixture companion */')
         status = resolve_native_helper_status(source=source, binary=executable, compiler=compiler, reason_label='CPU', build_runner=build)
         assert status['available'] and status['built']
         first_hash = binary.executable_snapshot(executable)['sha256']

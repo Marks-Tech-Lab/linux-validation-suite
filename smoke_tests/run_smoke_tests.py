@@ -29472,6 +29472,8 @@ def test_service_orchestrator_factory_injection() -> None:
         )
 
 
+from smoke_tests.primary_work_progress_checks import (run_primary_work_analysis_checks, run_primary_work_contradiction_checks, run_primary_work_known_native_checks, run_primary_work_native_lifecycle_checks)
+
 def main() -> int:
     tests = [
         run_environment_ui_terminal_checks,
@@ -29835,6 +29837,10 @@ def main() -> int:
         run_thermal_strict_terminal_checks,
         run_thermal_auxiliary_publication_latency_checks,
         run_thermal_shared_entrypoint_scope_checks,
+        run_primary_work_analysis_checks,
+        run_primary_work_contradiction_checks,
+        run_primary_work_known_native_checks,
+        run_primary_work_native_lifecycle_checks,
         run_thermal_install_transaction_checks,run_thermal_install_input_checks,run_thermal_install_readiness_checks,run_thermal_install_maintenance_checks,
         run_system_authorization_checks,
         run_system_topology_checks,

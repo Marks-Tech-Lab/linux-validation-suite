@@ -12,6 +12,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "primary_work_progress.h"
+#ifndef LVS_WORK_PROGRESS_EXTERNAL
+/* Preserve direct single-source development builds using the same publisher. */
+#include "primary_work_progress.c"
+#endif
+
 static volatile sig_atomic_t g_running = 1;
 static volatile uint64_t g_sink = 0;
 static volatile uint64_t g_error_count = 0;
@@ -122,7 +128,8 @@ static void *worker_main(void *opaque) {
         int verify_pattern = (int)((pass_index + (uint64_t)PATTERN_COUNT - 1ULL) % (uint64_t)PATTERN_COUNT);
         int write_pattern = (int)(pass_index % (uint64_t)PATTERN_COUNT);
         int pass_completed = 1;
-        for (size_t offset = 0; offset + stride <= length; offset += stride) {
+        size_t offset;
+        for (offset = 0; offset + stride <= length; offset += stride) {
             if (!g_running) {
                 pass_completed = 0;
                 break;
@@ -151,6 +158,8 @@ static void *worker_main(void *opaque) {
                 lane[lane_index] = expected_value_for_pattern(write_pattern, pass_index, args->thread_index, offset, lane_index);
             }
         }
+        /* Offset is actual traversal, including a partial canceled pass. */
+        lvs_work_record_memory(args->thread_index,(uint64_t)offset,pass_index>0,stats ? stats->error_count : 0,0);
         if (!pass_completed || !g_running) {
             break;
         }
@@ -166,6 +175,7 @@ static void *worker_main(void *opaque) {
         );
         pass_index += 1;
     }
+    lvs_work_record_memory(args->thread_index,0,0,stats ? stats->error_count : 0,1);
     return NULL;
 }
 
@@ -236,6 +246,7 @@ static int write_result_file(
         lifecycle_phase,
         (int)g_stop_signal
     );
+    /* Metadata follows the closed thread array below. */
     for (int index = 0; index < threads; ++index) {
         const struct worker_stats *stats = &worker_stats[index];
         fprintf(
@@ -281,7 +292,9 @@ static int write_result_file(
             fprintf(handle, "\n    }%s\n", index + 1 < threads ? "," : "");
         }
     }
-    fprintf(handle, "  ]\n}\n");
+    fprintf(handle, "  ],\n");
+    lvs_work_metadata(handle);
+    fprintf(handle, "  \"work_scope\": \"actual_64_byte_regions_not_allocated_capacity\"\n}\n");
     int write_failed = fflush(handle) != 0;
     if (!write_failed && fsync(fileno(handle)) != 0) {
         write_failed = 1;
@@ -357,6 +370,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    lvs_work_init(g_result_file,threads,"memory");
     size_t bytes_per_thread = (size_t)(aligned_bytes / (uint64_t)threads);
     size_t remainder = (size_t)(aligned_bytes % (uint64_t)threads);
     size_t cursor = 0;
@@ -385,6 +399,7 @@ int main(int argc, char **argv) {
         pthread_join(thread_ids[index], NULL);
     }
 
+    lvs_work_finish();
     if (!verification_complete(threads, worker_stats)) {
         __atomic_fetch_add(&g_error_count, 1, __ATOMIC_RELAXED);
     }
@@ -407,6 +422,7 @@ int main(int argc, char **argv) {
         cleanup_result == 0,
         cleanup_result == 0 ? "completed_cleanly" : "cleanup_failed"
     );
+    lvs_work_dispose();
     free(thread_ids);
     free(worker_args);
     free(worker_stats);

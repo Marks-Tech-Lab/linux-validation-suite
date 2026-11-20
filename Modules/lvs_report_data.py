@@ -548,6 +548,8 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         for worker in (window.get("worker_results") or [])
         if isinstance(worker, dict) and isinstance(worker.get("verified_progress_analysis"), dict)
     ]
+    primary_work = [dict(worker["primary_work_analysis"]) for worker in (window.get("worker_results") or [])
+                    if isinstance(worker, dict) and isinstance(worker.get("primary_work_analysis"), dict)]
     native_binaries = native_binary_reviews({"stage_windows": [window]})
     return {
         "index": index,
@@ -586,6 +588,7 @@ def _stage_shell(index: int, window: Dict[str, Any]) -> Dict[str, Any]:
         }} if isinstance(window.get("cpu_selection_evidence"), dict)
               and window["cpu_selection_evidence"].get("selection_reason") else {}),
         **({"cpu_verified_progress": cpu_progress} if cpu_progress else {}),
+        **({"primary_completed_work": primary_work} if primary_work else {}),
         "native_executable_review": native_binaries,
         "native_executable_text": native_binary_text(native_binaries),
         "normalization_sources": dict(window.get("normalization_sources") or {}),
@@ -1470,6 +1473,7 @@ def compile_report_data(run_dir: Path | str, *, generated_at: Optional[str] = No
                     "analysis_duration_seconds": stage["analysis_duration_seconds"],
                     "analysis_window_valid": stage["analysis_window_valid"],
                     "analysis_evidence": stage["analysis_evidence"],
+                    **({"primary_completed_work": stage["primary_completed_work"]} if stage.get("primary_completed_work") else {}),
                     **({"cpu_verified_progress": stage["cpu_verified_progress"]}
                        if stage.get("cpu_verified_progress") else {}),
                     "normalization_sources": stage["normalization_sources"],

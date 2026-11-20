@@ -42,15 +42,20 @@ def native_helper_status_base(source: Path, binary: Path, compiler: Optional[str
 
 
 def native_helper_build_command(compiler: str, source: Path, binary: Path) -> list[str]:
-    return [compiler, "-O3", "-std=c11", "-pthread", str(source), "-o", str(binary)]
+    command=[compiler, "-O3", "-std=c11", "-pthread", str(source), "-o", str(binary)]
+    if source.name in ("cpu_stress_helper.c","memory_stress_helper.c"):
+        command.extend(["-DLVS_WORK_PROGRESS_EXTERNAL",str(source.with_name("primary_work_progress.c"))])
+    return command
 
 
 def native_helper_binary_ready(source: Path, binary: Path) -> bool:
     dependencies = [source]
+    if source.name in ("cpu_stress_helper.c", "memory_stress_helper.c"):
+        dependencies.extend(source.with_name(name)for name in ("primary_work_progress.h","primary_work_progress.c"))
     if source.name == "cpu_stress_helper.c":
         dependencies.extend(source.with_name(name) for name in ("cpu_sve_kernel.h", "cpu_vnni_kernel.h", "cpu_sve2_kernel.h", "cpu_dotprod_kernel.h", "cpu_i8mm_kernel.h", "cpu_half_kernel.h", "cpu_bf16_kernel.h", "cpu_sve_i8mm_kernel.h")
                             if source.with_name(name).exists())
-    return (binary.exists() and all(binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
+    return (binary.exists() and all(p.is_file() and binary.stat().st_mtime >= p.stat().st_mtime for p in dependencies)
             and os.access(binary, os.X_OK))
 
 

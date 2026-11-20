@@ -1314,3 +1314,13 @@ mandatory; installation never grants system-drive workload authorization.
 Physical system-drive and simultaneous-drive qualification remain separate.
 Genuine primary throughput instrumentation is the next independent development
 workstream, with broader media, calibration and scale still open.
+
+Primary completed-work instrumentation now supplies native SSE2 loop work and
+actual per-thread processed/verified RAM bytes through existing stage artifacts,
+with monotonic trimmed-interval analysis. Historical verification-cycle proxies
+remain diagnostic. See [semantics and qualification](docs/primary_completed_work.md).
+Definitive physical throughput-interference acceptance remains pending a separately
+authorized matched campaign; previous accepted Samsung trials are not repeated.
+The [workstation readiness review](docs/storage_thermal_workstation_readiness.md)
+keeps post-exec worker confidentiality qualification separate from installation
+and leaves current system-access authorization checks unchanged.

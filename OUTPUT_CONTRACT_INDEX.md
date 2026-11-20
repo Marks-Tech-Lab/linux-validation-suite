@@ -1206,3 +1206,12 @@ throughput. Segment `PrimaryWorkloads` and stability `NoPrimaryWorkloads` retain
 that distinction through department-use and review rendering. Actual aborts,
 errors and worker failures retain precedence. Mixed-run primary verdicts and
 independent Storage Thermal Assist success/cleanup contracts are unchanged.
+
+### Supplementary primary completed work
+
+`lvs_primary_work_v1`: native `RESULT.work.jsonl` plus terminal `work_progress`;
+per-thread monotonic completed SSE2 iterations and actual processed/verified RAM
+regions. Final manifest `worker_results[].primary_work_analysis` and report JSON
+`primary_completed_work` retain observed interval rates and coverage. These are
+supplementary measurements, never primary verdicts, retired-instruction counters
+or physical DRAM bandwidth. See [measurement semantics](docs/primary_completed_work.md).

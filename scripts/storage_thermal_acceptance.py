@@ -245,7 +245,7 @@ def mark(args):
     return event
 
 
-def analyze(directory):
+def analyze(directory, run_manifest=None):
     directory=Path(directory);meta=json_file(directory/'session.json');require(meta['contract']==CONTRACT,'foreign capture')
     previous=None;last_process={};cpu={};rates={};thermal={};issues=[];samples=0;max_gap=0;first=None;peaks={};host_usage=dict(weighted_percent_seconds=0,covered_seconds=0)
     def issue(message):
@@ -332,7 +332,12 @@ def analyze(directory):
     span=(previous['monotonic_ns']-first)/1e9 if previous and first is not None else 0
     cores=previous.get('host',{}).get('logical_cpus',0) if previous else 0
     percent={role:100*seconds/span/cores for role,seconds in cpu.items()} if span>0 and cores>0 else {}
-    return dict(contract=CONTRACT,session=meta['session'],samples=samples,issues=issues,max_gap_seconds=max_gap,
+    primary_work=[]
+    if run_manifest is not None:
+        manifest=json_file(Path(run_manifest))
+        for window in manifest.get("stage_windows",[]):
+            primary_work.append(dict(stage_id=window.get("stage_id"),measurements=[w["primary_work_analysis"]for w in window.get("worker_results",[])if isinstance(w,dict)and isinstance(w.get("primary_work_analysis"),dict)]))
+    return dict(primary_completed_work=primary_work,contract=CONTRACT,session=meta['session'],samples=samples,issues=issues,max_gap_seconds=max_gap,
                 sampled_cpu_percent_host_capacity_lower_bound=percent,process_group_sampled_peaks=peaks,
                 host_cpu_busy_percent=host_usage['weighted_percent_seconds']/host_usage['covered_seconds'] if host_usage['covered_seconds'] else None,
                 host_cpu_covered_seconds=host_usage['covered_seconds'],
@@ -350,14 +355,14 @@ def main(argv=None):
     m=commands.add_parser('mark');m.add_argument('--directory',required=True);m.add_argument('--event',required=True)
     m.add_argument('--phase',choices=('passive','idle','launch','cancel','low','heat','cooling'));m.add_argument('--ambient-c',type=float)
     m.add_argument('--pid',type=int);m.add_argument('--role',choices=('auxiliary','primary'),default='auxiliary')
-    a=commands.add_parser('analyze');a.add_argument('--directory',required=True)
+    a=commands.add_parser('analyze');a.add_argument('--directory',required=True);a.add_argument('--run-manifest',help='Existing run_manifest.json completed-work measurements; no historical proxy conversion')
     args=p.parse_args(argv)
     if args.command=='capture':
         require(1<=args.seconds<=21600 and math.isfinite(args.interval) and 1<=args.interval<=60,'duration 1..21600 s, interval 1..60 s required')
         require(args.sensor_resolution_c is None or math.isfinite(args.sensor_resolution_c) and args.sensor_resolution_c>0,'invalid sensor resolution')
         result=capture(args)
     elif args.command=='mark':result=mark(args)
-    else:result=analyze(args.directory)
+    else:result=analyze(args.directory,args.run_manifest)
     print(json.dumps(result,indent=2,allow_nan=False))
 
 

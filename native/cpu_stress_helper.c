@@ -29,6 +29,12 @@
 #include <unistd.h>
 #include <time.h>
 
+#include "primary_work_progress.h"
+#ifndef LVS_WORK_PROGRESS_EXTERNAL
+/* Preserve direct single-source development builds using the same publisher. */
+#include "primary_work_progress.c"
+#endif
+
 typedef enum {
     MODE_AUTO = 0,
     MODE_SCALAR = 1,
@@ -591,8 +597,10 @@ static void run_sse_loop(uint32_t seed, worker_stats_t *stats) {
     uint64_t canary_state = 0x13579BDF2468ACE0ULL ^ seed;
     uint64_t iteration = 0;
     unsigned int repeat_count = 0;
+    uint64_t completed_iterations = 0;
     while (keep_running) {
-        for (int i = 0; i < 200000; ++i) {
+        int i;
+        for (i = 0; i < 200000; ++i) {
             if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm_add_ps(_mm_mul_ps(v0, mul), add);
             v1 = _mm_add_ps(_mm_mul_ps(v1, mul), v0);
@@ -608,8 +616,11 @@ static void run_sse_loop(uint32_t seed, worker_stats_t *stats) {
             record_worker_error(stats, "non_finite", iteration, 0ULL, checksum_f32(sink, 4));
         }
         run_cpu_canary(stats, seed, iteration, &canary_state);
+        completed_iterations += (uint64_t)i;
+        lvs_work_publish(stats->progress_index,completed_iterations,0,0,stats->error_count,0);
         iteration += 1ULL;
     }
+    lvs_work_publish(stats->progress_index,completed_iterations,0,0,stats->error_count,1);
     _mm_storeu_ps(sink, _mm_add_ps(v0, v1));
     vector_sink_u64 ^= (uint64_t)sink[1];
 }
@@ -629,8 +640,10 @@ static void run_sse2_int_loop(uint32_t seed, worker_stats_t *stats) {
     uint64_t canary_state = 0x0F1E2D3C4B5A6978ULL ^ seed;
     uint64_t iteration = 0;
     unsigned int repeat_count = 0;
+    uint64_t completed_iterations = 0;
     while (keep_running) {
-        for (int i = 0; i < 260000; ++i) {
+        int i;
+        for (i = 0; i < 260000; ++i) {
             if ((i & 4095) == 0 && !keep_running) break;
             v0 = _mm_add_epi16(_mm_mullo_epi16(v0, mul), add);
             v1 = _mm_xor_si128(_mm_add_epi16(_mm_mullo_epi16(v1, mul), add), v0);
@@ -641,8 +654,11 @@ static void run_sse2_int_loop(uint32_t seed, worker_stats_t *stats) {
         vector_sink_u64 ^= (uint64_t)sink[0];
         update_u16_stats(stats, sink, 8, &last_checksum, &repeat_count);
         run_cpu_canary(stats, seed, iteration, &canary_state);
+        completed_iterations += (uint64_t)i;
+        lvs_work_publish(stats->progress_index,completed_iterations,0,0,stats->error_count,0);
         iteration += 1ULL;
     }
+    lvs_work_publish(stats->progress_index,completed_iterations,0,0,stats->error_count,1);
     _mm_storeu_si128((__m128i *)sink, _mm_add_epi16(v0, v1));
     vector_sink_u64 ^= (uint64_t)sink[1];
 }
@@ -2228,6 +2244,7 @@ static void write_result_file(
             initial && periodic && final && !error_count ? "true":"false",
             kernel_flavor_name(kernel_flavor),progress_io_error ? "true":"false",progress_sequence,progress_write_seconds);
     }
+    lvs_work_metadata(handle);
     if (verified_fp32_kernel(kernel_flavor)) {
         const char *contract_kernel = kernel_flavor_name(kernel_flavor);
         fprintf(handle, "  \"verified_progress\": {\"contract\":\"%s_progress_v1\","
@@ -2671,6 +2688,8 @@ int main(int argc, char **argv) {
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_SVE_I8MM) kernel_flavor=KERNEL_SVE_I8MM;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_NEON_I8MM) kernel_flavor=KERNEL_NEON_I8MM;
     if (kernel_flavor == KERNEL_UNSPECIFIED && mode == MODE_SVE2_SMLAL) kernel_flavor=KERNEL_SVE2_SMLAL;
+    kernel_flavor_t work_flavor=kernel_flavor==KERNEL_UNSPECIFIED ? default_kernel_flavor(mode) : kernel_flavor;
+    if(work_flavor==KERNEL_SSE2 || work_flavor==KERNEL_SSE2_INT) lvs_work_init(result_file_path,threads,kernel_flavor_name(work_flavor));
     progress_kernel=kernel_flavor;
     sve_progress = kernel_flavor == KERNEL_SVE_FP32_FMA;
     if (verified_arithmetic_kernel(kernel_flavor) && result_file_path) {
@@ -2744,6 +2763,7 @@ int main(int argc, char **argv) {
         pthread_join(workers[i], NULL);
     }
 
+    lvs_work_finish();
     uint64_t total_verify_passes = 0;
     uint64_t total_canary_passes = 0;
     uint64_t total_error_count = 0;
@@ -2783,6 +2803,7 @@ int main(int argc, char **argv) {
     if ((resolved_flavor == KERNEL_NEON_BF16 || resolved_flavor == KERNEL_SVE_I8MM) && progress_io_error)
         total_error_count += 1ULL;
     write_result_file(result_file_path, mode_for_kernel_flavor(resolved_flavor), resolved_flavor, requested_threads, threads, total_verify_passes, total_canary_passes, total_error_count, worker_stats, target_cpu_ids);
+    lvs_work_dispose();
     free(progress_slots);
     free(progress_snapshot);
     free(progress_path);
