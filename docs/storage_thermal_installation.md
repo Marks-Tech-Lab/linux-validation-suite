@@ -1,5 +1,10 @@
 # Routine trusted Thermal Assist installation and updates
 
+This document records the retained **legacy permanent-deployment workflow**. New
+on-demand data-drive execution uses [the transient runtime](storage_thermal_transient_runtime.md),
+not permanent installation or boot enablement. Existing deployments, records and
+recovery obligations must be preserved until a separately approved handoff.
+
 Use the original checkout and its Wave 1 managed `.venv`. `./setup.sh` option
 **9 — Trusted Thermal Assist installation/update** provides metadata-only
 readiness and unprivileged preparation. Option 7 and normal LVS dependency

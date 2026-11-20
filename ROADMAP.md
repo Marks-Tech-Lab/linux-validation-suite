@@ -1333,3 +1333,15 @@ aliases; promotion and physical system-drive authorization remain separate.
 See [scope and qualification](docs/storage_thermal_confidentiality.md). Completed
 Samsung milestones and genuine CPU/RAM measurement semantics remain preserved;
 physical system-drive, broader calibration, media and scalability gates remain open.
+
+### On-demand Thermal Assist migration
+
+The foreground preparation boundary is retained. Experimental ordinary data-drive
+execution now has a transient systemd/root-protected `/run` runtime and a temporary
+identity reservation, without permanent account or boot-enabled unit provisioning.
+See [the runtime contract](docs/storage_thermal_transient_runtime.md). Existing
+installed deployments and canonical recovery are not automatically migrated. The
+next gate is an explicitly approved legacy handoff; system-drive support through
+the alternative identity remains blocked pending separate qualification. Historical
+Samsung physical acceptance, calibration, throughput, broader hardware and
+scalability requirements remain unchanged.

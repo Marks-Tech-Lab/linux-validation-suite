@@ -20,8 +20,9 @@ root=pathlib.Path(__file__).resolve().parent
 if os.getuid()!=0:raise SystemExit('Use the separately approved sudo workflow; no automatic elevation')
 integrated_serve=sys.argv[1:]==['--serve-integrated']
 verify_installation=sys.argv[1:]==['--verify-installation']
+cleanup_transient=sys.argv[1:]==['--cleanup-transient']
 integrated_client=len(sys.argv)==3 and sys.argv[1]=='--integrated-client'
-if not integrated_serve and not integrated_client and not verify_installation and (set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2):raise SystemExit('Unsupported installed operation')
+if not integrated_serve and not integrated_client and not verify_installation and not cleanup_transient and (set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2):raise SystemExit('Unsupported installed operation')
 for p in (root,*root.parents):
  s=p.lstat()
  if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:raise SystemExit('Unsafe deployment parent')
@@ -54,6 +55,9 @@ os.environ.clear();os.environ.update(PATH='/usr/bin:/bin',HOME='/root',LC_ALL='C
 sys.dont_write_bytecode=True;sys.path.insert(0,str(root/'runtime'))
 from Modules.lvs_source_provenance import _source_snapshot
 if _source_snapshot(root/'runtime')[0]!=m['source']:raise SystemExit('Execution-source mismatch')
+if cleanup_transient:
+ from Modules.lvs_storage_thermal_transient import cleanup
+ cleanup(root,m);raise SystemExit(0)
 if verify_installation:
  from Modules.lvs_storage_thermal_installation import verify_components
  print(json.dumps(verify_components(root,m)));raise SystemExit(0)

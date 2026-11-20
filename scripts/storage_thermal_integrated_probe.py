@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 
-def primary(plan,config,path,seconds,cancel_after=None,temperature_stop=False,death_control=False):
+def primary(plan,config,path,seconds,cancel_after=None,temperature_stop=False,death_control=False,prepare_execution=None):
     from Modules.lvs_profile_models import StageConfig,StageModules,ModuleCpu,ModuleStorageThermal,ValidationProfile
     from Modules.lvs_run_models import StageWindow
     from Modules.lvs_stage_execution import execute_stage_runtime
@@ -30,6 +30,7 @@ def primary(plan,config,path,seconds,cancel_after=None,temperature_stop=False,de
     if config.get('system_device_ids'):
         from Modules.lvs_storage_thermal_stage import set_thermal_setting
         set_thermal_setting(stage,'thermal_system_access',json.dumps(dict(device_ids=config['system_device_ids'],colocated=config['control_plane_colocation'],swap=config['system_swap'])))
+    if prepare_execution is not None:prepare_execution(ValidationProfile('sealed',stages=[stage]))
     plan=preview(stage)
     assert plan['status']=='READY',plan
     item=dict(storage_thermal=plan)

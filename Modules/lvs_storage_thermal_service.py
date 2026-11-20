@@ -34,6 +34,9 @@ class RuntimePolicy:
     def runner(self):
         from .lvs_storage_thermal_runner import ThermalRunner
         from .lvs_storage_thermal_system import SystemAuthority
+        if self.manifest.get('runtime_mode') == 'lvs.thermal.transient.data.v1':
+            from .lvs_storage_thermal_transient import verify_identity
+            verify_identity(self.manifest)
         return ThermalRunner(self.root/'runtime/build/fio',self.root/'runtime/build/storage_thermal_guard',
             uid=self.manifest.get('worker_uid',self.uid),gid=self.manifest.get('worker_gid',self.gid),
             system_authority=SystemAuthority(self.root,self.manifest))
@@ -120,6 +123,7 @@ def client(root,manifest,generation):
                 try:SystemAuthority(root,manifest).worker();system_worker_ready=True;system_reason=''
                 except ValueError as exc:system_worker_ready=False;system_reason=str(exc)
                 send(conn,dict(status='AVAILABLE',system_worker_ready=system_worker_ready,system_worker_reason=system_reason,source=manifest['source'],generation=generation,
+                    runtime_mode=manifest.get('runtime_mode'),
                     root=str(root),postexec_sha256=manifest['files'].get('runtime/build/storage_thermal_confidential.so'),bootstrap_sha256=manifest['files']['runtime/build/storage_thermal_launch.so'],
                     fio_version=manifest.get('backend',{}).get('fio_version'),
                     worker_uid=manifest.get('worker_uid',manifest['uid']),worker_gid=manifest.get('worker_gid',manifest['gid']),
@@ -137,8 +141,18 @@ def client(root,manifest,generation):
                 reason=blocker(policy.marker)
                 if reason:result.update(status='BLOCKED',reasons=list(result.get('reasons',[]))+[reason],runnable_devices=[])
                 result['installed_runtime']=dict(source=manifest['source'],generation=generation,root=str(root),
+                    runtime_mode=manifest.get('runtime_mode'),
                     bootstrap_sha256=manifest['files']['runtime/build/storage_thermal_launch.so'])
                 send(conn,result)
+            elif op=='hold':
+                require(set(request)=={'operation'} and manifest.get('runtime_mode')=='lvs.thermal.transient.data.v1','invalid temporary-runtime hold')
+                send(conn,dict(generation=generation,source=manifest['source']))
+                conn.settimeout(1);deadline=time.monotonic()+86400
+                while time.monotonic()<deadline:
+                    try:
+                        if conn.recv(1):raise ValueError('unexpected hold data')
+                        break
+                    except socket.timeout:continue
             elif op=='terminal':
                 require(set(request)=={'operation','session'},'invalid terminal envelope')
                 from .lvs_storage_thermal_recovery import evidence_operation
@@ -190,6 +204,7 @@ def serve(root,manifest):
         if not p.exists():p.mkdir(mode=0o755)
         owned_path(p,directory=True)
     listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);children=[];generation=uuid4().hex;stop=[False];bound_identity=None
+    temporary=manifest.get('runtime_mode')=='lvs.thermal.transient.data.v1';last_activity=time.monotonic()
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(sig,lambda *_:stop.__setitem__(0,True))
     try:
         listener.bind(str(target));bound=target.lstat();bound_identity=(bound.st_dev,bound.st_ino)
@@ -197,8 +212,13 @@ def serve(root,manifest):
         while not stop[0]:
             for child in children[:]:
                 if child.poll() is not None and child.group_cleanup_confirmed():children.remove(child)
+            if temporary and not children and time.monotonic()-last_activity>=30:
+                from .lvs_storage_thermal_recovery import blocker
+                if not blocker(STATE/'storage_thermal_recovery_required.json'):break
+                last_activity=time.monotonic()  # retain helper/UID while cleanup is uncertain
             if not select.select([listener],[],[],.1)[0]:continue
             conn,_=listener.accept()
+            last_activity=time.monotonic()
             try:
                 _,peer_uid,peer_gid=struct.unpack('3i',conn.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
                 if peer_uid!=uid or peer_gid!=gid or len(children)>=MAX_CLIENTS:continue

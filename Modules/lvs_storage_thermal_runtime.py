@@ -118,15 +118,28 @@ def inspect(config):
     Socket presence is not proof that a service is live, compatible or eligible.
     Those authoritative checks belong to confirmed execution preparation.
     """
-    owned_path(SOCKET_ROOT,directory=True)
-    s = endpoint().lstat()
-    require(stat.S_ISSOCK(s.st_mode) and s.st_uid==0 and not s.st_mode&0o007,
-            'trusted Thermal Assist endpoint unavailable')
+    startup=False
+    try:
+        owned_path(SOCKET_ROOT,directory=True)
+        s = endpoint().lstat()
+        require(stat.S_ISSOCK(s.st_mode) and s.st_uid==0 and not s.st_mode&0o007,
+                'trusted Thermal Assist endpoint unavailable')
+    except FileNotFoundError:
+        require(on_demand_candidate(),'on-demand startup requires supported native systemd and trusted OS tools')
+        startup=True
     return dict(status='DEFERRED', inspection_only=True, preparation_required=True,
         execution_ready=False, configuration=config.to_dict(), devices=[], targets=[],
         selected_devices=[], runnable_devices=[], blocked_devices=[], commands=[],
-        backend=dict(status='unverified'),
+        backend=dict(status='unverified'), on_demand_startup=startup,
         reasons=['Execution readiness pending final run confirmation and authorization'])
+
+
+def on_demand_candidate():
+    """Metadata only; no service activation or privilege operation."""
+    if Path('/proc/1/comm').read_text().strip()!='systemd':return False
+    for name in ('systemd-run','systemctl','python3','sudo'):
+        owned_path(Path('/usr/bin'/Path(name)).resolve())
+    return True
 
 
 def _inspect(config):
@@ -145,7 +158,9 @@ def _preview(config):
     from .lvs_storage_thermal_launch import prepare,ready,provenance
     if ready():
         observed=provenance()['binary'];identity=binary.stat()
-        require((observed['file_device'],observed['file_inode'])==(identity.st_dev,identity.st_ino),'different bootstrap already loaded; restart LVS')
+        same=(observed['file_device'],observed['file_inode'])==(identity.st_dev,identity.st_ino)
+        equivalent=(result['installed_runtime'].get('runtime_mode')=='lvs.thermal.transient.data.v1'and observed.get('sha256')==hashlib.sha256(binary.read_bytes()).hexdigest())
+        require(same or equivalent,'different bootstrap already loaded; restart LVS')
     prepare(binary.parent,allow_build=False)  # verified installed bytes; never rebuild from client source
     result['execution_ready'] = True
     return result

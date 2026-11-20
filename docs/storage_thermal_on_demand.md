@@ -13,8 +13,9 @@ callback. Thermal Assist inspection reads only local trusted-endpoint metadata:
 no sudo, RPC, temperature probe, bootstrap load, subprocess or host write. A socket
 is only a preparation candidate, not proof of a live/compatible service, eligible
 device or execution authority. Its result is `DEFERRED` with
-`inspection_only=true`, `execution_ready=false`. Missing or untrusted endpoints
-remain unavailable. Timed Thermal Assist-only stages can reach confirmation with
+`inspection_only=true`, `execution_ready=false`. An absent endpoint on a supported
+native systemd host can be an on-demand startup candidate; an untrusted endpoint
+remains unavailable. Timed Thermal Assist-only stages can reach confirmation with
 a deferred candidate, but require real readiness before execution; genuinely empty
 stages remain rejected.
 
@@ -25,7 +26,9 @@ noninteractive sudo check, or a frontend-owned explicit authorization callback.
 The CLI prompts on its foreground terminal. The TUI suspends Textual before
 prompting through the same manager, then restores the interface. Disabled stages
 and disabled Thermal Assist require no authorization or runtime preparation.
-Missing runtime does not trigger sudo or installation. No passwords are retained.
+An absent runtime may offer explicitly approved on-demand startup at this confirmed
+foreground point. It never triggers installation or elevation during inspection.
+No passwords are retained.
 
 Only this confirmed phase performs the existing authoritative runtime readiness
 and verified native-bootstrap loading. Preparation is bound to the effective
@@ -43,18 +46,15 @@ have run. Background service execution checks enhanced-telemetry sudo readiness
 noninteractively; it cannot request authentication inside a timed stage or the TUI
 worker.
 
-## Scope and next step
+## Implemented transport and next step
 
-The existing authenticated installed runtime remains the only implemented
-transport in this boundary change. An installed runtime may fail source matching
-following a client change; that remains truthful auxiliary unavailability. This
-change does not install, replace, start, stop or reconfigure it. No accounts,
-systemd units, protected recovery state, workload limits, native security policy
-or standard profiles are changed.
+The foreground boundary now supports the separately qualified temporary data-drive
+runtime described in [the transient runtime contract](storage_thermal_transient_runtime.md).
+Its explicit source approval, private dynamic identity reservation and transient
+supervision do not install or boot-enable a permanent service. Existing installations
+remain untouched and conflicting ownership is refused. System-drive execution through
+this alternative identity remains blocked pending separate qualification.
 
-The next task must qualify a protected temporary runtime and on-demand supervised
-helper through this preparation point, including trusted code/tool identities,
-termination and cleanup ownership, canonical durable recovery and authorization
-failure. System-drive access must remain fail-closed until an equivalent alternative
-worker identity and confidentiality boundary are independently qualified. No
-physical access is authorized by this implementation or its synthetic tests.
+The boundary itself still performs no installation or automatic migration. The next
+migration step is an explicitly approved legacy-service handoff preserving canonical
+recovery, previous deployments and evidence. Physical use is separately authorized.

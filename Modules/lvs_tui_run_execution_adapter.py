@@ -185,6 +185,8 @@ class TuiRunExecutionAdapterMixin:
         # Textual releases the terminal before the existing sudo manager prompts.
         try:
             with self.suspend():
+                summary=getattr(self.service.privileged_telemetry,'thermal_source_approval','')
+                if summary:print(summary)
                 choice = input('Authorize privileged Thermal Assist preparation for this run? [y/N]: ').strip().lower()
                 return choice in {'y', 'yes'} and self.service.privileged_telemetry.prepare_session()
         except (EOFError, KeyboardInterrupt, RuntimeError):

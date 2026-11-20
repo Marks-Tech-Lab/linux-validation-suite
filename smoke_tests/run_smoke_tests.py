@@ -29485,8 +29485,14 @@ from smoke_tests.storage_thermal_confidential_checks import run_thermal_postexec
 
 from smoke_tests.storage_thermal_execution_checks import (run_thermal_passive_inspection_checks, run_thermal_execution_preparation_checks, run_thermal_frontend_authorization_checks, run_thermal_prepared_executor_checks)
 
+from smoke_tests.storage_thermal_transient_checks import (run_thermal_transient_candidate_checks, run_thermal_transient_approval_checks, run_thermal_transient_stager_checks, run_thermal_transient_lifetime_checks)
+
 def main() -> int:
     tests = [
+        run_thermal_transient_candidate_checks,
+        run_thermal_transient_approval_checks,
+        run_thermal_transient_stager_checks,
+        run_thermal_transient_lifetime_checks,
         run_thermal_passive_inspection_checks,
         run_thermal_execution_preparation_checks,
         run_thermal_frontend_authorization_checks,

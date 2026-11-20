@@ -43,7 +43,9 @@ def prepare(profile, manager, authorize):
     from .lvs_storage_thermal_runtime import preview as execution_readiness
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError('Thermal Assist preparation requires the frontend thread')
-    profile.__dict__.pop('_thermal_execution_preparation', None)
+    previous=profile.__dict__.pop('_thermal_execution_preparation', {})
+    if previous.get('lease') is not None:previous['lease'].close()
+    if manager is not None:manager.thermal_source_approval=''
     plans = {}
     for stage in profile.stages:
         if stage.enabled and getattr(stage.modules.storage_thermal, 'enabled', False):
@@ -56,16 +58,31 @@ def prepare(profile, manager, authorize):
                     devices=[], targets=[], selected_devices=[], blocked_devices=[],
                     backend=dict(status='unavailable'), requires_consent=False), str(exc))
     ready = any(p.get('status') in {'READY', 'DEFERRED'} for p in plans.values())
+    startup=any(p.get('on_demand_startup')for p in plans.values());approval=None;lease=None
+    if startup and ready:
+        try:
+            from .lvs_storage_thermal_transient import prepare_candidate,approval_text
+            approval=prepare_candidate()
+            if manager is None:raise ValueError('Privilege manager unavailable')
+            manager.thermal_source_approval=approval_text(approval)
+        except (OSError,ValueError,RuntimeError)as exc:
+            plans={k:blocked(p,str(exc))for k,p in plans.items()};ready=False
     authorized = False
     reason = 'Thermal Assist execution authorization unavailable or declined'
     if ready:
         try:
             authorized = bool(manager is not None and (
-                manager.sudo_noninteractive_ready() or (authorize is not None and authorize())))
+                (not startup and manager.sudo_noninteractive_ready()) or (authorize is not None and authorize())))
             if authorized:
                 manager.start_keepalive()
         except (OSError, RuntimeError) as exc:
             reason = 'Thermal Assist authorization unavailable: ' + str(exc)
+    if authorized and startup:
+        try:
+            from .lvs_storage_thermal_transient import start_and_hold
+            lease=start_and_hold(approval)
+        except (OSError,ValueError,RuntimeError)as exc:
+            authorized=False;reason=str(exc)
     for stage in profile.stages:
         if not stage.enabled or not getattr(stage.modules.storage_thermal, 'enabled', False):
             continue
@@ -83,7 +100,14 @@ def prepare(profile, manager, authorize):
                 stage_config(stage).monitoring == 'approved_unmonitored')
         except (OSError, ValueError, RuntimeError) as exc:
             plans[identity] = blocked(plans[identity], str(exc))
-    profile._thermal_execution_preparation = dict(stages=schedule(profile), plans=deepcopy(plans))
+    if authorized and lease is None and any(p.get('status')=='READY'and(p.get('installed_runtime')or{}).get('runtime_mode')=='lvs.thermal.transient.data.v1'for p in plans.values()):
+        try:
+            from .lvs_storage_thermal_transient import Hold
+            lease=Hold()
+        except OSError as exc:plans={k:blocked(p,str(exc))for k,p in plans.items()}
+    if lease is not None and not any(p.get('status')=='READY'for p in plans.values()):
+        lease.close();lease=None  # unavailable storage must not pin an idle root helper
+    profile._thermal_execution_preparation = dict(stages=schedule(profile), plans=deepcopy(plans),lease=lease)
     return deepcopy(plans)
 
 
@@ -97,6 +121,7 @@ def execution_scope(profile, preparation=None):
         yield
     finally:
         _PLANS.reset(token)
+        if receipt.get('lease') is not None:receipt['lease'].close()
 
 
 def execution_plan(stage):

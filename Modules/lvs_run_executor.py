@@ -171,6 +171,8 @@ class RunExecutor:
                 exception_type=type(exc).__name__,
                 traceback_text=traceback.format_exc(),
             ) from exc
+        finally:
+            if thermal_preparation.get('lease') is not None:thermal_preparation['lease'].close()
         return RunResult(
             run_dir=run_dir,
             output=output.getvalue(),
@@ -194,17 +196,20 @@ class RunExecutor:
         run_metadata = context.metadata
         thermal_preparation = profile.__dict__.pop('_thermal_execution_preparation', {})
 
-        self.ensure_enhanced_telemetry_ready()
-        run_dir = None
-        heatsoak_debug = None
-        if float(heatsoak_minutes or 0.0) > 0 and bool(getattr(run_metadata, "advanced_debug_logging", False)):
-            run_dir, heatsoak_debug = build_heatsoak_debug(self.orchestrator, profile.profile_name)
-            if run_dir is not None and heatsoak_debug_callback is not None:
-                heatsoak_debug_callback(run_dir / "advanced_debug" / "heatsoak")
-        if not self.run_heatsoak_if_requested(heatsoak_minutes, advanced_debug=heatsoak_debug):
-            return None
-        return self._run_with_preparation(profile_path, profile, labels, run_metadata,
-                                          thermal_preparation=thermal_preparation, run_dir=run_dir)
+        try:
+            self.ensure_enhanced_telemetry_ready()
+            run_dir = None
+            heatsoak_debug = None
+            if float(heatsoak_minutes or 0.0) > 0 and bool(getattr(run_metadata, "advanced_debug_logging", False)):
+                run_dir, heatsoak_debug = build_heatsoak_debug(self.orchestrator, profile.profile_name)
+                if run_dir is not None and heatsoak_debug_callback is not None:
+                    heatsoak_debug_callback(run_dir / "advanced_debug" / "heatsoak")
+            if not self.run_heatsoak_if_requested(heatsoak_minutes, advanced_debug=heatsoak_debug):
+                return None
+            return self._run_with_preparation(profile_path, profile, labels, run_metadata,
+                                              thermal_preparation=thermal_preparation, run_dir=run_dir)
+        finally:
+            if thermal_preparation.get('lease') is not None:thermal_preparation['lease'].close()
 
     def _run_with_preparation(self, profile_path, profile, labels, metadata, *, thermal_preparation, **kwargs):
         from .lvs_storage_thermal_execution import execution_scope
@@ -217,11 +222,19 @@ class RunExecutor:
         metadata: Optional[RunMetadata],
         setup: Optional[RunSetupState],
     ):
-        return build_profile_run_context(
-            profile_path,
-            metadata,
-            setup,
-            settings=self.settings,
-            profile_loader=self.profile_loader,
-            default_run_metadata=self.default_run_metadata,
-        )
+        try:
+            return build_profile_run_context(
+                profile_path,
+                metadata,
+                setup,
+                settings=self.settings,
+                profile_loader=self.profile_loader,
+                default_run_metadata=self.default_run_metadata,
+            )
+        except BaseException:
+            # Context construction precedes normal executor cleanup. A failed
+            # metadata/setup callback must not leave a no-work helper held open.
+            if setup is not None:
+                receipt=setup.profile.__dict__.pop('_thermal_execution_preparation', {})
+                if receipt.get('lease') is not None:receipt['lease'].close()
+            raise

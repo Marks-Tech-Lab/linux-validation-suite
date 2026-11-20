@@ -99,6 +99,8 @@ class SystemAuthority:
 
     def worker(self, confidential=True):
         m = self.manifest
+        if m.get('runtime_mode') == 'lvs.thermal.transient.data.v1':
+            raise ValueError('Temporary identity is qualified for data drives only; system access remains blocked')
         uid, gid = m.get('worker_uid'), m.get('worker_gid')
         if (os.geteuid() != 0 or type(uid) is not int or type(gid) is not int or
                 not 0 < uid < 2**32-1 or not 0 < gid < 2**32-1 or uid == m['uid']):
