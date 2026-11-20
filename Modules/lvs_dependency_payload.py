@@ -112,6 +112,7 @@ class DependencyCheckPayloadBuilder:
                 "identified_module_count": memory_identity_count,
                 "source": ", ".join(memory_identity_sources) if memory_identity_sources else "not found",
             },
+            "storage_thermal_runtime": thermal_runtime_default(),
             "storage_health": self.storage_health_factory(helper_effective),
             "storage_benchmark": self.storage_benchmark_factory(helper_effective),
             "gpu_opencl_coverage": gpu_opencl_coverage(workload_runner),
@@ -198,3 +199,8 @@ def gpu_opencl_coverage(workload_runner: Any) -> list[Dict[str, Any]]:
                 }
             )
     return coverage
+
+
+def thermal_runtime_default():
+    from .lvs_storage_thermal_installation import runtime_status
+    return runtime_status()

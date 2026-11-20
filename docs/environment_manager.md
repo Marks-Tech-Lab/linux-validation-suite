@@ -105,6 +105,7 @@ unchanged. The published release/tag and historical acceptance evidence are unch
 | 6 | Explicitly compile/query native CPU/memory helpers through existing LVS machinery |
 | 7 | Run the existing structured LVS dependency checker and save its normal report |
 | 8 | Exit |
+| 9 | Check/prepare trusted Thermal Assist installation or update; administrator promotion remains separate |
 
 Actions repeat in one session. A modifying operation displays its current status,
 recommended action, selected Python, package source and preservation/backup effects.
@@ -461,3 +462,10 @@ Unknown terminals and noninteractive streams deliberately retain a linear plain
 transcript. External-installer coordination and the real-host deployment boundaries
 listed above remain unchanged. No new runtime dependency or system-package work
 was introduced, and no physical hardware campaign was repeated.
+
+## Trusted Thermal Assist runtime
+
+Option 9 and `--thermal-check` / `--thermal-prepare` reuse the managed `.venv`,
+maintenance lock and native build lifecycle. See the [installation and rollback
+workflow](storage_thermal_installation.md). No bootstrap action automatically
+elevates, installs system packages, changes profiles or authorizes a workload.

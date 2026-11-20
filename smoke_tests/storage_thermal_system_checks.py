@@ -84,6 +84,9 @@ def run_system_confidentiality_policy_checks():
         manifest=dict(uid=1000,gid=1000,worker_uid=65533,worker_gid=65533)
         with patch('Modules.lvs_storage_thermal_system.pwd.getpwuid',return_value=SimpleNamespace(pw_name='lvs-thermal-worker',pw_gid=65533,pw_shell='/sbin/nologin')),patch('Modules.lvs_storage_thermal_system.os.geteuid',return_value=0),patch('Modules.lvs_storage_thermal_system.owned_path',side_effect=lambda p:p),patch.object(Path,'read_text',read):
             assert SystemAuthority(root,manifest).approve(config())['worker_uid']==65533
+            with patch.object(Path,'read_text',lambda p,*a,**k:'2'if str(p)=='/proc/sys/fs/suid_dumpable'else original(p,*a,**k)):
+                assert SystemAuthority(root,manifest).worker(confidential=False)==(65533,65533)
+                rejects(lambda:SystemAuthority(root,manifest).approve(config()))
             fio.chmod(0o755);rejects(lambda:SystemAuthority(root,manifest).approve(config()));fio.chmod(0o711)
             for worker in (0,True,1000):rejects(lambda:SystemAuthority(root,dict(manifest,worker_uid=worker)).approve(config()))
             rejects(lambda:SystemAuthority(root,dict(uid=1000,gid=1000)).approve(config()))

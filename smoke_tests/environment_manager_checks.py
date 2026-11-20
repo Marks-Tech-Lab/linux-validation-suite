@@ -221,7 +221,12 @@ def run_environment_rebuild_preservation_checks():
         pid=int(pidfile.read_text());deadline=time.monotonic()+2
         while time.monotonic()<deadline:
             status=Path('/proc')/str(pid)/'stat'
-            if not status.exists() or status.read_text().split(') ')[1].startswith('Z'):break
+            # The child can disappear after a pathname check or open. ESRCH
+            # and ENOENT are genuine exit observations, not cleanup failures.
+            try:state=status.read_text()
+            except (FileNotFoundError,ProcessLookupError):break
+            fields=state.rsplit(') ',1)
+            if len(fields)==2 and fields[1].startswith('Z'):break
             time.sleep(.01)
         else:raise AssertionError('Cancelled installer descendant remains running')
     fake=SimpleNamespace(pid=12345,communicate=__import__('unittest.mock',fromlist=['Mock']).Mock(side_effect=[KeyboardInterrupt(),(None,None)]))
@@ -299,7 +304,7 @@ def run_environment_integration_checks():
         f.manager.ask=lambda _: '2';count=len(f.calls);assert f.manager.bridge(em.NATIVE,'cancel?') is False
         assert all('-c' in a and a[a.index('-c')+1]==em.PROBE or '-m' in a and '--version' in a for a,_ in f.calls[count:])
         answers=iter(['invalid','1','8']);f.manager.ask=lambda _:next(answers);f.manager.menu()
-        assert any('1 to 8' in line for line in f.output)
+        assert any('1 to 9' in line for line in f.output)
         f.manager.ask=lambda _:(_ for _ in ()).throw(EOFError());f.manager.menu()
     # Real integration with the existing compiler-discovery path: no compiler,
     # no build directory creation, no native workload and no environment writes.

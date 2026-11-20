@@ -794,6 +794,39 @@ class EnvironmentManager:
         self.checked([self.python, '-I', '-c', code, str(self.root)], timeout=600, capture=self._ui_mode)
         return True
 
+    def thermal_operation(self, prepare=False, fio=None, approved_fio=None, approved_source=None):
+        if prepare:
+            with self.maintenance_lock():return self._thermal_operation(prepare,fio,approved_fio,approved_source)
+        return self._thermal_operation(prepare,fio,approved_fio,approved_source)
+
+    def _thermal_operation(self, prepare=False, fio=None, approved_fio=None, approved_source=None):
+        self.require_environment()
+        request = dict(prepare=prepare, fio=fio, approved_fio=approved_fio, approved_source=approved_source)
+        code = "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from Modules.lvs_storage_thermal_installation import runtime_status,prepare_runtime;r=json.loads(sys.argv[2]);print(json.dumps(prepare_runtime(Path(r['fio']) if r['fio'] else None,r['approved_fio'],r['approved_source']) if r['prepare'] else runtime_status(),indent=2))"
+        result = self.checked([self.python, '-I', '-B', '-c', code, str(self.root), json.dumps(request)], timeout=600)
+        value = json.loads(result.stdout)
+        self.screens.write('Thermal Assist: ' + value['status'])
+        if prepare:
+            self.screens.write('Prepared for independent administrator review; nothing privileged was installed.')
+            for key in ('bundle', 'manifest_sha256', 'installer', 'installer_sha256'):
+                self.screens.write(key + ': ' + str(value[key]))
+            self.screens.write('Full approval and promotion instructions: build/thermal-runtime/approval.json')
+        else:
+            self.screens.write(value.get('reason', ''));self.screens.write(value.get('action', ''))
+        return value
+
+    def thermal_menu(self):
+        sub = self.choose_submenu('Trusted Thermal Assist runtime',
+            '1. Check installed runtime (metadata only)\n2. Prepare installation/update for review\n3. Back', 3)
+        if sub == '3':return False
+        if sub == '1':return self.thermal_operation()
+        if sub != '2':raise EnvironmentError('Choose one of the listed numbers')
+        fio = self.ask('Approved fio 3.42 executable (Enter reuses qualified local cache): ').strip() or None
+        approved_fio = self.ask('Independently approved fio SHA-256: ').strip() if fio else None
+        approved_source = self.ask('Approved execution-source SHA-256: ').strip()
+        if not self.confirm('Prepare native tools and a reviewable Thermal Assist update using this repository environment? No sudo, installation or workloads.'):return False
+        return self.thermal_operation(True, fio, approved_fio, approved_source)
+
     def diagnostics(self):
         policy = python_policy(self.root)
         state = self.inspect()
@@ -1108,7 +1141,7 @@ class EnvironmentManager:
             self.screens.write('1. Check environment health\n2. Set up or repair Python environment\n'
                                '3. Update installed Python packages\n4. Google Drive packages and readiness\n'
                                '5. Rebuild Python environment\n6. Build or check native helper programs\n'
-                               '7. Run the full LVS dependency check\n8. Exit')
+                               '7. Run the full LVS dependency check\n8. Exit\n9. Trusted Thermal Assist installation/update')
             try:
                 choice=self.ask('Choose [1]: ').strip() or '1'
                 if choice=='8':return
@@ -1138,7 +1171,8 @@ class EnvironmentManager:
                 elif choice=='7':reply=self.run_screen('Full LVS dependency check',lambda:self.perform(lambda:self.bridge(DEPENDENCIES,
                     'Run the existing LVS dependency check and save its report? It may build/query helpers and check DNS; no system packages will be installed.')),
                     summary='Dependency check finished. Review the full findings and saved-report location in technical details; this is not a hardware PASS.')
-                else:reply=self.screens.results('Invalid choice',['Choose a number from 1 to 8.'])
+                elif choice=='9':reply=self.run_screen('Trusted Thermal Assist runtime',self.thermal_menu)
+                else:reply=self.screens.results('Invalid choice',['Choose a number from 1 to 9.'])
                 if reply=='exit':return
             except (EOFError,KeyboardInterrupt):
                 self.screens.write('\nClosing the manager. No further operation will be started.');return
@@ -1150,8 +1184,16 @@ def main(argv=None):
     parser.add_argument('--check', action='store_true', help='print local bootstrap diagnostics without installing/building')
     parser.add_argument('--python', dest='selected', help='explicit installed base Python interpreter')
     parser.add_argument('--wheelhouse', help='offline local packages; pip uses --no-index --find-links')
+    parser.add_argument('--thermal-check', action='store_true', help='metadata-only trusted service readiness using the managed .venv')
+    parser.add_argument('--thermal-prepare', action='store_true', help='unprivileged trusted-runtime preparation only')
+    parser.add_argument('--fio', help='approved fio 3.42 executable for one-time import')
+    parser.add_argument('--approved-fio-sha256')
+    parser.add_argument('--approved-source')
     args = parser.parse_args(argv)
+    if sum(bool(v) for v in (args.check,args.thermal_check,args.thermal_prepare))>1:parser.error('Select one inspection/preparation operation')
     manager = EnvironmentManager(selected=args.selected, wheelhouse=args.wheelhouse)
+    if args.thermal_check or args.thermal_prepare:
+        manager.thermal_operation(args.thermal_prepare,args.fio,args.approved_fio_sha256,args.approved_source);return 0
     if args.check:
         try:
             print(json.dumps(manager.diagnostics(), indent=2));return 0

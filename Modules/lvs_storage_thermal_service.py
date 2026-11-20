@@ -40,7 +40,20 @@ class RuntimePolicy:
 
     def directory(self,session):return STATE/'integrated'/str(self.uid)/token(session)
 
+    def installation_reason(self):
+        record=STATE/('installation-'+str(self.uid)+'.json')
+        if not record.exists():return ''  # previous independently approved deployment
+        owned_path(record);require(record.stat().st_size<=262144,'oversized installation state')
+        import json,base64
+        value=json.loads(record.read_text());phase=value.get('phase')
+        if phase=='active'and value.get('deployment')==str(self.root):return ''
+        if phase=='rolled_back'and value.get('previous_unit'):
+            unit=base64.b64decode(value['previous_unit']).decode()
+            if ('ExecStart=/usr/bin/python3 -I -B '+str(self.root/'launch.py')+' --serve-integrated\n')in unit:return ''
+        return 'Trusted runtime installation is pending, rolled back elsewhere or inconsistent; administrator verification/rollback required'
+
     def request(self,request,descriptors):
+        require(not self.installation_reason(),'runtime installation is not active; finish verification or rollback first')
         require(type(request) is dict,'stage request object required')
         require(set(request)=={'plan','execution_context','directory','supervisor_parent_pid','recovery_marker','stage_deadline','stage_lease_id','admission_fd','admission_identity'},'invalid stage envelope')
         plan=request['plan'];config=configuration(plan['configuration'])
@@ -100,7 +113,20 @@ def client(root,manifest,generation):
         if data==b'J':
             require(not received,'unexpected descriptors')
             request=receive(conn);op=request.get('operation')
-            if op=='inspect':
+            if op=='health':
+                require(set(request)=={'operation'},'invalid health envelope')
+                from .lvs_storage_thermal_recovery import blocker
+                from .lvs_storage_thermal_system import SystemAuthority
+                try:SystemAuthority(root,manifest).worker();system_worker_ready=True;system_reason=''
+                except ValueError as exc:system_worker_ready=False;system_reason=str(exc)
+                send(conn,dict(status='AVAILABLE',system_worker_ready=system_worker_ready,system_worker_reason=system_reason,source=manifest['source'],generation=generation,
+                    root=str(root),bootstrap_sha256=manifest['files']['runtime/build/storage_thermal_launch.so'],
+                    fio_version=manifest.get('backend',{}).get('fio_version'),
+                    worker_uid=manifest.get('worker_uid',manifest['uid']),worker_gid=manifest.get('worker_gid',manifest['gid']),
+                    fio_sha256=manifest['files']['runtime/build/fio'],guard_sha256=manifest['files']['runtime/build/storage_thermal_guard'],
+                    installation_blocker=policy.installation_reason(),recovery_blocker=blocker(policy.marker)))
+            elif op=='inspect':
+                require(not policy.installation_reason(),'runtime installation is not active; finish verification or rollback first')
                 require(set(request)=={'operation','configuration'},'invalid inspect envelope')
                 from .lvs_storage_thermal_stage import inspect_stage
                 from .lvs_storage_thermal_recovery import blocker

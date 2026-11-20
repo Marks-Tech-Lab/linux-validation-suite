@@ -17,6 +17,7 @@ from .lvs_dependency_payload import (
     gpu_opencl_coverage,
     memory_module_has_identity_default,
     memory_modules_default,
+    thermal_runtime_default,
 )
 from .lvs_dependency_report_text import (
     dependency_check_detail_text as render_dependency_check_detail_text,
@@ -93,6 +94,7 @@ class DependencyReportManager:
             drive,
             storage_health=storage_health,
             storage_benchmark=storage_benchmark,
+            storage_thermal_runtime=thermal_runtime_default(),
         )
 
     def dependency_check_payload(

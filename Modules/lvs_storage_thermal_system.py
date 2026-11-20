@@ -84,9 +84,7 @@ class SystemAuthority:
     def __init__(self, root, manifest):
         self.root, self.manifest = Path(root), manifest
 
-    def approve(self, config):
-        if not config.system_device_ids:
-            return None
+    def worker(self, confidential=True):
         m = self.manifest
         uid, gid = m.get('worker_uid'), m.get('worker_gid')
         if (os.geteuid() != 0 or type(uid) is not int or type(gid) is not int or
@@ -100,8 +98,13 @@ class SystemAuthority:
         fio = owned_path(self.root/'runtime/build/fio')
         # An unreadable ordinary ELF makes exec nondumpable. The zero kernel
         # suid_dumpable policy is required even when core_pattern is a pipe.
-        if fio.stat().st_mode & 0o044 or Path('/proc/sys/fs/suid_dumpable').read_text().strip() != '0':
+        if fio.stat().st_mode & 0o044 or confidential and Path('/proc/sys/fs/suid_dumpable').read_text().strip() != '0':
             raise ValueError('System worker requires unreadable fio and nondumpable exec policy')
+        return uid,gid
+
+    def approve(self, config):
+        if not config.system_device_ids:return None
+        uid,gid=self.worker();m=self.manifest
         return dict(contract='shared_system_readonly_v1', device_ids=list(config.system_device_ids),
                     colocated=config.control_plane_colocation, swap=config.system_swap,
                     worker_uid=uid, worker_gid=gid, operator_uid=m['uid'],confidentiality='separate_uid_unreadable_exec_no_core')

@@ -47,7 +47,12 @@ are not claimed to be capped by fio limits. Eligibility and provisional media
 ceilings are unchanged. Canonical state and installed runtime must remain outside
 the selected physical target for initial qualification.
 
-## Operator session
+## Routine installation and operator session
+
+Use the [routine trusted installation/update workflow](storage_thermal_installation.md)
+for normal setup and updates. The following manual session commands remain
+historical/advanced operation guidance; separate temporary bundle assembly is
+not the routine workflow.
 
 Prepare/promote a NEW reviewed version with `scripts.storage_thermal_prepare` and
 the approved fio build. Preserve all old versions and canonical state. Normal

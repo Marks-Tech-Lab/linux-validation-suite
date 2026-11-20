@@ -19,8 +19,9 @@ import hashlib,json,os,pathlib,runpy,stat,sys
 root=pathlib.Path(__file__).resolve().parent
 if os.getuid()!=0:raise SystemExit('Use the separately approved sudo workflow; no automatic elevation')
 integrated_serve=sys.argv[1:]==['--serve-integrated']
+verify_installation=sys.argv[1:]==['--verify-installation']
 integrated_client=len(sys.argv)==3 and sys.argv[1]=='--integrated-client'
-if not integrated_serve and not integrated_client and (set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2):raise SystemExit('Unsupported installed operation')
+if not integrated_serve and not integrated_client and not verify_installation and (set(sys.argv[1:])-{'--check','--plan'} or len(sys.argv)>2):raise SystemExit('Unsupported installed operation')
 for p in (root,*root.parents):
  s=p.lstat()
  if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:raise SystemExit('Unsafe deployment parent')
@@ -53,6 +54,9 @@ os.environ.clear();os.environ.update(PATH='/usr/bin:/bin',HOME='/root',LC_ALL='C
 sys.dont_write_bytecode=True;sys.path.insert(0,str(root/'runtime'))
 from Modules.lvs_source_provenance import _source_snapshot
 if _source_snapshot(root/'runtime')[0]!=m['source']:raise SystemExit('Execution-source mismatch')
+if verify_installation:
+ from Modules.lvs_storage_thermal_installation import verify_components
+ print(json.dumps(verify_components(root,m)));raise SystemExit(0)
 if integrated_serve or integrated_client:
  from Modules.lvs_storage_thermal_service import serve,client
  raise SystemExit(serve(root,m) if integrated_serve else client(root,m,sys.argv[2]))
@@ -98,6 +102,13 @@ def prepare(destination: Path, fio: Path, *, root=ROOT, worker_uid=None, worker_
     # Public code/tool traversal after trusted root promotion; never writable.
     for directory in destination.rglob('*'):
         if directory.is_dir():directory.chmod(0o755)
+    from Modules.lvs_source_provenance import collect_source_provenance
+    preparation=dict(contract='lvs.storage_thermal.preparation.v1',source=source,git=collect_source_provenance(root)['git'],
+        fio_sha256=hashlib.sha256((build/'fio').read_bytes()).hexdigest(),fio_version=observed['fio_version'],
+        native_sources={n:hashlib.sha256((runtime/'native'/n).read_bytes()).hexdigest()for n in ('storage_thermal_guard.c','storage_thermal_launch.c')},
+        compiler=dict(path=str(Path(compiler).resolve()),sha256=hashlib.sha256(Path(compiler).read_bytes()).hexdigest(),version=subprocess.check_output([compiler,'--version'],text=True).splitlines()[0]),
+        build_commands=[native_helper_build_command(compiler,runtime/'native'/n,build/o)+f for n,o,f in [('storage_thermal_guard.c','storage_thermal_guard',[]),('storage_thermal_launch.c','storage_thermal_launch.so',['-shared','-fPIC'])]])
+    (destination/'preparation.json').write_text(json.dumps(preparation,indent=2)+'\n')
     files={str(p.relative_to(destination)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.rglob('*')) if p.is_file()}
     manifest=dict(contract='lvs.storage_thermal.offline_bundle.v1',source=source,uid=os.getuid(),gid=os.getgid(),files=files,backend=observed)
     if worker_uid is not None:

@@ -47,10 +47,23 @@ def build_fixture(bundle,root,token,args):
         path=Path('/usr/lib/modules')/KERNEL/name
         if path.exists():shutil.copy2(path,root/'lib/modules'/KERNEL/name)
     for name in ('newroot','control','data-hdd','data-ssd','data-nvme'):(root/name).mkdir(exist_ok=True)
+    if args.campaign.startswith('encrypted-install'):
+        (root/'usr/sbin').mkdir(parents=True,exist_ok=True)
+        for source in ('/usr/sbin/useradd','/usr/sbin/nologin'):
+            copy_binary(root,source,source.lstrip('/'))
     if args.campaign.endswith('system'):
         for name in ('mkswap','swapon','swapoff'):copy_binary(root,'/usr/sbin/'+name,'bin/'+name)
     if args.campaign.startswith('encrypted'):
         for source,dest in [('/usr/sbin/cryptsetup','bin/cryptsetup'),('/usr/sbin/mkfs.btrfs','bin/mkfs.btrfs'),('/usr/sbin/mkfs.ext4','bin/mkfs.ext4'),('/usr/sbin/dmsetup','bin/dmsetup')]:copy_binary(root,source,dest)
+    if args.campaign=='encrypted-install-systemd':
+        for source in ('/usr/lib/systemd/systemd','/usr/lib/systemd/systemd-executor','/usr/lib/systemd/systemd-shutdown','/usr/bin/systemctl','/usr/bin/systemd-run','/usr/bin/env'):
+            dest=root/source.lstrip('/');dest.parent.mkdir(parents=True,exist_ok=True);copy_binary(root,source,source.lstrip('/'))
+        units=root/'etc/systemd/system';units.mkdir(parents=True,exist_ok=True)
+        (units/'lvs-fixture.target').write_text('[Unit]\nDescription=Disposable qualification\nDefaultDependencies=no\nRequires=lvs-fixture-run.service\nAfter=lvs-fixture-run.service\n')
+        for name in ('sysinit.target','basic.target','shutdown.target'):(units/name).write_text('[Unit]\nDefaultDependencies=no\n')
+        (units/'poweroff.target').write_text('[Unit]\nDefaultDependencies=no\nSuccessAction=poweroff-force\n')
+        (units/'multi-user.target').write_text('[Unit]\nDescription=Fixture enablement target\nDefaultDependencies=no\n')
+        (units/'lvs-fixture-run.service').write_text('[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\nTimeoutStartSec=900\nExecStart=/usr/bin/python3 -B /foundation_probe.py --inside\nExecStopPost=/usr/bin/systemctl --no-block poweroff\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/console\n')
     (root/'shared-campaign').write_text(args.campaign)
     (root/'init').write_text('#!/bin/sh\n/bin/mount -t proc proc /proc\n/bin/mount -t sysfs sysfs /sys\n/bin/mount -t devtmpfs devtmpfs /dev\n/bin/modprobe nvme\nexec /usr/bin/python3 /foundation_probe.py --bootstrap\n')
     for p in root.rglob('*'):
@@ -113,8 +126,14 @@ def bootstrap():
         sys.path.insert(0,'/lvs')
         from scripts.storage_thermal_system_probe import encrypted_root
         newroot=encrypted_root(newroot)
+    if Path('/shared-campaign').read_text()=='encrypted-install-systemd':
+        for name in ('bin','usr','lib','lib64','etc'):
+            directory=newroot/name
+            if directory.exists():
+                for p in (directory,*directory.rglob('*')):os.chown(p,0,0,follow_symlinks=False)
+        os.execv('/bin/switch_root',['switch_root',str(newroot),'/usr/lib/systemd/systemd','--unit=lvs-fixture.target','--log-target=console','--log-level=warning'])
     tracing=[]
-    if Path('/shared-campaign').read_text() in ('encrypted-integrated','encrypted-system','ext4-system'):
+    if Path('/shared-campaign').read_text() in ('encrypted-integrated','encrypted-system','ext4-system','encrypted-install'):
         # Trace the access/mutation boundary, not every interpreter stat/read.
         # Kernel filtering avoids ptrace overhead manufacturing shutdown delays
         # in a single-core TCG guest. Fio preadv/pread and open/mutation attempts
@@ -272,7 +291,7 @@ def encrypted_inside():
         for module in ('dm-crypt','btrfs','xts'):
             subprocess.run(['/bin/modprobe',module],check=True)
         Path('/run').mkdir(exist_ok=True)
-        subprocess.run(['/bin/mount','-t','tmpfs','tmpfs','/run'],check=True)
+        if not Path('/run/systemd/system').is_dir():subprocess.run(['/bin/mount','-t','tmpfs','tmpfs','/run'],check=True)
         key=Path('/run/fixture-key');key.write_bytes(os.urandom(32));key.chmod(0o600)
         for i in (1,2):
             device=fixture_device(4)+f'p{i}';name=f'fixture-crypt{i}'
@@ -304,6 +323,14 @@ def encrypted_inside():
         approved=subprocess.run([*command,'--check'],capture_output=True,text=True,timeout=20)
         require(approved.returncode==0,'root-owned verified deployment check failed: '+approved.stderr)
         require(next(r for r in json.loads(approved.stdout) if r['identity']['path']==fixture_device(4))['eligible'],'deployed encrypted discovery failed')
+        if Path('/shared-campaign').read_text().startswith('encrypted-install'):
+            from scripts.storage_thermal_install_probe import run
+            payload=run(deployment,data['device_id'])
+            Path('/control/results.json').write_text(json.dumps(payload,indent=2))
+            archive=io.BytesIO()
+            with tarfile.open(fileobj=archive,mode='w:gz')as tar:tar.add('/control',arcname='evidence')
+            print('LVS_EVIDENCE_BEGIN',flush=True);print(base64.b64encode(archive.getvalue()).decode(),flush=True);print('LVS_EVIDENCE_END',flush=True)
+            return
         if Path('/shared-campaign').read_text()=='encrypted-integrated':
             from scripts.storage_thermal_integrated_probe import run
             integrated=run(deployment,data['device_id'])
@@ -455,6 +482,8 @@ def encrypted_inside():
 
 
 def verify(result):
+    if result.get('contract')=='lvs.storage_thermal.install_vm.v1':
+        r=result['results'];require(r['canonical_CLEAN']and r['ARMED_preserved_across_restart']and r['failed_promotion_preserved']and r['interrupted_promotion_recovered'],'installation transaction/recovery proof missing');return
     if result.get('contract')=='lvs.storage_thermal.system_vm.v1':
         require(not result.get('error'),str(result.get('error')))
         require(result['integrity'] and result['canonical_CLEAN_before_interruption'] and result['fresh_process_ARMED'],'system ownership/integrity proof missing')
@@ -525,19 +554,34 @@ def host(args):
         deployment=tools/'deployment'
         prepare_bundle(deployment,Path(args.fio),**(dict(worker_uid=65533,worker_gid=65533) if args.campaign.endswith('system') else {}))
         files += [(p,'/opt/lvs-thermal-fixture/'+str(p.relative_to(deployment))) for p in deployment.rglob('*') if p.is_file()]
-    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=600 if args.campaign.endswith('system') else None)
+    if args.campaign.startswith('encrypted-install'):
+        import runpy
+        old=tools/'accepted-source';old.mkdir()
+        import tarfile,io
+        archive=subprocess.check_output(['git','archive','7e9d892faf218a6cbfd16ea15a1e8f4df7128f39'])
+        with tarfile.open(fileobj=io.BytesIO(archive))as tar:tar.extractall(old,filter='data')
+        previous=tools/'previous-deployment'
+        runpy.run_path(str(old/'scripts/storage_thermal_prepare.py'))['prepare'](previous,Path(args.fio),root=old)
+        files += [(p,'/opt/lvs-thermal-previous/'+str(p.relative_to(previous)))for p in previous.rglob('*')if p.is_file()]
+        files += [(ROOT/'scripts/storage_thermal_install.py','/lvs/scripts/storage_thermal_install.py'),(ROOT/'scripts/storage_thermal_install_probe.py','/lvs/scripts/storage_thermal_install_probe.py')]
+    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=900 if args.campaign.startswith('encrypted-install')else 600 if args.campaign.endswith('system') else None)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system'),default='full')
+    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd'),default='full')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
     parser.add_argument('--case');parser.add_argument('--identity')
     for name in ('fio','old-fio','strace','kernel','python'):parser.add_argument('--'+name)
     args=parser.parse_args()
     if args.bootstrap:bootstrap()
     elif args.case:inside(args.case,args.identity)
-    elif args.inside:inside()
+    elif args.inside:
+        inside()
+        if Path('/shared-campaign').read_text()=='encrypted-install-systemd':
+            seal();os.sync()
+            import ctypes
+            ctypes.CDLL(None).reboot(0x4321fedc)  # disposable guest only: power off after evidence export
     else:
         require(all(getattr(args,k) for k in ('fio','old_fio','strace','kernel','python')),'explicit qualified regular-file inputs required')
         host(args)

@@ -67,6 +67,7 @@ def dependency_summary_text(
     *,
     storage_health: Optional[Dict[str, Any]] = None,
     storage_benchmark: Optional[Dict[str, Any]] = None,
+    storage_thermal_runtime: Optional[Dict[str, Any]] = None,
 ) -> str:
     def status(key: str) -> str:
         return "OK" if bool(backends.get(key)) else "missing"
@@ -107,6 +108,9 @@ def dependency_summary_text(
         suffix = f", count={count}" if count else ""
         lines.append(f"- {label}: {'OK' if cap.get('available') else 'missing'} ({source}{suffix})")
     storage_health = storage_health if isinstance(storage_health, dict) else {}
+    if storage_thermal_runtime:
+        lines.extend(['', 'Thermal Assist: '+str(storage_thermal_runtime.get('status')),
+                      str(storage_thermal_runtime.get('reason','')), str(storage_thermal_runtime.get('action',''))])
     if storage_health:
         lines.extend(
             [
@@ -175,6 +179,11 @@ def dependency_check_detail_text(payload: Dict[str, Any]) -> str:
             else ""
         ),
     ]
+
+    thermal=payload.get('storage_thermal_runtime') or {}
+    if thermal:
+        lines.extend(['Thermal Assist runtime: '+str(thermal.get('status','unknown')),
+                      '  '+str(thermal.get('reason','')), '  '+str(thermal.get('action',''))])
 
     cpu_helper = details.get("cpu_native_helper", {})
     memory_helper = details.get("memory_native_helper", {})

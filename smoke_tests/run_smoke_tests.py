@@ -37,6 +37,7 @@ from smoke_tests.environment_ui_checks import (
 )
 from smoke_tests.storage_thermal_crypt_checks import (run_overlay_layer_syntax_checks, run_ostree_boot_record_checks, run_bazzite_composefs_topology_checks, run_crypt_system_submount_checks, run_crypt_kernel_status_checks, run_crypt_topology_checks, run_crypt_atomic_overlay_checks, run_thermal_deployment_checks)
 from smoke_tests.storage_thermal_shared_checks import (run_shared_contract_checks, run_shared_topology_checks, run_shared_descriptor_checks, run_shared_supervisor_checks, run_shared_owned_stage_checks, run_shared_interactive_checks, run_shared_vm_evidence_checks)
+from smoke_tests.storage_thermal_installation_checks import run_thermal_install_transaction_checks,run_thermal_install_input_checks,run_thermal_install_readiness_checks,run_thermal_install_maintenance_checks
 from smoke_tests.storage_thermal_system_checks import run_system_authorization_checks, run_system_topology_checks, run_system_budget_checks, run_system_confidentiality_policy_checks, run_system_evidence_checks
 from smoke_tests.storage_thermal_only_checks import run_thermal_only_preflight_checks, run_thermal_only_lifecycle_checks, run_thermal_only_service_checks, run_thermal_only_verdict_checks
 from smoke_tests.storage_thermal_runtime_checks import run_installed_runtime_schema_checks, run_installed_runtime_authority_checks, run_installed_runtime_descriptor_checks, run_installed_runtime_final_observation_checks
@@ -29834,6 +29835,7 @@ def main() -> int:
         run_thermal_strict_terminal_checks,
         run_thermal_auxiliary_publication_latency_checks,
         run_thermal_shared_entrypoint_scope_checks,
+        run_thermal_install_transaction_checks,run_thermal_install_input_checks,run_thermal_install_readiness_checks,run_thermal_install_maintenance_checks,
         run_system_authorization_checks,
         run_system_topology_checks,
         run_system_budget_checks,

@@ -53,7 +53,7 @@ has been adopted here. This roadmap edit authorizes no implementation or campaig
    tests and 81/81 profiles valid. **Broader real-host deployment acceptance
    remains pending**, separate from these completed software gates. See the
    [Environment Manager contract and deployment procedure](docs/environment_manager.md).
-2. [ ] **Storage Thermal Assist — system-access software qualified; installation integration next.**
+2. [ ] **Storage Thermal Assist — system-access software qualified; trusted installation/update integration.**
    Wave 2A and Stage 2B-1 are committed, including guarded descriptor proofs.
    Stage 2B-2 standalone inactive-HDD execution is committed. Stage 2B-3 shared
    CLI/TUI configuration, concurrent timed-stage adapter and seven-profile/41-stage
@@ -1304,3 +1304,13 @@ Primary verified-work instrumentation remains a separate workstream. Broader
 percentage calibration, higher-rate research, HDD/SATA SSD qualification, multi-drive
 scalability, complex stacks and external-drive support remain open. No new physical
 system-drive workload, release or eligibility promotion is authorized by this change.
+
+### Routine trusted Thermal Assist installation/update integration
+
+[Installation and rollback](docs/storage_thermal_installation.md) reuse Wave 1
+setup option 9, the original `.venv`, native builds and dependency diagnostics.
+Administrator-reviewed root-owned promotion and the same canonical recovery are
+mandatory; installation never grants system-drive workload authorization.
+Physical system-drive and simultaneous-drive qualification remain separate.
+Genuine primary throughput instrumentation is the next independent development
+workstream, with broader media, calibration and scale still open.

@@ -115,7 +115,7 @@ def preview(config):
 def _preview(config):
     result=rpc('inspect',configuration=config.to_dict())
     from .lvs_source_provenance import _source_snapshot
-    require(result['installed_runtime']['source']==_source_snapshot(ROOT)[0],'installed runtime/source mismatch; install this version')
+    require(result['installed_runtime']['source']==_source_snapshot(ROOT)[0],'installed runtime/source mismatch; use ./setup.sh → 9 to prepare an approved update; restart LVS after promotion')
     info=result['installed_runtime']
     binary=owned_path(Path(info['root'])/'runtime/build/storage_thermal_launch.so')
     require(hashlib.sha256(binary.read_bytes()).hexdigest()==info['bootstrap_sha256'],'installed bootstrap mismatch')
