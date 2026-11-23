@@ -68,6 +68,13 @@ def build_fixture(bundle,root,token,args):
         (units/'poweroff.target').write_text('[Unit]\nDefaultDependencies=no\nSuccessAction=poweroff-force\n')
         (units/'multi-user.target').write_text('[Unit]\nDescription=Fixture enablement target\nDefaultDependencies=no\n')
         (units/'lvs-fixture-run.service').write_text('[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\nTimeoutStartSec=900\nExecStart=/usr/bin/python3 -B /foundation_probe.py --inside\nExecStopPost=/usr/bin/systemctl --no-block poweroff\nStandardOutput=tty\nStandardError=tty\nTTYPath=/dev/console\n')
+    if getattr(args,'vendor_dropin',False):
+        require(args.campaign=='encrypted-ea60-migration-systemd','vendor qualification is historical VM only')
+        from Modules.lvs_storage_thermal_migration import VENDOR_DROPIN_SHA256
+        fixture=ROOT/'smoke_tests/fixtures/systemd/10-timeout-abort.conf'
+        require(base.digest(fixture)==VENDOR_DROPIN_SHA256,'vendor fixture changed')
+        target=root/'usr/lib/systemd/system/service.d/10-timeout-abort.conf';target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(fixture,target)
+        (root/'vendor-dropin-proof').touch()
     if getattr(args,'proof_only',False):(root/'on-demand-proof-only').touch()
     if getattr(args,'concurrent_only',False):(root/'on-demand-concurrent-only').touch()
     (root/'shared-campaign').write_text(args.campaign)
@@ -522,6 +529,10 @@ def verify(result):
         return
     if result.get('contract')=='lvs.storage_thermal.migration_vm.v1':
         p=result['results'];require(p['canonical_CLEAN']and p['idle_cleanup']and p['old_unit_masked']and p['private_identity_static_db_unchanged'],'migration proof incomplete')
+        if p.get('vendor_negative_controls'):
+            require(p['vendor_abnormal_stop']['exit_signal']==6 and p['vendor_abnormal_stop']['CLEAN_unchanged']and p['vendor_abnormal_stop']['resumed_and_rolled_back'],'vendor abort/recovery proof missing')
+            require('ExecMainStatus=9'in p['vendor_final_kill']['result']and p['vendor_final_kill']['journal_unchanged'],'vendor final KILL proof missing')
+            require(p['inspection']['deployment']['shutdown_policy']['effective']['TimeoutStopFailureMode']=='abort','vendor effective policy not approved')
         if p.get('historical_ea60'):
             require(p['interrupted_phases_direct_rollback']==['PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'],'historical direct rollback proof missing')
             require(p['ordinary_operator_process_allowed']and p['escaped_bootstrap_mapping_rejected']and p['old_installed_source']['digest']=='1e35d99bf3b6b1789e6b4bc6571f4be4357afc8e7269413657e777b8bee8dc53','historical ownership/source proof missing')
@@ -647,6 +658,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'),default='full')
     parser.add_argument('--proof-only',action='store_true')
+    parser.add_argument('--vendor-dropin',action='store_true')
     parser.add_argument('--concurrent-only',action='store_true')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
     parser.add_argument('--case');parser.add_argument('--identity')

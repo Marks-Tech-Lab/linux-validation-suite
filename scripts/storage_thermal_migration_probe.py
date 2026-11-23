@@ -9,6 +9,75 @@ import subprocess
 import time
 
 
+def vendor_abnormal_stop(migration,approval,unit,marker,proof):
+    """Actual unchanged old server; VM tracer suppresses TERM, delivers ABRT.
+
+    No memory/sector reads, executable mutation or production tracing feature.
+    """
+    import ctypes,signal,threading
+    from Modules import lvs_storage_thermal_migration as m
+    from Modules.lvs_storage_thermal_transient import systemctl,ENV
+    pid=int(systemctl('show',unit,'--property=MainPID','--value'));identity=m.process_identity(pid)
+    libc=ctypes.CDLL(None,use_errno=True);libc.ptrace.argtypes=[ctypes.c_uint,ctypes.c_uint,ctypes.c_void_p,ctypes.c_void_p];libc.ptrace.restype=ctypes.c_long
+    ready=threading.Event();events=[];errors=[];finished=[]
+    def ptrace(op,sig=0):
+        if libc.ptrace(op,pid,None,ctypes.c_void_p(sig))<0:raise OSError(ctypes.get_errno(),'sealed tracer failure')
+    def trace():
+        try:
+            assert m.process_identity(pid)==identity;ptrace(0x4206);ready.set()  # PTRACE_SEIZE
+            end=time.monotonic()+110
+            while time.monotonic()<end:
+                got,status=os.waitpid(pid,os.WNOHANG|0x40000000)  # __WALL
+                if not got:time.sleep(.01);continue
+                if os.WIFSTOPPED(status):
+                    sig=os.WSTOPSIG(status);events.append(dict(signal=sig,at=time.monotonic()))
+                    ptrace(7,0 if sig==signal.SIGTERM else sig)  # only TERM suppressed
+                else:finished.append(status);return
+            raise RuntimeError('sealed tracer deadline')
+        except BaseException as exc:errors.append(repr(exc));ready.set()
+    thread=threading.Thread(target=trace,daemon=True);thread.start();assert ready.wait(10)and not errors,errors
+    before=marker.read_bytes();start=time.monotonic()
+    try:migration.retire(approval)
+    except subprocess.TimeoutExpired:elapsed=time.monotonic()-start
+    else:raise AssertionError('unresponsive service stop should exceed the existing 30-second administrative call')
+    assert 28<=elapsed<40 and marker.read_bytes()==before
+    state=json.loads((migration._pending(approval)/'state.json').read_text());assert state['phase']=='MASKED'
+    assert json.loads(migration.record.read_text())['phase']=='retiring'
+    # This failure is not cleanup. No transient owner may start on this marker.
+    assert systemctl('is-active','lvs-thermal-demand-1000.service',check=False)!='active'
+    thread.join(85);assert not thread.is_alive()and not errors and finished,(errors,events)
+    signals=[v['signal']for v in events];assert signal.SIGTERM in signals and signal.SIGABRT in signals,events
+    assert os.WIFSIGNALED(finished[0])and os.WTERMSIG(finished[0])==signal.SIGABRT,finished
+    migration.retire(approval);migration.rollback(approval);assert marker.read_bytes()==before
+    proof['vendor_abnormal_stop']=dict(control_timeout_seconds=elapsed,events=events,exit_signal=signal.SIGABRT,CLEAN_unchanged=True,resumed_and_rolled_back=True)
+    # Companion policy proof: ignore ABRT too; final KILL must cover descendants.
+    name='lvs-vendor-final-kill.service';event=Path('/control/vendor-final-kill.events')
+    code="""import signal,time,os
+from pathlib import Path
+p=Path('/control/vendor-final-kill.events')
+def record(s,f):
+ with p.open('a')as out:out.write(str(s)+'\\n')
+signal.signal(15,record);signal.signal(6,record)
+child=os.fork()
+if child:
+ Path('/control/vendor-final-kill.child').write_text(str(child))
+ p.write_text('READY\\n')
+while True:time.sleep(.1)
+"""
+    subprocess.run(['/usr/bin/systemd-run','--quiet','--unit='+name,'--property=Type=exec','--property=KillMode=mixed','--property=TimeoutStopSec=1','--property=TimeoutAbortSec=1','/usr/bin/python3','-I','-B','-c',code],check=True,env=ENV,capture_output=True)
+    end=time.monotonic()+10
+    while not event.exists():assert time.monotonic()<end;time.sleep(.05)
+    child=int(Path('/control/vendor-final-kill.child').read_text());handle=os.pidfd_open(child)
+    r=subprocess.run(['/usr/bin/systemctl','stop',name],env=ENV,capture_output=True,text=True,timeout=12)
+    result=systemctl('show',name,'--property=ExecMainCode','--property=ExecMainStatus','--property=MainPID','--property=ActiveState')
+    assert 'ExecMainCode=2'in result and 'ExecMainStatus=9'in result and 'MainPID=0'in result,result
+    assert '15'in event.read_text()and '6'in event.read_text(),event.read_text()
+    import select
+    assert select.select([handle],[],[],2)[0],'descendant survived final KILL';os.close(handle)
+    assert marker.read_bytes()==before
+    proof['vendor_final_kill']=dict(result=result,signals=event.read_text(),journal_unchanged=True)
+
+
 def run(bundle,identity):
     from __main__ import seal
     seal()
@@ -97,6 +166,21 @@ def run(bundle,identity):
         tool=old/'runtime/build/storage_thermal_launch.so';v=tool.stat();kernel_identity=m.mapping_identity(tool)
         proof['mapping_identity']=dict(stat_device=v.st_dev,proc_device=kernel_identity[0],inode=v.st_ino,proc_inode=kernel_identity[1],carrier='Btrfs')
     approval=migration.inspect()['approval_sha256'];proof['inspection']=migration.inspect()
+    if historical and Path('/vendor-dropin-proof').exists():
+        # Exact global vendor bytes are qualified in this guest only. No host
+        # config or active raw worker is changed by these negative controls.
+        vendor=m.VENDOR_DROPIN;data=vendor.read_bytes()
+        vendor.chmod(0o664);denied(migration.inspect);vendor.chmod(0o644)
+        vendor.write_bytes(data+b'\n[Service]\nExecStop=/unqualified\n');denied(migration.inspect);vendor.write_bytes(data)
+        systemctl('daemon-reload')
+        extra=Path('/etc/systemd/system')/(unit+'.d');extra.mkdir()
+        (extra/'90-extra.conf').write_text('[Service]\nNice=1\n');systemctl('daemon-reload');denied(migration.inspect)
+        (extra/'90-extra.conf').unlink();extra.rmdir();systemctl('daemon-reload')
+        approval=migration.inspect()['approval_sha256']
+        vendor_abnormal_stop(migration,approval,unit,marker,proof)
+        start_historical();approval=migration.inspect()['approval_sha256'];proof['inspection']=migration.inspect()
+        proof['vendor_negative_controls']=True
+
     # Crash a separate administrator process after each durable phase. Resume
     # and roll back without restarting anything; preserve all old material.
     phases=('PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED')

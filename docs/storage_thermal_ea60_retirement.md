@@ -165,3 +165,67 @@ under its lock. Missing or ambiguous evidence is not permission for manual journ
 removal, forced cleanup certification or guessing a worker UID. No force flag is
 provided. Any manual retirement of an unrecognized variant requires separate
 administrator review and explicit authorization.
+
+## Qualified Fedora vendor abort policy
+
+The exact Fedora package file
+`/usr/lib/systemd/system/service.d/10-timeout-abort.conf`, SHA-256
+`ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37`,
+is a specifically qualified historical-mode exception. Its only directive is
+`TimeoutStopFailureMode=abort`. The file and every ancestor must be trusted,
+root-owned and not group/other writable; no symlink, altered bytes, alternate
+location, additional drop-in or arbitrary override is accepted. The qualification
+binds the entire file, including comments, not just a matching filename or a
+substring. Default newer-installer override restrictions remain unchanged.
+
+The authoritative references are Fedora's
+[shutdown change](https://fedoraproject.org/wiki/Changes/Shorter_Shutdown_Timer),
+[systemd 259 service timeout semantics](https://www.freedesktop.org/software/systemd/man/259/systemd.service.html),
+and [systemd 259 kill semantics](https://www.freedesktop.org/software/systemd/man/259/systemd.kill.html).
+The full historical fragment is still required. Effective manager properties
+must agree: Type=exec; KillMode=mixed; TERM=15; Watchdog/abort=6; final KILL=9;
+SendSIGKILL=yes; no SIGHUP; stop and abort timeouts both 45 seconds;
+TimeoutStartFailureMode=terminate; no restart/delegation/alternate user or root
+image; UMask=0077; the one fixed env/Python command; no stop/post-stop/reload hooks.
+Empty Exec hook arrays are omitted by systemctl even with --all; only those three
+known empty arrays are normalized. Nonempty hooks and missing scalar properties
+are rejected. The raw fragment plus narrowly qualified drop-in independently
+forbid extra execution commands.
+
+This policy sends SIGABRT on a stop timeout, potentially generating a core, and
+allows the abort timeout before final SIGKILL. It is not merely a shorter TERM
+period. Retirement acts only on a verified idle main: no workers/handlers, CLEAN
+under the canonical anchor, complete ownership observations. The pinned historical
+main manages IPC/code metadata; target-sector buffers belong to separate workers,
+which must already be gone. This exception does not authorize aborting active
+storage work or weaken the new workers' post-exec nondumpability/seccomp. It does
+not promise absence of a control-process core artifact or qualify the actual
+host coredump handler anew. No global core/systemd policy is changed.
+
+Inspection binds the qualified file and stable effective properties into
+`shutdown_policy` in the exact-deployment approval. Retirement, resumed operations,
+fragment reconciliation and rollback repeat the same checks. After the original
+unit is masked/collected, its approved vendor bytes must remain unchanged even
+when the manager no longer lists the drop-in for that masked unit. Old approvals
+without this binding cannot silently acquire vendor authorization. An interrupted
+own-mask write before daemon-reload is recognized only with the proven mask and
+archived fragment; policy is checked again after reload before stopping anything.
+
+The existing administrative systemctl call deadline remains 30 seconds. A stuck
+service can therefore return a **blocked/incomplete transaction** before systemd's
+45-second abort point. The tool retains its intent, mask and audit material. It
+never treats that call timeout, SIGABRT, SIGKILL or a core as cleanup evidence.
+Retry/resume requires independently verifiable quiescence and CLEAN. ARMED always
+blocks; recovery is never cleared. Kernel stalls may remain unbounded, so no
+unconditional shutdown-latency guarantee is made.
+
+The `--vendor-dropin` option on the sealed historical VM campaign copies the
+committed vendor fixture **into the guest only**. It tests changed bytes, writable
+permissions and additional overrides; suppresses TERM on the unchanged idle old
+server using a guest-only tracer to observe the real 45-second ABRT path and
+administrative timeout; verifies final group KILL on a synthetic signal-resistant
+service; and reuses interruption/rollback, guarded data, CLEAN/ARMED and idle-cleanup
+checks. The synthetic final-KILL case uses one-second fixture timeouts, not a
+modified historical production policy. No old raw workload is run during these
+fault controls. Host tracing, policy edits and service operations are not part of
+this validation or automatically authorized by it.

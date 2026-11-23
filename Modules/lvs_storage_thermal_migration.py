@@ -36,6 +36,8 @@ EA60='integrated-ea60eaa9'
 EA60_SOURCE='1e35d99bf3b6b1789e6b4bc6571f4be4357afc8e7269413657e777b8bee8dc53'
 EA60_MANIFEST='dffa0d4cf30e1314a9b0d63eb9d4f071004473bc312290d84061e03d0599e7a9'
 EA60_SUMS='c3e04bbb37b373b8a7a7db695f5f0ac911dbf2944e567f66199d31f8fab35d1f'
+VENDOR_DROPIN=Path('/usr/lib/systemd/system/service.d/10-timeout-abort.conf')
+VENDOR_DROPIN_SHA256='ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37'
 ABSENT_RECORD=b'{"historical_installation_record_absent":true}\n'
 
 
@@ -116,6 +118,51 @@ def properties(unit):
     data=ctl('show',unit,*('--property='+n for n in names))
     rows=dict(line.split('=',1)for line in data.splitlines()if '='in line)
     require(set(rows)==set(names),'incomplete manager inspection');return rows
+
+
+def effective_policy(unit):
+    names=('Type','KillMode','KillSignal','FinalKillSignal','WatchdogSignal','SendSIGKILL','SendSIGHUP','TimeoutStopUSec','TimeoutAbortUSec','TimeoutStartFailureMode','TimeoutStopFailureMode','Restart','Delegate','User','Group','DynamicUser','UMask','ExecStart','ExecStop','ExecStopPost','ExecReload','RootDirectory','RootImage')
+    data=ctl('show','--all',unit,*('--property='+n for n in names))
+    rows=dict(line.split('=',1)for line in data.splitlines()if '='in line)
+    # systemctl suppresses empty Exec command arrays even with --all (unlike
+    # empty scalar strings). Nonempty hooks are printed and rejected below; the
+    # exact fragment and qualified drop-in independently forbid such hooks.
+    for name in ('ExecStop','ExecStopPost','ExecReload'):rows.setdefault(name,'')
+    require(set(rows)==set(names),'incomplete effective historical service policy')
+    return rows
+
+
+def qualified_dropins(value,historical=False):
+    if not value:return []
+    require(historical and value==str(VENDOR_DROPIN),'unqualified service drop-in path(s)')
+    require(sha(read(VENDOR_DROPIN,65536))==VENDOR_DROPIN_SHA256,'Fedora vendor drop-in content changed')
+    return [dict(path=str(VENDOR_DROPIN),sha256=VENDOR_DROPIN_SHA256)]
+
+
+def historical_policy(unit,prop,approved=None,*,pending_own_mask=False):
+    dropins=qualified_dropins(prop['DropInPaths'],historical=True)
+    require(not prop['Triggers']and not prop['TriggeredBy']and(prop['NeedDaemonReload']=='no'or pending_own_mask and prop['NeedDaemonReload']=='yes'),'unreviewed historical trigger or pending reload')
+    # A completed transaction may be masked/collected: the original service
+    # policy no longer exists in the manager. Its approved vendor bytes must
+    # nevertheless remain protected and unchanged before further admin actions.
+    if approved is not None:
+        original=approved.get('dropins',[])
+        for item in original:
+            require(item==dict(path=str(VENDOR_DROPIN),sha256=VENDOR_DROPIN_SHA256)and sha(read(VENDOR_DROPIN,65536))==VENDOR_DROPIN_SHA256,'approved vendor policy changed')
+        require(not dropins or dropins==original,'unapproved vendor policy appeared during transaction')
+    loaded=prop['Transient']=='yes'and prop['FragmentPath']==str(TRANSIENT_UNITS/unit)
+    if not loaded:return approved
+    policy=effective_policy(unit)
+    expected=dict(Type='exec',KillMode='mixed',KillSignal='15',FinalKillSignal='9',WatchdogSignal='6',SendSIGKILL='yes',SendSIGHUP='no',TimeoutStopUSec='45s',TimeoutAbortUSec='45s',TimeoutStartFailureMode='terminate',TimeoutStopFailureMode='abort'if dropins else'terminate',Restart='no',Delegate='no',User='',Group='',DynamicUser='no',UMask='0077',ExecStop='',ExecStopPost='',ExecReload='',RootDirectory='',RootImage='')
+    for name,value in expected.items():require(policy[name]==value,'unqualified effective historical '+name+': '+policy[name])
+    command='/usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LC_ALL=C /usr/bin/python3 -I -B /opt/lvs-thermal/'+EA60+'/launch.py --serve-integrated'
+    start=policy['ExecStart'];require(start.startswith('{ path=/usr/bin/env ; argv[]='+command+' ; ignore_errors=no ; ')and start.count('{')==1 and start.count('}')==1,'unqualified effective historical ExecStart')
+    # Exclude volatile execution timestamps/PIDs from the approval, while binding
+    # the exact executable/argv and every relevant stable stop/identity property.
+    policy=dict(policy,ExecStart=command)
+    value=dict(dropins=dropins,effective=policy)
+    if approved is not None:require(value==approved,'historical shutdown policy changed since approval')
+    return value
 
 
 def require_native():
@@ -444,14 +491,23 @@ class Migration:
         path=canonical(Path('/opt/lvs-thermal'))/EA60;m,mh=historical_deployment(path,self.uid)
         require(not(UNITS/self.unit).exists()and not(UNITS/self.unit).is_symlink(),'historical permanent unit conflict')
         prop=properties(self.unit);fragment=TRANSIENT_UNITS/self.unit
-        require(prop['Transient']=='yes'and prop['FragmentPath']==str(fragment)and prop['UnitFileState']=='transient'and prop['NeedDaemonReload']=='no'and not prop['DropInPaths']and not prop['Triggers']and not prop['TriggeredBy'],'unrecognized historical transient unit')
+        require(prop['Transient']=='yes'and prop['FragmentPath']==str(fragment)and prop['UnitFileState']=='transient'and prop['NeedDaemonReload']=='no','unrecognized historical transient unit')
+        policy=historical_policy(self.unit,prop)
         raw=read(fragment,65536);require(raw==historical_unit(),'historical unit bytes differ from reviewed command')
         no_alternate_unit(self.unit,path)
         main=quiescent(self.unit,path,None,allow_main=True,historical=True)
         sock=endpoint_info(self.uid,m['gid'],main);anchor=(STATE/'storage_thermal_recovery_required.json.scope').stat()
-        value=dict(contract=CONTRACT,uid=self.uid,gid=m['gid'],unit=self.unit,deployment=str(path),manifest_sha256=mh,source=m['source'],worker_uid=None,worker_gid=None,ownership_model='historical-cgroup-and-pinned-inodes',historical_ea60=True,record_absent=True,record_sha256=sha(ABSENT_RECORD),unit_sha256=sha(raw),enabled='transient',main=main,socket=sock,anchor=[anchor.st_dev,anchor.st_ino],journal_sha256=sha(journal()))
+        value=dict(contract=CONTRACT,uid=self.uid,gid=m['gid'],unit=self.unit,deployment=str(path),manifest_sha256=mh,source=m['source'],worker_uid=None,worker_gid=None,ownership_model='historical-cgroup-and-pinned-inodes',shutdown_policy=policy,historical_ea60=True,record_absent=True,record_sha256=sha(ABSENT_RECORD),unit_sha256=sha(raw),enabled='transient',main=main,socket=sock,anchor=[anchor.st_dev,anchor.st_ino],journal_sha256=sha(journal()))
         evidence=(json.dumps(value,sort_keys=True,indent=2)+'\n').encode()
         return dict(status='REVIEW_REQUIRED',approval_sha256=sha(evidence),deployment=value)
+
+    def _policy(self,prop,v,*,allow_pending=False):
+        if self.historical_ea60:
+            approved=v.get('shutdown_policy')
+            if approved is None:require(not prop['DropInPaths'],'old approval did not authorize vendor drop-ins')
+            pending=allow_pending and prop['NeedDaemonReload']=='yes'and masked(self.unit)and self._unit_ok(v)
+            return historical_policy(self.unit,prop,approved,pending_own_mask=pending)
+        require(not prop['DropInPaths']and not prop['Triggers']and not prop['TriggeredBy'],'unreviewed service override/trigger')
 
     def _quiescent(self,v,allow_main=False):
         return quiescent(self.unit,Path(v['deployment']),v['worker_uid'],allow_main=allow_main,historical=bool(v.get('historical_ea60')))
@@ -508,6 +564,7 @@ class Migration:
         anchor=(STATE/'storage_thermal_recovery_required.json.scope').stat()
         require([anchor.st_dev,anchor.st_ino]==v['anchor'],'canonical anchor replaced since approval')
         no_alternate_unit(self.unit,Path(v['deployment']))
+        self._policy(properties(self.unit),v,allow_pending=True)
         return v,t
 
     def _check_record(self,d,v,approval,original=False):
@@ -526,7 +583,7 @@ class Migration:
         require(main is None or main==v['main'],'legacy service generation changed since approval')
         # Revalidate unit independently on resume, including the pre-mask window.
         require(self._unit_ok(v),'legacy unit changed during transaction')
-        props=properties(self.unit);require(not props['DropInPaths']and not props['Triggers']and not props['TriggeredBy'],'unreviewed service override/trigger')
+        props=properties(self.unit);self._policy(props,v,allow_pending=True)
         write_json(self.record,dict(phase='retiring',contract=CONTRACT,transaction=d.name,approval=approval))
         if not self.historical_ea60:ctl('disable',self.unit)
         if not masked(self.unit):
@@ -535,7 +592,7 @@ class Migration:
                 require(temporary.is_symlink()and temporary.lstat().st_uid==0 and os.readlink(temporary)=='/dev/null','unexpected mask staging entry')
             else:os.symlink('/dev/null',temporary)
             os.replace(temporary,UNITS/self.unit);sync(UNITS)
-        ctl('daemon-reload');self._state(d,'MASKED',approval)
+        ctl('daemon-reload');self._policy(properties(self.unit),v);self._state(d,'MASKED',approval)
         ctl('stop',self.unit);self._quiescent(v);self._state(d,'STOPPED',approval)
         self._reconcile_fragment(v)
         self._endpoint(v)
@@ -547,6 +604,7 @@ class Migration:
 
     def _reconcile_fragment(self,v):
         if self.historical_ea60:
+            self._policy(properties(self.unit),v)
             fragment=TRANSIENT_UNITS/self.unit
             if fragment.exists()or fragment.is_symlink():
                 require(sha(read(fragment,65536))==v['unit_sha256'],'historical transient fragment changed after stop')
@@ -574,7 +632,7 @@ class Migration:
             require(t['phase']in ('PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED','ROLLING_BACK','ROLLED_BACK'),'unknown rollback phase')
             self._check_record(d,v,approval,original=t['phase']in ('PREPARED','ROLLING_BACK','ROLLED_BACK'))
             require(self._unit_ok(v),'unreviewed unit cannot be restored')
-            props=properties(self.unit);require(not props['DropInPaths']and not props['Triggers']and not props['TriggeredBy'],'unreviewed rollback override')
+            props=properties(self.unit);self._policy(props,v,allow_pending=True)
             main=self._quiescent(v,allow_main=True)
             require(main is None or main==v['main'],'legacy service generation changed since approval')
             self._state(d,'ROLLING_BACK',approval)

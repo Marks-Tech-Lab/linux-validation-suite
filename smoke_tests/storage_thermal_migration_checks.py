@@ -12,6 +12,13 @@ from Modules import lvs_storage_thermal_migration as m
 _REAL_ENDPOINT_INFO=m.endpoint_info
 
 
+def fixture_effective(abort=False):
+    v=dict(Type='exec',KillMode='mixed',KillSignal='15',FinalKillSignal='9',WatchdogSignal='6',SendSIGKILL='yes',SendSIGHUP='no',TimeoutStopUSec='45s',TimeoutAbortUSec='45s',TimeoutStartFailureMode='terminate',TimeoutStopFailureMode='abort'if abort else'terminate',Restart='no',Delegate='no',User='',Group='',DynamicUser='no',UMask='0077',ExecStop='',ExecStopPost='',ExecReload='',RootDirectory='',RootImage='')
+    command='/usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LC_ALL=C /usr/bin/python3 -I -B /opt/lvs-thermal/'+m.EA60+'/launch.py --serve-integrated'
+    v['ExecStart']='{ path=/usr/bin/env ; argv[]='+command+' ; ignore_errors=no ; pid=123 ; code=0 ; status=0 }'
+    return v
+
+
 @contextmanager
 def fixture():
     with tempfile.TemporaryDirectory()as name:
@@ -220,7 +227,7 @@ def historical_fixture():
             f.calls.append(args)
             if args[0]=='stop':f.model['active']=False;(fragment/f.unit).unlink(missing_ok=True)
             return ''
-        patches=[patch.object(m,'TRANSIENT_UNITS',fragment),patch.object(m,'canonical',return_value=f.root),patch.object(m,'historical_deployment',return_value=(dict(uid=f.uid,gid=os.getgid(),source={'digest':m.EA60_SOURCE}),'b'*64)),patch.object(m,'properties',side_effect=props),patch.object(m,'ctl',side_effect=ctl)]
+        patches=[patch.object(m,'effective_policy',return_value=fixture_effective()),patch.object(m,'TRANSIENT_UNITS',fragment),patch.object(m,'canonical',return_value=f.root),patch.object(m,'historical_deployment',return_value=(dict(uid=f.uid,gid=os.getgid(),source={'digest':m.EA60_SOURCE}),'b'*64)),patch.object(m,'properties',side_effect=props),patch.object(m,'ctl',side_effect=ctl)]
         for p in patches:p.start()
         try:yield f
         finally:
@@ -296,3 +303,71 @@ def run_thermal_historical_mapping_checks():
             with patch.object(Path,'read_bytes',read):
                 if valid:assert m.mapping_identity(tool)==(os.makedev(0,0x26),4242)
                 else:denied(lambda:m.mapping_identity(tool))
+
+
+@contextmanager
+def vendor_fixture():
+    with historical_fixture()as f:
+        vendor=f.root/'10-timeout-abort.conf';data=(Path(__file__).parent/'fixtures/systemd/10-timeout-abort.conf').read_bytes();assert m.sha(data)==m.VENDOR_DROPIN_SHA256;vendor.write_bytes(data)
+        previous=m.properties.side_effect
+        def props(unit):
+            p=previous(unit)
+            if p['Transient']=='yes':p['DropInPaths']=str(vendor)
+            return p
+        with patch.object(m,'VENDOR_DROPIN',vendor),patch.object(m,'properties',side_effect=props),patch.object(m,'effective_policy',return_value=fixture_effective(abort=True)):
+            yield f,vendor,data
+
+
+def run_thermal_vendor_dropin_checks():
+    with vendor_fixture()as(f,vendor,data):
+        obj=m.Migration(f.uid,historical_ea60=True);inspection=obj.inspect();approval=inspection['approval_sha256'];v=inspection['deployment'];before=f.marker.read_bytes()
+        assert v['shutdown_policy']['dropins']==[dict(path=str(vendor),sha256=m.VENDOR_DROPIN_SHA256)]
+        assert v['shutdown_policy']['effective']['TimeoutStopFailureMode']=='abort'
+        assert v['shutdown_policy']['effective']['ExecStop']==''
+        obj.retire(approval);obj.retire(approval);obj.rollback(approval);assert f.marker.read_bytes()==before
+        assert not f.record.exists()and not any(c[0]in ('start','restart','enable')for c in f.calls)
+        denied(lambda:m.qualified_dropins(str(vendor),historical=False))
+        for path in (str(vendor)+' /etc/extra.conf','/etc/systemd/system/service.d/10-timeout-abort.conf',str(vendor)+'\n'):
+            denied(lambda:m.qualified_dropins(path,historical=True))
+        with patch.object(m,'read',side_effect=PermissionError('unsafe owner/ancestor')):denied(lambda:m.qualified_dropins(str(vendor),historical=True))
+        vendor.write_bytes(data+b'\n# modified\n');denied(lambda:m.qualified_dropins(str(vendor),historical=True))
+
+
+def run_thermal_vendor_policy_checks():
+    for name,value in dict(Type='simple',KillMode='process',KillSignal='9',FinalKillSignal='6',WatchdogSignal='9',SendSIGKILL='no',SendSIGHUP='yes',TimeoutStopUSec='infinity',TimeoutAbortUSec='infinity',TimeoutStartFailureMode='kill',TimeoutStopFailureMode='terminate',Restart='always',Delegate='yes',User='1000',Group='1000',DynamicUser='yes',UMask='0000',ExecStop='{ path=/untrusted ; }',ExecStopPost='{ path=/untrusted ; }',ExecReload='{ path=/untrusted ; }',RootDirectory='/untrusted',RootImage='/untrusted',ExecStart='{ path=/usr/bin/python3 ; argv[]=/untrusted ; }').items():
+        with vendor_fixture()as(f,vendor,data):
+            m.effective_policy.return_value=fixture_effective(abort=True);m.effective_policy.return_value[name]=value
+            denied(m.Migration(f.uid,historical_ea60=True).inspect)
+            assert not f.record.exists()and not any(c[0]in ('stop','disable','daemon-reload')for c in f.calls)
+    # Missing empty Exec arrays are a systemctl formatting rule; other missing
+    # fields remain an unsupported/incomplete observation.
+    policy=fixture_effective(abort=True);raw='\n'.join(n+'='+v for n,v in policy.items()if n not in ('ExecStop','ExecStopPost','ExecReload'))
+    with patch.object(m,'ctl',return_value=raw):assert m.effective_policy('fixture')['ExecStop']==''
+    with patch.object(m,'ctl',return_value=raw.replace('KillMode=mixed','')):denied(lambda:m.effective_policy('fixture'))
+
+
+def run_thermal_vendor_transaction_checks():
+    for operation in ('retire','resume','rollback'):
+        with vendor_fixture()as(f,vendor,data):
+            obj=m.Migration(f.uid,historical_ea60=True);approval=obj.inspect()['approval_sha256'];before=f.marker.read_bytes()
+            if operation=='resume':
+                obj.checkpoint=lambda p:(_ for _ in ()).throw(OSError('interrupted'))if p=='PREPARED'else None
+                denied(lambda:obj.retire(approval));obj.checkpoint=lambda _:None
+            if operation=='rollback':obj.retire(approval)
+            vendor.write_bytes(data+b'\n[Service]\nExecStart=/untrusted\n')
+            count=len(f.calls);denied(lambda:obj.rollback(approval)if operation=='rollback'else obj.retire(approval));assert len(f.calls)==count and f.marker.read_bytes()==before
+    with vendor_fixture()as(f,vendor,data):
+        obj=m.Migration(f.uid,historical_ea60=True);approval=obj.inspect()['approval_sha256']
+        def interrupted(p):
+            if p=='PREPARED':raise OSError('interruption')
+        obj.checkpoint=interrupted;denied(lambda:obj.retire(approval));obj.checkpoint=lambda _:None
+        # Simulate the finer-grained interruption after writing our persistent
+        # mask but before daemon-reload. Only a proven own mask may resume.
+        (f.units/f.unit).symlink_to('/dev/null');previous=m.properties.side_effect
+        pending=[True];old_ctl=m.ctl.side_effect
+        def ctl(*args):
+            if args[0]=='daemon-reload':pending[0]=False
+            return old_ctl(*args)
+        with patch.object(m,'properties',side_effect=lambda u:dict(previous(u),NeedDaemonReload='yes'if pending[0]else'no')),patch.object(m,'ctl',side_effect=ctl):
+            obj.retire(approval)
+        assert m.retired_record(f.uid)

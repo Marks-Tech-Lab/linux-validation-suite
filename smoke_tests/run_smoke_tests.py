@@ -29487,10 +29487,13 @@ from smoke_tests.storage_thermal_execution_checks import (run_thermal_passive_in
 
 from smoke_tests.storage_thermal_transient_checks import (run_thermal_transient_candidate_checks, run_thermal_transient_approval_checks, run_thermal_transient_stager_checks, run_thermal_transient_lifetime_checks)
 
-from smoke_tests.storage_thermal_migration_checks import (run_thermal_retirement_transaction_checks, run_thermal_retirement_interruption_checks, run_thermal_retirement_recovery_checks, run_thermal_retirement_approval_checks, run_thermal_retirement_socket_checks, run_thermal_retirement_shared_gate_checks, run_thermal_retirement_persistence_checks, run_thermal_retirement_lock_checks, run_thermal_retirement_other_service_checks, run_thermal_historical_transaction_checks, run_thermal_historical_format_checks, run_thermal_historical_lock_checks, run_thermal_historical_mapping_checks)
+from smoke_tests.storage_thermal_migration_checks import (run_thermal_retirement_transaction_checks, run_thermal_retirement_interruption_checks, run_thermal_retirement_recovery_checks, run_thermal_retirement_approval_checks, run_thermal_retirement_socket_checks, run_thermal_retirement_shared_gate_checks, run_thermal_retirement_persistence_checks, run_thermal_retirement_lock_checks, run_thermal_retirement_other_service_checks, run_thermal_historical_transaction_checks, run_thermal_historical_format_checks, run_thermal_historical_lock_checks, run_thermal_historical_mapping_checks, run_thermal_vendor_dropin_checks, run_thermal_vendor_policy_checks, run_thermal_vendor_transaction_checks)
 
 def main() -> int:
     tests = [
+        run_thermal_vendor_dropin_checks,
+        run_thermal_vendor_policy_checks,
+        run_thermal_vendor_transaction_checks,
         run_thermal_historical_mapping_checks,
         run_thermal_historical_transaction_checks,
         run_thermal_historical_format_checks,
