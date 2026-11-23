@@ -163,3 +163,9 @@ device access. Image/extracted-file SHA-256 manifests and independent durable
 journal reconciliation accompany those recovered records. The production VM
 verifier passed on both recovered result sets. Raw images and the failed serial
 exports remain retained; no conclusions rely on the damaged archives.
+
+The subsequent [explicit legacy retirement tool](storage_thermal_legacy_retirement.md)
+provides a recovery-gated, reversible handoff for recognized routine installations.
+Startup shares `install.lock` serialization and accepts only a completed protected
+retirement transaction with the old unit persistently masked. It does not migrate
+or stop an installation itself. Legacy metadata, account and tree remain retained.

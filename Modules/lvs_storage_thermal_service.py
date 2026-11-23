@@ -49,6 +49,9 @@ class RuntimePolicy:
         owned_path(record);require(record.stat().st_size<=262144,'oversized installation state')
         import json,base64
         value=json.loads(record.read_text());phase=value.get('phase')
+        if phase=='retired'and self.manifest.get('runtime_mode')=='lvs.thermal.transient.data.v1':
+            from .lvs_storage_thermal_migration import retired_record
+            retired_record(self.uid);return ''
         if phase=='active'and value.get('deployment')==str(self.root):return ''
         if phase=='rolled_back'and value.get('previous_unit'):
             unit=base64.b64decode(value['previous_unit']).decode()

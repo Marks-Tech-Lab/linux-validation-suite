@@ -1345,3 +1345,14 @@ next gate is an explicitly approved legacy handoff; system-drive support through
 the alternative identity remains blocked pending separate qualification. Historical
 Samsung physical acceptance, calibration, throughput, broader hardware and
 scalability requirements remain unchanged.
+
+### Thermal Assist legacy-to-transient handoff
+
+The separately authorized retirement tool now preserves the verified legacy
+runtime/account, archives its unit and installation record, persistently masks its
+boot unit, and permits the protected on-demand **data-only** runtime after CLEAN
+and quiescence checks. See [migration states, approval and rollback](docs/storage_thermal_legacy_retirement.md).
+No automatic setup/startup migration or host service removal is authorized.
+Alternative-identity system-drive qualification and eventual retained-account/tree
+cleanup remain separate milestones; all existing physical, calibration and
+scalability requirements remain open as recorded above.

@@ -55,10 +55,10 @@ def build_fixture(bundle,root,token,args):
         for name in ('mkswap','swapon','swapoff'):copy_binary(root,'/usr/sbin/'+name,'bin/'+name)
     if args.campaign.startswith('encrypted'):
         for source,dest in [('/usr/sbin/cryptsetup','bin/cryptsetup'),('/usr/sbin/mkfs.btrfs','bin/mkfs.btrfs'),('/usr/sbin/mkfs.ext4','bin/mkfs.ext4'),('/usr/sbin/dmsetup','bin/dmsetup')]:copy_binary(root,source,dest)
-    if args.campaign in ('encrypted-install-systemd','encrypted-on-demand-systemd'):
+    if args.campaign in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
         for source in ('/usr/lib/systemd/systemd','/usr/lib/systemd/systemd-executor','/usr/lib/systemd/systemd-shutdown','/usr/bin/systemctl','/usr/bin/systemd-run','/usr/bin/env'):
             dest=root/source.lstrip('/');dest.parent.mkdir(parents=True,exist_ok=True);copy_binary(root,source,source.lstrip('/'))
-        if args.campaign=='encrypted-on-demand-systemd':
+        if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
             copy_binary(root,'/usr/lib64/libnss_systemd.so.2','usr/lib64/libnss_systemd.so.2')
             (root/'etc').mkdir(exist_ok=True)
             (root/'etc/nsswitch.conf').write_text('passwd: files systemd\ngroup: files systemd\nshadow: files\n')
@@ -132,7 +132,7 @@ def bootstrap():
         sys.path.insert(0,'/lvs')
         from scripts.storage_thermal_system_probe import encrypted_root
         newroot=encrypted_root(newroot)
-    if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd'):
+    if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
         for name in ('bin','usr','lib','lib64','etc'):
             directory=newroot/name
             if directory.exists():
@@ -333,6 +333,22 @@ def encrypted_inside():
         approved=subprocess.run([*command,'--check'],capture_output=True,text=True,timeout=20)
         require(approved.returncode==0,'root-owned verified deployment check failed: '+approved.stderr)
         require(next(r for r in json.loads(approved.stdout) if r['identity']['path']==fixture_device(4))['eligible'],'deployed encrypted discovery failed')
+        if Path('/shared-campaign').read_text()=='encrypted-install-migration-systemd':
+            from scripts.storage_thermal_migration_probe import run
+            try:payload=run(deployment,data['device_id'])
+            except BaseException:
+                import traceback
+                Path('/control/migration-traceback.txt').write_text(traceback.format_exc());raise
+            Path('/control/results.json').write_text(json.dumps(payload,indent=2))
+            archive=io.BytesIO()
+            with tarfile.open(fileobj=archive,mode='w:gz')as tar:
+                tar.add('/control/results.json',arcname='evidence/results.json')
+                if Path('/control/user').exists():tar.add('/control/user',arcname='evidence/user')
+            encoded=base64.b64encode(archive.getvalue()).decode()
+            print('LVS_EVIDENCE_BEGIN',flush=True)
+            for offset in range(0,len(encoded),76):print(encoded[offset:offset+76],flush=True)
+            print('LVS_EVIDENCE_END',flush=True)
+            return
         if Path('/shared-campaign').read_text()=='encrypted-on-demand-systemd':
             from scripts.storage_thermal_transient_probe import run
             payload=run(deployment,data['device_id'],proof_only=Path('/on-demand-proof-only').exists(),concurrent_only=Path('/on-demand-concurrent-only').exists())
@@ -500,6 +516,20 @@ def encrypted_inside():
 
 
 def verify(result):
+    if result.get('contract')=='lvs.storage_thermal.migration_lock_vm.v1':
+        p=result['results'];require(p['concurrent_installer_lock_rejected']and p['concurrent_startup_lock_rejected']and p['legacy_tree_worker_and_recovery_preserved']and p['old_installer_and_rollback_blocked'],'concurrent migration lock proof missing');return
+    if result.get('contract')=='lvs.storage_thermal.migration_vm.v1':
+        p=result['results'];require(p['canonical_CLEAN']and p['idle_cleanup']and p['old_unit_masked']and p['private_identity_static_db_unchanged'],'migration proof incomplete')
+        require(p['interrupted_phases_resumed_and_rolled_back']==['PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'],'migration phase coverage missing')
+        for key in ('active_canonical_owner_rejected','active_legacy_client_rejected','altered_deployment_rejected','concurrent_installer_lock_rejected','legacy_tree_worker_and_recovery_preserved','old_installer_and_rollback_blocked','unknown_stale_socket_rejected','rollback_while_transient_rejected','ARMED_blocks_rollback_and_startup'):require(p[key],key)
+        require(p['fresh_final_recovery']['state']=='ARMED'and not p['fresh_final_recovery']['cleanup_confirmed'],'uncertain recovery was lost')
+        require(p['approved_source_update']!=result['source']and p['client']['system_access_blocked']and p['client']['same_frontend_restart_verified'],'source/restart/system gate proof missing')
+        for case in ('normal','cancel'):
+            a=p['client'][case]['auxiliary'];require(a['cleanup_confirmed']and len(a['devices'])==1,'guarded cleanup missing')
+            for d in a['devices']:
+                require(d['read_ios']>0 and d['guard_confirmed']and d['provenance_confirmed'],'genuine guarded activity missing')
+                require(all(d[k]==0 for k in ('write_ios','discard_ios','flush_ios','errors')),'worker mutation/error')
+        return
     if result.get('contract')=='lvs.storage_thermal.transient_concurrency_vm.v1':
         require(result['canonical_CLEAN']and result['concurrent_readiness_blocked']and result['idle_cleanup'],'concurrent transient ownership proof missing');return
     if result.get('contract')=='lvs.storage_thermal.transient_proofs_vm.v1':
@@ -587,19 +617,20 @@ def host(args):
         import runpy
         old=tools/'accepted-source';old.mkdir()
         import tarfile,io
-        archive=subprocess.check_output(['git','archive','7e9d892faf218a6cbfd16ea15a1e8f4df7128f39'])
+        archive=subprocess.check_output(['git','archive','5144e17654bab152c84ad7840830140b56ba5996'if args.campaign=='encrypted-install-migration-systemd'else'7e9d892faf218a6cbfd16ea15a1e8f4df7128f39'])
         with tarfile.open(fileobj=io.BytesIO(archive))as tar:tar.extractall(old,filter='data')
         previous=tools/'previous-deployment'
         runpy.run_path(str(old/'scripts/storage_thermal_prepare.py'))['prepare'](previous,Path(args.fio),root=old)
         files += [(p,'/opt/lvs-thermal-previous/'+str(p.relative_to(previous)))for p in previous.rglob('*')if p.is_file()]
         files += [(ROOT/'scripts/storage_thermal_install.py','/lvs/scripts/storage_thermal_install.py'),(ROOT/'scripts/storage_thermal_install_probe.py','/lvs/scripts/storage_thermal_install_probe.py')]
-    if args.campaign=='encrypted-on-demand-systemd':files += [(ROOT/'scripts/storage_thermal_transient_probe.py','/lvs/scripts/storage_thermal_transient_probe.py')]
+    if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd'):files += [(ROOT/'scripts/storage_thermal_transient_probe.py','/lvs/scripts/storage_thermal_transient_probe.py')]
+    if args.campaign=='encrypted-install-migration-systemd':files += [(ROOT/'scripts/storage_thermal_migration_probe.py','/lvs/scripts/storage_thermal_migration_probe.py')]
     base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=900 if args.campaign.startswith('encrypted-install')or args.campaign=='encrypted-on-demand-systemd'else 600 if args.campaign.endswith('system') else None)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd','encrypted-on-demand-systemd'),default='full')
+    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'),default='full')
     parser.add_argument('--proof-only',action='store_true')
     parser.add_argument('--concurrent-only',action='store_true')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
@@ -610,7 +641,7 @@ if __name__=='__main__':
     elif args.case:inside(args.case,args.identity)
     elif args.inside:
         inside()
-        if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd'):
+        if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
             seal();os.sync()
             import ctypes
             ctypes.CDLL(None).reboot(0x4321fedc)  # disposable guest only: power off after evidence export

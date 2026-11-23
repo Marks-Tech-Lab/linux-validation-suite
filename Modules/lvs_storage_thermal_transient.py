@@ -229,13 +229,25 @@ def bootstrap(root,approved):
     if os.readlink('/proc/self/ns/mnt')!=os.readlink('/proc/1/ns/mnt'):raise ValueError('native mount namespace required')
     for p in root.rglob('*'):
         if p.is_dir():p.chmod(0o755)
-    lock=os.open(BASE/'startup.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    # Same global order as legacy retirement/installer: install -> startup ->
+    # canonical anchor. Never let a migration race the ownership conflict check.
+    from .lvs_storage_thermal_runtime import STATE
+    if not STATE.exists():owned_path(STATE.parent,directory=True);STATE.mkdir(mode=0o755);STATE.chmod(0o755)
+    owned_path(STATE,directory=True)
+    install=os.open(STATE/'install.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    lock=None
     try:
+        owned_path(STATE/'install.lock');fcntl.flock(install,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        lock=os.open(BASE/'startup.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
         owned_path(BASE/'startup.lock');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         uid=m['uid'];old=f'lvs-thermal-{uid}.service'
         # Existing installed or transient deployments are never stopped/overwritten.
         from .lvs_storage_thermal_runtime import endpoint,STATE,SOCKET_ROOT
-        if (STATE/f'installation-{uid}.json').exists()or endpoint(uid).exists()or systemctl('is-active',old,check=False)=='active' or systemctl('is-active',f'lvs-thermal-demand-{uid}.service',check=False)not in ('inactive','failed','unknown',''):
+        record=STATE/f'installation-{uid}.json'
+        if record.exists()or record.is_symlink():
+            from .lvs_storage_thermal_migration import retired_record
+            retired_record(uid)  # incomplete, unknown and legacy active records block
+        if endpoint(uid).exists()or systemctl('is-active',old,check=False)=='active' or systemctl('is-active',f'lvs-thermal-demand-{uid}.service',check=False)not in ('inactive','failed','unknown',''):
             raise ValueError('Existing installed/runtime ownership conflicts; migration requires separate review')
         for p in (STATE,):
             if not p.exists():owned_path(p.parent,directory=True);p.mkdir(mode=0o755);p.chmod(0o755)
@@ -249,7 +261,9 @@ def bootstrap(root,approved):
         try:
             return _launch(root,m)
         finally:gate.__exit__(None,None,None)
-    finally:os.close(lock)
+    finally:
+        if lock is not None:os.close(lock)
+        os.close(install)
 
 
 def _launch(root,m):
