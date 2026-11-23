@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from Modules import lvs_storage_thermal_migration as m
 _REAL_ENDPOINT_INFO=m.endpoint_info
+_REAL_NO_ALTERNATE_UNIT=m.no_alternate_unit
 
 
 def fixture_effective(abort=False):
@@ -371,3 +372,69 @@ def run_thermal_vendor_transaction_checks():
         with patch.object(m,'properties',side_effect=lambda u:dict(previous(u),NeedDaemonReload='yes'if pending[0]else'no')),patch.object(m,'ctl',side_effect=ctl):
             obj.retire(approval)
         assert m.retired_record(f.uid)
+
+
+def run_thermal_unit_scan_checks():
+    # Exercise actual inspection/eligibility, not a mocked alternate-unit scan.
+    with fixture()as f:
+        vendor=f.root/'vendor';vendor.mkdir();unrelated=vendor/'fedora-appstream.service'
+        unrelated.write_text('[Service]\nExecStart=/usr/bin/true\n');unrelated.chmod(0o664)
+        alias=f.root/'vendor-alias';alias.symlink_to(vendor,target_is_directory=True)
+        with patch.object(m,'UNIT_SCAN_ROOTS',(str(f.units),str(vendor),str(alias))),patch.object(m,'no_alternate_unit',_REAL_NO_ALTERNATE_UNIT):
+            obj=m.Migration(f.uid);before=f.marker.read_bytes();approval=obj.inspect()['approval_sha256']
+            assert not f.calls and f.marker.read_bytes()==before
+            # Do not skip unsafe permissions: even a deployment-only reference
+            # or the same unit basename in a different directory blocks.
+            for name,content in (('fedora-appstream.service',str(f.tree)),(f.unit,str(f.tree/'launch.py'))):
+                p=vendor/name;p.write_text('[Service]\nExecStart='+content+'\n');p.chmod(0o664)
+                denied(obj.inspect);denied(lambda:obj.retire(approval));assert not f.calls
+                p.unlink()
+            unrelated.write_text('[Service]\nExecStart=/usr/bin/true\n');unrelated.chmod(0o664)
+            dropins=vendor/'other.service.d';dropins.mkdir();fragment=dropins/'override.conf'
+            fragment.write_text('[Service]\nExecStart='+str(f.tree/'launch.py')+'\n');fragment.chmod(0o664)
+            denied(obj.inspect);fragment.write_text('[Service]\nNice=1\n');obj.inspect()
+            # An alias to the actual approved unit is still a second unit.
+            alternate=vendor/'alternate.service';alternate.symlink_to(f.units/f.unit);denied(obj.inspect);alternate.unlink()
+            (f.tree/'alias-target').touch();alternate.symlink_to(f.tree/'alias-target');denied(obj.inspect);alternate.unlink()
+            alternate.symlink_to('/dev/null');obj.inspect();alternate.unlink()
+            alternate.symlink_to(vendor/'missing');denied(obj.inspect);alternate.unlink()
+            alternate.symlink_to(alternate);denied(obj.inspect);alternate.unlink()
+            os.mkfifo(alternate);denied(obj.inspect);alternate.unlink()
+            # A symlinked directory cannot hide a second unit reference.
+            (vendor/'linked-units').symlink_to(f.units,target_is_directory=True);denied(obj.inspect);(vendor/'linked-units').unlink()
+            obj.inspect();assert f.marker.read_bytes()==before and not f.calls
+
+
+def run_thermal_unit_scan_race_checks():
+    for change in ('content','replacement','alias','new-entry','unreadable'):
+        with fixture()as f:
+            vendor=f.root/'vendor';vendor.mkdir();p=vendor/'ordinary.service';p.write_bytes(b'# unrelated vendor fixture\n');p.chmod(0o664)
+            link=vendor/'alias.service';link.symlink_to(p)
+            real_read=os.read;real_open=os.open;changed=[]
+            def mutate(fd,length):
+                value=real_read(fd,length)
+                if b'unrelated vendor fixture'in value and not changed:
+                    changed.append(True)
+                    if change=='content':p.write_bytes(b'# altered vendor fixture!!\n')
+                    elif change=='replacement':p.unlink();p.write_bytes(value)
+                    elif change=='alias':link.unlink();link.symlink_to(f.units/f.unit)
+                    elif change=='new-entry':(vendor/'new.service').write_text(str(f.tree))
+                return value
+            def opening(path,*args,**kwargs):
+                if change=='unreadable'and str(path).startswith('/proc/self/fd/')and os.readlink(path)==str(p):raise PermissionError('injected inaccessible candidate')
+                return real_open(path,*args,**kwargs)
+            with patch.object(m,'UNIT_SCAN_ROOTS',(str(f.units),str(vendor))),patch.object(m,'no_alternate_unit',_REAL_NO_ALTERNATE_UNIT),patch.object(m.os,'read',side_effect=mutate),patch.object(m.os,'open',side_effect=opening):
+                denied(m.Migration(f.uid).inspect)
+            assert not f.calls and 'retired'not in f.record.read_text()
+    # A directory alias ending in '..' must bind the enumerated directory too,
+    # including additions made after its last entry has been enumerated.
+    with fixture()as f:
+        vendor=f.root/'vendor';(vendor/'child').mkdir(parents=True);alias=f.root/'alias';alias.symlink_to('vendor/child/..')
+        real_scandir=os.scandir
+        @contextmanager
+        def listing(path):
+            with real_scandir(path)as entries:yield entries
+            if Path(path)==vendor:(vendor/'late.service').write_text(str(f.tree))
+        with patch.object(m,'UNIT_SCAN_ROOTS',(str(f.units),str(alias))),patch.object(m,'no_alternate_unit',_REAL_NO_ALTERNATE_UNIT),patch.object(m.os,'scandir',side_effect=listing):
+            denied(m.Migration(f.uid).inspect)
+        assert not f.calls

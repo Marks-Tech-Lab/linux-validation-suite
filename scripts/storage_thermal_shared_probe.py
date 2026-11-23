@@ -534,6 +534,7 @@ def verify(result):
             require('ExecMainStatus=9'in p['vendor_final_kill']['result']and p['vendor_final_kill']['journal_unchanged'],'vendor final KILL proof missing')
             require(p['inspection']['deployment']['shutdown_policy']['effective']['TimeoutStopFailureMode']=='abort','vendor effective policy not approved')
         if p.get('historical_ea60'):
+            require(p['unrelated_vendor_mode664_accepted']and p['alternate_writable_vendor_and_alias_rejected'],'read-only unit scanning/alternate reference proof missing')
             require(p['interrupted_phases_direct_rollback']==['PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'],'historical direct rollback proof missing')
             require(p['ordinary_operator_process_allowed']and p['escaped_bootstrap_mapping_rejected']and p['old_installed_source']['digest']=='1e35d99bf3b6b1789e6b4bc6571f4be4357afc8e7269413657e777b8bee8dc53','historical ownership/source proof missing')
             require(p['inspection']['deployment']['worker_uid']is None and p['inspection']['deployment']['record_absent'],'historical identity/record invented')

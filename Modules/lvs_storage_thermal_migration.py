@@ -39,6 +39,7 @@ EA60_SUMS='c3e04bbb37b373b8a7a7db695f5f0ac911dbf2944e567f66199d31f8fab35d1f'
 VENDOR_DROPIN=Path('/usr/lib/systemd/system/service.d/10-timeout-abort.conf')
 VENDOR_DROPIN_SHA256='ae6b234f92bc22f1201a7572b59b454c9809f33c80d13f361b9674e1801acc37'
 ABSENT_RECORD=b'{"historical_installation_record_absent":true}\n'
+UNIT_SCAN_ROOTS=('/etc/systemd/system','/run/systemd/system','/usr/local/lib/systemd/system','/usr/lib/systemd/system','/lib/systemd/system','/run/systemd/transient','/run/systemd/generator.early','/run/systemd/generator','/run/systemd/generator.late','/etc/systemd/system.control','/run/systemd/system.control')
 
 
 
@@ -342,19 +343,100 @@ def historical_processes(path,main):
         except (FileNotFoundError,ProcessLookupError):continue
 
 
+def scan_stamp(s,full=False):
+    value=(s.st_dev,s.st_ino,s.st_mode,s.st_uid,s.st_gid,s.st_rdev)
+    return value+(s.st_nlink,s.st_size,s.st_mtime_ns,s.st_ctime_ns)if full else value
+
+
+def scan_resolve(path,observations):
+    """Observe aliases without trusting their ownership or executing anything.
+
+    Ancestors bind identity, not unrelated directory activity; enumerated
+    directories, symlinks and candidate files also bind mutation timestamps.
+    """
+    def observe(p,s,full=False):
+        value=scan_stamp(s,full);previous=observations.get(p)
+        require(previous is None or previous[:min(len(previous),len(value))]==value[:min(len(previous),len(value))],'changing unit scan path: '+str(p))
+        if previous is None or len(value)>len(previous):observations[p]=value
+        require(len(observations)<=262144,'unit scan observation budget exceeded')
+    current=Path('/');observe(current,current.lstat());pending=list(Path(path).parts[1:]);links=0
+    while pending:
+        part=pending.pop(0)
+        if part in ('','.'):continue
+        if part=='..':current=current.parent;continue
+        p=current/part;s=p.lstat();link=stat.S_ISLNK(s.st_mode);observe(p,s,link or not pending)
+        if link:
+            links+=1;require(links<=40,'unit scan symlink loop: '+str(path));target=Path(os.readlink(p))
+            if target.is_absolute():current=Path('/');pending=list(target.parts[1:])+pending
+            else:pending=list(target.parts)+pending
+        else:
+            require(not pending or stat.S_ISDIR(s.st_mode),'non-directory unit scan ancestor: '+str(p));current=p
+    s=current.lstat();observe(current,s,True);return current,s
+
+
+def scan_unit(path,observations):
+    """Bounded observation, not executable/source approval. Never open a device.
+
+    O_PATH pins the object before a read-capable descriptor is obtained through
+    procfs. Thus a replacement cannot redirect the read-open to a special file.
+    """
+    resolved,s=scan_resolve(path,observations)
+    if resolved==Path('/dev/null')and stat.S_ISCHR(s.st_mode)and s.st_rdev==os.makedev(1,3):return b'',resolved
+    require(stat.S_ISREG(s.st_mode),'uninspectable unit candidate: '+str(path))
+    pin=os.open(resolved,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        require(scan_stamp(os.fstat(pin),True)==scan_stamp(s,True),'unit candidate replaced: '+str(path))
+        fd=os.open('/proc/self/fd/'+str(pin),os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC)
+        try:
+            require(scan_stamp(os.fstat(fd),True)==scan_stamp(s,True)and s.st_size<=65536,'changing/oversized unit candidate: '+str(path))
+            data=bytearray()
+            while len(data)<=65536:
+                chunk=os.read(fd,min(65536,65537-len(data)))
+                if not chunk:break
+                data+=chunk
+            require(len(data)==s.st_size and scan_stamp(os.fstat(fd),True)==scan_stamp(s,True),'changing unit content: '+str(path))
+            return bytes(data),resolved
+        finally:os.close(fd)
+    except OSError as exc:raise ValueError('unreadable unit candidate '+str(path)+': '+str(exc))from exc
+    finally:os.close(pin)
+
+
 def no_alternate_unit(unit,path):
-    for directory in ('/etc/systemd/system','/run/systemd/system','/usr/lib/systemd/system'):
-        base=Path(directory)
-        if not base.exists():continue
-        for p in base.rglob('*.service'):
-            if p.name==unit:continue
-            # A known deployment referenced by any second unit is ambiguous,
-            # even if that alternate unit is currently stopped.
-            if p.is_symlink():
-                resolved=p.resolve(strict=True)
-                if not resolved.is_file():continue
-                p=resolved
-            if any(x in read(p,65536)for x in (str(path/'launch.py').encode(),str(Path('/opt/lvs-thermal')/path.name/'launch.py').encode())):raise ValueError('alternate unit references legacy deployment')
+    observations={};roots=set();count=0;total=0
+    historical=path.name==EA60
+    approved=(TRANSIENT_UNITS if historical else UNITS)/unit
+    expected=historical_unit()if historical else unit_bytes(path)
+    needles=(str(path).encode(),str(Path('/opt/lvs-thermal')/path.name).encode())
+    def walk(base,ancestors):
+        nonlocal count,total
+        resolved,s=scan_resolve(base,observations);identity=(s.st_dev,s.st_ino)
+        require(stat.S_ISDIR(s.st_mode)and identity not in ancestors and len(ancestors)<128,'uninspectable/recursive unit directory: '+str(base))
+        # scandir raises on unreadable directories; never silently omit a tree.
+        with os.scandir(resolved)as entries:
+            for entry in entries:
+                count+=1;require(count<=65536,'unit scan entry budget exceeded')
+                p=base/entry.name
+                if entry.name.endswith(('.service','.conf')):
+                    data,target=scan_unit(p,observations);total+=len(data);require(total<=67108864,'unit scan byte budget exceeded')
+                    if target.is_relative_to(path)or any(n in data for n in needles):
+                        require(p==approved and data==expected,'alternate unit references legacy deployment: '+str(p))
+                        # Only the exact approved unit is trusted, never merely
+                        # a basename, inode alias or matching text in a vendor file.
+                        require(read(p,65536)==data,'approved unit changed during scan')
+                else:
+                    target,info=scan_resolve(p,observations)
+                    if stat.S_ISDIR(info.st_mode):walk(p,ancestors|{identity})
+    try:
+        for directory in UNIT_SCAN_ROOTS:
+            base=Path(directory)
+            try:base.lstat()
+            except FileNotFoundError:continue
+            resolved,s=scan_resolve(base,observations);identity=(s.st_dev,s.st_ino)
+            if identity in roots:continue  # e.g. /lib -> /usr/lib
+            roots.add(identity);walk(base,set())
+        for p,stamp in observations.items():
+            require(scan_stamp(p.lstat(),len(stamp)>6)==stamp,'unit scan path changed: '+str(p))
+    except OSError as exc:raise ValueError('incomplete systemd unit scan: '+str(exc))from exc
 
 
 def no_transient():

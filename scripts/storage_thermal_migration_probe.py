@@ -165,6 +165,20 @@ def run(bundle,identity):
         mapped=process(program,ready);denied(migration.inspect);mapped.stdin.close();mapped.wait(timeout=5);proof['escaped_bootstrap_mapping_rejected']=True
         tool=old/'runtime/build/storage_thermal_launch.so';v=tool.stat();kernel_identity=m.mapping_identity(tool)
         proof['mapping_identity']=dict(stat_device=v.st_dev,proc_device=kernel_identity[0],inode=v.st_ino,proc_inode=kernel_identity[1],carrier='Btrfs')
+    if historical:
+        # Real root-owned 0664 vendor unit: safe to observe, not executable trust.
+        unrelated=Path('/usr/lib/systemd/system/lvs-unrelated-vendor.service')
+        innocent=b'[Service]\nExecStart=/usr/bin/true\n';unrelated.write_bytes(innocent);unrelated.chmod(0o664)
+        assert unrelated.stat().st_uid==0 and unrelated.stat().st_mode&0o777==0o664
+        migration.inspect();proof['unrelated_vendor_mode664_accepted']=True
+        unrelated.write_text('[Service]\nExecStart=/usr/bin/python3 '+str(old/'launch.py')+'\n')
+        denied(migration.inspect);unrelated.write_bytes(innocent)
+        fragment=unrelated.parent/'lvs-unrelated-vendor.service.d';fragment.mkdir()
+        (fragment/'override.conf').write_text('[Service]\nExecStart='+str(old/'launch.py')+'\n')
+        denied(migration.inspect);(fragment/'override.conf').unlink();fragment.rmdir()
+        alias=Path('/usr/lib/systemd/system')/unit
+        alias.symlink_to(m.TRANSIENT_UNITS/unit);denied(migration.inspect);alias.unlink()
+        proof['alternate_writable_vendor_and_alias_rejected']=True
     approval=migration.inspect()['approval_sha256'];proof['inspection']=migration.inspect()
     if historical and Path('/vendor-dropin-proof').exists():
         # Exact global vendor bytes are qualified in this guest only. No host

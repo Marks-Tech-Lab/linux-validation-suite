@@ -229,3 +229,37 @@ checks. The synthetic final-KILL case uses one-second fixture timeouts, not a
 modified historical production policy. No old raw workload is run during these
 fault controls. Host tracing, policy edits and service operations are not part of
 this validation or automatically authorized by it.
+
+## Read-only alternate-unit scanning
+
+Unrelated systemd service files are observations, not trusted executable inputs
+to the retirement tool. A readable root-owned vendor unit with mode `0664` does
+not itself prevent inspection. Its bytes are still scanned: a second reference
+to the deployment blocks regardless of permissions, enabled state or basename.
+Service drop-in fragments are scanned too. Unit aliases and symlinked directories
+are followed; aliases into the deployment
+or to the approved unit also block. Standard `/dev/null` masks contain no unit
+commands. Overlapping unit-search roots such as `/lib` and `/usr/lib` are not
+mistaken for distinct units. Conventional system, transient and generator unit
+locations are included.
+
+This observation never grants executable trust. Only the exact approved unit
+location with its exact expected bytes may reference the deployment; it still
+passes the original strict root-ownership, ancestor and link checks. Deployment,
+vendor timeout qualification, recovery and transaction files retain their strict
+checks unchanged.
+
+The scanner pins regular files using `O_PATH`, checks type before obtaining a
+read-capable descriptor through procfs, and compares identity and mutation
+metadata before/after reading and at the end of the scan. It does not open block
+devices or execute unit contents. Alias-chain and enumerated-directory changes,
+replacement, unreadable/broken/recursive candidates and unsupported special files
+block as incomplete inspection. Defensive limits are 64 KiB per candidate, 64 MiB
+total candidate contents, 65,536 directory entries, 262,144 observed paths and 128
+directory levels; exceeding a limit blocks rather than silently skipping units.
+
+This is a bounded filesystem observation, not a lock against future administrator
+changes or a general interpreter for arbitrary scripts launched by unrelated
+services. It is repeated on transaction revalidation; process/cgroup, socket,
+exact-source and canonical CLEAN proofs remain independently mandatory. No
+vendor permissions are changed to make an installation inspectable.
