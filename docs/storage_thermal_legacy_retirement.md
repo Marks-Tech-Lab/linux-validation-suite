@@ -166,3 +166,8 @@ Retain the resulting host manifest, private image hashes, exported results and
 raw logs. The accepted campaign used kernel 7.2.9-200.fc44.x86_64, native systemd,
 unified cgroup v2 and fio 3.42. It tests administrator-process interruption and
 persistent mask enforcement; it is not a storage power-loss qualification.
+
+The separately selected [exact ea60 transient-session adapter](storage_thermal_ea60_retirement.md)
+handles the older, independently pinned workstation bundle without inventing a
+routine installation record or dedicated worker account. It requires
+`--historical-ea60`; default newer-generation recognition remains strict.

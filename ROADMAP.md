@@ -1356,3 +1356,9 @@ No automatic setup/startup migration or host service removal is authorized.
 Alternative-identity system-drive qualification and eventual retained-account/tree
 cleanup remain separate milestones; all existing physical, calibration and
 scalability requirements remain open as recorded above.
+
+The exact earlier `integrated-ea60eaa9` transient-session generation now has an
+[explicit retirement compatibility gate](docs/storage_thermal_ea60_retirement.md),
+separate from routine-installer deployments. Its absent record/private account
+are not inferred or fabricated; host handoff still requires fresh administrator
+inspection and approval. No physical acceptance or system-access scope is added.

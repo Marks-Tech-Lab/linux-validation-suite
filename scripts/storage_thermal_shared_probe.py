@@ -55,10 +55,10 @@ def build_fixture(bundle,root,token,args):
         for name in ('mkswap','swapon','swapoff'):copy_binary(root,'/usr/sbin/'+name,'bin/'+name)
     if args.campaign.startswith('encrypted'):
         for source,dest in [('/usr/sbin/cryptsetup','bin/cryptsetup'),('/usr/sbin/mkfs.btrfs','bin/mkfs.btrfs'),('/usr/sbin/mkfs.ext4','bin/mkfs.ext4'),('/usr/sbin/dmsetup','bin/dmsetup')]:copy_binary(root,source,dest)
-    if args.campaign in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
+    if args.campaign in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):
         for source in ('/usr/lib/systemd/systemd','/usr/lib/systemd/systemd-executor','/usr/lib/systemd/systemd-shutdown','/usr/bin/systemctl','/usr/bin/systemd-run','/usr/bin/env'):
             dest=root/source.lstrip('/');dest.parent.mkdir(parents=True,exist_ok=True);copy_binary(root,source,source.lstrip('/'))
-        if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
+        if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):
             copy_binary(root,'/usr/lib64/libnss_systemd.so.2','usr/lib64/libnss_systemd.so.2')
             (root/'etc').mkdir(exist_ok=True)
             (root/'etc/nsswitch.conf').write_text('passwd: files systemd\ngroup: files systemd\nshadow: files\n')
@@ -94,7 +94,7 @@ def build_fixture(bundle,root,token,args):
         drive+=['-drive',f'file={images[index]},format=raw,if=none,id=shared{index}']
         if index in (0,4):drive+=['-device',f'nvme,drive=shared{index},serial=SV{index}-{token}']
         else:drive+=['-device',f'ide-hd,drive=shared{index},bus=sharedahci.{index-1},serial=SV{index}-{token},rotation_rate={7200 if index==2 else 1}']
-    return dict(images=images,drive_args=drive,description=dict(system='NVMe ext4 rw',control='AHCI ext4 rw',
+    return dict(images=images,drive_args=drive,description=dict(system='NVMe ext4 rw',control='AHCI Btrfs rw (prepared in guest)'if args.campaign=='encrypted-ea60-migration-systemd'else'AHCI ext4 rw',
         data=['SATA HDD','SATA SSD','single-namespace PCIe NVMe'],qemu=subprocess.check_output(['qemu-system-x86_64','--version'],text=True).splitlines()[0]))
 
 
@@ -132,7 +132,7 @@ def bootstrap():
         sys.path.insert(0,'/lvs')
         from scripts.storage_thermal_system_probe import encrypted_root
         newroot=encrypted_root(newroot)
-    if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
+    if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):
         for name in ('bin','usr','lib','lib64','etc'):
             directory=newroot/name
             if directory.exists():
@@ -333,7 +333,7 @@ def encrypted_inside():
         approved=subprocess.run([*command,'--check'],capture_output=True,text=True,timeout=20)
         require(approved.returncode==0,'root-owned verified deployment check failed: '+approved.stderr)
         require(next(r for r in json.loads(approved.stdout) if r['identity']['path']==fixture_device(4))['eligible'],'deployed encrypted discovery failed')
-        if Path('/shared-campaign').read_text()=='encrypted-install-migration-systemd':
+        if Path('/shared-campaign').read_text()in ('encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):
             from scripts.storage_thermal_migration_probe import run
             try:payload=run(deployment,data['device_id'])
             except BaseException:
@@ -517,9 +517,15 @@ def encrypted_inside():
 
 def verify(result):
     if result.get('contract')=='lvs.storage_thermal.migration_lock_vm.v1':
-        p=result['results'];require(p['concurrent_installer_lock_rejected']and p['concurrent_startup_lock_rejected']and p['legacy_tree_worker_and_recovery_preserved']and p['old_installer_and_rollback_blocked'],'concurrent migration lock proof missing');return
+        p=result['results'];require(p['concurrent_installer_lock_rejected']and p['concurrent_startup_lock_rejected']and p['legacy_tree_worker_and_recovery_preserved']and p['old_installer_and_rollback_blocked'],'concurrent migration lock proof missing')
+        if p.get('historical_ea60'):require(p['known_legacy_stale_socket_created']and p['known_legacy_stale_socket_reconciled'],'historical stale endpoint reconciliation missing')
+        return
     if result.get('contract')=='lvs.storage_thermal.migration_vm.v1':
         p=result['results'];require(p['canonical_CLEAN']and p['idle_cleanup']and p['old_unit_masked']and p['private_identity_static_db_unchanged'],'migration proof incomplete')
+        if p.get('historical_ea60'):
+            require(p['interrupted_phases_direct_rollback']==['PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'],'historical direct rollback proof missing')
+            require(p['ordinary_operator_process_allowed']and p['escaped_bootstrap_mapping_rejected']and p['old_installed_source']['digest']=='1e35d99bf3b6b1789e6b4bc6571f4be4357afc8e7269413657e777b8bee8dc53','historical ownership/source proof missing')
+            require(p['inspection']['deployment']['worker_uid']is None and p['inspection']['deployment']['record_absent'],'historical identity/record invented')
         require(p['interrupted_phases_resumed_and_rolled_back']==['PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'],'migration phase coverage missing')
         for key in ('active_canonical_owner_rejected','active_legacy_client_rejected','altered_deployment_rejected','concurrent_installer_lock_rejected','legacy_tree_worker_and_recovery_preserved','old_installer_and_rollback_blocked','unknown_stale_socket_rejected','rollback_while_transient_rejected','ARMED_blocks_rollback_and_startup'):require(p[key],key)
         require(p['fresh_final_recovery']['state']=='ARMED'and not p['fresh_final_recovery']['cleanup_confirmed'],'uncertain recovery was lost')
@@ -623,14 +629,23 @@ def host(args):
         runpy.run_path(str(old/'scripts/storage_thermal_prepare.py'))['prepare'](previous,Path(args.fio),root=old)
         files += [(p,'/opt/lvs-thermal-previous/'+str(p.relative_to(previous)))for p in previous.rglob('*')if p.is_file()]
         files += [(ROOT/'scripts/storage_thermal_install.py','/lvs/scripts/storage_thermal_install.py'),(ROOT/'scripts/storage_thermal_install_probe.py','/lvs/scripts/storage_thermal_install_probe.py')]
-    if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd'):files += [(ROOT/'scripts/storage_thermal_transient_probe.py','/lvs/scripts/storage_thermal_transient_probe.py')]
-    if args.campaign=='encrypted-install-migration-systemd':files += [(ROOT/'scripts/storage_thermal_migration_probe.py','/lvs/scripts/storage_thermal_migration_probe.py')]
-    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=900 if args.campaign.startswith('encrypted-install')or args.campaign=='encrypted-on-demand-systemd'else 600 if args.campaign.endswith('system') else None)
+    if args.campaign in ('encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):files += [(ROOT/'scripts/storage_thermal_transient_probe.py','/lvs/scripts/storage_thermal_transient_probe.py')]
+    if args.campaign in ('encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):files += [(ROOT/'scripts/storage_thermal_migration_probe.py','/lvs/scripts/storage_thermal_migration_probe.py')]
+    if args.campaign=='encrypted-ea60-migration-systemd':
+        historical=Path('/opt/lvs-thermal/integrated-ea60eaa9')
+        from Modules.lvs_storage_thermal_migration import EA60_MANIFEST,EA60_SUMS
+        require(base.digest(historical/'manifest.json')==EA60_MANIFEST and base.digest(historical/'SHA256SUMS')==EA60_SUMS,'independently approved historical bundle unavailable')
+        manifest=json.loads((historical/'manifest.json').read_text())
+        for name,h in manifest['files'].items():
+            p=historical/name;require(p.is_file()and not p.is_symlink()and base.digest(p)==h,'historical fixture source/tool changed')
+        files += [(p,'/opt/lvs-thermal-previous/'+str(p.relative_to(historical)))for p in historical.rglob('*')if p.is_file()]
+        files += [(ROOT/'scripts/storage_thermal_install.py','/lvs/scripts/storage_thermal_install.py')]
+    base.host(args,guest_script=Path(__file__).resolve(),verifier=verify,extra_files=files,fixture_builder=build_fixture,guest_timeout=900 if args.campaign.startswith('encrypted-install')or args.campaign in ('encrypted-on-demand-systemd','encrypted-ea60-migration-systemd')else 600 if args.campaign.endswith('system') else None)
 
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'),default='full')
+    parser.add_argument('--campaign',choices=('full','active-overlap','encrypted','encrypted-review','encrypted-integrated','ext4-system','encrypted-system','encrypted-install','encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'),default='full')
     parser.add_argument('--proof-only',action='store_true')
     parser.add_argument('--concurrent-only',action='store_true')
     parser.add_argument('--bootstrap',action='store_true');parser.add_argument('--inside',action='store_true')
@@ -641,7 +656,7 @@ if __name__=='__main__':
     elif args.case:inside(args.case,args.identity)
     elif args.inside:
         inside()
-        if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd'):
+        if Path('/shared-campaign').read_text() in ('encrypted-install-systemd','encrypted-on-demand-systemd','encrypted-install-migration-systemd','encrypted-ea60-migration-systemd'):
             seal();os.sync()
             import ctypes
             ctypes.CDLL(None).reboot(0x4321fedc)  # disposable guest only: power off after evidence export

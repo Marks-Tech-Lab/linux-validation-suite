@@ -207,3 +207,92 @@ def run_thermal_retirement_other_service_checks():
         denied(lambda:m.no_other_legacy('lvs-thermal-1000.service'))
     with patch.object(m,'ctl',return_value='lvs-thermal-2000.service loaded inactive dead legacy'):
         m.no_other_legacy('lvs-thermal-1000.service')
+
+
+@contextmanager
+def historical_fixture():
+    with fixture()as f:
+        f.record.unlink();(f.units/f.unit).unlink();old=f.root/m.EA60;old.mkdir();fragment=f.root/'transient';fragment.mkdir();(fragment/f.unit).write_bytes(m.historical_unit())
+        def props(_):
+            mask=m.masked(f.unit)
+            return dict(LoadState='masked'if mask and not f.model['active']else'loaded'if f.model['active']else'not-found',ActiveState='active'if f.model['active']else'inactive',SubState='running'if f.model['active']else'dead',MainPID='123'if f.model['active']else'0',ControlGroup='',FragmentPath=str(fragment/f.unit)if f.model['active']else str(f.units/f.unit)if mask else'',DropInPaths='',UnitFileState='masked'if mask else'transient'if f.model['active']else'',Transient='yes'if f.model['active']else'no',NeedDaemonReload='no',Triggers='',TriggeredBy='')
+        def ctl(*args):
+            f.calls.append(args)
+            if args[0]=='stop':f.model['active']=False;(fragment/f.unit).unlink(missing_ok=True)
+            return ''
+        patches=[patch.object(m,'TRANSIENT_UNITS',fragment),patch.object(m,'canonical',return_value=f.root),patch.object(m,'historical_deployment',return_value=(dict(uid=f.uid,gid=os.getgid(),source={'digest':m.EA60_SOURCE}),'b'*64)),patch.object(m,'properties',side_effect=props),patch.object(m,'ctl',side_effect=ctl)]
+        for p in patches:p.start()
+        try:yield f
+        finally:
+            for p in reversed(patches):p.stop()
+
+
+def run_thermal_historical_transaction_checks():
+    for phase in ('PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED'):
+        for operation in ('resume','rollback'):
+            with historical_fixture()as f:
+                obj=m.Migration(f.uid,historical_ea60=True);approval=obj.inspect()['approval_sha256'];before=f.marker.read_bytes()
+                assert not f.record.exists()
+                def crash(p):
+                    if p==phase:raise OSError('historical interruption')
+                obj.checkpoint=crash;denied(lambda:obj.retire(approval));obj.checkpoint=lambda _:None
+                if operation=='resume':
+                    obj.retire(approval);v=m.retired_record(f.uid);assert v['worker_uid']is None and v['record_absent'];obj.retire(approval)
+                else:
+                    obj.rollback(approval);obj.rollback(approval);assert not f.record.exists()and not(f.units/f.unit).exists()
+                assert f.marker.read_bytes()==before
+                assert not any(c[0]in ('start','enable','restart')for c in f.calls)
+                d=obj._pending(approval);assert (d/'original-record.json').read_bytes()==m.ABSENT_RECORD
+                assert (d/'original-unit').read_bytes()==m.historical_unit()
+    with historical_fixture()as f:
+        obj=m.Migration(f.uid,historical_ea60=True);approval=obj.inspect()['approval_sha256'];obj.retire(approval)
+        denied(lambda:m.Migration(f.uid).rollback(approval))
+        f.marker.write_text('{}');denied(lambda:obj.rollback(approval))
+        assert m.masked(f.unit)
+
+
+def run_thermal_historical_format_checks():
+    with tempfile.TemporaryDirectory()as name:
+        root=Path(name);tree=root/m.EA60;tree.mkdir()
+        paths=[f'runtime/Modules/source_{n}.py'for n in range(392)]+['launch.py','runtime/build/fio','runtime/build/storage_thermal_guard','runtime/build/storage_thermal_launch.so','runtime/scripts/storage_thermal_acceptance.py']
+        for n in paths:
+            p=tree/n;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'synthetic historical fixture')
+        manifest=dict(contract='lvs.storage_thermal.offline_bundle.v1',source=dict(scope='lvs_execution_source_v1',algorithm='sha256',file_count=392,digest=m.EA60_SOURCE,status='complete',error_count=0),uid=os.getuid(),gid=os.getgid(),files={p:m.sha((tree/p).read_bytes())for p in paths},backend={'fio_version':'fio-3.42'})
+        raw=json.dumps(manifest).encode();(tree/'manifest.json').write_bytes(raw);sums=''.join(h+'  '+n+'\n'for n,h in sorted(dict(manifest['files'],**{'manifest.json':m.sha(raw)}).items())).encode();(tree/'SHA256SUMS').write_bytes(sums)
+        with patch.object(m,'trusted',side_effect=lambda p,**k:Path(p)),patch.object(m,'canonical',return_value=root),patch.object(m,'EA60_MANIFEST',m.sha(raw)),patch.object(m,'EA60_SUMS',m.sha(sums)),patch.object(m.pwd,'getpwnam',side_effect=AssertionError('must not infer dedicated identity')):
+            assert m.historical_deployment(tree,os.getuid())[0]['uid']==os.getuid()
+            (tree/'runtime/build/fio').write_bytes(b'substituted executable');denied(lambda:m.historical_deployment(tree,os.getuid()));(tree/'runtime/build/fio').write_bytes(b'synthetic historical fixture')
+            (tree/'extra').write_bytes(b'extra');denied(lambda:m.historical_deployment(tree,os.getuid()));(tree/'extra').unlink()
+            manifest['worker_uid']=999;raw2=json.dumps(manifest).encode();(tree/'manifest.json').write_bytes(raw2)
+            denied(lambda:m.historical_deployment(tree,os.getuid()))
+            with patch.object(m,'EA60_MANIFEST',m.sha(raw2)):denied(lambda:m.historical_deployment(tree,os.getuid()))
+
+
+def run_thermal_historical_lock_checks():
+    import fcntl
+    with historical_fixture()as f:
+        lock=f.state/'install.lock';lock.unlink();obj=m.Migration(f.uid,historical_ea60=True)
+        approval=obj.inspect()['approval_sha256'];assert not lock.exists()
+        obj.retire(approval);assert lock.is_file()
+        # Creating serialization never creates/replaces a journal or anchor.
+        inode=Path(str(f.marker)+'.scope').stat().st_ino
+        obj.rollback(approval);assert Path(str(f.marker)+'.scope').stat().st_ino==inode
+    with historical_fixture()as f:
+        (f.state/'install.lock').unlink();f.marker.unlink();denied(m.Migration(f.uid,historical_ea60=True).inspect)
+        assert not(f.state/'install.lock').exists()
+
+
+def run_thermal_historical_mapping_checks():
+    with tempfile.TemporaryDirectory()as name:
+        root=Path(name);tool=root/'file';tool.write_bytes(b'\0'*4096)
+        observed=m.mapping_identity(tool);assert observed[1]==tool.stat().st_ino
+        fifo=root/'fifo';os.mkfifo(fifo);denied(lambda:m.mapping_identity(fifo))
+        actual=Path.read_bytes
+        # Model the actual Btrfs stat/proc-device disagreement. The returned
+        # token must come from the observed read-only mapping, not stat().
+        for row,valid in ((b'1000-2000 r--p 00000000 00:26 4242 /opaque\n',True),(b'1000-2000 rw-p 00000000 00:26 4242 /opaque\n',False),(b'1000-3000 r--p 00000000 00:26 4242 /opaque\n',False)):
+            samples=[b'',row]
+            def read(p):return samples.pop(0)if str(p)=='/proc/self/maps'else actual(p)
+            with patch.object(Path,'read_bytes',read):
+                if valid:assert m.mapping_identity(tool)==(os.makedev(0,0x26),4242)
+                else:denied(lambda:m.mapping_identity(tool))

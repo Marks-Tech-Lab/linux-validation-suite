@@ -16,7 +16,7 @@ def run(bundle,identity):
     from Modules.lvs_storage_thermal_transient import ROOT_STAGER,ENV,digest,systemctl
     from Modules.lvs_storage_thermal_recovery import RecoveryScope,read_state
     from scripts.storage_thermal_install import Installer
-    from scripts.storage_thermal_transient_probe import client_seal
+    historical=Path('/shared-campaign').read_text()=='encrypted-ea60-migration-systemd'
     for folder in ('/bin','/usr','/lib','/lib64'):
         p=Path(folder)
         if p.exists():
@@ -30,16 +30,35 @@ def run(bundle,identity):
     # Qualify immutable-OS /opt alias too; no host path is touched.
     Path('/opt').rename('/var/opt');Path('/opt').symlink_to('/var/opt',target_is_directory=True)
     previous=Path('/opt/lvs-thermal-previous');legacy_source=json.loads((previous/'manifest.json').read_text())['source']
-    installer=Installer(base=Path('/var/opt/lvs-thermal'))
-    installed=installer.install(previous,digest(previous/'manifest.json'))
-    old=Path(installed['deployment']);unit='lvs-thermal-1000.service'
+    installer=Installer(base=Path('/var/opt/lvs-thermal'));unit='lvs-thermal-1000.service'
+    def start_historical():
+        subprocess.run(['/usr/bin/systemd-run','--quiet','--collect','--unit='+unit,'--property=Type=exec','--property=KillMode=mixed','--property=TimeoutStopSec=45','--property=UMask=0077','/usr/bin/env','-i','PATH=/usr/bin:/bin','HOME=/root','LC_ALL=C','/usr/bin/python3','-I','-B','/opt/lvs-thermal/'+m.EA60+'/launch.py','--serve-integrated'],check=True,env=ENV,capture_output=True)
+        deadline=time.monotonic()+20
+        while not Path('/run/lvs-thermal/1000.sock').exists():
+            assert time.monotonic()<deadline,'historical listener startup timeout';time.sleep(.1)
+    if historical:
+        m.SOCKETS.mkdir(exist_ok=True);m.SOCKETS.chmod(0o755)  # historical reviewed directory correction
+        base=Path('/var/opt/lvs-thermal');base.mkdir()
+        # A separate disposable Btrfs control disk models actual /var/opt while
+        # keeping system/runtime ancestry off the selected data NVMe.
+        from __main__ import fixture_device
+        subprocess.run(['/bin/umount','/control'],check=True)
+        subprocess.run(['/bin/mkfs.btrfs','-f','--nodiscard',fixture_device(1,partition=True)],check=True,capture_output=True)
+        subprocess.run(['/bin/mount','-t','btrfs',fixture_device(1,partition=True),'/control'],check=True)
+        carrier=Path('/control/retirement-code');carrier.mkdir()
+        subprocess.run(['/bin/mount','--bind',str(carrier),str(base)],check=True)
+        old=base/m.EA60;shutil.copytree(previous,old)
+        m.historical_deployment(old,1000);start_historical()
+        assert not(m.STATE/'installation-1000.json').exists()and not(m.STATE/'install.lock').exists()
+    else:
+        installed=installer.install(previous,digest(previous/'manifest.json'));old=Path(installed['deployment'])
     marker=m.STATE/'storage_thermal_recovery_required.json'
     # Genuine durable protection establishes CLEAN, not a synthetic journal edit.
     scope=RecoveryScope(marker);scope.enter(evidence_directory='/control');scope.resolve(cleanup_confirmed=True);scope.close()
     before=marker.read_bytes();anchor=Path(str(marker)+'.scope').stat().st_ino
     saved={str(p):digest(p)for p in old.rglob('*')if p.is_file()}
     worker_db={str(p):p.read_bytes()for p in (Path('/etc/passwd'),Path('/etc/group'),Path('/etc/shadow'))}
-    migration=m.Migration(1000);proof={}
+    migration=m.Migration(1000,historical_ea60=historical);proof={'historical_ea60':historical}
     def denied(fn):
         try:fn()
         except (ValueError,OSError,KeyError):return
@@ -59,12 +78,31 @@ def run(bundle,identity):
     # Existing protected tool substitution is detected before any unit changes.
     fio=old/'runtime/build/fio';mode=fio.stat().st_mode;original=fio.read_bytes();fio.write_bytes(b'not fio')
     denied(migration.inspect);fio.write_bytes(original);fio.chmod(mode);proof['altered_deployment_rejected']=True
+    if historical:
+        # A legitimate operator process must not be mistaken for a dedicated
+        # storage worker, but a pinned old bootstrap mapping must block.
+        def process(program,ready):
+            ready.unlink(missing_ok=True)
+            p=subprocess.Popen(['/usr/bin/python3','-I','-B','-c',program],user=1000,group=1000,extra_groups=(),env=ENV,stdin=subprocess.PIPE)
+            deadline=time.monotonic()+10
+            while not ready.exists()and p.poll()is None:
+                assert time.monotonic()<deadline;time.sleep(.05)
+            assert p.poll()is None;return p
+        ready=user/'ordinary-ready'
+        ordinary=process("import sys;from pathlib import Path;Path('/control/user/ordinary-ready').touch();sys.stdin.buffer.read(1)",ready)
+        migration.inspect();ordinary.stdin.close();ordinary.wait(timeout=5);proof['ordinary_operator_process_allowed']=True
+        ready=user/'mapping-ready'
+        program="import mmap,sys;from pathlib import Path;f=open("+repr(str(old/'runtime/build/storage_thermal_launch.so'))+",'rb');mapped=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ);Path('/control/user/mapping-ready').touch();sys.stdin.buffer.read(1)"
+        mapped=process(program,ready);denied(migration.inspect);mapped.stdin.close();mapped.wait(timeout=5);proof['escaped_bootstrap_mapping_rejected']=True
+        tool=old/'runtime/build/storage_thermal_launch.so';v=tool.stat();kernel_identity=m.mapping_identity(tool)
+        proof['mapping_identity']=dict(stat_device=v.st_dev,proc_device=kernel_identity[0],inode=v.st_ino,proc_inode=kernel_identity[1],carrier='Btrfs')
     approval=migration.inspect()['approval_sha256'];proof['inspection']=migration.inspect()
     # Crash a separate administrator process after each durable phase. Resume
     # and roll back without restarting anything; preserve all old material.
     phases=('PREPARED','MASKED','STOPPED','SOCKET_RECONCILED','RETIRED')
-    failures=[]
-    for phase in phases:
+    failures=[];direct_rollbacks=[]
+    cases=[(p,op)for p in phases for op in (('resume','rollback')if historical else('resume',))]
+    for phase,operation in cases:
         def crash(point):
             if point==phase:
                 if point=='PREPARED':
@@ -83,20 +121,42 @@ def run(bundle,identity):
         if pid==0:
             migration.checkpoint=crash;migration.retire(approval);os._exit(2)
         _,status=os.waitpid(pid,0);assert os.waitstatus_to_exitcode(status)==77,(phase,status)
-        fresh=m.Migration(1000);fresh.retire(approval);assert m.retired_record(1000)
+        if historical and phase=='MASKED'and operation=='resume':
+            # Idle historical service death bypasses Python socket unlink. The
+            # preserved approved inode must be reconciled, never blindly erased.
+            systemctl('kill',unit,'--kill-whom=main','--signal=SIGKILL')
+            deadline=time.monotonic()+10
+            while systemctl('show',unit,'--property=MainPID','--value')!='0':
+                assert time.monotonic()<deadline;time.sleep(.1)
+            assert Path('/run/lvs-thermal/1000.sock').exists()
+            proof['known_legacy_stale_socket_created']=True
+        fresh=m.Migration(1000,historical_ea60=historical)
+        try:
+            if operation=='resume':fresh.retire(approval)
+        except BaseException:
+            Path('/control/retire-manager-state.json').write_text(json.dumps(m.properties(unit),indent=2));raise
+        if operation=='resume':assert m.retired_record(1000)
+        if historical and phase=='MASKED'and operation=='resume':
+            assert not Path('/run/lvs-thermal/1000.sock').exists();proof['known_legacy_stale_socket_reconciled']=True
         fresh.rollback(approval);assert systemctl('is-active',unit,check=False)!='active'
-        assert json.loads((m.STATE/'installation-1000.json').read_text())['phase']=='active'
-        assert systemctl('is-enabled',unit,check=False)=='disabled'
-        failures.append(phase)
+        if historical:
+            assert not(m.STATE/'installation-1000.json').exists()and not(Path('/etc/systemd/system')/unit).exists()
+        else:
+            assert json.loads((m.STATE/'installation-1000.json').read_text())['phase']=='active'
+            assert systemctl('is-enabled',unit,check=False)=='disabled'
+        if operation=='resume':failures.append(phase)
+        else:direct_rollbacks.append(phase)
         # Only this fixture explicitly restarts the known old deployment to set
         # up the NEXT interruption case. Production rollback never starts it.
-        if phase!=phases[-1]:
+        if historical:start_historical()  # explicit fixture re-creation, never rollback
+        elif phase!=phases[-1]:
             systemctl('start',unit);installer.health(old,json.loads((old/'manifest.json').read_text()))
         # Each exact PID/socket generation requires fresh administrator approval.
         # Archive remains; a rolled-back identical approval is intentionally not
         # recycled. Runtime PID or restored enablement changes the approval.
         approval=migration.inspect()['approval_sha256']
     proof['interrupted_phases_resumed_and_rolled_back']=failures
+    if historical:proof['interrupted_phases_direct_rollback']=direct_rollbacks
     proof['concurrent_installer_lock_rejected']=Path('/control/installer-lock-proven').exists()
     proof['concurrent_startup_lock_rejected']=Path('/control/startup-lock-proven').exists()
     # Final retirement from stopped/disabled legacy service uses current approval.

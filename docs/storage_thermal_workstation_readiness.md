@@ -72,3 +72,9 @@ qualifies dedicated worker protection under policy 2 without changing host polic
 It does not install itself or make the older prepared/installed runtime match the
 new source. Fresh preparation, independent approval and privileged recovery
 verification remain mandatory before any new physical authorization.
+
+A subsequent [exact historical retirement adapter](storage_thermal_ea60_retirement.md)
+qualifies the ea60 transient-session format for migration only. The historical
+findings above remain intact. This does not freshly certify host recovery or
+retire the workstation service; separate authoritative administrator inspection
+and exact-deployment approval are still required.
