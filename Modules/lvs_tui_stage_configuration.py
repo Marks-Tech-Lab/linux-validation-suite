@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from contextlib import suppress
 
 from .lvs_service_models import SetupPickerSpec
 from .lvs_tui_input_state import tui_input_state
 from .lvs_tui_picker_presentation import profile_edit_picker_open_presentation
+
+
+def _stage_setting_value(stage, setting):
+    module = getattr(stage.modules, setting.module)
+    if setting.key == "thermal_system_access":
+        return dict(device_ids=list(getattr(module, "_system_device_ids", ())),
+                    colocated=getattr(module, "_control_plane_colocation", False),
+                    swap=getattr(module, "_system_swap", False))
+    if setting.key == "thermal_rates":
+        return {key: getattr(module, key) for key in ("rate_mode", "iops", "bandwidth_bytes_per_second")}
+    return getattr(module, setting.attribute)
 
 
 class TuiStageConfigurationMixin:
@@ -20,6 +32,23 @@ class TuiStageConfigurationMixin:
         await self._show_stage_configuration()
 
     async def _show_stage_configuration(self, detail: str = "") -> None:
+        try:
+            await self._render_stage_configuration(detail)
+        except Exception as exc:
+            # Do not retry a failed renderer from its own error path. Disable
+            # stale rows/input; Esc/Back can leave this screen and reopen it.
+            self.view_mode = "stage_configuration"
+            self.stage_configuration_fields = []
+            self.setup_picker_key = self.profile_edit_picker_key = None
+            self.pending_input_field = None
+            self.confirm_run = False
+            message = (detail + "\n\n" if detail else "") + f"Unable to display stage configuration: {exc}. Press Esc to return."
+            with suppress(Exception):
+                self._set_detail(message)
+            with suppress(Exception):
+                self.notify(message, severity="error")
+
+    async def _render_stage_configuration(self, detail: str = "") -> None:
         self.view_mode = "stage_configuration"
         self.setup_picker_key = None
         self.profile_edit_picker_key = None
@@ -31,14 +60,12 @@ class TuiStageConfigurationMixin:
         original = getattr(self.run_setup, "original_profile", None) if self.stage_configuration_for_run else None
         from .lvs_stage_configuration import setting_value_text
         for setting in self.stage_configuration_fields:
-            value = setting_value_text(setting.value)
+            effective = _stage_setting_value(edit.profile.stages[index], setting)
+            value = setting_value_text(effective)
             suffix = ""
             if original is not None:
-                old = getattr(getattr(original.stages[index].modules, setting.module), setting.attribute)
-                if setting.key == "thermal_rates":
-                    module = original.stages[index].modules.storage_thermal
-                    old = {key:getattr(module,key) for key in setting.value}
-                if old != setting.value:
+                old = _stage_setting_value(original.stages[index], setting)
+                if old != effective:
                     suffix = f" (profile default: {old!r}; overridden)"
             rows.append(f"{setting.label}: {value or '(none)'}{suffix}")
         title = "Run-only Stage Configuration" if self.stage_configuration_for_run else "Stage Configuration"
@@ -81,12 +108,14 @@ class TuiStageConfigurationMixin:
             edit = self._stage_configuration_edit()
             result = self.service.apply_stage_configuration(edit, self.stage_configuration_index,
                                                             self.stage_configuration_key, value)
+        except Exception as exc:
+            detail = f"Setting unchanged: {exc}"
+        else:
             if self.stage_configuration_for_run:
                 self.run_setup.profile, self.run_setup.labels = edit.profile, edit.labels
             self.confirm_run = False
-            await self._show_stage_configuration(f"Updated: {result!r}")
-        except Exception as exc:
-            await self._show_stage_configuration(f"Setting unchanged: {exc}")
+            detail = f"Updated: {result!r}"
+        await self._show_stage_configuration(detail)
 
     async def _leave_stage_configuration(self) -> None:
         if self.stage_configuration_for_run:

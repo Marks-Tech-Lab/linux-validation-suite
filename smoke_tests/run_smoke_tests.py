@@ -143,6 +143,7 @@ from smoke_tests.physical_gpu_selection_checks import run_physical_gpu_selection
 from smoke_tests.configuration_workflow_checks import (
     run_profile_save_completion_checks, run_stage_configuration_execution_checks,
     run_tui_configuration_workflow_checks, run_stage_configuration_module_checks,
+    run_tui_thermal_configuration_checks, run_tui_stage_configuration_recovery_checks,
 )
 from smoke_tests.cli_configuration_checks import (
     run_cli_profile_persistence_checks, run_cli_workload_override_parity_checks, run_cli_instruction_catalog_checks,
@@ -29747,6 +29748,8 @@ def main() -> int:
         run_profile_save_completion_checks,
         run_stage_configuration_execution_checks,
         run_tui_configuration_workflow_checks,
+        run_tui_thermal_configuration_checks,
+        run_tui_stage_configuration_recovery_checks,
         run_stage_configuration_module_checks,
         run_physical_gpu_selection_checks,
         run_completion_evidence_checks,

@@ -67,6 +67,13 @@ def run_installed_runtime_authority_checks():
 
 
 def run_installed_runtime_descriptor_checks():
+    # Host retirement records must not influence this private-descriptor fixture
+    # or cause it to inspect the workstation's protected installation/recovery.
+    with tempfile.TemporaryDirectory() as name,patch.object(service,'STATE',Path(name)),patch.object(rt,'STATE',Path(name)):
+        _installed_runtime_descriptor_checks()
+
+
+def _installed_runtime_descriptor_checks():
     lease=SharedAdmission.create();read_fd,write_fd=os.pipe()
     try:
         generation='a'*32;session='b'*32;deadline=time.monotonic()+5

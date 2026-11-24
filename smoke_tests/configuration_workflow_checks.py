@@ -277,6 +277,125 @@ def run_tui_configuration_workflow_checks():
     asyncio.run(check())
 
 
+def run_tui_thermal_configuration_checks():
+    """Actual Quick Test picker, toggle and redraw in the Textual application."""
+    try:
+        from Modules.lvs_tui_app import LinuxValidationSuiteTui
+    except ModuleNotFoundError as exc:
+        if exc.name != 'textual':raise
+        print('SKIP optional Textual pilot; renderer failure recovery still runs')
+        return
+
+    class App(LinuxValidationSuiteTui):
+        def _refresh_live_system_pane(self):pass
+        def _set_detail(self, text):
+            self.observed_detail = text
+            super()._set_detail(text)
+        async def _replace_sidebar_labels(self, view, labels, **kwargs):
+            self.observed_rows = list(labels)
+            await super()._replace_sidebar_labels(view, labels, **kwargs)
+
+    async def check():
+        with TemporaryDirectory() as tmp:
+            service = Service(Path(tmp))
+            source = Path(service.settings.profiles_dir) / 'Quick Test.json'
+            service.profile_loader.save_profile(source, service.profile_loader.load_profile(ROOT / 'profiles/Quick Test.json'))
+            before = source.read_bytes()
+            app = App(service)
+            async with app.run_test(size=(150, 55)) as pilot:
+                await pilot.pause()
+                for run_only in (False, True):
+                    await app.action_show_profiles()
+                    if run_only:await app.action_setup_run()
+                    else:await app.action_edit_profile()
+                    await app._open_stage_configuration(0, for_run=run_only)
+                    for value in ('true', 'false', 'true'):
+                        row = next(i + 1 for i, s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_enabled')
+                        await app._activate_stage_configuration_item(row)
+                        app.query_one('#items').index = app.profile_edit_picker_options.index(value)
+                        await pilot.press('enter');await pilot.pause()
+                        edit = app._stage_configuration_edit()
+                        assert edit.profile.stages[0].modules.storage_thermal.enabled is (value == 'true')
+                        assert app.view_mode == 'stage_configuration' and app.stage_configuration_fields
+                        assert 'Updated:' in app.observed_detail
+                        await app._show_stage_configuration()
+                    # Default synthetic values must compare as dictionaries, not
+                    # nonexistent dataclass fields or rate_mode strings.
+                    for row in app.observed_rows:
+                        if row.startswith(('Thermal advanced rates', 'Run-local system authorization')):assert 'overridden' not in row
+                    if run_only:
+                        original = app.run_setup.original_profile.stages[0].modules.storage_thermal
+                        effective = app.run_setup.profile.stages[0].modules.storage_thermal
+                        original._system_device_ids = ('fixture-id',)
+                        effective._system_device_ids = ['fixture-id']
+                        original._control_plane_colocation = effective._control_plane_colocation = True
+                        await app._show_stage_configuration()
+                        auth = next(row for row in app.observed_rows if row.startswith('Run-local system authorization'))
+                        assert 'overridden' not in auth
+                        effective._system_swap = True
+                        effective.rate_mode, effective.iops, effective.bandwidth_bytes_per_second = 'advanced', 16, 1048576
+                        await app._show_stage_configuration()
+                        for prefix in ('Thermal advanced rates', 'Run-local system authorization'):
+                            assert 'profile default:' in next(row for row in app.observed_rows if row.startswith(prefix))
+                    else:
+                        module = app.profile_edit.profile.stages[0].modules.storage_thermal
+                        module.access_mode = 'shared_readonly_opt_in';module.selection = 'individual'
+                        module.device_ids = ['fixture-id'];module.aggregate_iops_limit = 16;module.aggregate_bps_limit = 1048576
+                        module._system_device_ids = ('fixture-id',)
+                        module._control_plane_colocation = True
+                        service.save_profile_edit(app.profile_edit)
+                        saved = json.loads(source.read_text())['stages'][0]['modules']['storage_thermal']
+                        assert not any('system_device' in k or 'system_access' in k or 'colocation' in k for k in saved)
+                        assert not hasattr(service.profile_loader.load_profile(source).stages[0].modules.storage_thermal, '_system_device_ids')
+                        # Next run starts with the saved disabled configuration.
+                        module.enabled = False;service.save_profile_edit(app.profile_edit);before = source.read_bytes()
+                assert source.read_bytes() == before
+    asyncio.run(check())
+
+
+def run_tui_stage_configuration_recovery_checks():
+    from Modules.lvs_tui_stage_configuration import TuiStageConfigurationMixin
+
+    class App(TuiStageConfigurationMixin):
+        def _clear_setup_input(self):self.pending_input_field = None
+        def query_one(self, name):return SimpleNamespace(update=lambda value:None)
+        async def _replace_sidebar_labels(self, *args, **kwargs):
+            self.renders += 1
+            if self.fail_render:raise RuntimeError('injected widget failure')
+        def _set_detail(self, message):self.detail = message
+        def notify(self, message, **kwargs):self.notice = message
+        async def _show_run_setup_sidebar(self):self.left = True
+
+    async def check():
+        with TemporaryDirectory() as tmp:
+            service = Service(Path(tmp));source = _source(service);before = source.read_bytes()
+            app = App();app.service = service;app.run_setup = service.create_run_setup(source)
+            app.stage_configuration_for_run = True;app.stage_configuration_index = 0
+            app.stage_configuration_key = 'thermal_enabled';app.confirm_run = True
+            app.renders = 0;app.fail_render = True
+            await app._commit_stage_configuration('true')
+            assert app.renders == 1 and app.run_setup.profile.stages[0].modules.storage_thermal.enabled
+            assert 'Updated: True' in app.detail and 'Unable to display' in app.detail
+            assert app.stage_configuration_fields == [] and not app.confirm_run
+            await app._activate_stage_configuration_item(0);assert app.left
+            # A failed transactional edit and a failed display are separate;
+            # neither retries the renderer or claims the update succeeded.
+            app.fail_render = False
+            await app._show_stage_configuration();assert app.stage_configuration_fields
+            snapshot = deepcopy(app.run_setup.profile)
+            with patch.object(service, 'stage_configuration_settings', side_effect=RuntimeError('injected settings failure')) as settings:
+                await app._commit_stage_configuration('not-a-boolean')
+                assert settings.call_count == 1
+            assert app.run_setup.profile == snapshot and 'Setting unchanged:' in app.detail and 'Unable to display' in app.detail
+            with patch.object(app, '_set_detail', side_effect=RuntimeError('broken detail')),patch.object(app, 'notify', side_effect=RuntimeError('broken notification')):
+                app.fail_render = True;await app._show_stage_configuration()
+            app.fail_render = False;await app._show_stage_configuration();assert app.stage_configuration_fields
+            await app._commit_stage_configuration('false')
+            assert not app.run_setup.profile.stages[0].modules.storage_thermal.enabled
+            assert 'Updated: False' in app.detail and source.read_bytes() == before
+    asyncio.run(check())
+
+
 def run_stage_configuration_module_checks():
     from Modules.lvs_profile_models import ValidationProfile
     from Modules.lvs_service_models import ProfileEditState
