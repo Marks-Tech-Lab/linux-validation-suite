@@ -68,20 +68,14 @@ def run_thermal_execution_preparation_checks():
 
 def run_thermal_frontend_authorization_checks():
     from Modules.lvs_cli_run import RunCliAdapter
-    from Modules.lvs_tui_run_execution_adapter import TuiRunExecutionAdapterMixin
     from Modules.lvs_privileged import PrivilegedTelemetryManager
     manager=Mock();manager.prepare_session.return_value=True
     cli=RunCliAdapter(SimpleNamespace(privileged_telemetry=manager,_input=lambda *a:'y'))
     with patch('sys.stdin.isatty',return_value=True):assert cli._authorize_thermal_execution()
-    events=[]
-    @contextmanager
-    def suspend():
-        events.append('suspend')
-        try:yield
-        finally:events.append('restore')
-    owner=SimpleNamespace(suspend=suspend,service=SimpleNamespace(privileged_telemetry=manager))
-    with patch('builtins.input',return_value='y'):assert TuiRunExecutionAdapterMixin._authorize_thermal_execution(owner)
-    assert events==['suspend','restore']
+    manager.prepare_session.assert_not_called()
+    manager.sudo_noninteractive_ready.return_value=False
+    with patch('sys.stdin.isatty',return_value=True):assert cli._authorize_thermal_execution()
+    manager.prepare_session.assert_called_once()
     settings=SimpleNamespace(privileged_helper_enabled=True)
     telemetry=PrivilegedTelemetryManager(settings)
     with patch('os.geteuid',return_value=1000),patch('shutil.which',return_value='/usr/bin/sudo'),patch.object(telemetry,'_sudo_noninteractive_ready',return_value=False),patch.object(telemetry,'_prepare_session',side_effect=AssertionError('background prompt')):

@@ -110,7 +110,7 @@ def candidate():
     return on_demand_candidate()
 
 
-def prepare_candidate():
+def prepare_candidate(*, previous=None):
     """Unprivileged build using existing source/native/fio preparation helpers."""
     if os.getuid()==0:raise ValueError('Prepare as the normal LVS operator')
     from .lvs_source_provenance import _source_snapshot,collect_source_provenance
@@ -121,6 +121,10 @@ def prepare_candidate():
     # fio approval is the existing Wave 1 cache, not PATH or an override.
     cache=ROOT/'build/thermal-runtime';approval=json.loads((cache/'fio-approval.json').read_text());fio=cache/'fio'
     if fio.is_symlink() or digest(fio)!=approval['sha256']:raise ValueError('Approved fio cache changed')
+    stager_sha256 = hashlib.sha256(ROOT_STAGER.encode()).hexdigest()
+    if previous is not None and _candidate_unchanged(previous, source, git['commit'],
+                                                       approval['sha256'], stager_sha256):
+        return previous
     parent=ROOT/'build/thermal-on-demand';parent.mkdir(exist_ok=True)
     destination=parent/(source['digest'][:20]+'-'+uuid4().hex[:12])
     result=prepare(destination,fio)
@@ -129,13 +133,46 @@ def prepare_candidate():
     return dict(bundle=str(destination),manifest_sha256=result['manifest_sha256'],source=source,commit=git['commit'],
                 tools={k:v for k,v in m['files'].items()if k.startswith('runtime/build/')},
                 build=json.loads((destination/'preparation.json').read_text()),
-                fio_sha256=approval['sha256'],stager_sha256=hashlib.sha256(ROOT_STAGER.encode()).hexdigest())
+                fio_sha256=approval['sha256'],stager_sha256=stager_sha256)
+
+
+def _candidate_unchanged(previous, source, commit, fio_sha256, stager_sha256):
+    """Recheck a previously approved snapshot. Root still pins every byte again."""
+    from .lvs_native_helpers import find_c_compiler
+    try:
+        if (previous['source'], previous['commit'], previous['fio_sha256'], previous['stager_sha256']) != (
+                source, commit, fio_sha256, stager_sha256):
+            return False
+        compiler = Path(find_c_compiler()).resolve()
+        recorded = previous['build']['compiler']
+        if str(compiler) != recorded['path'] or digest(compiler) != recorded['sha256']:
+            return False
+        root = Path(previous['bundle'])
+        raw = (root / 'manifest.json').read_bytes()
+        if hashlib.sha256(raw).hexdigest() != previous['manifest_sha256']:
+            return False
+        files = json.loads(raw)['files']
+        return all(not (root / name).is_symlink() and digest(root / name) == expected
+                   for name, expected in files.items())
+    except (OSError, KeyError, ValueError, TypeError):
+        return False
 
 
 def approval_text(value):
-    return ('Approve this reviewed source and tools for a temporary root runtime; '
-        'checksums alone are not approval. No system-drive access.\n'
-        +json.dumps(value,sort_keys=True,indent=2))
+    """Concise approval with an exact identity and a full local evidence path."""
+    return (
+        'Authorize a temporary privileged Thermal Assist helper for internal data drives?\n'
+        f"Commit {value['commit']}\nExecution source SHA-256 {value['source']['digest']}\n"
+        f"Prepared manifest SHA-256 {value['manifest_sha256']}\n"
+        f"Qualified {value['build']['fio_version']}; native guard and bootstrap verified.\n"
+        'Approve only if you trust this source and its tools. Approval applies to these exact bytes in this LVS session.\n'
+        f"Full compiler, tool and file evidence: {value['bundle']}"
+    )
+
+
+def approval_identity(value):
+    """Bind reuse to the exact root bootstrap and manifest bytes."""
+    return value['stager_sha256'], value['manifest_sha256']
 
 
 def start(value):

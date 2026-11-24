@@ -23,8 +23,15 @@ Both frontends call `RunLaunchCoordinator.prepare_execution()` after final run
 confirmation and effective O / Stage Overrides, before starting the execution
 thread, heatsoak or primary timers. It uses the existing privilege manager's
 noninteractive sudo check, or a frontend-owned explicit authorization callback.
-The CLI prompts on its foreground terminal. The TUI suspends Textual before
-prompting through the same manager, then restores the interface. Disabled stages
+The CLI prompts in its normal run flow. The TUI shows preparation progress and
+scrollable authorization and readiness dialogs while build and inspection work
+runs in the background. It hands the terminal to sudo only when the existing
+session credentials need authentication. A valid sudo timestamp does not grant
+source approval. The first approval shows the commit, source and manifest
+fingerprints, and the path to the complete manifest, compiler and tool evidence.
+Within this LVS session the same approval can be reused after checking current
+source, fio, compiler, bootstrap and all manifest-listed bytes. The privileged
+bootstrap independently pins the approved manifest and its files at startup. Disabled stages
 and disabled Thermal Assist require no authorization or runtime preparation.
 An absent runtime may offer explicitly approved on-demand startup at this confirmed
 foreground point. It never triggers installation or elevation during inspection.
@@ -72,11 +79,12 @@ The normal screen contains:
 - **Temperature protection**: Required. Existing legacy unmonitored intent is
   displayed honestly; the guided workflow cannot grant unmonitored approval.
 - **Advanced…**: explicit provider, automatic/manual aggregate budgets, custom
-  per-drive IOPS and MiB/s, read size in KiB, temperatures in °C, future system
-  intensity intent and individual per-drive percentage overrides. Optional rates
+  per-drive IOPS and MiB/s, read size in KiB, temperatures in °C and individual
+  per-drive percentage overrides. Optional rates
   accept `auto`, sensor-derived thresholds `device`, and overrides `default`.
   Choose individual drives before adding overrides; saved overrides can be cleared.
-  Set both manual caps before switching to Manual. Custom mode starts at 1 IOPS
+  Switching to Manual prompts for both caps together. Automatic budgets and
+  percentage mode hide inactive rate fields. Custom mode starts at 1 IOPS
   until edited. Every edit is validated transactionally, including threshold order.
 
 Existing profiles retain the legacy `exclusive` default: inactive physical SATA/SAS
@@ -87,6 +95,9 @@ mounted or unmounted. It does not add any eligibility or silently fall back to a
 weaker method. Filesystem names do not select a provider. Complex/ambiguous,
 external, unsupported and unqualified targets retain their existing blockers.
 Automatic mixed-provider selection/global legacy-default promotion is not implemented.
+Shared automatic groups intentionally omit positively classified system drives
+from requested coverage. Unknown system status and blocked requested data
+drives remain visible as coverage exclusions.
 
 `budget_mode=automatic` is saved profile intent, **not** a new privileged protocol
 field or an execution authorization. Before authorized preparation it uses
@@ -129,9 +140,7 @@ grants new system-drive or unmonitored-coverage authorization.
 Choose **2 — Return to setup** (also the empty-input default) for an authoritative
 **readiness-only test** through the normal workflow. No primary or physical
 Thermal Assist workload starts. Authoritative inspection may observe temperatures
-and topology and qualify the backend using disposable regular files. The TUI
-reuses its foreground terminal suspension, then returns to the interface; no
-external utility or manual observer is needed. Reopen Review and run to obtain
+and topology and qualify the backend using disposable regular files. The TUI returns directly to setup from the readiness dialog. Reopen Review and run to obtain
 fresh preparation before execution.
 
 Returning, EOF, interruption or review failure discards the one-use receipt and

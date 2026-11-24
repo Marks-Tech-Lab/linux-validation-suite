@@ -377,6 +377,10 @@ class ThermalTargets:
 def selected(record: dict, config) -> bool:
     if config.selection=='individual':
         return record['device_id'] in config.device_ids
+    # Shared automatic groups express data-drive intent. Keep unknown ancestry
+    # in the requested set so its actual readiness blocker remains visible.
+    if config.access_mode == 'shared_readonly_opt_in' and record.get('system_drive') is True:
+        return False
     if record['excluded_automatic'] or not record['internal']:
         return False
     return (config.selection=='all_internal'

@@ -1,4 +1,4 @@
-"""Run-local frontend preparation; no installer, elevation or service startup.
+"""Run-local preparation and frontend-owned authorization for Thermal Assist.
 
 Only the foreground frontend supplies interactive authorization. Execution consumes
 one configuration-bound preparation; passive previews never load a bootstrap.
@@ -99,17 +99,17 @@ def preparation_text(profile, plans):
     return '\n'.join(lines)
 
 
-def prepare(profile, manager, authorize):
-    if threading.current_thread() is not threading.main_thread():
+def prepare(profile, manager, authorize, *, frontend_dispatch=None, status=None):
+    if frontend_dispatch is None and threading.current_thread() is not threading.main_thread():
         raise RuntimeError('Thermal Assist preparation requires the frontend thread')
     try:
-        return _prepare(profile, manager, authorize)
+        return _prepare(profile, manager, authorize, frontend_dispatch, status or (lambda message: None))
     except BaseException:
         release_preparation(profile)
         raise
 
 
-def _prepare(profile, manager, authorize):
+def _prepare(profile, manager, authorize, frontend_dispatch, status):
     """After final confirmation/overrides, before handing work to any run thread.
 
     Authoritative inspection uses the authenticated runtime. On-demand startup
@@ -119,7 +119,7 @@ def _prepare(profile, manager, authorize):
     from .lvs_storage_thermal import stage_config
     from .lvs_storage_thermal_runtime import inspect
     from .lvs_storage_thermal_runtime import preview as execution_readiness
-    if threading.current_thread() is not threading.main_thread():
+    if frontend_dispatch is None and threading.current_thread() is not threading.main_thread():
         raise RuntimeError('Thermal Assist preparation requires the frontend thread')
     release_preparation(profile)
     if manager is not None:manager.thermal_source_approval=''
@@ -140,8 +140,10 @@ def _prepare(profile, manager, authorize):
     startup=any(p.get('on_demand_startup')for p in plans.values());approval=None;lease=None
     if startup and ready:
         try:
+            status('Preparing exact source and qualifying native tools…')
             from .lvs_storage_thermal_transient import prepare_candidate,approval_text
-            approval=prepare_candidate()
+            previous = getattr(manager, 'thermal_approved_candidate', None)
+            approval = prepare_candidate(previous=previous) if isinstance(previous, dict) else prepare_candidate()
             if manager is None:raise ValueError('Privilege manager unavailable')
             manager.thermal_source_approval=approval_text(approval)
         except (OSError,ValueError,RuntimeError)as exc:
@@ -150,8 +152,20 @@ def _prepare(profile, manager, authorize):
     reason = 'Thermal Assist execution authorization unavailable or declined'
     if ready:
         try:
-            authorized = bool(manager is not None and (
-                (not startup and manager.sudo_noninteractive_ready()) or (authorize is not None and authorize())))
+            from .lvs_storage_thermal_transient import approval_identity
+            cached = manager is not None and getattr(manager, 'thermal_approved_identity', None)
+            needs_source = startup and (not isinstance(cached, tuple) or cached != approval_identity(approval))
+            if not needs_source and startup:
+                manager.thermal_source_approval = ''
+            if manager is not None:
+                sudo_ready = manager.sudo_noninteractive_ready()
+                if not needs_source and sudo_ready:
+                    authorized = True
+                elif authorize is not None:
+                    authorized = bool(frontend_dispatch(authorize) if frontend_dispatch else authorize())
+                if authorized and startup:
+                    manager.thermal_approved_identity = approval_identity(approval)
+                    manager.thermal_approved_candidate = approval
             if authorized:
                 manager.start_keepalive()
         except (OSError, RuntimeError) as exc:
@@ -159,10 +173,13 @@ def _prepare(profile, manager, authorize):
     if authorized and startup:
         try:
             from .lvs_storage_thermal_transient import start_and_hold
+            status('Starting the protected temporary helper…')
             lease=start_and_hold(approval)
             profile._thermal_execution_preparation = dict(lease=lease)
         except (OSError,ValueError,RuntimeError)as exc:
             authorized=False;reason=str(exc)
+    if authorized:
+        status('Checking drives, temperature protection and workload limits…')
     for stage in profile.stages:
         if not stage.enabled or not getattr(stage.modules.storage_thermal, 'enabled', False):
             continue

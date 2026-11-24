@@ -346,7 +346,9 @@ class RunCliAdapter:
             summary=getattr(self.launcher.privileged_telemetry,'thermal_source_approval','')
             if summary:print(summary)
             choice = self._input('Authorize privileged Thermal Assist readiness preparation? Workloads require the following review. [y/N]: ').strip().lower()
-            return choice in {'y', 'yes'} and self.launcher.privileged_telemetry.prepare_session()
+            return choice in {'y', 'yes'} and (
+                self.launcher.privileged_telemetry.sudo_noninteractive_ready()
+                or self.launcher.privileged_telemetry.prepare_session())
         except (EOFError, KeyboardInterrupt):
             return False
 

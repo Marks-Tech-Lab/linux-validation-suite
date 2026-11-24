@@ -26,12 +26,13 @@ def run_thermal_transient_candidate_checks():
 def run_thermal_transient_approval_checks():
     p,s=fixture();manager=Mock();manager.sudo_noninteractive_ready.return_value=True
     passive=dict(status='DEFERRED',on_demand_startup=True)
-    approved=dict(source={'digest':'a'*64},manifest_sha256='b'*64)
+    approved=dict(source={'digest':'a'*64},manifest_sha256='b'*64, stager_sha256='c'*64,
+                  commit='d'*40, build={'fio_version':'fio-3.42'}, bundle='/tmp/fixture')
     lease=Mock()
     with patch('Modules.lvs_storage_thermal_runtime.inspect',return_value=passive),patch('Modules.lvs_storage_thermal_transient.prepare_candidate',return_value=approved),patch('Modules.lvs_storage_thermal_transient.start_and_hold',return_value=lease)as start,patch('Modules.lvs_storage_thermal_runtime.preview',return_value=dict(status='READY')):
         deny=Mock(return_value=False);plans=prepare(p,manager,deny)
         assert list(plans.values())[0]['status']=='BLOCKED';deny.assert_called_once();start.assert_not_called()
-        manager.sudo_noninteractive_ready.assert_not_called()  # cached sudo is NOT source approval
+        manager.sudo_noninteractive_ready.assert_called_once()  # cached sudo is NOT source approval
         yes=Mock(return_value=True);plans=prepare(p,manager,yes)
         assert list(plans.values())[0]['execution_ready'];yes.assert_called_once();start.assert_called_once_with(approved)
         with execution_scope(p):pass
@@ -40,6 +41,34 @@ def run_thermal_transient_approval_checks():
         with patch('Modules.lvs_storage_thermal_runtime.preview',return_value=dict(status='BLOCKED')):
             prepare(p,manager,yes)
         lease.close.assert_called_once()
+        yes.assert_called_once()  # exact approval reused without prompting
+        changed = dict(approved, manifest_sha256='e'*64)
+        with patch('Modules.lvs_storage_thermal_transient.prepare_candidate',return_value=changed):
+            prepare(p,manager,deny)
+        assert deny.call_count == 2 and start.call_count == 2
+    from tempfile import TemporaryDirectory
+    import json
+    from Modules.lvs_storage_thermal_transient import _candidate_unchanged, digest
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        tool = root / 'fixture-tool'
+        compiler = root / 'fixture-compiler'
+        tool.write_bytes(b'approved tool')
+        compiler.write_bytes(b'approved compiler')
+        manifest = root / 'manifest.json'
+        manifest.write_text(json.dumps({'files': {tool.name: digest(tool)}}))
+        candidate = dict(approved, bundle=directory, manifest_sha256=digest(manifest),
+                         fio_sha256='fixture-fio', build={'compiler': {
+                             'path': str(compiler.resolve()), 'sha256': digest(compiler)}})
+        identities = (candidate['source'], candidate['commit'], candidate['fio_sha256'], candidate['stager_sha256'])
+        with patch('Modules.lvs_native_helpers.find_c_compiler', return_value=str(compiler)):
+            assert _candidate_unchanged(candidate, *identities)
+            assert not _candidate_unchanged(candidate, {'digest': 'changed'}, *identities[1:])
+            tool.write_bytes(b'changed tool')
+            assert not _candidate_unchanged(candidate, *identities)
+            tool.write_bytes(b'approved tool')
+            compiler.write_bytes(b'changed compiler')
+            assert not _candidate_unchanged(candidate, *identities)
     from Modules.lvs_storage_thermal_system import SystemAuthority
     try:SystemAuthority('/unused',dict(runtime_mode=MODE)).worker()
     except ValueError as e:assert 'data drives only'in str(e)

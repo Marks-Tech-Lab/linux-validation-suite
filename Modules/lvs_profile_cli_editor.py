@@ -746,8 +746,14 @@ class ProfileCliEditor:
                 if item.key == 'thermal_ui_targets' and value == 'individual':
                     rows = drive_choices();section = 'thermal_drives'
                     continue
+                key = item.key
+                if key == 'thermal_ui_budget_mode' and value == 'manual' and stage.modules.storage_thermal.budget_mode == 'automatic':
+                    value = self.host._input('Manual total IOPS / MiB/s [Enter cancels]: ').strip()
+                    if not value or value.lower() == 'b':
+                        continue
+                    key = 'thermal_ui_manual_caps'
                 edit = ProfileEditState(Path('<in-memory>'), profile, list(labels))
-                apply(edit, stage_index, item.key, value, self.host.profile_save.validator, rows)
+                apply(edit, stage_index, key, value, self.host.profile_save.validator, rows)
                 stage.modules = edit.profile.stages[stage_index].modules
                 print('Updated configuration; activity has not started.')
             except BackRequested:

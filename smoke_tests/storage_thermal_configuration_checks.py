@@ -51,7 +51,11 @@ def run_thermal_guided_configuration_checks():
         assert stage_config(edit.profile.stages[0]).bandwidth_bytes_per_second==524288
         change('intensity','25') # Normal percentage selection exits custom mode.
         c=stage_config(edit.profile.stages[0]);assert c.rate_mode=='percent' and c.iops is None and c.intensity_percent==25
-        change('aggregate_iops','80');change('aggregate_mib','5');change('budget_mode','manual')
+        visible = {f.attribute for f in fields(edit.profile.stages[0], 'thermal_advanced')}
+        assert not visible & {'aggregate_iops', 'aggregate_mib', 'iops', 'mib', 'system_intensity'}
+        change('manual_caps','80 / 5')
+        visible = {f.attribute for f in fields(edit.profile.stages[0], 'thermal_advanced')}
+        assert {'aggregate_iops', 'aggregate_mib'} <= visible
         assert stage_config(edit.profile.stages[0]).aggregate_bps_limit==5242880
         for k,v in [('intensity','101'),('intensity','true'),('block_kib','3'),('block_kib','12'),('warning','NaN'),
                     ('mib','Infinity'),('aggregate_mib','0.00000001'),('system','true'),('protection','optional'),('targets','bogus')]:
@@ -83,7 +87,7 @@ def run_thermal_guided_cli_checks():
         folder=len([f for f in stage_settings(p.stages[0],service.profile_editor) if not f.key.startswith('thermal_')])+1
         # Real operator menu: folder, enable, physical picker, select NVMe, back,
         # percentage, advanced read size, back twice, leave workload screen.
-        answers=iter([str(folder),'1','2','2','6','3','2','b','3','25','6','8','64','b','b','b'])
+        answers=iter([str(folder),'1','2','2','6','3','2','b','3','25','6','4','64','b','b','b'])
         host=SimpleNamespace(profile_editor=service.profile_editor,profile_edit_controller=service.profile_edit_controller,
                              profile_save=service.profile_save,_input=lambda _:next(answers))
         output=io.StringIO()
@@ -152,6 +156,17 @@ def run_thermal_automatic_runner_planning_checks():
         ready=f.runner.plan(replace(config,aggregate_iops_limit=limits[0],aggregate_bps_limit=limits[1]),f.rows,f.backend)
         assert ready['status']=='READY' and len(ready['commands'])==3
         assert sum(d['rate']['effective_iops']for d in ready['devices'])==207
+        f.rows[0].update(system_drive=True, eligible=False, reasons=['system access blocked'])
+        probe=f.runner.plan(config,f.rows,f.backend)
+        limits=automatic_limits(config,probe)
+        assert limits==(192,12582912)
+        shared=f.runner.plan(replace(config,aggregate_iops_limit=limits[0],aggregate_bps_limit=limits[1]),f.rows,f.backend)
+        assert shared['status']=='READY' and not shared['partial_coverage']
+        assert f.rows[0]['device_id'] not in shared['selected_devices']
+        f.rows[0].update(system_drive=None, reasons=['unknown topology'])
+        shared=f.runner.plan(replace(config,aggregate_iops_limit=limits[0],aggregate_bps_limit=limits[1]),f.rows,f.backend)
+        assert shared['status']=='READY' and shared['partial_coverage']
+        assert f.rows[0]['device_id'] in shared['blocked_devices']
         f.temp=None
         probe=f.runner.plan(config,f.rows,f.backend)
         assert automatic_limits(config,probe) is None # missing monitoring never supplies budgets

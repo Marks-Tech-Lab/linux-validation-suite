@@ -3,6 +3,7 @@ from __future__ import annotations
 """Textual TUI run execution and post-run adapter methods."""
 
 import asyncio
+from concurrent.futures import TimeoutError as DispatchTimeout
 import threading
 import time
 from pathlib import Path
@@ -83,6 +84,8 @@ class TuiRunExecutionAdapterMixin:
         self._set_status(presentation.status)
 
     def action_run_selected(self) -> None:
+        if getattr(self, '_thermal_preparing', False):
+            return
         if self.view_mode == "settings":
             self._set_detail(self.service.toggle_bool_setting_text("google_drive_move_to_uploaded_on_success"))
             self._set_status("Settings updated | toggle move successful uploads")
@@ -141,22 +144,104 @@ class TuiRunExecutionAdapterMixin:
             self.confirm_run = False
             self._set_detail(f"Run readiness check failed:\n{exc}")
             return
-        # Still on the frontend thread, after the second/final confirmation.
-        # Never authenticate from _run_profile_thread or a timed stage.
-        try:
-            plans = self.service.run_launcher.prepare_execution(
-                prepared_flow.launch_request,
-                privilege_manager=getattr(self.service, 'privileged_telemetry', None),
-                authorize=self._authorize_thermal_execution,
-            )
-            if not self.service.run_launcher.review_execution(prepared_flow.launch_request, plans,
-                                                              review=self._review_thermal_preparation):
-                self.confirm_run = False
-                return
-        except Exception as exc:
-            self.confirm_run = False
-            self._set_detail(f'Run preparation failed: {exc}')
+        self.confirm_run = False
+        if any(s.enabled and s.modules.storage_thermal.enabled
+               for s in prepared_flow.launch_request.setup.profile.stages):
+            if not getattr(self, '_thermal_preparing', False):
+                self._thermal_preparing = True
+                self._thermal_preparation_task = asyncio.create_task(
+                    self._prepare_thermal_run(prepared_flow.launch_request))
             return
+        self._start_confirmed_run()
+
+    async def _prepare_thermal_run(self, request):
+        from Modules.lvs_storage_thermal_execution import release_preparation
+
+        launcher = self.service.run_launcher
+        manager = getattr(self.service, 'privileged_telemetry', None)
+        loop = asyncio.get_running_loop()
+        progress = self._thermal_review_screen('Preparing Thermal Assist', 'Checking session readiness…')
+        launched = False
+        pending = None
+        abandoned = threading.Event()
+
+        async def ask(title, detail, accept, decline):
+            decision = loop.create_future()
+            await self.push_screen(self._thermal_review_screen(title, detail, accept, decline),
+                                   lambda result: decision.set_result(result) if not decision.done() else None)
+            return await decision is True
+
+        async def authorize():
+            summary = getattr(manager, 'thermal_source_approval', '')
+            if not await ask('Thermal Assist authorization',
+                             summary or 'Authenticate to prepare the trusted Thermal Assist helper?',
+                             'Authorize', 'Skip Thermal Assist'):
+                return False
+            if await asyncio.to_thread(manager.sudo_noninteractive_ready):
+                return True
+            try:
+                with self.suspend():  # Only sudo's own authentication prompt.
+                    return manager.prepare_session()
+            except (EOFError, KeyboardInterrupt, RuntimeError):
+                return False
+
+        def dispatch(callback):
+            if abandoned.is_set():
+                return False
+            decision = asyncio.run_coroutine_threadsafe(callback(), loop)
+            while not abandoned.is_set():
+                try:
+                    return decision.result(timeout=0.2)
+                except DispatchTimeout:
+                    continue
+            decision.cancel()
+            return False
+
+        def prepare():
+            try:
+                return launcher.prepare_execution(request, privilege_manager=manager,
+                    authorize=authorize, frontend_dispatch=dispatch,
+                    status=lambda message: loop.call_soon_threadsafe(progress.update_message, message))
+            finally:
+                if abandoned.is_set():
+                    release_preparation(request.setup.profile)
+
+        try:
+            await self.push_screen(progress)
+            pending = asyncio.create_task(asyncio.to_thread(prepare))
+            plans = await asyncio.shield(pending)
+            review_text = []
+            def capture_review(detail):
+                review_text.append(detail)
+                return True
+            if not launcher.review_execution(request, plans, review=capture_review):
+                return
+            if review_text and not await ask('Review Thermal Assist readiness', review_text[0].split('\n1. Continue run', 1)[0],
+                                             'Start run', 'Return to setup'):
+                self._set_detail('Run not started. Reopen Review and run for fresh readiness.')
+                return
+            if self.run_setup is not request.setup:
+                return
+            # Recheck the bound receipt after the asynchronous operator decision.
+            if not launcher.review_execution(request, plans, review=lambda _: True):
+                return
+            progress.dismiss()
+            self._start_confirmed_run()
+            launched = True
+        except Exception as exc:
+            self._set_detail(f'Run preparation failed: {exc}')
+        finally:
+            self._thermal_preparing = False
+            if not launched:
+                abandoned.set()
+                if pending is not None and not pending.done():
+                    pending.add_done_callback(lambda _: release_preparation(request.setup.profile))
+                else:
+                    release_preparation(request.setup.profile)
+                if self.screen_stack and self.screen is progress:
+                    progress.dismiss()
+
+    def _start_confirmed_run(self):
         self.confirm_run = False
         self.run_in_progress = True
         self.run_cancel_requested = False
@@ -184,30 +269,6 @@ class TuiRunExecutionAdapterMixin:
             pass
         thread = threading.Thread(target=self._run_profile_thread, args=(profile,), daemon=True)
         thread.start()
-
-    def _authorize_thermal_execution(self) -> bool:
-        # Textual releases the terminal before the existing sudo manager prompts.
-        try:
-            with self.suspend():
-                summary=getattr(self.service.privileged_telemetry,'thermal_source_approval','')
-                if summary:print(summary)
-                choice = input('Authorize privileged Thermal Assist readiness preparation? Workloads require the following review. [y/N]: ').strip().lower()
-                return choice in {'y', 'yes'} and self.service.privileged_telemetry.prepare_session()
-        except (EOFError, KeyboardInterrupt, RuntimeError):
-            return False
-
-    def _review_thermal_preparation(self, text: str) -> bool:
-        # Reuse the foreground terminal handoff used for sudo authorization.
-        # No prompt is allowed in the execution thread or a timed stage.
-        try:
-            with self.suspend():
-                print(text)
-                accepted = input('Choose [2]: ').strip() == '1'
-        except (EOFError, KeyboardInterrupt, RuntimeError):
-            accepted = False
-        if not accepted:
-            self._set_detail(text + '\n\nRun not started; runtime hold released. Reopen Review and run for fresh readiness.')
-        return accepted
 
     def action_edit_wall_wattage(self) -> None:
         if self.view_mode == "settings":

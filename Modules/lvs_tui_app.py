@@ -8,7 +8,8 @@ import time
 from typing import Any, Dict, Optional
 
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import Button, Header, Input, Label, ListItem, ListView, Static
 
 from Modules.linux_validation_suite_service import SuiteAppService
@@ -51,6 +52,55 @@ from Modules.lvs_tui_run_setup_adapter import TuiRunSetupAdapterMixin
 from Modules.lvs_tui_settings_adapter import TuiSettingsAdapterMixin
 
 
+class ThermalReviewScreen(ModalScreen[bool]):
+    BINDINGS = [('escape', 'decline', 'Return')]
+    CSS = """
+    ThermalReviewScreen { align: center middle; }
+    ThermalReviewScreen > Vertical {
+        width: 90%; height: 85%; border: round $primary; background: $surface;
+        padding: 1 2;
+    }
+    ThermalReviewScreen VerticalScroll { height: 1fr; margin: 1 0; }
+    ThermalReviewScreen Horizontal { height: auto; }
+    ThermalReviewScreen Button { margin-right: 1; }
+    """
+
+    def __init__(self, title, message, accept=None, decline=None):
+        super().__init__()
+        self.heading = title
+        self.message = message
+        self.accept = accept
+        self.decline = decline
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self.heading, markup=False)
+            with VerticalScroll():
+                yield Static(self.message, id='thermal-review-message', markup=False)
+            if self.accept:
+                with Horizontal():
+                    yield Button(self.decline, id='thermal-decline')
+                    yield Button(self.accept, variant='primary', id='thermal-accept')
+
+    def on_mount(self):
+        if self.accept:
+            self.query_one('#thermal-decline', Button).focus()
+        self.update_message(self.message)
+
+    def update_message(self, message):
+        self.message = message
+        if self.is_mounted:
+            self.query_one('#thermal-review-message', Static).update(message)
+
+    def action_decline(self):
+        if self.accept:
+            self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed):
+        event.stop()
+        self.dismiss(event.button.id == 'thermal-accept')
+
+
 class LinuxValidationSuiteTui(
     TuiStageConfigurationMixin,
     TuiAppActionsAdapterMixin,
@@ -62,6 +112,8 @@ class LinuxValidationSuiteTui(
     TuiRunExecutionAdapterMixin,
     App[None],
 ):
+    _thermal_review_screen = ThermalReviewScreen
+
     CSS = """
     Screen {
         layout: vertical;
@@ -249,6 +301,8 @@ class LinuxValidationSuiteTui(
         self._rendered_context_action_mode: Optional[str] = None
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if getattr(self, '_thermal_preparing', False):
+            return None
         if self.run_in_progress:
             return True if action in {"cancel_setup_input", "telemetry_detail"} else None
         if self.upload_in_progress:
@@ -323,6 +377,9 @@ class LinuxValidationSuiteTui(
         self._refresh_global_action_buttons()
 
     async def on_unmount(self) -> None:
+        preparation = getattr(self, '_thermal_preparation_task', None)
+        if preparation is not None and not preparation.done():
+            preparation.cancel()
         self.service.stop_enhanced_telemetry_keepalive()
 
     async def _replace_sidebar_labels(

@@ -41,7 +41,7 @@ def fields(stage, section='thermal', rows=()):
                 result.append(item('percent:'+d,label,m.per_device_percent.get(d,'default')))
         return result
     if section=='thermal_advanced':
-        return [item('provider','Access provider',m.access_mode,('exclusive','shared_readonly_opt_in'),('Exclusive inactive HDD','Experimental shared data')),
+        settings = [item('provider','Access provider',m.access_mode,('exclusive','shared_readonly_opt_in'),('Exclusive inactive HDD','Experimental shared data')),
                 item('budget_mode','Aggregate budgets',m.budget_mode,('automatic','manual'),('Automatic from qualified rates','Manual caps')),
                 item('aggregate_iops','Manual total IOPS',m.aggregate_iops_limit if m.aggregate_iops_limit is not None else 'auto'),
                 item('aggregate_mib','Manual total MiB/s',m.aggregate_bps_limit/1024**2 if m.aggregate_bps_limit is not None else 'auto'),
@@ -51,8 +51,13 @@ def fields(stage, section='thermal', rows=()):
                 item('block_kib','Read size (KiB)',m.block_size//1024,('4','8','16','32','64','128','256','512','1024')),
                 item('warning','Warning temperature °C',m.temperature_warning_c if m.temperature_warning_c is not None else 'device'),
                 item('stop','Stop temperature °C',m.temperature_limit_c if m.temperature_limit_c is not None else 'device'),
-                item('system_intensity','System intent (%)',m.system_intensity_percent),
                 item('perdrive','Per-drive intensity…','Open')]
+        hidden = set()
+        if m.budget_mode == 'automatic':
+            hidden.update(('aggregate_iops', 'aggregate_mib'))
+        if m.rate_mode == 'percent':
+            hidden.update(('iops', 'mib'))
+        return [setting for setting in settings if setting.attribute not in hidden]
     group = GROUP_LABELS[GROUPS.index(m.selection)]
     if m.selection=='individual':group=f'{len(m.device_ids)} physical drive(s)'
     return [item('enabled','Enabled',m.enabled,('false','true'),('Off','On — recommended data setup')),
@@ -66,7 +71,7 @@ def fields(stage, section='thermal', rows=()):
 def help_text(section='thermal'):
     if section=='thermal_advanced':
         return ('Advanced changes do not expand eligibility. Automatic budgets use authoritative physical-device rates; '
-                'manual caps must cover the requested rates. Enter auto to clear optional rates, device for sensor-derived '
+                'To switch to manual, enter both caps as IOPS / MiB/s. Enter auto to clear optional rates, device for sensor-derived '
                 'temperature limits. Custom rate mode begins at 1 IOPS until edited. MiB/s means 1,048,576 bytes/s. '
                 'These caps do not bound OS, kernel or initialization I/O.')
     return ('Enabled → On selects the experimental shared read-only data provider and automatic aggregate budgets. '
@@ -124,6 +129,15 @@ def apply(edit, index, key, raw, validator, rows=()):
     elif name=='budget_mode':
         if text not in ('automatic','manual'):raise ValueError('Choose automatic or manual')
         m.budget_mode=text
+    elif name == 'manual_caps':
+        parts = text.split('/')
+        if len(parts) != 2:
+            raise ValueError('Enter total IOPS / MiB/s, for example 128 / 8')
+        m.aggregate_iops_limit = whole(parts[0].strip(), 1, 2**40)
+        m.aggregate_bps_limit = mib(parts[1].strip())
+        if m.aggregate_bps_limit is None:
+            raise ValueError('Manual bandwidth cap is required')
+        m.budget_mode = 'manual'
     elif name=='aggregate_iops':m.aggregate_iops_limit=None if text=='auto'else whole(text,1,2**40)
     elif name=='aggregate_mib':m.aggregate_bps_limit=mib(text)
     elif name=='rate_mode':

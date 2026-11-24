@@ -39,16 +39,16 @@ class RunLaunchCoordinator:
         self.executor = executor
         self.state_lock_context = state_lock_context or nullcontext
 
-    def prepare_execution(self, request: RunLaunchRequest, *, privilege_manager: Any, authorize: Callable[[], bool]):
-        """Foreground-only boundary after final confirmation and effective overrides."""
+    def prepare_execution(self, request: RunLaunchRequest, *, privilege_manager: Any, authorize: Callable[[], bool], frontend_dispatch=None, status=None):
+        """Prepare after effective overrides, with any authorization owned by the frontend."""
         from .lvs_storage_thermal_execution import prepare, release_preparation, key, blocked, schedule
         if request.setup is None:
             raise ValueError('Execution preparation requires the effective run setup')
-        if threading.current_thread() is not threading.main_thread():
+        if frontend_dispatch is None and threading.current_thread() is not threading.main_thread():
             raise RuntimeError('Execution preparation requires the frontend thread')
         profile = request.setup.profile
         try:
-            return prepare(profile, privilege_manager, authorize)
+            return prepare(profile, privilege_manager, authorize, frontend_dispatch=frontend_dispatch, status=status)
         except Exception as exc:
             release_preparation(profile)
             plans = {key(s): blocked(dict(configuration=json.loads(key(s))),

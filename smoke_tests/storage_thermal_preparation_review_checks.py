@@ -81,7 +81,7 @@ def run_thermal_preparation_review_checks():
     # configuration-bound ticket, allowing a truthful primary-only continuation.
     lease = Mock();manager = Mock();manager.sudo_noninteractive_ready.return_value = False
     with patch('Modules.lvs_storage_thermal_runtime.inspect', return_value=dict(status='DEFERRED', on_demand_startup=True)), \
-         patch('Modules.lvs_storage_thermal_transient.prepare_candidate', return_value={}), \
+         patch('Modules.lvs_storage_thermal_transient.prepare_candidate', return_value=dict(stager_sha256='fixture', manifest_sha256='fixture')), \
          patch('Modules.lvs_storage_thermal_transient.approval_text', return_value='fixture approval'), \
          patch('Modules.lvs_storage_thermal_transient.start_and_hold', return_value=lease), \
          patch('Modules.lvs_storage_thermal_runtime.preview', side_effect=KeyError('incomplete response')):
@@ -113,12 +113,17 @@ def run_thermal_review_frontend_checks():
     from Modules.lvs_service_models import FrontendActionSpec
 
     @contextmanager
-    def runtime(profile, stage, lease, coverage='ready'):
+    def runtime(profile, stage, lease, coverage='ready', startup=False):
         plan = dict(plan_for(stage), installed_runtime=dict(runtime_mode='lvs.thermal.transient.data.v1'))
         if coverage == 'partial':plan.update(blocked_devices=['disk-b'],partial_coverage=True)
         if coverage == 'zero':plan.update(status='BLOCKED',runnable_devices=[])
         if coverage == 'recovery':plan.update(status='BLOCKED',runnable_devices=[],eligibility_status='ELIGIBLE',reasons=['unresolved recovery obligation'])
-        with patch('Modules.lvs_storage_thermal_runtime.inspect', return_value=dict(status='DEFERRED')), \
+        approved = dict(commit='fixture-commit', source=dict(digest='fixture-source'),
+                        manifest_sha256='fixture-manifest', stager_sha256='fixture-stager',
+                        bundle='/tmp/fixture-evidence', build=dict(fio_version='fio-3.42'))
+        with patch('Modules.lvs_storage_thermal_runtime.inspect', return_value=dict(status='DEFERRED', on_demand_startup=startup)), \
+             patch('Modules.lvs_storage_thermal_transient.prepare_candidate', return_value=approved), \
+             patch('Modules.lvs_storage_thermal_transient.start_and_hold', return_value=lease), \
              patch('Modules.lvs_storage_thermal_runtime.preview', return_value=plan,
                    side_effect=OSError('authorization unavailable') if coverage=='failure' else None), \
              patch('Modules.lvs_storage_thermal_transient.Hold', return_value=lease):yield
@@ -150,42 +155,78 @@ def run_thermal_review_frontend_checks():
         else:lease.close.assert_not_called()
         assert not hasattr(profile, '_thermal_execution_preparation')
 
-    class App(TuiRunExecutionAdapterMixin):
+    try:
+        from textual.app import App as TextualApp
+        from Modules.lvs_tui_app import ThermalReviewScreen
+    except ModuleNotFoundError as exc:
+        if exc.name != 'textual':
+            raise
+        return
+
+    class App(TuiRunExecutionAdapterMixin, TextualApp):
+        _thermal_review_screen = ThermalReviewScreen
         def _handle_sync_run_setup_action(self, action):pass
         def _prepare_run_confirmation_flow(self, **kwargs):return self.flow
         def _set_detail(self, value):self.detail=value
-        def _set_status(self, value):pass
-        def set_timer(self, *args):pass
-        @contextmanager
-        def suspend(self):yield
-        async def _show_run_active_sidebar(self):pass
-        def _run_profile_thread(self, profile):raise AssertionError('real execution forbidden')
+        def _start_confirmed_run(self):
+            self.run_in_progress=True
+        def suspend(self):
+            raise AssertionError('cached sudo must keep Textual active')
+
+    async def until(pilot, predicate):
+        for _ in range(100):
+            if predicate():
+                return
+            await pilot.pause(0.02)
+        raise AssertionError('Timed out waiting for the Textual preparation screen')
 
     async def tui():
-        for answer, coverage in product(('1', '2', '', 'eof'), outcomes):
-            profile, stage = fixture();lease=Mock();events=[];manager=Mock();manager.sudo_noninteractive_ready.return_value=True
-            coordinator=RunLaunchCoordinator(Mock());path=Path('fixture')
+        for answer, coverage in (('accept','ready'), ('decline','partial'), ('escape','zero'),
+                                 ('decline','failure'), ('decline','recovery')):
+            profile, stage = fixture()
+            lease=Mock()
+            manager=Mock()
+            manager.sudo_noninteractive_ready.return_value=True
+            coordinator=RunLaunchCoordinator(Mock())
+            path=Path('fixture')
             setup=SimpleNamespace(profile_path=path, profile=profile, heatsoak_minutes=0)
-            app=App();app.run_setup=setup;app.view_mode='setup';app.selected_profile=SimpleNamespace(path=path,name='fixture')
-            app.confirm_run=True;app.run_in_progress=False;app.run_cancel_event=threading.Event();app.run_status_tracker=Mock()
+            app=App()
+            app.run_setup=setup
+            app.view_mode='setup'
+            app.selected_profile=SimpleNamespace(path=path,name='fixture')
+            app.confirm_run=True
+            app.run_in_progress=False
             app.service=SimpleNamespace(run_launcher=coordinator, privileged_telemetry=manager,
                 setup_action_specs=lambda s:[FrontendActionSpec('u','run_selected')])
             app.flow=SimpleNamespace(launch_request=RunLaunchRequest(path,setup=setup),preflight_action=SimpleNamespace(blocked=False))
-            def get_input(prompt):
-                events.append('review')
-                if answer=='eof':raise EOFError()
-                return answer
-            with runtime(profile,stage,lease,coverage),patch('builtins.input',side_effect=get_input), \
-                 patch('Modules.lvs_tui_run_execution_adapter.threading.Thread') as thread,redirect_stdout(io.StringIO())as out:
-                app.action_run_selected();assert events==['review']
-                if answer=='1':
-                    thread.return_value.start.assert_called_once();lease.close.assert_not_called()
-                    with execution_scope(profile):pass
-                else:
-                    thread.assert_not_called();assert not app.run_in_progress and not app.confirm_run
-                    assert 'Run not started' in app.detail
-                assert outcomes[coverage] in out.getvalue()
-                if coverage in ('ready','partial'):lease.close.assert_called_once()
-                else:lease.close.assert_not_called()
-            await asyncio.sleep(0)
+            startup = coverage == 'ready'
+            with runtime(profile,stage,lease,coverage,startup=startup),patch('builtins.input',side_effect=AssertionError('terminal prompt')):
+                async with app.run_test(size=(100,36)) as pilot:
+                    app.action_run_selected()
+                    if startup:
+                        await until(pilot,lambda: isinstance(app.screen,ThermalReviewScreen) and app.screen.accept == 'Authorize')
+                        assert 'fixture-manifest' in app.screen.message and '/tmp/fixture-evidence' in app.screen.message
+                        assert '"files"' not in app.screen.message
+                        await pilot.pause()
+                        app.screen.query_one('#thermal-accept').focus()
+                        await pilot.press('enter')
+                    await until(pilot,lambda: isinstance(app.screen,ThermalReviewScreen) and app.screen.accept == 'Start run')
+                    assert not app.run_in_progress and outcomes[coverage] in app.screen.message
+                    await pilot.pause()
+                    if answer == 'escape':
+                        await pilot.press('escape')
+                    else:
+                        app.screen.query_one('#thermal-'+answer).focus()
+                        await pilot.press('enter')
+                    await until(pilot,lambda: app._thermal_preparation_task.done())
+                    assert app.run_in_progress is (answer=='accept'), getattr(app, 'detail', '')
+                    if answer=='accept':
+                        lease.close.assert_not_called()
+                        with execution_scope(profile):pass
+                    else:
+                        assert 'Run not started' in app.detail
+                    if coverage in ('ready','partial'):lease.close.assert_called_once()
+                    else:lease.close.assert_not_called()
+                    assert not hasattr(profile, '_thermal_execution_preparation')
+                    await pilot.pause()
     asyncio.run(tui())

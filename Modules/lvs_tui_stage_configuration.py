@@ -168,6 +168,14 @@ class TuiStageConfigurationMixin:
                 placeholder=setting.label, detail=f"{setting.label}. Enter a valid value; Esc cancels."))
 
     async def _commit_stage_configuration(self, value: str) -> None:
+        if self.stage_configuration_key == 'thermal_ui_budget_mode' and value == 'manual':
+            module = self._stage_configuration_edit().profile.stages[self.stage_configuration_index].modules.storage_thermal
+            if module.budget_mode == 'automatic':
+                await self._show_stage_configuration()
+                self.stage_configuration_key = 'thermal_ui_manual_caps'
+                self._apply_input_state(tui_input_state('__profile_configuration_value',
+                    placeholder='Total IOPS / MiB/s', detail='Enter both manual caps, for example 128 / 8. Esc cancels.'))
+                return
         if self.stage_configuration_key == 'thermal_ui_targets' and value == 'individual':
             try:
                 self.thermal_picker_rows = self.service.thermal_drive_choices()
