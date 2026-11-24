@@ -388,8 +388,8 @@ def run_thermal_stage_frontend_parity_checks():
     profile=ValidationProfile('fixture',stages=[stage()]);original=deepcopy(profile)
     editor=ProfileEditor();controller=ProfileEditController(editor)
     fields=stage_settings(profile.stages[0],editor)
-    index=next(i+1 for i,s in enumerate(fields) if s.key=='thermal_enabled')
-    answers=iter([str(index),'false','b'])
+    index=len([s for s in fields if not s.key.startswith('thermal_')])+1
+    answers=iter([str(index),'1','false','b','b'])
     host=SimpleNamespace(profile_editor=editor,profile_edit_controller=controller,
         profile_save=SimpleNamespace(validator=ProfileValidator()),_input=lambda _:next(answers))
     with redirect_stdout(io.StringIO()):ProfileCliEditor(host).configure_stage_workloads(profile,0,['CPU'],run_only=True)

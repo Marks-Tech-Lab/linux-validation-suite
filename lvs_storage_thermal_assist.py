@@ -23,8 +23,8 @@ ROOT=Path(__file__).resolve().parent
 
 
 def drive_lines(rows):
-    return [f"{i}. {r['model']} | {r['device_id']} | {r['transport']} / {r['drive_class']}"
-            f"{' [SYSTEM: blocked]' if r['system_drive'] else ' [TOPOLOGY INCOMPLETE: blocked]' if r.get('classification_status')=='incomplete' else ''}\n   "
+    from Modules.lvs_storage_thermal_configuration import drive_label
+    return [f"{i}. {drive_label(r)} | {r['transport']} / {r['drive_class']}\n   "
             + ('Eligible candidate under selected access contract' if r['eligible'] else 'Blocked: '+'; '.join(r['reasons']))
             for i,r in enumerate(rows,1)]
 
@@ -79,17 +79,26 @@ class ThermalMenu:
         if not low<=value<=high:raise ValueError(f'Choose {low}–{high}')
         return value
 
+    def mib_rate(self, prompt, default):
+        from decimal import Decimal, InvalidOperation
+        text=self.ui.ask(f'{prompt} [{default:g}]: ').strip() or str(default)
+        try:value=Decimal(text)*1048576
+        except InvalidOperation:raise ValueError('Enter positive MiB/s')from None
+        if not value.is_finite() or value!=value.to_integral_value() or not 1<=value<=2**40:
+            raise ValueError('Enter positive MiB/s representable in whole bytes')
+        return int(value)
+
     def advanced(self):
         self.ui.write('1. Read size\n2. Advanced IOPS/bandwidth\n3. Temperature policy\n4. Per-drive intensity\n5. Build native guard\n6. Access contract and aggregate budgets\n0. Back')
         choice=self.ui.ask('Choose [0]: ').strip() or '0'
-        if choice=='1':self.config=replace(self.config,block_size=self.number('Read size in bytes (power of two)',4096,1048576,self.config.block_size))
+        if choice=='1':self.config=replace(self.config,block_size=self.number('Read size in KiB (power of two)',4,1024,self.config.block_size//1024)*1024)
         elif choice=='2':
             self.ui.write('1. Percentage mode\n2. Advanced rates\n0. Back')
             mode=self.ui.ask('Choose [0]: ').strip()
             if mode=='1':self.config=replace(self.config,rate_mode='percent',iops=None,bandwidth_bytes_per_second=None)
             elif mode=='2':
                 rate=self.number('Requested IOPS (still limited by pilot ceiling)',1,1000000,15)
-                bandwidth=self.number('Bandwidth cap in bytes/s',1,2**40,2*1024**2)
+                bandwidth=self.mib_rate('Bandwidth cap in MiB/s',2)
                 self.config=replace(self.config,rate_mode='advanced',iops=rate,bandwidth_bytes_per_second=bandwidth)
         elif choice=='3':
             self.ui.write('1. Require reliable temperature monitoring\n2. Bounded unmonitored approval at start\n0. Back')
@@ -111,7 +120,7 @@ class ThermalMenu:
             if mode=='1':self.config=replace(self.config,access_mode='exclusive')
             elif mode=='2':
                 iops=self.number('Aggregate fio IOPS budget (one-drive starting example: 128)',1,2**40,self.config.aggregate_iops_limit or 128)
-                bps=self.number('Aggregate fio bytes/s budget (8 MiB/s = 8388608)',1,2**40,self.config.aggregate_bps_limit or 8388608)
+                bps=self.mib_rate('Aggregate fio MiB/s budget', (self.config.aggregate_bps_limit or 8388608)/1048576)
                 self.config=replace(self.config,access_mode='shared_readonly_opt_in',aggregate_iops_limit=iops,
                                     aggregate_bps_limit=bps,monitoring='required',unmonitored_approval='')
         elif choice=='5':
@@ -226,7 +235,8 @@ class ThermalMenu:
         while not self.closed:
             try:
                 self.ui.open('LVS Storage Thermal Assist')
-                self.ui.write('Guarded provisional read activity; access contract is selected in configuration. System/array paths remain blocked.\n'
+                self.ui.write('Guarded provisional read activity; system/array paths remain blocked.\n'
+                              + ('Exclusive: inactive physical SATA/SAS HDD only.\n' if self.config.access_mode=='exclusive' else 'Experimental shared: qualified internal data HDD/SSD/NVMe, mounted or unmounted.\n') +
                               '1. Check drives and eligibility\n2. Choose drive group or individual drives\n'
                               '3. Set ordinary/system activity\n4. Set duration\n5. Advanced options\n'
                               '6. Preview execution plan\n7. Confirm and start\n8. Exit')

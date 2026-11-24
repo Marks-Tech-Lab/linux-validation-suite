@@ -309,8 +309,10 @@ def run_tui_thermal_configuration_checks():
                     if run_only:await app.action_setup_run()
                     else:await app.action_edit_profile()
                     await app._open_stage_configuration(0, for_run=run_only)
+                    folder = next(i+1 for i,s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_ui_open')
+                    await app._activate_stage_configuration_item(folder)
                     for value in ('true', 'false', 'true'):
-                        row = next(i + 1 for i, s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_enabled')
+                        row = next(i + 1 for i, s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_ui_enabled')
                         await app._activate_stage_configuration_item(row)
                         app.query_one('#items').index = app.profile_edit_picker_options.index(value)
                         await pilot.press('enter');await pilot.pause()
@@ -319,31 +321,29 @@ def run_tui_thermal_configuration_checks():
                         assert app.view_mode == 'stage_configuration' and app.stage_configuration_fields
                         assert 'Updated:' in app.observed_detail
                         await app._show_stage_configuration()
-                    # Default synthetic values must compare as dictionaries, not
-                    # nonexistent dataclass fields or rate_mode strings.
-                    from Modules.lvs_profile_report_text import storage_thermal_access_help
-                    assert storage_thermal_access_help() in app.observed_detail
-                    access = next(i + 1 for i, s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_access_mode')
+                    assert 'Shared' not in '\n'.join(app.observed_rows) or app.stage_configuration_fields
+                    assert 'System drives stay excluded' in app.observed_detail
+                    assert not any('JSON' in row or 'authorization (' in row for row in app.observed_rows)
+                    advanced = next(i+1 for i,s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_ui_advanced')
+                    await app._activate_stage_configuration_item(advanced)
+                    access = next(i+1 for i,s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_ui_provider')
                     await app._activate_stage_configuration_item(access);await pilot.pause()
-                    assert storage_thermal_access_help() in app.observed_detail
+                    assert 'Experimental shared data' in '\n'.join(app.observed_rows)
                     await pilot.press('escape');await pilot.pause()
                     assert app.view_mode == 'stage_configuration'
-                    for row in app.observed_rows:
-                        if row.startswith(('Thermal advanced rates', 'Run-local system authorization')):assert 'overridden' not in row
                     if run_only:
-                        original = app.run_setup.original_profile.stages[0].modules.storage_thermal
-                        effective = app.run_setup.profile.stages[0].modules.storage_thermal
-                        original._system_device_ids = ('fixture-id',)
-                        effective._system_device_ids = ['fixture-id']
-                        original._control_plane_colocation = effective._control_plane_colocation = True
-                        await app._show_stage_configuration()
-                        auth = next(row for row in app.observed_rows if row.startswith('Run-local system authorization'))
-                        assert 'overridden' not in auth
-                        effective._system_swap = True
-                        effective.rate_mode, effective.iops, effective.bandwidth_bytes_per_second = 'advanced', 16, 1048576
-                        await app._show_stage_configuration()
-                        for prefix in ('Thermal advanced rates', 'Run-local system authorization'):
-                            assert 'profile default:' in next(row for row in app.observed_rows if row.startswith(prefix))
+                        assert app.run_setup.profile.stages[0].modules.storage_thermal.budget_mode == 'automatic'
+                        # Synthetic legacy comparison remains normalized without exposing it in menus.
+                        from Modules.lvs_tui_stage_configuration import _stage_setting_value
+                        from Modules.lvs_storage_thermal_stage import thermal_settings
+                        original = app.run_setup.original_profile.stages[0]
+                        effective = app.run_setup.profile.stages[0]
+                        from Modules.lvs_stage_configuration import StageSetting
+                        original.modules.storage_thermal.enabled = True
+                        setting = next(f for f in thermal_settings(original, StageSetting) if f.key == 'thermal_system_access')
+                        original.modules.storage_thermal._system_device_ids = ('fixture-id',)
+                        effective.modules.storage_thermal._system_device_ids = ['fixture-id']
+                        assert _stage_setting_value(original, setting) == _stage_setting_value(effective, setting)
                     else:
                         module = app.profile_edit.profile.stages[0].modules.storage_thermal
                         module.access_mode = 'shared_readonly_opt_in';module.selection = 'individual'

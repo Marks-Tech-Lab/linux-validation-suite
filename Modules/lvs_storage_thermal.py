@@ -320,6 +320,13 @@ def result_successful(record: dict) -> bool:
 
 def stage_config(stage):
     values = asdict(stage.modules.storage_thermal)
+    budget_mode = values.pop('budget_mode', 'manual')
+    if budget_mode not in ('manual', 'automatic'):raise ValueError('unsupported aggregate budget mode')
+    if budget_mode == 'automatic':
+        # An unresolved automatic plan cannot admit useful reads. Foreground
+        # preparation replaces this probe-only cap using authoritative rates.
+        values['aggregate_iops_limit'],values['aggregate_bps_limit'] = getattr(
+            stage.modules.storage_thermal, '_resolved_aggregate_limits', (1, 1))
     if type(values["enabled"]) is not bool:
         raise ValueError("Thermal enabled must be a boolean")
     values.pop('enabled')

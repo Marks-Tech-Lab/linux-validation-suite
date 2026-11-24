@@ -24,19 +24,25 @@ production eligibility, the guard, profile settings or stage lifecycle.
 `modules.storage_thermal` is a duration-based optional module. Its duration is
 always the containing stage's duration; a saved profile cannot supply a second
 duration or reusable execution approval. The shared CLI/TUI **Configure workload
-settings** interface and Run Setup **O / Stage Overrides** expose:
+settings** interface and Run Setup **O / Stage Overrides** now open one dedicated
+**Storage Thermal Assist…** screen:
 
-- Enabled/OFF, all internal, SATA/SAS, NVMe, HDD, SSD or individual stable IDs.
-- Ordinary 50% and system-drive 25% intent; individual intensity overrides.
-- Read size, and an atomic advanced-rate JSON edit containing `rate_mode`, `iops`
-  and `bandwidth_bytes_per_second` (use JSON `null` for an unused rate).
-- Required monitoring or explicitly requested bounded unmonitored operation,
-  temperature warning/stop thresholds and ordinary Linux scheduling.
+- Enabled/OFF; explicitly selecting On applies recommended experimental shared
+  data access, automatic budgets and required temperature monitoring.
+- Human drive groups or a physical picker with model, capacity and system/data
+  classification; no raw stable-ID or JSON input is needed.
+- Ordinary intensity percentage; system inclusion remains unavailable through the
+  current on-demand identity pending separate qualification.
+- Advanced provider, aggregate/per-drive rates in IOPS and MiB/s, read size in KiB,
+  temperature thresholds in °C and individual percentage overrides.
 
-Lists and per-drive mappings use JSON. Configuration is transactionally validated
-by the same `ThermalConfig` policy as the standalone runner. Enter/back cancels
-editing; invalid input does not partly change a stage. Save, Save As and Copy use
-the existing profile workflows. A run-local OFF comparison changes no saved file.
+See [the guided workflow and automatic-budget contract](storage_thermal_on_demand.md#access-modes-and-final-preparation-review).
+Existing profile providers and policy values are preserved until explicitly edited.
+The internal JSON catalog remains a compatibility API, not the operator screen.
+Edits remain transactional under `ThermalConfig`; invalid edits do not partly
+change a stage. Save, Save As and Copy retain existing semantics. Run-local edits
+never save the original profile. Existing legacy unmonitored settings remain
+readable but are not silently approved by the guided workflow.
 Original/effective profiles and field-level overrides remain separately captured
 in [effective readiness evidence](../OUTPUT_CONTRACT_INDEX.md). Runtime results
 also preserve `profile_original.json`, `profile_used.json`, manifest/extended

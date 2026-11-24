@@ -130,7 +130,19 @@ class SuiteProfileServiceMixin:
         return stage_settings(edit.profile.stages[index], self.profile_editor, configuration_gpu_cards(self)
                               if any(m.enabled for m in (edit.profile.stages[index].modules.gpu_3d, edit.profile.stages[index].modules.vram)) else ())
 
-    def apply_stage_configuration(self, edit: ProfileEditState, index: int, key: str, value: str):
+    def thermal_configuration_settings(self, edit, index, section='thermal', rows=()):
+        from .lvs_storage_thermal_configuration import fields
+        return fields(edit.profile.stages[index], section, rows)
+
+    def thermal_drive_choices(self):
+        from .lvs_storage_thermal_configuration import drive_choices
+        return drive_choices()
+
+    def apply_stage_configuration(self, edit: ProfileEditState, index: int, key: str, value: str, *, thermal_rows=()):
+        if key.startswith('thermal_ui_'):
+            from .lvs_storage_thermal_configuration import apply
+            return apply(edit, index, key, value, self.profile_save.validator,
+                         thermal_rows)
         return apply_stage_setting(edit, index, key, value, self.profile_edit_controller, self.profile_save.validator,
                                    configuration_gpu_cards(self) if key in {"gpu_3d_target", "vram_target"} else ())
 

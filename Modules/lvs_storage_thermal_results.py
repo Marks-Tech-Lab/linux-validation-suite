@@ -21,7 +21,7 @@ def storage_thermal_access_help() -> str:
     return ('exclusive: inactive physical SATA/SAS HDDs only; mounted drives, SSDs and NVMe are excluded.\n'
             'shared_readonly_opt_in: experimental read-only access to supported internal SATA/SAS HDDs/SSDs '
             'and qualified local PCIe NVMe data drives, mounted or unmounted.\n'
-            'Set aggregate IOPS and bytes/s budgets before selecting shared mode; required monitoring and '
+            'Recommended data setup derives aggregate budgets at authorized readiness; Advanced offers manual caps. Required monitoring and '
             'authoritative topology/identity checks still apply. System, complex-stack and external access '
             'are not authorized by selecting this mode. Configured activity is not executed activity.')
 

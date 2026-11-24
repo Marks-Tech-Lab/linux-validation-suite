@@ -654,6 +654,10 @@ class ProfileCliEditor:
             stage = profile.stages[stage_index]
             fields = stage_settings(stage, host.profile_editor, configuration_gpu_cards(host)
                                     if stage.modules.gpu_3d.enabled or stage.modules.vram.enabled else ())
+            from .lvs_stage_configuration import StageSetting
+            fields = [f for f in fields if not f.key.startswith('thermal_')]
+            fields.append(StageSetting('thermal_ui_open', 'Storage Thermal Assist…', 'storage_thermal', 'enabled',
+                                       'On' if stage.modules.storage_thermal.enabled else 'Off'))
             print(f"\nStage {stage_index + 1} workload settings — "
                   + ("this run only; profile file unchanged" if run_only else "unsaved profile edits"))
             from .lvs_profile_report_text import storage_thermal_access_help
@@ -673,6 +677,9 @@ class ProfileCliEditor:
                 if not 0 <= index < len(fields):
                     raise ValueError("Invalid setting number.")
                 field = fields[index]
+                if field.key == 'thermal_ui_open':
+                    self.configure_thermal(profile, stage_index, labels)
+                    continue
                 if field.options:
                     for option_index, value in enumerate(field.options, 1):
                         print(f"{option_index}. {(field.option_labels or field.options)[option_index - 1] or '(none)'}")
@@ -699,6 +706,55 @@ class ProfileCliEditor:
                 print(f"Setting unchanged: {exc}")
             except BackRequested:
                 print("Setting cancelled; value unchanged.")
+
+    def configure_thermal(self, profile, stage_index, labels):
+        """The same bounded fields and transactions as the normal TUI screen."""
+        from .lvs_storage_thermal_configuration import fields, help_text, apply, drive_choices
+        section = 'thermal';rows = []
+        while True:
+            stage = profile.stages[stage_index]
+            settings = fields(stage, section, rows)
+            print('\nStorage Thermal Assist — ' + section.replace('thermal', 'Configuration').replace('_', ' '))
+            from .lvs_profile_report_text import storage_thermal_request_text
+            print(storage_thermal_request_text(stage.modules.storage_thermal))
+            print(help_text(section))
+            for number, item in enumerate(settings, 1):
+                value = str(item.value).lower() if isinstance(item.value, bool) else str(item.value)
+                if item.key == 'thermal_ui_enabled':value = 'On' if item.value else 'Off'
+                elif item.option_labels and value in item.options:value = item.option_labels[item.options.index(value)]
+                print(f'{number}. {item.label}: {value}')
+            try:
+                raw = self.host._input('Setting number [Enter/B back]: ').strip()
+                if not raw or raw.lower() in ('b','q'):
+                    if section == 'thermal':return
+                    section = 'thermal_advanced' if section == 'thermal_per_drive' else 'thermal'
+                    continue
+                index = int(raw)-1
+                if not 0 <= index < len(settings):raise ValueError('Invalid setting number')
+                item = settings[index]
+                if item.key in ('thermal_ui_advanced','thermal_ui_perdrive'):
+                    section = 'thermal_advanced' if item.key.endswith('advanced') else 'thermal_per_drive'
+                    if section == 'thermal_per_drive':rows = drive_choices()
+                    continue
+                for n, label in enumerate(item.option_labels or item.options, 1):print(f'{n}. {label}')
+                value = self.host._input(f'{item.label} [Enter keeps; B cancels]: ').strip()
+                if not value or value.lower() == 'b':continue
+                if item.options and value not in item.options:
+                    n = int(value)-1
+                    if not 0 <= n < len(item.options):raise ValueError('Invalid option number')
+                    value = item.options[n]
+                if item.key == 'thermal_ui_targets' and value == 'individual':
+                    rows = drive_choices();section = 'thermal_drives'
+                    continue
+                edit = ProfileEditState(Path('<in-memory>'), profile, list(labels))
+                apply(edit, stage_index, item.key, value, self.host.profile_save.validator, rows)
+                stage.modules = edit.profile.stages[stage_index].modules
+                print('Updated configuration; activity has not started.')
+            except BackRequested:
+                if section == 'thermal':return
+                section = 'thermal'
+            except (ValueError, OSError, IndexError, RuntimeError) as exc:
+                print(f'Setting unchanged: {exc}')
 
     def edit_stage(
         self,

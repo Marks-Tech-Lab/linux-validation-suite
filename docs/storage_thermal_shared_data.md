@@ -154,13 +154,16 @@ Results/build/recovery locations must remain outside executing targets. Existing
 permissions and an explicit non-root worker identity are required; no automatic
 sudo, chmod, disk-group assignment or package installation is introduced.
 
-CLI/TUI Configure Workloads and O / Stage Overrides expose access contract and
-aggregate budgets using the same ThermalConfig constraints. Set budgets first,
-then choose shared opt-in; invalid edits roll back through the existing editor.
-Individual stable IDs accept plain text/comma-separated entries as well as the
-existing JSON-list form. Storage OFF comparisons, original/effective evidence and manual labels remain
-unchanged. Do not Save if only run-local changes were intended. The seven existing
-profiles retain exclusive defaults until a later explicitly reviewed promotion.
+CLI/TUI Configure Workloads and O / Stage Overrides use the
+[guided Thermal Assist screen](storage_thermal_on_demand.md#access-modes-and-final-preparation-review).
+Choose Enabled → On for explicit experimental shared data setup, then a drive
+group or model/capacity picker and percentage. Automatic aggregate caps resolve
+from authoritative qualified physical-device rates before the final readiness
+review. Advanced retains validated manual caps and custom rates with human units;
+raw JSON or stable-ID entry is unnecessary. Existing profile access modes are
+preserved until edited, including the seven standard profiles' exclusive defaults.
+Storage OFF comparisons, original/effective evidence and manually authored labels
+remain unchanged. Run-only edits do not save the profile; normal Save remains explicit.
 No per-filesystem provider or duplicated workload implementation is introduced.
 
 At 64 KiB and ordinary 50%, provisional rates resolve to HDD 15 IOPS, SATA/SAS

@@ -130,7 +130,8 @@ def apply_stage_setting(edit: Any, index: int, key: str, raw: str, controller: A
 def effective_stage_text(stage: Any) -> list[str]:
     """Show the actual effective workload, not just duration and a stage label."""
     from dataclasses import asdict
-    return [f"  {name}: " + ", ".join(f"{key}={value}" for key, value in asdict(module).items() if key != "enabled")
+    from .lvs_profile_report_text import storage_thermal_request_text
+    return ["  " + storage_thermal_request_text(module) if name == 'storage_thermal' else f"  {name}: " + ", ".join(f"{key}={value}" for key, value in asdict(module).items() if key != "enabled")
             for name, module in vars(stage.modules).items() if module.enabled]
 
 

@@ -29493,8 +29493,17 @@ from smoke_tests.storage_thermal_transient_checks import (run_thermal_transient_
 
 from smoke_tests.storage_thermal_migration_checks import (run_thermal_retirement_transaction_checks, run_thermal_retirement_interruption_checks, run_thermal_retirement_recovery_checks, run_thermal_retirement_approval_checks, run_thermal_retirement_socket_checks, run_thermal_retirement_shared_gate_checks, run_thermal_retirement_persistence_checks, run_thermal_retirement_lock_checks, run_thermal_retirement_other_service_checks, run_thermal_historical_transaction_checks, run_thermal_historical_format_checks, run_thermal_historical_lock_checks, run_thermal_historical_mapping_checks, run_thermal_vendor_dropin_checks, run_thermal_vendor_policy_checks, run_thermal_vendor_transaction_checks, run_thermal_unit_scan_checks, run_thermal_unit_scan_race_checks)
 
+from smoke_tests.storage_thermal_configuration_checks import (run_thermal_guided_configuration_checks,
+    run_thermal_guided_cli_checks, run_thermal_guided_tui_checks, run_thermal_automatic_budget_checks,
+    run_thermal_automatic_runner_planning_checks)
+
 def main() -> int:
     tests = [
+        run_thermal_guided_configuration_checks,
+        run_thermal_guided_cli_checks,
+        run_thermal_guided_tui_checks,
+        run_thermal_automatic_budget_checks,
+        run_thermal_automatic_runner_planning_checks,
         run_thermal_access_presentation_checks,
         run_thermal_preparation_review_checks,
         run_thermal_review_frontend_checks,

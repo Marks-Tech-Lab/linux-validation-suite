@@ -37,7 +37,9 @@ def storage_thermal_request_text(config: Any) -> str:
         detail += "; advanced limits " + ", ".join(rates)
     mode = getattr(config, 'access_mode', 'exclusive')
     detail += '; ' + storage_thermal_access_text(mode)
-    if mode != 'exclusive':
+    if getattr(config, 'budget_mode', 'manual') == 'automatic':
+        detail += '; automatic aggregate budgets (resolved at readiness)'
+    elif mode != 'exclusive':
         detail += f"; aggregate {config.aggregate_iops_limit} IOPS / {config.aggregate_bps_limit} B/s"
     return f"Storage Thermal Assist requested ({detail})"
 

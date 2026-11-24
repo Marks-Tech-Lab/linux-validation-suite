@@ -47,7 +47,7 @@ def thermal_settings(stage, setting_type):
                            'enabled', obj.enabled, ('false', 'true'))]
     if not obj.enabled:
         return fields
-    options = dict(access_mode=('exclusive','shared_readonly_opt_in'), selection=GROUPS, rate_mode=('percent', 'advanced'), monitoring=('required', 'approved_unmonitored'), scheduling=('normal',))
+    options = dict(budget_mode=('manual','automatic'), access_mode=('exclusive','shared_readonly_opt_in'), selection=GROUPS, rate_mode=('percent', 'advanced'), monitoring=('required', 'approved_unmonitored'), scheduling=('normal',))
     labels = dict(access_mode='Access contract (shared is experimental explicit opt-in)', aggregate_iops_limit='Aggregate IOPS budget (JSON integer/null)', aggregate_bps_limit='Aggregate bytes/s budget (JSON integer/null)',device_ids='Individual stable IDs (comma-separated or JSON list)', per_device_percent='Per-drive intensity (JSON object)',
                   intensity_percent='Ordinary activity %', system_intensity_percent='System activity % (separate authorization required)',
                   block_size='Read size bytes', iops='Advanced IOPS (JSON integer/null)',
@@ -87,7 +87,7 @@ def set_thermal_setting(stage, key, raw):
         raise ValueError('Unknown thermal setting')
     if name=='device_ids' and not raw.strip().startswith('['):
         value=[part.strip() for part in raw.split(',') if part.strip()]
-    else:value = raw if name in ('access_mode','selection','rate_mode','monitoring','scheduling') else json.loads(raw)
+    else:value = raw if name in ('budget_mode','access_mode','selection','rate_mode','monitoring','scheduling') else json.loads(raw)
     setattr(stage.modules.storage_thermal, name, value)
     stage_config(stage)  # same validation as standalone; caller owns transaction
     if type(stage.modules.storage_thermal.enabled) is not bool:

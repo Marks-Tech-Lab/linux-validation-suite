@@ -118,6 +118,7 @@ class ModuleStorageThermal:
     temperature_warning_c: Optional[float] = None
     scheduling: str = "normal"
 
+    budget_mode: str = "manual"  # profile intent only; not a privileged wire field
 
 @dataclass
 class StageModules:

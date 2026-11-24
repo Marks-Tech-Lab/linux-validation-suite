@@ -42,6 +42,7 @@ def release_preparation(profile):
 def preparation_text(profile, plans):
     """Pure presentation of final effective plans; no inspection or authorization."""
     from .lvs_storage_thermal_results import storage_thermal_access_text
+    from .lvs_storage_thermal_configuration import drive_label
     groups = {}
     for index, stage in enumerate(profile.stages, 1):
         if stage.enabled and stage.modules.storage_thermal.enabled:
@@ -61,6 +62,8 @@ def preparation_text(profile, plans):
         prepared = authoritative and backend_available and not global_blocker
         ready = list(plan.get('runnable_devices') or []) if prepared and plan.get('status') == 'READY' else []
         excluded = list(plan.get('blocked_devices') or [])
+        names = {r['device_id']: drive_label(r) for r in plan.get('targets', []) if r.get('model')}
+        def named(devices):return ', '.join(names.get(d, d) for d in devices) or '(none)'
         outcome = ('PREPARATION FAILED / UNAVAILABLE' if not prepared else
                    'ZERO ELIGIBLE DRIVES — Thermal Assist NOT_RUN' if not ready else
                    'PARTIAL COVERAGE — listed eligible subset only' if excluded or plan.get('partial_coverage') else
@@ -73,18 +76,18 @@ def preparation_text(profile, plans):
                   f"stop={config['temperature_limit_c'] if config['temperature_limit_c'] is not None else 'device-derived'} C; "
                   f"aggregate={config['aggregate_iops_limit'] if config['aggregate_iops_limit'] is not None else 'unset'} IOPS / "
                   f"{config['aggregate_bps_limit'] if config['aggregate_bps_limit'] is not None else 'unset'} B/s",
-                  f"  Eligible ({len(ready)}): {', '.join(ready) or '(none)'}",
-                  f"  Excluded requested targets ({len(excluded)}): {', '.join(excluded) or '(none)'}"]
+                  f"  Eligible ({len(ready)}): {named(ready)}",
+                  f"  Excluded requested targets ({len(excluded)}): {named(excluded)}"]
         lines.append(f"  Requested: {config['block_size']} byte reads, QD{config['queue_depth']}; "
                      f"{config['rate_mode']}, ordinary {config['intensity_percent']}% / system {config['system_intensity_percent']}%")
         for row in plan.get('targets', []):
             if row['device_id'] in ready:
                 rate = row.get('rate') or {}
-                lines.append(f"  {row['device_id']}: planned {rate.get('effective_iops', 'unavailable')} IOPS / "
+                lines.append(f"  {names.get(row['device_id'], row['device_id'])}: planned {rate.get('effective_iops', 'unavailable')} IOPS / "
                              f"{rate.get('effective_bps', 'unavailable')} B/s (not achieved activity)")
         reasons = list(plan.get('reasons') or [])
         if not backend_available:reasons += plan.get('backend', {}).get('reasons') or []
-        reasons += [d['device_id'] + ': ' + '; '.join(d.get('reasons') or [])
+        reasons += [names.get(d['device_id'], d['device_id']) + ': ' + '; '.join(d.get('reasons') or [])
                     for d in plan.get('devices', []) if d.get('selected') and d.get('reasons')]
         if not plan:reasons.append('No final preparation result for this effective configuration.')
         lines.extend('  ' + reason for reason in dict.fromkeys(reasons))
@@ -121,6 +124,8 @@ def _prepare(profile, manager, authorize):
     release_preparation(profile)
     if manager is not None:manager.thermal_source_approval=''
     plans = {}
+    for stage in profile.stages:
+        stage.modules.storage_thermal.__dict__.pop('_resolved_aggregate_limits', None)
     for stage in profile.stages:
         if stage.enabled and getattr(stage.modules.storage_thermal, 'enabled', False):
             config = stage_config(stage)
@@ -168,13 +173,24 @@ def _prepare(profile, manager, authorize):
             plans[identity] = blocked(plans[identity], reason)
             continue
         try:
-            plans[identity] = execution_readiness(stage_config(stage))
+            plan = execution_readiness(stage_config(stage))
+            if getattr(stage.modules.storage_thermal, 'budget_mode', 'manual') == 'automatic':
+                from .lvs_storage_thermal_configuration import automatic_limits
+                limits = automatic_limits(stage_config(stage), plan)
+                if limits is not None:
+                    stage.modules.storage_thermal._resolved_aggregate_limits = limits
+                    plan = execution_readiness(stage_config(stage))
+                else:
+                    plan = blocked(plan, 'Automatic budgets unresolved: no qualified monitored nonzero-rate data targets')
+                identity = key(stage)
+            plans[identity] = plan
             plans[identity]['execution_ready'] = True
             plans[identity]['requires_consent'] = bool(
                 plans[identity].get('status') == 'READY' and
                 stage_config(stage).monitoring == 'approved_unmonitored')
         except (OSError, ValueError, RuntimeError) as exc:
-            plans[identity] = blocked(plans[identity], str(exc))
+            plans[key(stage)] = blocked(plans.get(identity, {}), str(exc))
+    plans = {identity: plans[identity] for identity in schedule(profile) if identity is not None}
     if authorized and lease is None and any(p.get('status')=='READY'and(p.get('installed_runtime')or{}).get('runtime_mode')=='lvs.thermal.transient.data.v1'for p in plans.values()):
         try:
             from .lvs_storage_thermal_transient import Hold

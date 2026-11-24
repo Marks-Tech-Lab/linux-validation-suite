@@ -48,14 +48,66 @@ worker.
 
 ## Access modes and final preparation review
 
-Enabling Thermal Assist preserves the selected access contract. The default
-`exclusive` provider supports only inactive physical SATA/SAS HDDs; it excludes
-mounted targets, SSDs and NVMe. `shared_readonly_opt_in` is the experimental path
-for supported internal data HDDs, SSDs and qualified local PCIe NVMe, mounted or
-unmounted. Filesystem names alone do not select a provider. Set aggregate IOPS
-and byte/s budgets **before** selecting shared mode, retain required monitoring,
-and choose the intended stable physical IDs. No mode selection grants system,
-complex-stack or external access. Existing eligibility proofs still apply.
+The stage workload screen has one **Storage Thermal Assist…** entry in both
+CLI and TUI. In O / Stage Overrides these edits affect only the pending run;
+saved-profile editing remains unsaved until the existing Save/Save As action.
+No standard profiles, labels or menu descriptions are rewritten.
+
+The normal screen contains:
+
+- **Enabled**: Off, or On — recommended data setup. Explicitly selecting On
+  opts into the existing experimental shared data provider, automatic aggregate
+  budgets and required monitoring. The current effective provider is displayed.
+- **Drives**: internal data groups or **Choose physical drives…**. The picker
+  shows device node where known, model, capacity and system/data/unknown status.
+  It uses passive metadata, never sudo, RPC or temperature probing. Known system
+  targets cannot be selected; unknown classification is not eligibility.
+- **Intensity (%)**: the ordinary-drive percentage policy, 0–100. Changing this
+  returns from custom rates to percentage mode. This is requested activity, not
+  utilization or measured heating. Existing 50% ordinary / 25% system policy
+  values and all class ceilings are unchanged.
+- **Include system drives**: Off; unavailable through the current on-demand
+  identity pending separate confidentiality/identity qualification. Configuration
+  cannot manufacture private run-local system authorization.
+- **Temperature protection**: Required. Existing legacy unmonitored intent is
+  displayed honestly; the guided workflow cannot grant unmonitored approval.
+- **Advanced…**: explicit provider, automatic/manual aggregate budgets, custom
+  per-drive IOPS and MiB/s, read size in KiB, temperatures in °C, future system
+  intensity intent and individual per-drive percentage overrides. Optional rates
+  accept `auto`, sensor-derived thresholds `device`, and overrides `default`.
+  Choose individual drives before adding overrides; saved overrides can be cleared.
+  Set both manual caps before switching to Manual. Custom mode starts at 1 IOPS
+  until edited. Every edit is validated transactionally, including threshold order.
+
+Existing profiles retain the legacy `exclusive` default: inactive physical SATA/SAS
+HDDs only, excluding mounted drives, SSDs and NVMe. Simply loading or running an
+old profile does not promote it to shared access. The guided On action explicitly
+selects `shared_readonly_opt_in`, supporting qualified internal data HDD/SSD/NVMe,
+mounted or unmounted. It does not add any eligibility or silently fall back to a
+weaker method. Filesystem names do not select a provider. Complex/ambiguous,
+external, unsupported and unqualified targets retain their existing blockers.
+Automatic mixed-provider selection/global legacy-default promotion is not implemented.
+
+`budget_mode=automatic` is saved profile intent, **not** a new privileged protocol
+field or an execution authorization. Before authorized preparation it uses
+non-executable probe caps (1 IOPS / 1 B/s). After the existing source/privilege
+approval, authoritative readiness identifies qualified monitored physical data
+targets. The client sums their exact established `pilot_rate` results with no
+capacity/model proxies or new ceilings, then performs the normal authoritative
+readiness pass again with explicit numeric aggregate limits. Duplicate or
+contradictory rate evidence is rejected; missing monitoring/resources cannot supply
+budgets. Unknown/system targets never supply automatic budgets. The existing
+privileged provider revalidates all limits, topology, recovery and admission.
+No qualified targets means blocked auxiliary execution, never an uncapped fallback.
+The resolved limits live only in the one-use effective preparation and its evidence;
+saving/reloading a profile requires fresh resolution. A changed effective schedule
+cannot reuse the receipt. Final review displays the numeric caps before execution.
+These workload caps do not bound all initialization, kernel or application traffic.
+
+The standalone expert menu also uses human drive descriptions, KiB and MiB/s
+prompts and displays the current access contract. Its command-line JSON format
+remains available for automation; it is not the normal profile-editing workflow.
+Its existing explicit manual caps and start confirmation remain required.
 
 After foreground authorization, both CLI and TUI use
 `RunLaunchCoordinator.review_execution()` to present the effective contracts and
