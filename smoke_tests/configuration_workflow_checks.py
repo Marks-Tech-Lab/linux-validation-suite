@@ -321,6 +321,13 @@ def run_tui_thermal_configuration_checks():
                         await app._show_stage_configuration()
                     # Default synthetic values must compare as dictionaries, not
                     # nonexistent dataclass fields or rate_mode strings.
+                    from Modules.lvs_profile_report_text import storage_thermal_access_help
+                    assert storage_thermal_access_help() in app.observed_detail
+                    access = next(i + 1 for i, s in enumerate(app.stage_configuration_fields) if s.key == 'thermal_access_mode')
+                    await app._activate_stage_configuration_item(access);await pilot.pause()
+                    assert storage_thermal_access_help() in app.observed_detail
+                    await pilot.press('escape');await pilot.pause()
+                    assert app.view_mode == 'stage_configuration'
                     for row in app.observed_rows:
                         if row.startswith(('Thermal advanced rates', 'Run-local system authorization')):assert 'overridden' not in row
                     if run_only:

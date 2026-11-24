@@ -303,9 +303,10 @@ class RunCliAdapter:
                 privilege_manager=getattr(self.launcher, 'privileged_telemetry', None),
                 authorize=self._authorize_thermal_execution,
             )
-            for plan in plans.values():
-                if plan.get('status') != 'READY':
-                    print('Thermal Assist unavailable: ' + '; '.join(plan.get('reasons') or ['Not ready']))
+            if not self.run_launcher.review_execution(prepared_run.launch_request, plans,
+                                                      review=self._review_thermal_preparation):
+                print('Run not started; readiness-only review complete. Runtime hold released.')
+                return
             if cli_live_run_supported(sys.stdout):
                 live = CliLiveRunPresenter(stream=sys.stdout, enabled=True)
                 try:
@@ -344,9 +345,16 @@ class RunCliAdapter:
         try:
             summary=getattr(self.launcher.privileged_telemetry,'thermal_source_approval','')
             if summary:print(summary)
-            choice = self._input('Authorize privileged Thermal Assist preparation for this run? [y/N]: ').strip().lower()
+            choice = self._input('Authorize privileged Thermal Assist readiness preparation? Workloads require the following review. [y/N]: ').strip().lower()
             return choice in {'y', 'yes'} and self.launcher.privileged_telemetry.prepare_session()
         except (EOFError, KeyboardInterrupt):
+            return False
+
+    def _review_thermal_preparation(self, text: str) -> bool:
+        print(text)
+        try:
+            return self._input('Choose [2]: ').strip() == '1'
+        except (EOFError, KeyboardInterrupt, BackRequested):
             return False
 
     def post_run_wall_wattage_prompt(self, run_dir: Path, metadata: RunMetadata) -> None:

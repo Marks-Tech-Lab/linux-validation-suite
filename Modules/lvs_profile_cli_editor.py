@@ -656,6 +656,9 @@ class ProfileCliEditor:
                                     if stage.modules.gpu_3d.enabled or stage.modules.vram.enabled else ())
             print(f"\nStage {stage_index + 1} workload settings — "
                   + ("this run only; profile file unchanged" if run_only else "unsaved profile edits"))
+            from .lvs_profile_report_text import storage_thermal_access_help
+            if stage.modules.storage_thermal.enabled:
+                print(storage_thermal_access_help())
             for index, field in enumerate(fields, 1):
                 print(f"{index}. {field.label}: {setting_value_text(field.value) or '(none)'}")
             print("\n".join(effective_stage_text(stage)))

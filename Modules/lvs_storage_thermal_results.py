@@ -10,6 +10,22 @@ import os
 import json
 from uuid import uuid4
 
+def storage_thermal_access_text(mode: str) -> str:
+    return {
+        'exclusive': 'exclusive — inactive physical SATA/SAS HDDs only',
+        'shared_readonly_opt_in': 'experimental shared read-only — supported internal data HDD/SSD/NVMe, mounted or unmounted',
+    }.get(mode, f'unsupported access contract: {mode}')
+
+
+def storage_thermal_access_help() -> str:
+    return ('exclusive: inactive physical SATA/SAS HDDs only; mounted drives, SSDs and NVMe are excluded.\n'
+            'shared_readonly_opt_in: experimental read-only access to supported internal SATA/SAS HDDs/SSDs '
+            'and qualified local PCIe NVMe data drives, mounted or unmounted.\n'
+            'Set aggregate IOPS and bytes/s budgets before selecting shared mode; required monitoring and '
+            'authoritative topology/identity checks still apply. System, complex-stack and external access '
+            'are not authorized by selecting this mode. Configured activity is not executed activity.')
+
+
 _ACTIVE_RUN = ContextVar("thermal_evidence_run", default=None)
 
 
@@ -556,12 +572,14 @@ def readiness_lines(report):
         if plan.get('requires_consent') and not permitted:reasons.append('Bounded unmonitored approval missing or declined; primary validation may continue without storage')
         outcome='READY (execution pending)' if permitted else 'NOT_RUN'
         entry=dict(outcome=outcome,selection=plan.get('configuration',{}).get('selection'),
+                   access_mode=plan.get('configuration',{}).get('access_mode','exclusive'),
                    eligible=plan.get('runnable_devices',[]),excluded=plan.get('blocked_devices',[]),reasons=reasons)
         key=json.dumps(entry,sort_keys=True)
         groups.setdefault(key,dict(entry,count=0))['count']+=1
     if not groups:return []
     lines=['Storage Thermal Assist — independent, non-gating:']
     for g in groups.values():
+        lines.append('  Access contract: ' + storage_thermal_access_text(g['access_mode']))
         lines.append(f"  {g['count']} stage(s): {g['outcome']}; eligible {len(g['eligible'])}, excluded {len(g['excluded'])}; selection={g['selection']}")
         lines.extend('    '+reason for reason in dict.fromkeys(g['reasons']))
     return lines

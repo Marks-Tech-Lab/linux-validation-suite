@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+from .lvs_storage_thermal_results import storage_thermal_access_text, storage_thermal_access_help
+
+
 def storage_thermal_request_text(config: Any) -> str:
     """Describe configured activity without asserting readiness or execution."""
     selection = {
@@ -32,8 +35,10 @@ def storage_thermal_request_text(config: Any) -> str:
         if config.bandwidth_bytes_per_second is not None:
             rates.append(f"{config.bandwidth_bytes_per_second} B/s")
         detail += "; advanced limits " + ", ".join(rates)
-    if getattr(config,"access_mode","exclusive")!="exclusive":
-        detail += f"; experimental shared read-only; aggregate {config.aggregate_iops_limit} IOPS / {config.aggregate_bps_limit} B/s"
+    mode = getattr(config, 'access_mode', 'exclusive')
+    detail += '; ' + storage_thermal_access_text(mode)
+    if mode != 'exclusive':
+        detail += f"; aggregate {config.aggregate_iops_limit} IOPS / {config.aggregate_bps_limit} B/s"
     return f"Storage Thermal Assist requested ({detail})"
 
 

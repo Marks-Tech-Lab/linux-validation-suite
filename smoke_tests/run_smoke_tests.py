@@ -9060,6 +9060,8 @@ def test_cli_run_heatsoak_reaches_prepared_launch() -> None:
             )
 
     class RunLauncherStub:
+        review_execution = RunLaunchCoordinator.review_execution
+
         def __init__(self) -> None:
             self.request = None
             self.callback_path = None
@@ -29485,6 +29487,7 @@ from smoke_tests.primary_work_progress_checks import (run_primary_work_analysis_
 from smoke_tests.storage_thermal_confidential_checks import run_thermal_postexec_native_checks, run_thermal_postexec_witness_checks
 
 from smoke_tests.storage_thermal_execution_checks import (run_thermal_passive_inspection_checks, run_thermal_execution_preparation_checks, run_thermal_frontend_authorization_checks, run_thermal_prepared_executor_checks)
+from smoke_tests.storage_thermal_preparation_review_checks import (run_thermal_access_presentation_checks, run_thermal_preparation_review_checks, run_thermal_review_frontend_checks)
 
 from smoke_tests.storage_thermal_transient_checks import (run_thermal_transient_candidate_checks, run_thermal_transient_approval_checks, run_thermal_transient_stager_checks, run_thermal_transient_lifetime_checks)
 
@@ -29492,6 +29495,9 @@ from smoke_tests.storage_thermal_migration_checks import (run_thermal_retirement
 
 def main() -> int:
     tests = [
+        run_thermal_access_presentation_checks,
+        run_thermal_preparation_review_checks,
+        run_thermal_review_frontend_checks,
         run_thermal_unit_scan_checks,
         run_thermal_unit_scan_race_checks,
         run_thermal_vendor_dropin_checks,

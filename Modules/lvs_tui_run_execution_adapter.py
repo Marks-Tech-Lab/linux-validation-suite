@@ -144,11 +144,15 @@ class TuiRunExecutionAdapterMixin:
         # Still on the frontend thread, after the second/final confirmation.
         # Never authenticate from _run_profile_thread or a timed stage.
         try:
-            self.service.run_launcher.prepare_execution(
+            plans = self.service.run_launcher.prepare_execution(
                 prepared_flow.launch_request,
                 privilege_manager=getattr(self.service, 'privileged_telemetry', None),
                 authorize=self._authorize_thermal_execution,
             )
+            if not self.service.run_launcher.review_execution(prepared_flow.launch_request, plans,
+                                                              review=self._review_thermal_preparation):
+                self.confirm_run = False
+                return
         except Exception as exc:
             self.confirm_run = False
             self._set_detail(f'Run preparation failed: {exc}')
@@ -187,10 +191,23 @@ class TuiRunExecutionAdapterMixin:
             with self.suspend():
                 summary=getattr(self.service.privileged_telemetry,'thermal_source_approval','')
                 if summary:print(summary)
-                choice = input('Authorize privileged Thermal Assist preparation for this run? [y/N]: ').strip().lower()
+                choice = input('Authorize privileged Thermal Assist readiness preparation? Workloads require the following review. [y/N]: ').strip().lower()
                 return choice in {'y', 'yes'} and self.service.privileged_telemetry.prepare_session()
         except (EOFError, KeyboardInterrupt, RuntimeError):
             return False
+
+    def _review_thermal_preparation(self, text: str) -> bool:
+        # Reuse the foreground terminal handoff used for sudo authorization.
+        # No prompt is allowed in the execution thread or a timed stage.
+        try:
+            with self.suspend():
+                print(text)
+                accepted = input('Choose [2]: ').strip() == '1'
+        except (EOFError, KeyboardInterrupt, RuntimeError):
+            accepted = False
+        if not accepted:
+            self._set_detail(text + '\n\nRun not started; runtime hold released. Reopen Review and run for fresh readiness.')
+        return accepted
 
     def action_edit_wall_wattage(self) -> None:
         if self.view_mode == "settings":

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import threading
 from typing import Any, Callable, Optional
 
 from .lvs_run_executor import RunExecutor
@@ -39,10 +41,38 @@ class RunLaunchCoordinator:
 
     def prepare_execution(self, request: RunLaunchRequest, *, privilege_manager: Any, authorize: Callable[[], bool]):
         """Foreground-only boundary after final confirmation and effective overrides."""
-        from .lvs_storage_thermal_execution import prepare
+        from .lvs_storage_thermal_execution import prepare, release_preparation, key, blocked, schedule
         if request.setup is None:
             raise ValueError('Execution preparation requires the effective run setup')
-        return prepare(request.setup.profile, privilege_manager, authorize)
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError('Execution preparation requires the frontend thread')
+        profile = request.setup.profile
+        try:
+            return prepare(profile, privilege_manager, authorize)
+        except Exception as exc:
+            release_preparation(profile)
+            plans = {key(s): blocked(dict(configuration=json.loads(key(s))),
+                        'Thermal Assist preparation failed: ' + str(exc))
+                     for s in profile.stages if s.enabled and s.modules.storage_thermal.enabled}
+            profile._thermal_execution_preparation = dict(stages=schedule(profile), plans=plans, lease=None)
+            return plans
+
+    def review_execution(self, request: RunLaunchRequest, plans, *, review: Callable[[str], bool]) -> bool:
+        """Foreground final review. Returning to setup also serves readiness-only use."""
+        from .lvs_storage_thermal_execution import preparation_text, release_preparation, schedule
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError('Execution review requires the frontend thread')
+        accepted = False
+        try:
+            receipt = request.setup.profile.__dict__.get('_thermal_execution_preparation', {})
+            if receipt.get('stages') != schedule(request.setup.profile) or receipt.get('plans') != plans:
+                release_preparation(request.setup.profile)
+                plans = {}  # changed/missing preparation cannot appear eligible
+            text = preparation_text(request.setup.profile, plans)
+            accepted = not text or review(text) is True
+            return accepted
+        finally:
+            if not accepted:release_preparation(request.setup.profile)
 
     def run_direct(
         self,

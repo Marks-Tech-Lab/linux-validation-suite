@@ -75,7 +75,13 @@ class TuiStageConfigurationMixin:
             + ("Changes affect this pending run only; the profile file is never saved.\n" if self.stage_configuration_for_run
                else "Changes remain unsaved until Save or Save As.\n")
             + "Select a setting and press Enter. Only settings applicable to enabled workloads/backends are offered.\n"
-            + "Hardware readiness, memory budgets and runtime safety are still checked before execution.")
+            + "Hardware readiness, memory budgets and runtime safety are still checked before execution.\n\n"
+            + (self._thermal_access_help() if edit.profile.stages[index].modules.storage_thermal.enabled else ''))
+
+    @staticmethod
+    def _thermal_access_help():
+        from .lvs_profile_report_text import storage_thermal_access_help
+        return storage_thermal_access_help()
 
     async def _activate_stage_configuration_item(self, row: int) -> None:
         if row == 0:
@@ -93,6 +99,9 @@ class TuiStageConfigurationMixin:
                 spec, "This setting is applied transactionally; invalid combinations are rejected. "
                 "Physical selections are rechecked before execution; backend identity binding is still required.",
                 stage_index=self.stage_configuration_index)
+            if setting.key == 'thermal_access_mode':
+                presentation = replace(presentation, picker=replace(presentation.picker,
+                    detail=presentation.picker.detail + '\n\n' + self._thermal_access_help()))
             if setting.option_labels:
                 presentation = replace(presentation, picker=replace(presentation.picker,
                     labels=tuple(label + (" (current)" if value == spec.current else "")
